@@ -2530,6 +2530,28 @@ function ArtifactPreview({ block }) {
     return () => { cancelled = true; };
   }, [lang, code]);
 
+  // Design canvas / slide deck: both are built by the main process (one source of
+  // truth with the artifact window and print-to-PDF) and rendered in a sandbox.
+  const isCanvas = ['design', 'canvas', 'artboard', 'slides', 'deck', 'presentation'].includes(lang);
+  const [canvasDoc, setCanvasDoc] = useState('');
+  useEffect(() => {
+    if (!isCanvas) return undefined;
+    let live = true;
+    setCanvasDoc('');
+    const api = window.autobot;
+    const p = api && api.artifactDocument
+      ? api.artifactDocument({ name: block.label || lang, language: lang, content: code })
+      : Promise.resolve('');
+    Promise.resolve(p)
+      .then((h) => { if (live && typeof h === 'string') setCanvasDoc(h); })
+      .catch(() => { /* leave the placeholder */ });
+    return () => { live = false; };
+  }, [isCanvas, lang, code, block.label]);
+
+  if (isCanvas) {
+    if (!canvasDoc) return <div className="artifact-fallback muted">Building {lang === 'slides' || lang === 'deck' || lang === 'presentation' ? 'deck' : 'canvas'}…</div>;
+    return <iframe className="artifact-frame" title={lang + ' canvas'} sandbox="allow-scripts allow-modals allow-popups" srcDoc={canvasDoc} />;
+  }
   if (lang === 'html' || lang === 'htm' || lang === 'xml') {
     return <iframe className="artifact-frame" title="artifact preview" sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={code} />;
   }
@@ -2677,7 +2699,7 @@ function ArtifactsView({ blocks }) {
       highlighted = block.lang && hljs.getLanguage(block.lang) ? hljs.highlight(block.code, { language: block.lang }).value : hljs.highlightAuto(block.code).value;
     } catch {}
   }
-  const canPreview = block && ['html', 'htm', 'xml', 'svg', 'mermaid', 'react', 'jsx', 'js', 'markdown', 'md', 'text', 'txt'].includes((block.lang || 'text').toLowerCase().trim());
+  const canPreview = block && ['html', 'htm', 'xml', 'svg', 'mermaid', 'react', 'jsx', 'js', 'markdown', 'md', 'text', 'txt', 'design', 'canvas', 'artboard', 'slides', 'deck', 'presentation'].includes((block.lang || 'text').toLowerCase().trim());
   return (
     <div className="panel artifacts">
       <h2>Artifacts</h2>
@@ -2698,7 +2720,7 @@ function ArtifactsView({ blocks }) {
                   <button className={mode === 'code' ? 'on' : ''} onClick={() => setMode('code')}>Code</button>
                   <button className="copy-btn" data-code={encodeURIComponent(block.code)} onClick={(e) => { const btn = e.currentTarget; const c = decodeURIComponent(btn.dataset.code || ''); navigator.clipboard?.writeText(c).then(() => { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1200); }); }}>Copy</button>
                   <button onClick={() => window.autobot.openArtifactWindow({ name: block.label || block.lang, language: block.lang, content: block.code })}>Open</button>
-                  <button onClick={() => window.autobot.printToPdf({ defaultName: (block.label || 'artifact').replace(/[^\w.-]+/g, '_') + '.pdf', html: ['html', 'htm', 'svg'].includes((block.lang || '').toLowerCase()) ? block.code : undefined, content: block.code })}>PDF</button>
+                  <button onClick={() => window.autobot.printToPdf({ defaultName: (block.label || 'artifact').replace(/[^\w.-]+/g, '_') + '.pdf', language: (block.lang || '').toLowerCase(), html: ['html', 'htm', 'svg'].includes((block.lang || '').toLowerCase()) ? block.code : undefined, content: block.code })}>PDF</button>
                 </div>
               </div>
               {mode === 'code' || !canPreview ? (

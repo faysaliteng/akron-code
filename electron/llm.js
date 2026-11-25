@@ -1403,6 +1403,8 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       json: 'data.json', md: 'README.md', markdown: 'README.md',
       python: 'main.py', py: 'main.py', sh: 'script.sh', bash: 'script.sh',
       sql: 'query.sql', yaml: 'config.yaml', yml: 'config.yml',
+      design: 'design.json', canvas: 'design.json', artboard: 'design.json',
+      slides: 'slides.json', deck: 'slides.json', presentation: 'slides.json',
     };
     const createArtifact = (args) => {
       const language = String(args.language || '').toLowerCase().trim();

@@ -143,6 +143,37 @@ async function main() {
     const r = await runTool('Artifact', { name: 'x', content: 'y' }, { createArtifact: (a) => (art = a) });
     assert.strictEqual(art.name, 'x');
   });
+  await test('Artifact canvas types land on disk with the right default filename', async () => {
+    const os = require('os'), p = require('path'), f = require('fs');
+    const dir = f.mkdtempSync(p.join(os.tmpdir(), 'helio-canvas-'));
+    const deck = JSON.stringify({ title: 'Q3', slides: [{ title: 'Intro', bullets: ['up 20%'] }] });
+    const board = JSON.stringify({ title: 'Site', artboards: [{ name: 'Mobile', width: 390, height: 844, html: '<h1>Cart</h1>' }] });
+    const mock = await startMock([
+      { tool_calls: [{ name: 'Artifact', args: { language: 'slides', content: deck } }] },
+      { tool_calls: [{ name: 'Artifact', args: { name: 'board', language: 'design', content: board } }] },
+      { content: 'canvas-done' },
+    ]);
+    const events = [];
+    await runAgent({
+      provider: { baseURL: `http://127.0.0.1:${mock.port}/v1`, apiKey: '', model: 'test', temperature: 0, maxTokens: 400 },
+      messages: [{ role: 'user', content: 'make a deck and a board' }],
+      cwd: dir,
+      emit: (evt) => events.push(evt),
+      useMemory: false,
+    });
+    mock.server.close();
+    const arts = events.filter((e) => e.type === 'artifact');
+    assert.strictEqual(arts.length, 2, 'both canvas artifacts must be emitted');
+    assert.strictEqual(arts[0].language, 'slides');
+    assert.strictEqual(arts[1].language, 'design');
+    assert.strictEqual(arts[0].name, 'slides.json', 'slides default to slides.json');
+    assert.strictEqual(arts[1].name, 'board.json', 'design inherits .json');
+    assert.ok(f.existsSync(p.join(dir, 'slides.json')), 'deck written into the project folder');
+    assert.ok(f.existsSync(p.join(dir, 'board.json')), 'design written into the project folder');
+    assert.strictEqual(f.readFileSync(p.join(dir, 'slides.json'), 'utf8'), deck, 'content stored verbatim');
+    assert.ok(events.some((e) => e.type === 'delta' && /canvas-done/.test(e.text || '')));
+    f.rmSync(dir, { recursive: true, force: true });
+  });
 
   // ---- 2. shell manager (terminal MCP) ----
   console.log('\nShell manager:');

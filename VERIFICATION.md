@@ -482,3 +482,27 @@ Screenshot: `screenshots/swarm-real.png`. **PASS on all 11 checks, first attempt
 Note: the first `npm run dist` was started before the delegation-prompt edit, so it shipped a
 model that was never told the team existed. That stale build was discarded and the package was
 rebuilt after the edit; the asar checks above are what confirm the fix is in the artifact.
+
+## 15. Design + Slides canvas artifacts (2026-11-25)
+
+The last named Desktop parity gap (`PARITY-GAPS.md` §4) — the two branded canvas
+artifact types — is implemented in one shared module so the artifact window, the
+in-chat preview and PDF export cannot drift.
+
+| Check | Result |
+|---|---|
+| Module is pure Node (no Electron/network) | ✅ `electron/artifactcanvas.js` — `parseDesign`, `parseSlides`, `designHtml`, `slidesHtml`, `canvasHtml`, `isCanvas`, `mdToHtml` |
+| Unit suite | ✅ `node test/artifactcanvas.test.js` → **PASSED (45 checks)** |
+| Artifact window routes canvas types | ✅ `createArtifactWindow` → `artifactDocument()`; canvas windows open 1180×800 |
+| In-chat preview uses the same document | ✅ `autobot:artifactDocument` IPC → `preload.artifactDocument` → `ArtifactPreview` (`design`/`slides`/`deck`/`presentation`/`canvas`/`artboard`) |
+| PDF export honours the language | ✅ `printToPdf({language})` builds the canvas doc (deck prints one slide per page) |
+| Design contract | ✅ artboards (name/width/height/html/notes), bare array, ```json fence, `---` sections, single blob; sizes clamped 120–2400 × 120–4000 (0 = fluid) |
+| Slides contract | ✅ slides (title/html/bullets/notes), bare array, `---` markdown with `# heading` → title, bullets → `<ul>` |
+| Escaping | ✅ artboard/slide HTML entity-escaped into `srcdoc`; embedded board JSON escapes `<` |
+| Live CDP (dev app on 9333) | ✅ `artifactDocument(design)` → 5,336-char doc with `.canvas`; `artifactDocument(slides)` → 2 `<section class="slide">`; `openArtifactWindow` opened windows 2–6; `html` passthrough unchanged |
+| Live design window | ✅ 1 `.board` + 1 rail item + 1 `iframe`, `Print`/`Save`/`Zoom` present; clicking **Zoom** → `#zoom.open` with a live stage iframe |
+| Live slides window (3-slide JSON deck) | ✅ `1 / 3` on load, `Next` → `2 / 3` + progress `66.6667%` + title "Roadmap", `End` → `3 / 3` "Thanks", Notes toggle → `body.nopnotes` |
+| Regression gates | ✅ e2e **112 passed / 0 failed (141 tool defs)**; `parity-audit.js` → *NO ATOMIC GAPS*, EXIT 0; every `test/*.test.js` green |
+
+Tool surface: the `Artifact` tool description now documents both JSON contracts and
+`ARTIFACT_DEFAULT_FILE` names the outputs `design.json` / `slides.json`.

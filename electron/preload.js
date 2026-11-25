@@ -148,6 +148,7 @@ contextBridge.exposeInMainWorld('autobot', {
   openQuickEntry: () => ipcRenderer.invoke('autobot:openQuickEntry'),
   quickSubmit: (payload) => ipcRenderer.invoke('autobot:quickSubmit', payload),
   openArtifactWindow: (payload) => ipcRenderer.invoke('autobot:openArtifactWindow', payload),
+  artifactDocument: (payload) => ipcRenderer.invoke('autobot:artifactDocument', payload),
   printToPdf: (payload) => ipcRenderer.invoke('autobot:printToPdf', payload),
   onQuickEntry: (cb) => {
     const handler = (event, payload) => cb(payload);

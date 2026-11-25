@@ -83,7 +83,7 @@ The build below mirrors this surface with a **pluggable OpenAI-compatible LLM ad
 1. **Chat UI** — streaming, markdown + code highlighting, copy buttons.
 2. **Agent tool loop** — function calling with the full classic Example Code tool surface (56 tools, see §4).
 3. **MCP client** — connect to external stdio MCP servers, list & call their tools (the defining Example feature).
-4. **Artifacts panel** — code/files render in a live preview pane (+ explicit `Artifact` tool).
+4. **Artifacts panel** — code/files render in a live preview pane (+ explicit `Artifact` tool). Six renderers (`html` / `svg` / `mermaid` / `react` / `markdown` / `text`) plus the two Desktop canvas types: **`design`** (rail + wrapping canvas of live `srcdoc` artboards, per-board width×height, zoom overlay, save-per-board / save-all, print) and **`slides`** (16:9 stage, keyboard nav, progress bar, speaker-notes toggle, present-fullscreen, one-slide-per-page print). All three surfaces — artifact window, in-chat preview, print-to-PDF — build from one module (`electron/artifactcanvas.js`).
 5. **Memory** — persistent `.auto-memory` store.
 6. **Skills registry** — list/load skills.
 7. **Provider settings** — base URL / API key / model / presets.
