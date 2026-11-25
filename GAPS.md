@@ -805,3 +805,60 @@ transcript (main-process scrub + renderer scrub + an assertion in the headless s
 | Live CDP (`test/live/gateway-502.cjs`, stub on :8903) | ✅ 3 attempts, banner empty, transcript blocks `["think:provider error 502 — waiting 2s before retrying / … 5s …", "text:Back online — the gateway blip was retried and this answer is intact."]`, `document.body.innerText` free of `<html|<head|<title|<body|nginx`, screenshot `screenshots/gateway-502.png` |
 | Regressions | ✅ `retry-ui.cjs` PASS, `composer-flow.cjs` PASS (`think>text>tool>text`, page in pane + on disk), `e2e.test.js` **111 passed, 0 failed** |
 | Real reasoning model after the fix | ✅ `real-model.cjs deepseek` exit 0 — `deepseek-v4.1-flash-1017`, *Worked for 8m 33s*, 204 live samples, 139 ordered blocks (text → think → tool → text), 7 files on disk in `~/Helio Bot/build-me-a-live-football-score-website-15/`, page live in the pane at `http://localhost:8899/index.html`, `errorBanner`/`lastNotice` empty, `hung:false`, no markup anywhere |
+
+## P. MULTI-AGENT + SWARM — "IS IT LIKE THE CLAUDE APP?" — RESOLVED (2026-11-25)
+
+The ask was exact: *"does it have multi agent and swarm like the original claude app? …
+multi model and multi agent work same time for different task, small task can use small model
+and heavy task or critical use frontier model, so there must be a supervisor model as well."*
+
+### P.1 What the Claude app / Claude Code actually do
+
+| Mechanism | Claude's behaviour | What copied it |
+|---|---|---|
+| **Subagents** (`Task`/`Agent`) | A tool call spawns a child agent with its **own** context window and its own system prompt; the child runs its own tool loop and returns **only its final message** to the parent. Parent context never absorbs the child's tool chatter | `Task` / `Agent` tools → `runSubagent`; child gets `subagentMaxSteps`, returns last assistant message |
+| **Concurrency** | Independent subagents are dispatched at the same time (the app runs several in parallel; Claude Code fans out one per task) | `Swarm` + `mcp__cowork__orchestrate` dispatch with a concurrency pool |
+| **Model per agent** | A subagent definition can pin `model: haiku/sonnet/opus` — the child does **not** have to be the parent's model | `Task`/`Agent`/`Swarm` accept `model` **and** `tier`; the provider is resolved per subtask |
+| **Supervisor / lead** | For big goals the top model plans, delegates, then reviews and merges what came back — the "orchestrator + workers" pattern | `electron/swarm.js`: `decompose()` → dispatch → `SUPERVISOR_MERGE_PROMPT` review, all on the strongest tier |
+| **Complexity routing** | Cheap model for mechanical work, frontier model for hard/critical work (cost + latency control) | `tier` (`small`/`heavy`/`critical`) per subtask → `pickProvider` picks the roster entry of that tier |
+| **Per-agent UI** | Each agent is its own transcript/row; the parent chat shows the agent, not its raw tokens | `.subagent` rows keyed by agent id, with tier + model + live counters; **subagent streams are excluded from the parent message** (§P.3) |
+| **Failure isolation** | One failing worker does not kill the team; the lead reports what failed | `runOne` catches per task → `status:'error'` + `Error: …` in the merge report |
+
+### P.2 What was missing here, and the fix
+
+| # | Gap | Was | Now |
+|---|---|---|---|
+| 1 | No team at all — one loop, one model | only `Task` (single child) + `cowork orchestrate` (same goal, N workers) | `electron/swarm.js` — supervisor plans, tags tiers, dispatches **distinct** subtasks concurrently, reviews and merges |
+| 2 | One model for everything | subagent inherited the parent provider | roster from the orchestrator list; each entry carries a `tier`; `pickProvider` matches tier → model; a per-subtask `model` pin wins |
+| 3 | No complexity judgement | — | `normalizeTier()` accepts `small/cheap/fast/mini`, `heavy/large/frontier/pro`, `critical/urgent/hardest` **and** natural-language phrasings (`mechanical`, `boilerplate`, `architect`, `security review`) so a supervisor's loose wording still routes correctly |
+| 4 | Worker output polluted the parent transcript | subagent `delta`/`tool` events were appended to the live message — three concurrent workers produced `done on cheadone on mid-done on fronp-mini…` | any event carrying `subagent` is routed to that agent's row (`delta|thinking|tool|toolResult|retry|limit`), and the row shows live counters (`1.2k` chars while running, `3 tools` after) |
+| 5 | No supervisor concept | — | supervisor = strongest tier in the roster, always; `swarm` events `start|planned|dispatched|done` drive a supervisor badge and pre-populate queued rows so the team is visible *before* work lands |
+| 6 | Parallelism was unobservable | — | `planned` phase lists every agent + model up front; `dispatched` phase closes them out |
+| 7 | Orchestrator had no notion of strength | provider list was a flat failover list | Settings → Orchestrator has a per-provider `tier` select (small / heavy / critical), persisted through `setOrchestrator` |
+
+### P.3 Design notes worth keeping
+
+- **`swarm.js` is pure.** It never imports `llm.js`; the caller injects `runAgent`. No require
+  cycle, and the whole thing is testable with a fake runner (43 tests, no network).
+- **Distinct prompts, not N copies of the goal.** Each worker receives
+  `workerPrompt(goal, task)` containing *its* subtask, its `owns[]` files and an explicit
+  "do not duplicate other agents' files" instruction. `cowork.orchestrate` gained the same
+  `tasks[]` form, so fan-out no longer means "ask the same thing N times".
+- **Supervisor is not appended twice.** `buildRoster` dedupes on `baseURL|model` before adding
+  the active provider as the supervisor, so a pool that already contains the top model does
+  not gain a duplicate reviewer.
+- **Bounded fan-out.** `maxTasks` is clamped to 1–12 (default 6) and `concurrency` defaults to
+  4 — a supervisor that plans 12 subtasks cannot open 12 sockets against one endpoint.
+- **Degradation is explicit.** No planner → single-task plan tagged `fallback`; no roster →
+  every tier resolves to the active provider; supervisor review fails → the merged report is
+  still returned with `reviewError` attached instead of the whole run dying.
+
+### P.4 Verification
+
+| Check | Result |
+|---|---|
+| Unit (no network) | ✅ `test/swarm.test.js` — **43 passed**: tier normalisation (incl. prose), roster build/dedupe/fallback, `pickProvider` per tier, `model` pin precedence, plan parsing (`\`\`\`json` fences, prose, junk), concurrent distinct-prompt dispatch, per-agent event payloads (model+tier), degraded paths (no plan / no roster / failed merge), cowork `tasks[]` fan-out, legacy same-goal mode |
+| Live, real IPC boundary | ✅ `test/live/swarm-live.cjs` — three stub models on :8905/:8906/:8907 (`cheap-mini` small, `mid-pro` heavy, `frontier-1` critical). One composer message → real renderer → IPC → `runAgent` → `Swarm`. **16/16 checks**: supervisor planned on `frontier-1`; 3 workers; 3 distinct models; small→cheap, heavy→mid, critical→frontier; `maxInFlight = 3`; 3 overlapping worker pairs; supervisor merged on `frontier-1`; parent reply clean while workers streamed; >1 agent visibly running; live counters visible; no error bar. Screenshot `screenshots/swarm-live.png` |
+| Headless suite | ✅ `test/e2e.test.js` **111 passed, 0 failed** (112 tool definitions — includes `Swarm`) |
+| Regressions | ✅ `retry-ui.cjs` PASS · `composer-flow.cjs` PASS (`think>text>tool>text`, page in pane **and** on disk) · `gateway-502.cjs` PASS |
+| Renderer crash caught by the live harness | ✅ the first live run surfaced `ReferenceError: swarmInfo is not defined` (used in `ChatView`, never passed as a prop) — the app rendered a blank page and the harness reported `composer: no-composer` instead of a false PASS. Fixed by threading the prop; re-verified blank-page-free |

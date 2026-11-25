@@ -8,6 +8,7 @@
 
 const http = require('http');
 const crypto = require('crypto');
+const swarm = require('./swarm');
 
 // ---- bot bridge webhook server ----
 let bridgeServer = null;
@@ -88,6 +89,7 @@ function registerWorker(name, opts = {}) {
     provider: pinned || opts.provider || prev.provider || null,
     model: (pinned && pinned.model) || (opts.provider && opts.provider.model) || (prev.model || null),
     baseURL: (pinned && pinned.baseURL) || (opts.provider && opts.provider.baseURL) || (prev.baseURL || null),
+    tier: opts.tier || (opts.provider && opts.provider.tier) || prev.tier || null,
     systemPrompt: opts.systemPrompt || prev.systemPrompt || '',
     lastRun: 0,
   });
@@ -97,15 +99,18 @@ function registerWorker(name, opts = {}) {
 function listWorkers() {
   return [...workers.values()].map((w) => ({
     name: w.name, status: w.status, goal: w.goal, lastRun: w.lastRun,
-    model: w.model || null, baseURL: w.baseURL || null,
+    model: w.model || null, baseURL: w.baseURL || null, tier: w.tier || null,
   }));
 }
 
 // Run one worker to completion, returning a result record (never throws).
+// `prompt` overrides the shared goal so several workers can do DIFFERENT work
+// in the same fan-out instead of all answering the same question.
 async function runWorker(name, goal, opts) {
   const w = workers.get(name);
   if (!w) return { name, status: 'missing', result: 'no such worker' };
   if (!w.runAgent) return { name, status: 'unconfigured', result: 'worker has no agent runner' };
+  const prompt = opts && opts.prompt ? String(opts.prompt) : goal;
 
   // Precedence: explicit per-call override > worker pin > call-wide fallback.
   // A partial override (e.g. only `model`) is layered on top of that base so the
@@ -124,21 +129,28 @@ async function runWorker(name, goal, opts) {
     : base;
 
   w.status = 'running';
-  w.goal = goal;
+  w.goal = goal || prompt;
   w.lastRun = Date.now();
   const started = Date.now();
   try {
     const sys = raw && raw.systemPrompt ? raw.systemPrompt : w.systemPrompt;
+    // When a per-call prompt is supplied it is the worker's whole job; keep the
+    // shared goal as context so the worker knows what the team is building.
+    const userContent = opts && opts.prompt && goal && goal !== prompt
+      ? `TEAM GOAL (context):\n${goal}\n\nYOUR TASK:\n${prompt}`
+      : prompt;
     const msgs = sys
-      ? [{ role: 'system', content: sys }, { role: 'user', content: goal }]
-      : [{ role: 'user', content: goal }];
+      ? [{ role: 'system', content: sys }, { role: 'user', content: userContent }]
+      : [{ role: 'user', content: userContent }];
     const out = await w.runAgent({ provider, messages: msgs, maxSteps: opts.maxSteps || 0, emit: opts.emit });
     const last = [...out].reverse().find((m) => m.role === 'assistant' && m.content);
     w.status = 'idle';
     return {
       name,
+      title: (opts && opts.title) || name,
       status: 'done',
       provider: provider ? { baseURL: provider.baseURL, model: provider.model } : null,
+      tier: (raw && raw.tier) || w.tier || null,
       ms: Date.now() - started,
       result: last ? last.content : '(done)',
     };
@@ -146,33 +158,95 @@ async function runWorker(name, goal, opts) {
     w.status = 'error';
     return {
       name,
+      title: (opts && opts.title) || name,
       status: 'error',
       provider: provider ? { baseURL: provider.baseURL, model: provider.model } : null,
+      tier: (raw && raw.tier) || w.tier || null,
       ms: Date.now() - started,
       result: e.message,
     };
   }
 }
 
-// Fan a goal out to workers in parallel (bounded concurrency). `workerNames` may
-// be strings or `{ name, baseURL?, model?, apiKey?, supportsTools? }` objects
-// which register/override a worker for this call only.
+// Fan work out to workers in parallel (bounded concurrency). Two modes:
+//  - Distribute `opts.tasks` (distinct prompt per worker) — each agent does
+//    different work, optionally on a different model/tier.
+//  - Otherwise send one shared `goal` to every worker (classic fan-out).
+// `workerNames` may be strings or `{ name, baseURL?, model?, apiKey?, tier? }`
+// objects which register/override a worker for this call only.
 async function orchestrate(goal, workerNames, opts = {}) {
-  const entries = (workerNames && workerNames.length ? workerNames : [...workers.keys()])
-    .map((e) => (typeof e === 'string' ? { name: e } : (e && e.name ? e : null)))
-    .filter(Boolean);
-
   const overrides = { ...(opts.overrides || {}) };
+  let entries;
+
+  if (Array.isArray(opts.tasks) && opts.tasks.length) {
+    // Distinct work per agent. A task may name a worker; otherwise the tasks
+    // are spread across the registered workers in order.
+    const pool = [...workers.keys()];
+    entries = opts.tasks.map((t, i) => {
+      const name = t.worker || t.name || pool[i % Math.max(pool.length, 1)] || `worker-${i + 1}`;
+      const prompt = t.prompt || t.task || t.instructions || t.goal || goal || '';
+      return {
+        name,
+        title: t.title || (prompt ? prompt.slice(0, 60) : name),
+        prompt,
+        tier: t.tier || null,
+        model: t.model || null,
+      };
+    });
+  } else {
+    entries = (workerNames && workerNames.length ? workerNames : [...workers.keys()])
+      .map((e) => (typeof e === 'string' ? { name: e } : (e && e.name ? e : null)))
+      .filter(Boolean);
+  }
+
   for (const [i, e] of (workerNames || []).entries()) {
-    if (typeof e !== 'string' && e && e.name && (e.baseURL || e.model || e.apiKey)) {
+    if (typeof e !== 'string' && e && e.name && (e.baseURL || e.model || e.apiKey || e.tier)) {
       overrides[e.name] = {
         baseURL: e.baseURL || undefined,
         model: e.model || undefined,
         apiKey: e.apiKey != null ? e.apiKey : undefined,
+        tier: e.tier || undefined,
         supportsTools: e.supportsTools,
         systemPrompt: e.systemPrompt,
         _idx: i,
       };
+    }
+  }
+
+  // A task-level model/tier override wins for that task's worker. A bare tier is
+  // resolved against the model pool (orchestrator providers + active provider),
+  // so cheap tiers get a cheap model and critical work gets the frontier model
+  // without the caller having to name a model id.
+  const roster = (Array.isArray(opts.tasks) && opts.tasks.some((t) => t.tier && !t.model))
+    ? swarm.buildRoster({ orchestrator: opts.orchestrator, provider: opts.provider })
+    : [];
+  if (Array.isArray(opts.tasks)) {
+    for (const e of entries) {
+      if (e.model || e.tier) {
+        const picked = (!e.model && e.tier) ? swarm.pickProvider(roster, e.tier) : null;
+        overrides[e.name] = {
+          ...(overrides[e.name] || {}),
+          ...(e.model ? { model: e.model } : {}),
+          ...(picked ? { baseURL: picked.baseURL, apiKey: picked.apiKey, model: picked.model } : {}),
+          ...(e.tier ? { tier: swarm.normalizeTier(e.tier) } : {}),
+        };
+      }
+    }
+  }
+
+  // Auto-provision a worker when a task names one that was never registered, so
+  // a single orchestrate call works without a separate register step.
+  for (const e of entries) {
+    if (!workers.has(e.name) && typeof opts.runAgent === 'function') {
+      registerWorker(e.name, {
+        runAgent: opts.runAgent,
+        provider: opts.provider,
+        tier: e.tier || undefined,
+        model: e.model || undefined,
+        baseURL: (overrides[e.name] || {}).baseURL || undefined,
+        apiKey: (overrides[e.name] || {}).apiKey,
+        supportsTools: true,
+      });
     }
   }
 
@@ -183,7 +257,13 @@ async function orchestrate(goal, workerNames, opts = {}) {
   const next = async () => {
     while (cursor < entries.length) {
       const i = cursor++;
-      results[i] = await runWorker(entries[i].name, goal, { ...opts, overrides });
+      const e = entries[i];
+      results[i] = await runWorker(e.name, goal, {
+        ...opts,
+        overrides,
+        prompt: e.prompt,
+        title: e.title,
+      });
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, entries.length || 1) }, next));

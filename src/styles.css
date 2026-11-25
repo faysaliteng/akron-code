@@ -894,9 +894,10 @@ button { font-family: inherit; letter-spacing: inherit; }
 
 /* Orchestrator list */
 .orch-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
-.orch-item { display: grid; grid-template-columns: 36px 72px 1fr 1fr 1fr 22px; gap: 5px; align-items: center; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-000); }
+.orch-item { display: grid; grid-template-columns: 36px 72px 1fr 1fr 1fr 1fr 90px 22px; gap: 5px; align-items: center; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-000); }
 .orch-item.on { border-color: var(--accent); }
 .orch-item input { width: 100%; margin: 0; padding: 6px; font-size: 11px; }
+.orch-item select { width: 100%; margin: 0; padding: 5px; font-size: 11px; }
 .orch-radio { display: flex; align-items: center; gap: 3px; margin: 0 !important; font-size: 11px; color: var(--text-400); white-space: nowrap; }
 .orch-radio input { width: auto; margin: 0; }
 .orch-del { border: none; background: transparent; color: var(--red); cursor: pointer; font-size: 16px; line-height: 1; }
@@ -946,6 +947,12 @@ button { font-family: inherit; letter-spacing: inherit; }
 .subagent { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-200); font-size: var(--fs-caption); color: var(--text-400); }
 .subagent.running { border-color: var(--accent); color: var(--accent-text); }
 .subagent.done { border-color: var(--green); color: var(--green); }
+.subagent.queued { opacity: .72; border-style: dashed; }
+.subagent.error { border-color: var(--red, #c0392b); color: var(--red, #c0392b); }
+.subagent.stopped { opacity: .6; text-decoration: line-through; }
+.subagent.supervisor { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg-200)); color: var(--accent-text); }
+.subagent .tier { font-style: normal; text-transform: uppercase; letter-spacing: .04em; font-size: 9px; opacity: .8; padding: 0 3px; border-radius: 4px; background: color-mix(in srgb, currentColor 14%, transparent); }
+.subagent .model { font-style: normal; opacity: .7; max-width: 15ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Notebooks */
 .notebook-layout { display: flex; gap: 14px; margin-top: 12px; min-height: 0; }

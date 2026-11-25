@@ -319,7 +319,8 @@ export default function App() {
   const [skills, setSkills] = useState([]);
   const [mcpServers, setMcpServers] = useState([]);
   const [mcpForm, setMcpForm] = useState({ transport: 'stdio', command: '', args: '', url: '' });
-  const [subAgents, setSubAgents] = useState([]); // { name, status }
+  const [subAgents, setSubAgents] = useState([]); // { id, name, status, role, model, tier, ms }
+  const [swarmInfo, setSwarmInfo] = useState(null); // { supervisor, roster }
   const [notebooks, setNotebooks] = useState([]); // names
   const [activeNotebook, setActiveNotebook] = useState(null);
   const [notebookCells, setNotebookCells] = useState([]);
@@ -478,6 +479,25 @@ export default function App() {
       // started and clobber it — drop anything still tagged with an older run.
       if (evt.runId && runIdRef.current && evt.runId !== runIdRef.current
         && /^(delta|thinking|tool|toolResult|done|complete|cancelled|error|notice|limit|retry)$/.test(evt.type)) return;
+      // A sub-agent's stream belongs to ITS row, never to the parent reply. Without
+      // this, three concurrent workers interleaved their tokens into one garbled
+      // paragraph ("done on cheadone on mid-…") and every worker tool row landed in
+      // the parent's tool list. Claude keeps subagent output out of the transcript.
+      if (evt.subagent && /^(delta|thinking|tool|toolResult|retry|limit)$/.test(evt.type)) {
+        setSubAgents((prev) => prev.map((a) => {
+          if (a.key !== String(evt.subagent) && a.name !== String(evt.subagent)) return a;
+          const p = a.progress || { chars: 0, tools: 0, last: '' };
+          if (evt.type === 'delta') {
+            const chars = p.chars + String(evt.text || '').length;
+            return { ...a, progress: { ...p, chars, last: (p.last + String(evt.text || '')).slice(-400) } };
+          }
+          if (evt.type === 'thinking') return { ...a, progress: { ...p, think: (p.think || 0) + String(evt.text || '').length } };
+          if (evt.type === 'tool') return { ...a, progress: { ...p, tools: p.tools + 1, last: p.last || 'using ' + evt.name } };
+          if (evt.type === 'retry') return { ...a, progress: { ...p, retried: (p.retried || 0) + 1 } };
+          return a; // toolResult / limit — nothing to show on the parent row
+        }));
+        return;
+      }
       switch (evt.type) {
         case 'retry':
           // The turn was cut at the token limit and is being re-generated. Drop
@@ -577,13 +597,64 @@ export default function App() {
         case 'permission':
           setPermission({ id: evt.id, tool: evt.tool, args: evt.args || {}, summary: evt.summary || '' });
           break;
-        case 'subagent':
-          if (evt.status === 'started') {
-            setSubAgents((s) => [...s, { name: evt.name, status: 'running' }]);
-          } else {
-            setSubAgents((s) => s.map((a) => (a.name === evt.name ? { ...a, status: 'done' } : a)));
+        case 'subagent': {
+          // One row per agent, keyed by id (falling back to name) so a worker
+          // reporting started → running → done updates in place instead of
+          // stacking duplicates. Carries model + tier so the transcript shows
+          // WHICH model is doing the work.
+          const key = String(evt.id || evt.name || 'agent');
+          const status = evt.status === 'started' || evt.status === 'running' ? 'running'
+            : evt.status === 'error' ? 'error'
+              : evt.status === 'stopped' ? 'stopped' : 'done';
+          setSubAgents((prev) => {
+            const next = [...prev];
+            const i = next.findIndex((a) => a.key === key);
+            const row = {
+              key,
+              name: evt.name || (i >= 0 ? next[i].name : key),
+              status,
+              role: evt.role || (i >= 0 ? next[i].role : null),
+              model: evt.model || (i >= 0 ? next[i].model : null),
+              tier: evt.tier || (i >= 0 ? next[i].tier : null),
+              ms: evt.ms != null ? evt.ms : (i >= 0 ? next[i].ms : null),
+              progress: i >= 0 ? next[i].progress : undefined,
+            };
+            if (i >= 0) next[i] = row; else next.push(row);
+            return next;
+          });
+          break;
+        }
+        case 'swarm': {
+          // Supervisor-led team events: start → planned → dispatched → done.
+          if (evt.phase === 'start') {
+            setSwarmInfo({ supervisor: evt.supervisor, roster: evt.roster || [], phase: 'planning' });
+          } else if (evt.phase === 'planned') {
+            setSwarmInfo((w) => ({ ...(w || {}), phase: 'running' }));
+            // Show every planned agent immediately as queued, so the user can
+            // see the team and the models assigned before work completes.
+            setSubAgents((prev) => {
+              const byKey = new Map(prev.map((a) => [a.key, a]));
+              (evt.tasks || []).forEach((t) => {
+                const key = String(t.id);
+                const cur = byKey.get(key);
+                byKey.set(key, {
+                  key,
+                  name: t.title || t.id,
+                  status: cur && cur.status !== 'queued' ? cur.status : 'queued',
+                  role: 'worker',
+                  model: t.model || (cur && cur.model) || null,
+                  tier: t.tier || (cur && cur.tier) || null,
+                  ms: cur && cur.ms != null ? cur.ms : null,
+                  progress: cur ? cur.progress : undefined,
+                });
+              });
+              return [...byKey.values()];
+            });
+          } else if (evt.phase === 'done') {
+            setSwarmInfo((w) => ({ ...(w || {}), phase: 'done' }));
           }
           break;
+        }
         case 'artifact':
           setArtifactsExplicit((a) => [...a.filter((x) => x.name !== evt.name), { name: evt.name, language: evt.language, content: evt.content, path: evt.path }]);
           setNotice(`Artifact created: ${evt.name || evt.language || 'code'} (view in Artifacts panel)`);
@@ -722,6 +793,7 @@ export default function App() {
     setThinking('');
     setLive({ content: '', tools: [] });
     setSubAgents([]);
+    setSwarmInfo(null);
     const runId = uid();
     runIdRef.current = runId;
 
@@ -900,6 +972,7 @@ export default function App() {
     setThinking('');
     setLive({ content: '', tools: [] });
     setSubAgents([]);
+    setSwarmInfo(null);
     const runId = uid();
     runIdRef.current = runId;
     await window.autobot.run({
@@ -1157,7 +1230,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={subAgents} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} />}
+              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={subAgents} swarmInfo={swarmInfo} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} />}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
               {panel === 'skills' && <SkillsView skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills} />}
@@ -1413,7 +1486,7 @@ h1{font-size:22px;margin:0 0 4px} .meta{color:#888;font-size:12px;margin-bottom:
 }
 
 // ---------- Chat view ----------
-function ChatView({ messages, live, thinking, subAgents, copyBlock, applyBlock, bottomRef, convId, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt }) {
+function ChatView({ messages, live, thinking, subAgents, swarmInfo, copyBlock, applyBlock, bottomRef, convId, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt }) {
   return (
     <div className="chat" onClick={(e) => { copyBlock(e); applyBlock(e); }}>
       {conv && (
@@ -1430,10 +1503,28 @@ function ChatView({ messages, live, thinking, subAgents, copyBlock, applyBlock, 
         </div>
       )}
       {messages.map((m, i) => <Message key={m.id} m={m} convId={convId} idx={i} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} />)}
-      {subAgents.length > 0 && (
+      {(subAgents.length > 0 || swarmInfo) && (
         <div className="subagents">
-          {subAgents.map((a, i) => (
-            <span key={i} className={'subagent ' + a.status}><Icon name={a.status === 'running' ? 'Clock' : 'Check'} size={12} /> {a.name}</span>
+          {swarmInfo && swarmInfo.supervisor && (
+            <span className="subagent supervisor" title={'Supervisor: ' + (swarmInfo.supervisor.model || 'model')}>
+              <Icon name="Sparkles" size={12} /> supervisor{swarmInfo.supervisor.model ? ' · ' + swarmInfo.supervisor.model : ''}{swarmInfo.phase ? ' · ' + swarmInfo.phase : ''}
+            </span>
+          )}
+          {subAgents.map((a) => (
+            <span
+              key={a.key}
+              className={'subagent ' + a.status + (a.role === 'supervisor' ? ' supervisor' : '')}
+              title={[a.role, a.tier && a.tier + ' tier', a.model, a.ms != null && (a.ms / 1000).toFixed(1) + 's',
+                a.progress && a.progress.tools ? a.progress.tools + ' tool calls' : null,
+                a.progress && a.progress.last ? '\n' + String(a.progress.last).slice(-300) : null].filter(Boolean).join(' · ')}
+            >
+              <Icon name={a.status === 'running' ? 'Clock' : a.status === 'error' ? 'Warning' : a.status === 'queued' ? 'History' : 'Check'} size={12} />
+              {' '}{a.name}
+              {a.tier ? <em className="tier">{a.tier}</em> : null}
+              {a.model ? <em className="model">{a.model}</em> : null}
+              {a.progress && a.status === 'running' && a.progress.chars ? <em className="model">{a.progress.chars > 999 ? (a.progress.chars / 1000).toFixed(1) + 'k' : a.progress.chars}</em> : null}
+              {a.progress && a.status !== 'running' && a.progress.tools ? <em className="model">{a.progress.tools} tools</em> : null}
+            </span>
           ))}
         </div>
       )}
@@ -3289,7 +3380,7 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
     saveOrch({ ...orchestrator, providers: next });
   };
   const addProvider = () => {
-    const entry = { id: 'p' + Date.now().toString(36), name: 'Provider ' + (providers.length + 1), baseURL: provider.baseURL || 'http://localhost:11434/v1', apiKey: '', model: provider.model || 'llama3.1' };
+    const entry = { id: 'p' + Date.now().toString(36), name: 'Provider ' + (providers.length + 1), baseURL: provider.baseURL || 'http://localhost:11434/v1', apiKey: '', model: provider.model || 'llama3.1', tier: 'heavy' };
     saveOrch({ ...orchestrator, providers: [...providers, entry], activeIndex: providers.length ? orchestrator.activeIndex : 0 });
   };
   const removeProvider = (i) => {
@@ -3360,10 +3451,16 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
         <label className="check"><input type="checkbox" checked={provider.supportsTools} onChange={(e) => setProvider({ ...provider, supportsTools: e.target.checked })} /> Function calling / tools</label>
 
         <h3><Icon name="Settings" size={14} /> {T('settings.orchestrator')}</h3>
-        <label className="check"><input type="checkbox" checked={!!orchestrator.enabled} onChange={(e) => saveOrch({ ...orchestrator, enabled: e.target.checked })} /> Enable — auto-switch to the next provider on rate-limit / limit-reached</label>
+        <label className="check"><input type="checkbox" checked={!!orchestrator.enabled} onChange={(e) => saveOrch({ ...orchestrator, enabled: e.target.checked })} /> Enable — multi-model pool for failover AND swarm tier routing</label>
         {orchestrator.enabled && (
           <div className="orch-list">
-            {providers.length === 0 && <p className="muted">No providers added. Add 100+ API keys below; Helio Bot will fail over in order.</p>}
+            {providers.length === 0 && <p className="muted">No providers added. Add your models below; Helio Bot fails over in order and routes swarm subtasks by tier.</p>}
+            <p className="muted" style={{ marginTop: -4 }}>
+              <b>Tier</b> decides which model a supervisor-assigned subtask runs on:
+              <b> small</b> = cheap/mechanical work, <b>heavy</b> = real implementation,
+              <b> critical</b> = architecture/security/review (also the supervisor's own model).
+              Without tiers every subtask falls back to the active provider.
+            </p>
             {providers.map((p, i) => (
               <div key={p.id || i} className={'orch-item ' + (i === orchestrator.activeIndex ? 'on' : '')}>
                 <label className="orch-radio"><input type="radio" name="orch-active" checked={i === orchestrator.activeIndex} onChange={() => saveOrch({ ...orchestrator, activeIndex: i })} title="Start here" /> #{i + 1}</label>
@@ -3371,6 +3468,11 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
                 <input value={p.baseURL || ''} onChange={(e) => updateProviderEntry(i, { baseURL: e.target.value })} placeholder="baseURL" />
                 <input value={p.model || ''} onChange={(e) => updateProviderEntry(i, { model: e.target.value })} placeholder="model" />
                 <input value={p.apiKey || ''} onChange={(e) => updateProviderEntry(i, { apiKey: e.target.value })} placeholder="apiKey" type="password" />
+                <select value={p.tier || 'heavy'} onChange={(e) => updateProviderEntry(i, { tier: e.target.value })} title="Complexity tier this model serves">
+                  <option value="small">small</option>
+                  <option value="heavy">heavy</option>
+                  <option value="critical">critical</option>
+                </select>
                 <button className="orch-del" onClick={() => removeProvider(i)}>×</button>
               </div>
             ))}

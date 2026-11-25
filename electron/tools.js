@@ -7,6 +7,7 @@ const visualize = require('./visualize');
 const computer = require('./computer');
 const chrome = require('./chrome');
 const cowork = require('./cowork');
+const swarm = require('./swarm');
 const browser = require('./browser');
 const pluginsDir = require('./plugins');
 const scheduler = require('./scheduler');
@@ -718,8 +719,9 @@ const toolDefinitions = [
   { name: 'WebFetch', description: 'Fetch the contents of a URL and return readable text.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
   { name: 'WebSearch', description: 'Search the web and return top results (titles + URLs).', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
   { name: 'TodoWrite', description: 'Create/update a structured todo list to track multi-step work.', parameters: { type: 'object', properties: { todos: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, content: { type: 'string' }, status: { type: 'string', enum: ['pending', 'completed'] } } } } }, required: ['todos'] } },
-  { name: 'Task', description: 'Spawn a sub-agent to complete a self-contained, multi-step task and return its result. Use for parallelizable or independent work.', parameters: { type: 'object', properties: { description: { type: 'string', description: 'Short label for the task' }, prompt: { type: 'string', description: 'The full instructions for the sub-agent' }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
-  { name: 'Agent', description: 'Spawn a sub-agent (alias of Task) to delegate a self-contained piece of work.', parameters: { type: 'object', properties: { description: { type: 'string' }, prompt: { type: 'string' }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
+  { name: 'Task', description: 'Spawn a sub-agent to complete a self-contained, multi-step task and return its result. Use for parallelizable or independent work. Optionally pin it to a model or complexity tier.', parameters: { type: 'object', properties: { description: { type: 'string', description: 'Short label for the task' }, prompt: { type: 'string', description: 'The full instructions for the sub-agent' }, model: { type: 'string', description: 'Optional model id to run this sub-agent on' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'], description: 'Optional complexity tier; picks the matching model from the provider pool' }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
+  { name: 'Agent', description: 'Spawn a sub-agent (alias of Task) to delegate a self-contained piece of work.', parameters: { type: 'object', properties: { description: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
+  { name: 'Swarm', description: 'Run a supervisor-led multi-agent team. The supervisor decomposes the goal into subtasks, tags each with a complexity tier, every subtask runs CONCURRENTLY on the model that fits its tier (small/cheap for mechanical work, frontier for heavy or critical work), then the supervisor reviews and merges the results into one answer. Use for large builds or any task that splits into independent parts.', parameters: { type: 'object', properties: { goal: { type: 'string', description: 'The overall objective for the team' }, tasks: { type: 'array', description: 'Optional explicit subtasks; omit to let the supervisor plan', items: { type: 'object', properties: { title: { type: 'string' }, prompt: { type: 'string' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, model: { type: 'string' } } } }, concurrency: { type: 'number', description: 'Max subtasks running at once (default 4)' }, maxTasks: { type: 'number', description: 'Max subtasks the supervisor may create (default 6)' }, critique: { type: 'boolean', description: 'Run the supervisor review/merge step (default true)' }, cwd: { type: 'string' } }, required: ['goal'] } },
   { name: 'NotebookRead', description: 'Read the cells of a notebook by name.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
   { name: 'NotebookEdit', description: 'Create or replace the cells of a notebook by name.', parameters: { type: 'object', properties: { name: { type: 'string' }, cells: { type: 'array', items: { type: 'object', properties: { language: { type: 'string' }, source: { type: 'string' } } } } }, required: ['name', 'cells'] } },
   { name: 'AskUserQuestion', description: 'Ask the user a structured question and wait for their answer. Use when you need a decision, clarification, or choice before proceeding.', parameters: { type: 'object', properties: { question: { type: 'string' }, options: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, description: { type: 'string' } } } } }, required: ['question'] } },
@@ -787,9 +789,9 @@ const toolDefinitions = [
   { name: 'mcp__chrome__screenshot', description: '[chrome] Screenshot a Chrome tab (returns base64 PNG length).', parameters: { type: 'object', properties: { targetId: { type: 'string' } } } },
 
   // ---- Cowork orchestration ----
-  { name: 'mcp__cowork__register_worker', description: '[cowork] Register a cowork worker (a sub-agent). Optionally pin it to its own model endpoint (baseURL + model + apiKey) so different workers run on different backends (e.g. NVIDIA NIM vs local Ollama Gemma).', parameters: { type: 'object', properties: { name: { type: 'string' }, goal: { type: 'string' }, baseURL: { type: 'string', description: 'OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1 or http://127.0.0.1:11434/v1' }, model: { type: 'string', description: 'Model id for this worker, e.g. nvidia/nemotron-3.5-bolt-e4b or gemma4:latest' }, apiKey: { type: 'string', description: 'API key for this worker (omit for local endpoints)' }, supportsTools: { type: 'boolean' }, systemPrompt: { type: 'string' } }, required: ['name'] } },
+  { name: 'mcp__cowork__register_worker', description: '[cowork] Register a cowork worker (a sub-agent). Optionally pin it to its own model endpoint (baseURL + model + apiKey) and tier (small/heavy/critical) so different workers run on different backends (e.g. NVIDIA NIM vs local Ollama Gemma).', parameters: { type: 'object', properties: { name: { type: 'string' }, goal: { type: 'string' }, baseURL: { type: 'string', description: 'OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1 or http://127.0.0.1:11434/v1' }, model: { type: 'string', description: 'Model id for this worker, e.g. nvidia/nemotron-3.5-bolt-e4b or gemma4:latest' }, apiKey: { type: 'string', description: 'API key for this worker (omit for local endpoints)' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, supportsTools: { type: 'boolean' }, systemPrompt: { type: 'string' } }, required: ['name'] } },
   { name: 'mcp__cowork__list_workers', description: '[cowork] List registered cowork workers.', parameters: { type: 'object', properties: {} } },
-  { name: 'mcp__cowork__orchestrate', description: '[cowork] Fan a goal out to named workers (sub-agents) in parallel and return their results. Each entry of `workers` may be a name or an object {name, baseURL, model, apiKey} to run that worker on a specific backend for this call.', parameters: { type: 'object', properties: { goal: { type: 'string' }, workers: { type: 'array', items: { type: ['string', 'object'] }, description: 'Worker names, or {name, baseURL, model, apiKey} objects' }, concurrency: { type: 'number' }, maxSteps: { type: 'number' } }, required: ['goal'] } },
+  { name: 'mcp__cowork__orchestrate', description: '[cowork] Fan work out to named workers (sub-agents) in parallel and return their results. Pass a single `goal` shared by all workers, or `tasks` with a DISTINCT prompt per worker so each agent does different work. Each entry of `workers` may be a name or an object {name, baseURL, model, apiKey, tier} to run that worker on a specific backend for this call.', parameters: { type: 'object', properties: { goal: { type: 'string', description: 'Shared goal when every worker gets the same prompt' }, tasks: { type: 'array', description: 'Distinct per-worker work: [{worker?, name?, title?, prompt, tier?, model?}]', items: { type: 'object', properties: { worker: { type: 'string' }, name: { type: 'string' }, title: { type: 'string' }, prompt: { type: 'string' }, tier: { type: 'string' }, model: { type: 'string' } } } }, workers: { type: 'array', items: { type: ['string', 'object'] }, description: 'Worker names, or {name, baseURL, model, apiKey, tier} objects' }, concurrency: { type: 'number' }, maxSteps: { type: 'number' } } } },
   { name: 'mcp__ccd_submit', description: '[ccd] Submit a task to the cloud cowork daemon (CCD) queue.', parameters: { type: 'object', properties: { task: { type: 'string' } }, required: ['task'] } },
   { name: 'mcp__ccd_list', description: '[ccd] List tasks in the cloud cowork daemon (CCD) queue.', parameters: { type: 'object', properties: {} } },
 
@@ -1011,7 +1013,7 @@ function normalizeFileArgs(args) {
 // kept ticking, the composer stayed locked and no result ever arrived. Claude's
 // tools fail fast and let the model recover, so give every executor a deadline.
 const LONG_RUNNING = new Set([
-  'Task', 'Agent', 'mcp__cowork__orchestrate', 'mcp__botbridge__register',
+  'Task', 'Agent', 'Swarm', 'mcp__cowork__orchestrate', 'mcp__botbridge__register',
   'mcp__ccd_submit', 'mcp__bots__send', 'mcp__visualize__visualize',
 ]);
 function toolTimeoutMs(name, args) {
@@ -1069,6 +1071,31 @@ async function runTool(name, args, ctx) {
   if (name === 'Task' || name === 'Agent') {
     if (!runSubagent) return 'Sub-agents unavailable (no subagent runner).';
     return await runSubagent(args);
+  }
+  if (name === 'Swarm') {
+    if (!ctx.runAgent) return 'Swarm unavailable (no agent runner wired).';
+    const goal = args.goal || args.objective || args.task || '';
+    if (!goal) return 'Error: goal required.';
+    try {
+      const out = await swarm.swarm(String(goal), {
+        runAgent: ctx.runAgent,
+        provider: ctx.provider,
+        orchestrator: ctx.orchestrator,
+        emit: ctx.emit || (() => {}),
+        tasks: Array.isArray(args.tasks) && args.tasks.length ? args.tasks : undefined,
+        concurrency: Number(args.concurrency) || 4,
+        maxTasks: Number(args.maxTasks) || 6,
+        critique: args.critique !== false,
+        cwd: args.cwd || ctx.cwd,
+        maxSteps: Number(args.maxSteps) || 0,
+      });
+      const table = out.results
+        .map((r) => `- ${r.title} — ${r.tier} · ${r.model || 'model'} · ${r.status} (${r.ms}ms)`)
+        .join('\n');
+      return `SWARM COMPLETE — ${out.results.length} agents, supervisor ${out.supervisor.model}, ${Math.round(out.ms / 1000)}s\n\nROSTER\n${table}\n\nFINAL ANSWER\n${out.answer}`;
+    } catch (e) {
+      return 'Swarm error: ' + (e && e.message ? e.message : String(e));
+    }
   }
   if (name === 'AskUserQuestion') {
     if (!askUser) return 'Error: interactive questions unavailable.';
@@ -1180,11 +1207,12 @@ async function runTool(name, args, ctx) {
       baseURL: args.baseURL,
       model: args.model,
       apiKey: args.apiKey,
+      tier: args.tier,
       supportsTools: args.supportsTools,
       systemPrompt: args.systemPrompt,
     });
     const pin = w.model ? ` pinned to ${w.model} @ ${w.baseURL}` : ' (uses the active provider)';
-    return `Registered cowork worker "${args.name}"${pin}.`;
+    return `Registered cowork worker "${args.name}"${pin}${w.tier ? ' [' + w.tier + ' tier]' : ''}.`;
   }
   if (name === 'mcp__cowork__list_workers') {
     const ws = cowork.listWorkers();
@@ -1194,15 +1222,20 @@ async function runTool(name, args, ctx) {
   }
   if (name === 'mcp__cowork__orchestrate') {
     if (!ctx.runAgent) return 'Cowork unavailable (no agent runner wired).';
-    if (!args.goal) return 'Error: goal required.';
-    const results = await cowork.orchestrate(args.goal, args.workers, {
+    const hasTasks = Array.isArray(args.tasks) && args.tasks.length;
+    if (!args.goal && !hasTasks) return 'Error: goal (or tasks) required.';
+    const results = await cowork.orchestrate(args.goal || '', args.workers, {
+      runAgent: ctx.runAgent,
       provider: ctx.provider,
+      orchestrator: ctx.orchestrator,
+      tasks: hasTasks ? args.tasks : undefined,
       concurrency: Number(args.concurrency) || 4,
       maxSteps: Number(args.maxSteps) || 0,
+      emit: ctx.emit,
     });
     const lines = results.map((r) => {
-      const who = r.provider ? `${r.name} (${r.provider.model} @ ${r.provider.baseURL})` : r.name;
-      return `--- ${who} [${r.status}${r.ms != null ? ', ' + r.ms + 'ms' : ''}] ---\n${r.result}`;
+      const who = r.provider ? `${r.title || r.name} (${r.provider.model} @ ${r.provider.baseURL})` : (r.title || r.name);
+      return `--- ${who} [${r.tier || 'n/a'}${r.status ? ', ' + r.status : ''}${r.ms != null ? ', ' + r.ms + 'ms' : ''}] ---\n${r.result}`;
     });
     return 'ORCHESTRATION RESULTS:\n' + lines.join('\n\n') + '\n\n(JSON)\n' + JSON.stringify(results, null, 2);
   }

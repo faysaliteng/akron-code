@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { toolDefinitions, runTool } = require('./tools');
+const swarm = require('./swarm');
 
 // Registry of live sub-agents (for TaskStop / ListAgents).
 const subagentControllers = new Map(); // name -> AbortController
@@ -903,6 +904,8 @@ async function runAgent(opts) {
     }
 
     // Context handed to built-in tools for sub-agents, questions, plan mode, shells, MCP resources.
+    // Model roster for tier routing: the orchestrator pool + the active provider.
+    const agentRoster = swarm.buildRoster({ orchestrator: orch, provider: providerList[getIndex()] });
     const runSubagent = async (args) => {
       const name = args.description || args.name || 'sub-agent';
       const ac = new AbortController();
@@ -911,13 +914,28 @@ async function runAgent(opts) {
         if (opts.signal.aborted) onAbort();
         else opts.signal.addEventListener('abort', onAbort, { once: true });
       }
-      subagentControllers.set(name, { controller: ac, status: 'running', started: Date.now() });
-      emit({ type: 'subagent', name, status: 'started' });
+      // A delegated task may name the model it needs, or just its complexity
+      // tier. Claude lets a subagent definition pin `model: sonnet|opus|haiku`;
+      // here the same idea maps onto the configured provider pool so cheap work
+      // runs on a cheap model and hard work lands on the frontier model.
+      const wantModel = args.model || args.model_id || null;
+      const wantTier = args.tier || args.complexity || null;
+      const pinned = Boolean(wantModel || wantTier);
+      let subProvider = providerList[getIndex()];
+      let tier = null;
+      if (pinned) {
+        const base = swarm.pickProvider(agentRoster, wantTier || 'heavy') || subProvider;
+        subProvider = wantModel ? { ...base, model: String(wantModel) } : { ...base };
+        tier = base.tier || swarm.normalizeTier(wantTier, 'heavy');
+      }
+      subagentControllers.set(name, { controller: ac, status: 'running', started: Date.now(), model: subProvider && subProvider.model, tier });
+      emit({ type: 'subagent', id: name, name, status: 'started', role: 'worker', model: subProvider ? subProvider.model : null, tier });
       try {
         const subMsgs = [{ role: 'user', content: args.prompt || args.description || '' }];
         const subResult = await runAgent({
-          provider: providerList[getIndex()],
-          orchestrator: opts.orchestrator,
+          provider: subProvider,
+          // A pinned provider must not be replaced by the parent's failover list.
+          orchestrator: pinned ? null : opts.orchestrator,
           messages: subMsgs,
           cwd: args.cwd || currentCwd,
           emit: (evt) => emit({ ...evt, subagent: name }),
@@ -937,7 +955,7 @@ async function runAgent(opts) {
         return last ? last.content : '(sub-agent completed)';
       } finally {
         subagentControllers.delete(name);
-        emit({ type: 'subagent', name, status: 'done' });
+        emit({ type: 'subagent', id: name, name, status: 'done', role: 'worker', model: subProvider ? subProvider.model : null, tier });
         if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
       }
     };
@@ -945,7 +963,7 @@ async function runAgent(opts) {
     const listAgents = () => {
       const entries = [...subagentControllers.entries()];
       if (!entries.length) return '(no agents running)';
-      return 'RUNNING AGENTS:\n' + entries.map(([n, s]) => `- ${n} [${s.status}] (${Math.round((Date.now() - s.started) / 1000)}s)`).join('\n');
+      return 'RUNNING AGENTS:\n' + entries.map(([n, s]) => `- ${n} [${s.status}]${s.model ? ' · ' + s.model : ''}${s.tier ? ' · ' + s.tier : ''} (${Math.round((Date.now() - s.started) / 1000)}s)`).join('\n');
     };
     const stopTask = (name) => {
       const match = [...subagentControllers.entries()].find(([n]) => n === name || n.includes(name));
@@ -1023,6 +1041,9 @@ async function runAgent(opts) {
         ...subOpts,
       }),
       get provider() { return providerList[getIndex()]; },
+      orchestrator: opts.orchestrator || null,
+      emit,
+      agentRoster,
       askUser: opts.askUser,
       exitPlanMode: opts.exitPlanMode,
       mcpListResources: opts.mcpListResources,

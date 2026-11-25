@@ -361,3 +361,77 @@ LLM 502: <html><head><title>502 Bad Gateway</title></head><body>…nginx…
 | Headless suite | ✅ **111 passed, 0 failed** (two new tests: the retry and the humanizer) |
 | Real model, end to end, after the fix | ✅ `real-model.cjs deepseek` exit 0 — `Worked for 8m 33s`, 204 samples, 139 ordered blocks, 7 files on disk, page live in the pane, `errorBanner` empty, no markup |
 | Regressions | ✅ `retry-ui.cjs` PASS · `composer-flow.cjs` PASS · `npm run build` clean |
+
+## 12. Multi-agent swarm — supervisor, complexity routing, real concurrency (2026-11-25)
+
+The parity claim under test: *"multi model and multi agent work at the same time on different
+tasks — small task on a small model, heavy/critical on the frontier model, with a supervisor."*
+
+### 12.1 Unit — `test/swarm.test.js` (no network, injected `runAgent`)
+
+**43 passed, 0 failed.**
+
+| Area | Assertions |
+|---|---|
+| Tier normalisation | `small/cheap/fast/mini/nano` → `small`; `heavy/large/frontier/pro/big` → `heavy`; `critical/urgent/hardest/top/supervisor` → `critical`; prose (`mechanical`, `boilerplate`, `typo` → small; `architect`, `security`, `review`, `complex` → critical); unknown → fallback |
+| Roster | built from the orchestrator pool, each entry keeps its own `tier`; the active provider is included so a swarm still runs with the orchestrator off; `baseURL|model` dedupe; supervisor is the strongest tier and is **not** appended twice |
+| Routing | `pickProvider` returns the intended model for every tier; a subtask-level `model` pin overrides tier routing; missing tier → heavy |
+| Plan parsing | JSON in a fenced block, bare JSON, JSON with prose around it, malformed JSON → fallback plan; `maxTasks` clamp (1–12); duplicate ids repaired |
+| Dispatch | every worker receives a **distinct** prompt naming its own subtask and `owns[]`; concurrency pool respected; results ordered by plan, not by completion |
+| Events | `swarm` `start` carries supervisor + roster; `planned` carries id/title/tier/**model** per task; `subagent` events carry `role`, `tier`, `model`, `ms`; `done` closes the phase |
+| Degradation | no plan → single `fallback` subtask; no roster → all tiers collapse to the active provider; failed supervisor merge → merged report still returned with the error recorded |
+| Cowork fan-out | `tasks[]` with per-task prompt/tier/model resolved through the same routing; legacy same-goal mode still works |
+
+### 12.2 Live — `test/live/swarm-live.cjs` (real renderer → IPC → llm.js)
+
+Three local OpenAI-compatible stubs stand in for three models at three tiers:
+
+```
+:8905  cheap-mini   tier small      (mechanical work)
+:8906  mid-pro      tier heavy      (implementation)
+:8907  frontier-1   tier critical   (supervisor + review)
+```
+
+One composer message (`run the team: build a two-part deliverable`) drives the whole path.
+The stubs log every request with a start/end pair, so concurrency is **measured**, not inferred.
+
+**PASS — 16/16**
+
+| Check | Result |
+|---|---|
+| Composer accepted the message | ✅ `sent` |
+| Supervisor planned on the frontier model | ✅ 1 plan call, `frontier-1` |
+| Three workers ran | ✅ 3 |
+| Workers spanned three models | ✅ `{cheap-mini, mid-pro, frontier-1}` |
+| `small` tier → cheap model | ✅ `cheap-mini` |
+| `heavy` tier → mid model | ✅ `mid-pro` |
+| `critical` tier → frontier model | ✅ `frontier-1` |
+| Requests genuinely overlapped | ✅ `maxInFlight = 3`, **3** overlapping worker pairs |
+| Supervisor merged | ✅ `frontier-1` |
+| Merged answer reached the transcript | ✅ |
+| **Parent reply stayed clean while workers streamed** | ✅ no `done on <model>` / `YOUR SUBTASK` text ever appeared in the parent message (the earlier defect put all three streams in one paragraph) |
+| UI showed >1 agent running at once | ✅ |
+| Running rows showed live progress counters | ✅ |
+| UI showed the team with tiers / per-agent models | ✅ 5 rows: 3 workers + supervisor + supervisor review |
+| No error bar | ✅ |
+
+Screenshot: `screenshots/swarm-live.png`. Config is written to `~/.autobot/orchestrator.json`
+(the real path the app reads), and the user's pool is restored byte-for-byte afterwards.
+
+### 12.3 Defect found and fixed by this harness
+
+The first live attempt reported `composer: no-composer` — the renderer had crashed with
+`ReferenceError: swarmInfo is not defined` because `swarmInfo` was rendered inside `ChatView`
+but never passed in. The bundle was fresh (a stale-`dist` symptom was ruled out by grepping the
+built entry asset), so the crash was real and total: **blank app**. Fixed by threading the prop
+through the `ChatView` call site; re-verified with a clean console and a 13 k-char root render.
+
+### 12.4 Regressions after the swarm work
+
+| Suite | Result |
+|---|---|
+| `test/e2e.test.js` | ✅ **111 passed, 0 failed** (112 tool definitions) |
+| `test/swarm.test.js` | ✅ **43 passed** |
+| `test/live/retry-ui.cjs` | ✅ PASS — cut-off turn replaced, not stacked |
+| `test/live/composer-flow.cjs` | ✅ PASS — `think>text>tool>text`, page in pane **and** on disk (`MINDMAP.md`, `index.html`) |
+| `test/live/gateway-502.cjs` | ✅ PASS — 502 retried, explained, never rendered raw |
