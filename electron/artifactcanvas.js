@@ -21,6 +21,8 @@
 //     also accepted: a bare array, or a markdown deck split on `---`
 //     (each chunk: first `# heading` becomes the slide title, rest renders).
 
+const { designRuntime, slidesRuntime } = require('./artifactcanvas-runtime');
+
 const esc = (s) =>
   String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -30,6 +32,15 @@ const clampInt = (v, lo, hi, dflt) => {
   const n = Number(v);
   if (!Number.isFinite(n)) return dflt;
   return Math.max(lo, Math.min(hi, Math.round(n)));
+};
+
+// Artboard size: absent, 0 or negative all mean "fluid", so they must stay 0
+// instead of being lifted to the minimum usable frame. Positive values clamp to
+// a sane range so a stray 99999 cannot blow out the canvas.
+const clampSize = (v, hi) => {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return clampInt(n, 120, hi, 0);
 };
 
 // ---------------------------------------------------------------- parsing ---
@@ -76,8 +87,8 @@ function parseDesign(content) {
     return {
       name: String((isObj && (b.name || b.title)) || `Artboard ${i + 1}`),
       html: String(html == null ? '' : html),
-      width: clampInt(isObj ? b.width : null, 120, 2400, 0),
-      height: clampInt(isObj ? b.height : null, 120, 4000, 0),
+      width: clampSize(isObj ? b.width : null, 2400),
+      height: clampSize(isObj ? b.height : null, 4000),
       notes: String((isObj && (b.notes || b.description)) || ''),
     };
   });
@@ -160,20 +171,105 @@ button:hover{border-color:var(--accent);color:var(--accent)}
 button.on{background:var(--accent);border-color:var(--accent);color:#fff}
 `;
 
-function designHtml(name, content) {
-  const { title, artboards } = parseDesign(content);
+// ------------------------------------------------------- edit application ---
+// The generated content is the base; hand edits are a patch on top. Both the
+// document builder and the artifact window go through these so every surface
+// shows the same deck.
+const clampFloat = (v, lo, hi, dflt) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return dflt;
+  return Math.max(lo, Math.min(hi, n));
+};
+
+function normalizeBoard(b, i) {
+  const isObj = b && typeof b === 'object';
+  const html = isObj ? (b.html != null ? b.html : b.content != null ? b.content : '') : b;
+  return {
+    name: String((isObj && (b.name || b.title)) || `Artboard ${i + 1}`),
+    html: String(html == null ? '' : html),
+    width: clampInt(isObj ? b.width : null, 0, 2400, 0),
+    height: clampInt(isObj ? b.height : null, 0, 4000, 0),
+    notes: String((isObj && (b.notes || b.description)) || ''),
+  };
+}
+
+function normalizeSlide(s, i) {
+  const isObj = s && typeof s === 'object';
+  return {
+    title: String((isObj && (s.title || s.heading)) || `Slide ${i + 1}`),
+    html: String((isObj && (s.html != null ? s.html : s.content != null ? s.content : '')) ?? ''),
+    notes: String((isObj && (s.notes || s.speakerNotes)) || ''),
+    layout: String((isObj && s.layout) || 'default'),
+  };
+}
+
+function applyDesignEdits(base, edits) {
+  const e = edits && typeof edits === 'object' ? edits : {};
+  const boards = Array.isArray(e.boards) && e.boards.length
+    ? e.boards.slice(0, 60).map(normalizeBoard)
+    : (base && base.artboards) || [];
+  const comments = (Array.isArray(e.comments) ? e.comments : [])
+    .filter((c) => c && typeof c === 'object')
+    .slice(0, 500)
+    .map((c) => ({
+      i: clampInt(c.i, 0, Math.max(0, boards.length - 1), 0),
+      x: clampFloat(c.x, 0, 100, 50),
+      y: clampFloat(c.y, 0, 100, 50),
+      text: String(c.text == null ? '' : c.text).slice(0, 400),
+    }))
+    .filter((c) => c.text && c.i < boards.length);
+  return {
+    title: typeof e.title === 'string' && e.title.trim() ? e.title.trim().slice(0, 120) : (base && base.title) || 'Design',
+    layout: ['grid', 'row', 'column'].includes(e.layout) ? e.layout : 'grid',
+    zoom: clampFloat(e.zoom, 0.5, 2, 1),
+    artboards: boards,
+    comments,
+  };
+}
+
+function applySlidesEdits(base, edits) {
+  const e = edits && typeof edits === 'object' ? edits : {};
+  const slides = Array.isArray(e.slides) && e.slides.length
+    ? e.slides.slice(0, 200).map(normalizeSlide)
+    : (base && base.slides) || [];
+  return {
+    title: typeof e.title === 'string' && e.title.trim() ? e.title.trim().slice(0, 120) : (base && base.title) || 'Deck',
+    aspect: e.aspect === '4:3' ? '4:3' : '16:9',
+    slides,
+  };
+}
+
+
+function designHtml(name, content, edits, meta) {
+  const view = applyDesignEdits(parseDesign(content), edits);
+  const { title, artboards, layout, zoom, comments } = view;
+  const pinsFor = (i) => comments.filter((c) => c.i === i)
+    .map((c) => `<span class="pin" style="left:${c.x}%;top:${c.y}%" title="${esc(c.text)}"><b>${esc(c.text.slice(0, 40))}</b></span>`).join('');
+  const deviceSel = (b) => {
+    const opts = [['fluid', 'Fluid'], ['390x844', '390 × 844'], ['768x1024', '768 × 1024'], ['1440x900', '1440 × 900']];
+    const cur = !b.width ? 'fluid' : `${b.width}x${b.height || 520}`;
+    return `<select data-sel="device" title="Device width">` +
+      opts.map(([v, lbl]) => `<option value="${v}"${v === cur ? ' selected' : ''}>${lbl}</option>`).join('') + '</select>';
+  };
   const cards = artboards.map((b, i) => {
     const w = b.width || 0;
     const h = b.height || 520;
     return `<figure class="board" data-i="${i}">
-      <figcaption><span class="bname">${esc(b.name)}</span>
+      <figcaption><span class="bname" contenteditable="true" spellcheck="false" data-edit="name" data-i="${i}">${esc(b.name)}</span>
         <span class="dims">${w ? w + '×' + h : 'fluid'}</span>
         <span class="bacts">
+          ${deviceSel(b)}
+          <button data-act="up" data-i="${i}" title="Move earlier">↑</button>
+          <button data-act="down" data-i="${i}" title="Move later">↓</button>
+          <button data-act="src" data-i="${i}">Edit HTML</button>
+          <button data-act="dup" data-i="${i}">Duplicate</button>
+          <button data-act="del" data-i="${i}">Delete</button>
           <button data-act="zoom" data-i="${i}">Zoom</button>
           <button data-act="save" data-i="${i}">Save .html</button>
         </span></figcaption>
       <div class="frame" style="${w ? `width:${w}px;height:${h}px` : 'width:100%;height:' + h + 'px'}">
         <iframe sandbox="allow-scripts allow-forms allow-modals allow-popups" srcdoc="${esc(b.html)}"></iframe>
+        <div class="pins" data-i="${i}">${pinsFor(i)}</div>
       </div>
       ${b.notes ? `<p class="note">${esc(b.notes)}</p>` : ''}
     </figure>`;
@@ -181,6 +277,12 @@ function designHtml(name, content) {
 
   const rail = artboards.map((b, i) =>
     `<button class="railitem" data-act="jump" data-i="${i}">${esc(b.name)}</button>`).join('');
+  const payload = JSON.stringify({
+    title, layout, zoom, boards: artboards, comments,
+    // Echoed back on every change so the surface that receives the message
+    // (the in-chat preview posts to its parent) knows which slot to write.
+    key: (meta && meta.key) || '',
+  }).replace(/</g, '\\u003c');
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>${esc(name || title)} — Design</title><style>${BASE_CSS}
@@ -208,135 +310,155 @@ figcaption{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:1
 .zoombar{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line)}
 .zoomstage{overflow:auto;padding:16px;display:flex;justify-content:center}
 .zoomstage .frame{background:#fff;max-width:none}
+.canvas.layout-row{flex-wrap:nowrap;overflow-x:auto;padding-bottom:10px}
+.canvas.layout-column{flex-direction:column;flex-wrap:nowrap}
+.canvas.layout-column .board{width:100%}
+.bacts select{font-size:11px;padding:2px 4px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px}
+.bname{outline:none;border-radius:4px;padding:1px 3px}
+.bname:focus{background:#31322a;box-shadow:0 0 0 1px var(--accent)}
+.frame{position:relative}
+.pins{position:absolute;inset:0;pointer-events:none}
+.canvas.commenting .pins{pointer-events:auto;cursor:crosshair;
+  background:repeating-linear-gradient(45deg,rgba(217,119,87,.06) 0 8px,transparent 8px 16px)}
+.pin{position:absolute;transform:translate(-50%,-50%);pointer-events:auto;cursor:pointer;
+  display:flex;align-items:center;gap:5px;max-width:180px}
+.pin::before{content:'';width:12px;height:12px;border-radius:50%;background:var(--accent);
+  border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);flex:0 0 auto}
+.pin b{font-size:10px;font-weight:500;color:var(--ink);background:#16170f;border:1px solid var(--line);
+  border-radius:5px;padding:2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#ttl{outline:none;border-radius:4px;padding:1px 4px}
+#ttl:focus{background:#31322a;box-shadow:0 0 0 1px var(--accent)}
+#status{min-height:16px;margin:10px 2px 0;color:var(--muted);font-size:12px}
+.railfoot{margin-top:10px}
+.railfoot button{width:100%;font-size:12px}
+.drawer{position:fixed;right:0;top:0;bottom:0;width:min(560px,86vw);background:var(--panel);
+  border-left:1px solid var(--line);display:none;grid-template-rows:auto 1fr;z-index:12}
+.drawer.open{display:grid}
+.drawerbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.drawer textarea{width:100%;height:100%;border:0;resize:none;padding:12px;background:#14150f;
+  color:#dfe3d4;font:12px/1.5 ui-monospace,Menlo,monospace;outline:none}
 </style></head><body>
-<aside><h1>Artboards</h1>${rail || '<p class="note">No artboards.</p>'}</aside>
+<aside><h1>Artboards</h1><div id="rail">${rail || '<p class="note">No artboards.</p>'}</div>
+  <div class="railfoot"><button data-act="add">+ Artboard</button></div></aside>
 <main>
-  <header><h2>${esc(title)}</h2><span class="dims">${artboards.length} artboard${artboards.length === 1 ? '' : 's'}</span>
+  <header><h2 id="ttl" contenteditable="true" spellcheck="false">${esc(title)}</h2>
+    <span class="dims" id="cnt">${artboards.length} artboard${artboards.length === 1 ? '' : 's'}</span>
     <span class="sp"></span>
+    <button data-act="layout" data-l="grid"${layout === 'grid' ? ' class="on"' : ''}>Grid</button>
+    <button data-act="layout" data-l="row"${layout === 'row' ? ' class="on"' : ''}>Row</button>
+    <button data-act="layout" data-l="column"${layout === 'column' ? ' class="on"' : ''}>Column</button>
+    <button data-act="zoom-out">−</button><span id="zlbl">${Math.round(zoom * 100)}%</span><button data-act="zoom-in">+</button>
+    <button data-act="comment-mode">Comment</button>
     <button data-act="print">Print / PDF</button>
     <button data-act="save-all">Save all</button>
   </header>
-  <div class="canvas">${cards || '<p class="note">Nothing to render.</p>'}</div>
+  <div class="canvas layout-${layout}" id="canvas" style="zoom:${zoom}">${cards || '<p class="note">Nothing to render.</p>'}</div>
+  <p class="note" id="status"></p>
 </main>
+<div class="drawer" id="drawer"><div class="drawerbar">
+  <strong id="dname">Artboard</strong><span class="sp" style="flex:1"></span>
+  <button data-act="apply-src">Apply</button><button data-act="close-drawer">Close</button></div>
+  <textarea id="dsrc" spellcheck="false"></textarea></div>
 <div class="zoom" id="zoom"><div class="zoombar">
   <strong id="zname"></strong><span class="sp" style="flex:1"></span>
   <button data-act="close-zoom">Close</button></div>
   <div class="zoomstage" id="zstage"></div></div>
-<script>
-const BOARDS = ${JSON.stringify(artboards.map((b) => ({ name: b.name, html: b.html, width: b.width, height: b.height }))).replace(/</g, '\\u003c')};
-const zoom = document.getElementById('zoom');
-const zstage = document.getElementById('zstage');
-const zname = document.getElementById('zname');
-function save(i) {
-  const b = BOARDS[i]; if (!b) return;
-  const blob = new Blob([b.html], { type: 'text/html' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = (b.name || 'artboard').replace(/[^\\w.-]+/g, '_') + '.html';
-  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-}
-document.addEventListener('click', (e) => {
-  const t = e.target.closest('[data-act]'); if (!t) return;
-  const act = t.getAttribute('data-act');
-  const i = Number(t.getAttribute('data-i') || 0);
-  if (act === 'print') window.print();
-  else if (act === 'save') save(i);
-  else if (act === 'save-all') BOARDS.forEach((_, k) => setTimeout(() => save(k), k * 120));
-  else if (act === 'jump') { const el = document.querySelector('.board[data-i="' + i + '"]'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
-  else if (act === 'zoom') {
-    const b = BOARDS[i]; if (!b) return;
-    zname.textContent = b.name || 'Artboard';
-    const w = b.width || 900, h = b.height || 640;
-    zstage.innerHTML = '<div class="frame" style="width:' + w + 'px;height:' + h + 'px"></div>';
-    const f = document.createElement('iframe');
-    f.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups');
-    f.srcdoc = b.html;
-    zstage.firstElementChild.appendChild(f);
-    zoom.classList.add('open');
-  } else if (act === 'close-zoom') { zoom.classList.remove('open'); zstage.innerHTML = ''; }
-});
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { zoom.classList.remove('open'); zstage.innerHTML = ''; } });
-</script></body></html>`;
+<script>(${designRuntime.toString()})(${payload});</script></body></html>`;
 }
 
-function slidesHtml(name, content) {
-  const { title, slides } = parseSlides(content);
-  const deck = slides.map((s) => `<section class="slide">
+function slidesHtml(name, content, edits, meta) {
+  const view = applySlidesEdits(parseSlides(content), edits);
+  const { title, slides, aspect } = view;
+  const deck = slides.map((s, i) => `<section class="slide${i === 0 ? ' active' : ''}" data-i="${i}">
       <h1 class="stitle">${esc(s.title)}</h1>
       <div class="sbody">${s.html}</div>
       ${s.notes ? `<aside class="snotes">${esc(s.notes)}</aside>` : ''}
     </section>`).join('\n');
+  const thumbs = slides.map((s, i) =>
+    `<button class="thumb${i === 0 ? ' on' : ''}" data-act="goto" data-i="${i}"><span class="tnum">${i + 1}</span><span class="ttl">${esc(s.title)}</span></button>`).join('');
+  const payload = JSON.stringify({
+    title, aspect, slides: slides.map((s) => ({ title: s.title, html: s.html, notes: s.notes, layout: s.layout })),
+    key: (meta && meta.key) || '',
+  }).replace(/</g, '\\u003c');
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>${esc(name || title)} — Slides</title><style>${BASE_CSS}
-body{display:grid;grid-template-rows:1fr auto;height:100%;overflow:hidden}
-#stage{position:relative;display:grid;place-items:center;padding:28px 34px;overflow:hidden}
-.slide{display:none;width:min(1024px,100%);aspect-ratio:16/9;background:#fbf9f4;color:#20211c;
-  border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.45);padding:44px 52px;overflow:auto}
+body{display:grid;grid-template-columns:196px 1fr;height:100vh;overflow:hidden}
+#thumbs{border-right:1px solid var(--line);background:var(--panel);overflow:auto;padding:10px}
+#thumbs h1{margin:2px 6px 10px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.thumb{display:flex;gap:8px;align-items:center;width:100%;text-align:left;border:1px solid var(--line);
+  border-radius:8px;padding:8px;margin-bottom:8px;background:var(--bg)}
+.thumb:hover{border-color:var(--accent)}
+.thumb.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.tnum{font-variant-numeric:tabular-nums;color:var(--muted);font-size:11px;min-width:16px}
+.ttl{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+main{display:grid;grid-template-rows:auto 1fr auto;min-width:0;overflow:hidden}
+header{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h2{font-size:15px;margin:0;font-weight:600}
+#ttl{outline:none;border-radius:4px;padding:1px 4px}
+#ttl:focus{background:#31322a;box-shadow:0 0 0 1px var(--accent)}
+header .sp{flex:1}
+header button{padding:4px 9px;font-size:12px}
+#stage{position:relative;display:grid;place-items:center;padding:24px 30px;overflow:hidden;min-height:0}
+.slide{display:none;width:min(1024px,100%);background:#fbf9f4;color:#20211c;
+  border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.45);padding:44px 52px;overflow:auto;max-height:100%}
+#stage.aspect-169 .slide{aspect-ratio:16/9}
+#stage.aspect-43 .slide{aspect-ratio:4/3}
 .slide.active{display:block}
-.stitle{margin:0 0 18px;font-size:30px;line-height:1.15;letter-spacing:-.01em;color:#1b1c18}
+.stitle{margin:0 0 18px;font-size:30px;line-height:1.15;letter-spacing:-.01em;color:#1b1c18;outline:none}
 .slide .stitle:empty{display:none}
-.sbody{font-size:18px;line-height:1.55}
+.sbody{font-size:18px;line-height:1.55;outline:none}
 .sbody h1,.sbody h2{font-size:24px;margin:0 0 10px}
 .sbody ul,.sbody ol{margin:0;padding-left:22px}
 .sbody li{margin:6px 0}
 .sbody code{background:#ece8dd;border-radius:4px;padding:1px 5px;font-size:.92em}
-.snotes{margin-top:22px;border-top:1px dashed #cfc9ba;padding-top:12px;color:#6b6a62;font-size:13px}
+.snotes{margin-top:22px;border-top:1px dashed #cfc9ba;padding-top:12px;color:#6b6a62;font-size:13px;outline:none}
 .nopnotes .snotes{display:none}
+[contenteditable="true"]:focus{box-shadow:0 0 0 2px rgba(217,119,87,.5);border-radius:5px}
+[contenteditable="true"]:empty:before{content:'Type here…';color:#b3ae9f}
 #bar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid var(--line);background:var(--panel)}
 #prog{flex:1;height:4px;background:#33342c;border-radius:3px;overflow:hidden}
 #prog i{display:block;height:100%;width:0;background:var(--accent);transition:width .18s ease}
 #count{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;min-width:62px;text-align:right}
+#status{color:var(--muted);font-size:12px;margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34ch}
 @media print{
   body{display:block;height:auto;background:#fff}
+  main{display:block}
+  #thumbs,header,#bar{display:none}
   #stage{display:block;padding:0}
-  #bar{display:none}
   .slide{display:block !important;page-break-after:always;box-shadow:none;border-radius:0;
-    width:100%;aspect-ratio:auto;min-height:96vh;background:#fff}
+    width:100%;aspect-ratio:auto;min-height:96vh;max-height:none;background:#fff}
 }
 </style></head><body>
-<div id="stage">${deck || '<p class="note">No slides.</p>'}</div>
-<div id="bar">
-  <button data-nav="prev">‹ Prev</button>
-  <button data-nav="next">Next ›</button>
-  <span id="prog"><i></i></span>
-  <span id="count">1 / ${slides.length || 1}</span>
-  <button data-act="notes" class="on">Notes</button>
-  <button data-act="full">Present</button>
-  <button data-act="print">Print / PDF</button>
-</div>
-<script>
-const slides = Array.from(document.querySelectorAll('.slide'));
-let i = 0;
-const prog = document.querySelector('#prog i');
-const count = document.getElementById('count');
-function show(n) {
-  if (!slides.length) return;
-  i = Math.max(0, Math.min(slides.length - 1, n));
-  slides.forEach((s, k) => s.classList.toggle('active', k === i));
-  prog.style.width = ((i + 1) / slides.length * 100) + '%';
-  count.textContent = (i + 1) + ' / ' + slides.length;
-}
-document.addEventListener('click', (e) => {
-  const n = e.target.closest('[data-nav]'); if (n) {
-    show(i + (n.getAttribute('data-nav') === 'next' ? 1 : -1)); return;
-  }
-  const a = e.target.closest('[data-act]'); if (!a) return;
-  const act = a.getAttribute('data-act');
-  if (act === 'notes') { document.body.classList.toggle('nopnotes'); a.classList.toggle('on'); }
-  else if (act === 'print') window.print();
-  else if (act === 'full') { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); }
-});
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); show(i + 1); }
-  else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); show(i - 1); }
-  else if (e.key === 'Home') show(0);
-  else if (e.key === 'End') show(slides.length - 1);
-  else if (e.key.toLowerCase() === 'n') document.body.classList.toggle('nopnotes');
-  else if (e.key.toLowerCase() === 'f') document.documentElement.requestFullscreen();
-});
-show(0);
-</script></body></html>`;
+<aside id="thumbs"><h1>Slides</h1>${thumbs || '<p class="note">Empty</p>'}</aside>
+<main>
+  <header>
+    <h2 id="ttl" contenteditable="true" spellcheck="false">${esc(title)}</h2>
+    <span class="sp"></span>
+    <button data-act="edit">Edit</button>
+    <button data-act="aspect">${aspect}</button>
+    <button data-act="add">+ Slide</button>
+    <button data-act="dup">Duplicate</button>
+    <button data-act="del">Delete</button>
+    <button data-act="up" title="Move earlier">↑</button>
+    <button data-act="down" title="Move later">↓</button>
+    <button data-act="drive">Save to Drive</button>
+    <button data-act="html">Export HTML</button>
+    <button data-act="md">Export MD</button>
+  </header>
+  <div id="stage" class="aspect-${aspect === '4:3' ? '43' : '169'}">${deck || '<p class="note">No slides.</p>'}</div>
+  <div id="bar">
+    <button data-nav="prev">‹ Prev</button>
+    <button data-nav="next">Next ›</button>
+    <span id="prog"><i></i></span>
+    <span id="count">1 / ${slides.length || 1}</span>
+    <button data-act="notes" class="on">Notes</button>
+    <button data-act="full">Present</button>
+    <button data-act="print">Print / PDF</button>
+    <span id="status"></span>
+  </div>
+</main>
+<script>(${slidesRuntime.toString()})(${payload});</script></body></html>`;
 }
 
 // The language values that route to a canvas document, and the builder for each.
@@ -353,11 +475,21 @@ function isCanvas(language) {
   return Object.prototype.hasOwnProperty.call(CANVAS, String(language || '').toLowerCase().trim());
 }
 
-function canvasHtml(language, name, content) {
+function canvasHtml(language, name, content, edits, meta) {
   const lang = String(language || '').toLowerCase().trim();
   const build = CANVAS[lang];
   if (!build) return null;
-  return build(name, content);
+  return build(name, content, edits, meta);
 }
 
-module.exports = { parseDesign, parseSlides, designHtml, slidesHtml, canvasHtml, isCanvas, mdToHtml };
+module.exports = {
+  parseDesign,
+  parseSlides,
+  designHtml,
+  slidesHtml,
+  canvasHtml,
+  isCanvas,
+  mdToHtml,
+  applyDesignEdits,
+  applySlidesEdits,
+};

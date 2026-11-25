@@ -2654,6 +2654,8 @@ function ArtifactPreview({ block }) {
   // truth with the artifact window and print-to-PDF) and rendered in a sandbox.
   const isCanvas = ['design', 'canvas', 'artboard', 'slides', 'deck', 'presentation'].includes(lang);
   const [canvasDoc, setCanvasDoc] = useState('');
+  const [canvasKey, setCanvasKey] = useState('');
+  const [canvasTick, setCanvasTick] = useState(0);
   useEffect(() => {
     if (!isCanvas) return undefined;
     let live = true;
@@ -2663,10 +2665,48 @@ function ArtifactPreview({ block }) {
       ? api.artifactDocument({ name: block.label || lang, language: lang, content: code })
       : Promise.resolve('');
     Promise.resolve(p)
-      .then((h) => { if (live && typeof h === 'string') setCanvasDoc(h); })
+      .then((h) => {
+        if (!live || typeof h !== 'string') return;
+        setCanvasDoc(h);
+        // The document carries its own store key; the preview posts edits back
+        // with that key so main writes the right slot.
+        const m = /"key":"(canvas-[A-Za-z0-9-]+)"/.exec(h);
+        setCanvasKey(m ? m[1] : '');
+      })
       .catch(() => { /* leave the placeholder */ });
     return () => { live = false; };
-  }, [isCanvas, lang, code, block.label]);
+  }, [isCanvas, lang, code, block.label, canvasTick]);
+
+  // Edits made inside the preview (design artboards / slide deck) are posted to
+  // the app window; persist them so the artifact window and every other surface
+  // see one document.
+  useEffect(() => {
+    if (!isCanvas) return undefined;
+    const onMsg = (ev) => {
+      const d = ev && ev.data;
+      if (!d || d.type !== 'helio:artifact-change' || !d.patch) return;
+      const api = window.autobot;
+      if (!api || !api.artifactSave) return;
+      const key = d.key || canvasKey;
+      if (!key) return;
+      try { api.artifactSave(key, d.patch).catch(() => {}); } catch (_) {}
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [isCanvas, canvasKey]);
+
+  // A change made elsewhere (artifact window, another conversation) reloads this
+  // preview from the store instead of drifting out of sync.
+  useEffect(() => {
+    if (!isCanvas) return undefined;
+    const api = window.autobot;
+    if (!api || !api.onArtifactSaved) return undefined;
+    const off = api.onArtifactSaved((info) => {
+      if (!canvasKey || !info || info.key !== canvasKey) return;
+      setCanvasTick((n) => n + 1);
+    });
+    return typeof off === 'function' ? off : undefined;
+  }, [isCanvas, canvasKey]);
 
   if (isCanvas) {
     if (!canvasDoc) return <div className="artifact-fallback muted">Building {lang === 'slides' || lang === 'deck' || lang === 'presentation' ? 'deck' : 'canvas'}…</div>;

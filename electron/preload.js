@@ -154,6 +154,20 @@ contextBridge.exposeInMainWorld('autobot', {
   artifactDocument: (payload) => ipcRenderer.invoke('autobot:artifactDocument', payload),
   printToPdf: (payload) => ipcRenderer.invoke('autobot:printToPdf', payload),
 
+  // ---- Canvas artifact edits (Design artboards / Slides decks) ----
+  // The in-chat preview is a `srcdoc` iframe, so it posts edits to the app and
+  // the app persists them here; the artifact window writes through its own
+  // preload, and `onArtifactSaved` keeps both surfaces in sync.
+  artifactSave: (key, edits) => ipcRenderer.invoke('autobot:artifactSave', { key, edits }),
+  artifactGet: (key) => ipcRenderer.invoke('autobot:artifactGet', { key }),
+  artifactReset: (key) => ipcRenderer.invoke('autobot:artifactReset', { key }),
+  slidesUpload: (payload) => ipcRenderer.invoke('autobot:slidesUpload', payload),
+  onArtifactSaved: (cb) => {
+    const handler = (event, info) => cb(info);
+    ipcRenderer.on('autobot:artifactSaved', handler);
+    return () => ipcRenderer.removeListener('autobot:artifactSaved', handler);
+  },
+
   // ---- Link unfurl (Desktop og / twitter / xlink parity) ----
   unfurl: (url) => ipcRenderer.invoke('autobot:unfurl', url),
   unfurlMany: (urls) => ipcRenderer.invoke('autobot:unfurlMany', urls),

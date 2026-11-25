@@ -19,12 +19,16 @@ const workspace = require('./workspace');
 const paths = require('./paths');
 const mindmap = require('./mindmap');
 const artifactcanvas = require('./artifactcanvas');
+const artifactstore = require('./artifactstore');
 const extensionhost = require('./extensionhost');
 const unfurlMod = require('./unfurl');
 const compliance = require('./compliance');
 const mcpoauth = require('./mcpoauth');
 
 const windows = new Set(); // all open BrowserWindows (multi-window parity)
+// artifact key -> Set<BrowserWindow>: artifact windows currently showing that
+// canvas document, so an edit made in the chat preview refreshes them too.
+const artifactWindows = new Map();
 // BrowserWindow.id -> extension id, for the hosting windows created by
 // `createExtensionWindow` (Desktop's extension-page surfaces).
 const extensionWindows = new Map();
@@ -343,10 +347,17 @@ function registerQuickShortcuts(enable) {
 
 // Artifact app window: opens an artifact (code/HTML/SVG/markdown) in its own
 // standalone window, mirroring Example's "open in app" artifact surface.
-function artifactDocument({ name, language, content }) {
+//
+// Canvas artifacts (design / slides) resolve their persisted hand edits first:
+// the key is a hash of the generated content, so the same artifact always finds
+// the same edit slot no matter which surface built it.
+function artifactDocument({ name, language, content, edits }) {
   const lang = String(language || '').toLowerCase();
-  const canvas = artifactcanvas.canvasHtml(lang, name, content);
-  if (canvas) return canvas;
+  const canvas = artifactcanvas.isCanvas(lang);
+  const key = canvas ? artifactstore.keyFor(lang, content) : '';
+  const resolved = canvas ? (edits !== undefined ? edits : artifactstore.get(key)) : undefined;
+  const doc = artifactcanvas.canvasHtml(lang, name, content, resolved, { key });
+  if (doc) return doc;
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const safe = String(content || '');
   const body = lang === 'html' || lang === 'htm' || lang === 'svg'
@@ -360,15 +371,45 @@ function artifactDocument({ name, language, content }) {
 function createArtifactWindow(payload) {
   const { name, language } = payload || {};
   const canvas = artifactcanvas.isCanvas(language);
+  const key = canvas ? artifactstore.keyFor(String(language || '').toLowerCase(), (payload || {}).content) : '';
   const win = new BrowserWindow({
     width: canvas ? 1180 : 960, height: canvas ? 800 : 700, minWidth: 520, minHeight: 360,
     title: name || 'Artifact', backgroundColor: '#1e1f1c',
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false },
+    webPreferences: {
+      contextIsolation: true, nodeIntegration: false, sandbox: false,
+      // The bridge is only meaningful for canvas documents; plain code/SVG
+      // artifacts get no preload so their content keeps zero privileges.
+      preload: key ? path.join(__dirname, 'artifact-preload.js') : undefined,
+      additionalArguments: key ? [`--helio-artifact-key=${key}`] : [],
+    },
   });
+  if (key) {
+    if (!artifactWindows.has(key)) artifactWindows.set(key, new Set());
+    artifactWindows.get(key).add(win);
+    win.on('closed', () => {
+      const set = artifactWindows.get(key);
+      if (set) { set.delete(win); if (!set.size) artifactWindows.delete(key); }
+    });
+  }
   const html = artifactDocument(payload || {});
   win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
-  return { ok: true, windowId: win.id };
+  return { ok: true, windowId: win.id, key };
+}
+
+// Every surface showing a canvas artifact (in-chat preview, artifacts list,
+// other artifact windows) refetches when its slot changes. `skipId` is the
+// webContents that made the change — it is already up to date.
+function broadcastArtifactSaved(key, skipId) {
+  for (const w of windows) {
+    if (!w.isDestroyed() && w.webContents.id !== skipId) w.webContents.send('autobot:artifactSaved', { key });
+  }
+  const viewers = artifactWindows.get(key);
+  if (viewers) {
+    for (const w of viewers) {
+      if (!w.isDestroyed() && w.webContents.id !== skipId) w.webContents.send('autobot:artifactSaved', { key });
+    }
+  }
 }
 
 // ---------- Hosted Chrome extensions (Example Desktop extension-host parity) ----------
@@ -1419,6 +1460,86 @@ ipcMain.handle('autobot:openQuickEntry', () => { createQuickWindow(); return { o
 ipcMain.handle('autobot:openArtifactWindow', (e, payload) => createArtifactWindow(payload || {}));
 ipcMain.handle('autobot:printToPdf', (e, payload) => printToPdf(e, payload || {}));
 ipcMain.handle('autobot:artifactDocument', async (e, payload) => artifactDocument(payload || {}));
+
+// ---- Canvas artifact edits (Design artboards / Slides decks) ----
+// The artifact window talks to main through electron/artifact-preload.js, which
+// carries the artifact's own key. Every other surface (in-chat preview, print,
+// reopened window) resolves the same slot from artifactstore.keyFor(), so an
+// edit made once shows up everywhere and survives restarts.
+ipcMain.handle('autobot:artifactSave', (e, { key, edits } = {}) => {
+  if (typeof key !== 'string' || !key.startsWith('canvas-')) return { ok: false, error: 'invalid artifact key' };
+  const saved = artifactstore.patch(key, edits && typeof edits === 'object' ? edits : {});
+  if (!saved) return { ok: false, error: 'could not persist edits' };
+  // Refresh the in-chat preview / artifacts list without a reload.
+  broadcastArtifactSaved(key, e.sender.id);
+  return { ok: true, key };
+});
+ipcMain.handle('autobot:artifactGet', (e, { key } = {}) => {
+  if (typeof key !== 'string' || !key.startsWith('canvas-')) return { ok: false, error: 'invalid artifact key' };
+  return { ok: true, edits: artifactstore.get(key) };
+});
+ipcMain.handle('autobot:artifactReset', (e, { key } = {}) => {
+  if (typeof key !== 'string' || !key.startsWith('canvas-')) return { ok: false, error: 'invalid artifact key' };
+  artifactstore.remove(key);
+  broadcastArtifactSaved(key, e.sender.id);
+  return { ok: true, key };
+});
+
+// Print the *sender* (the artifact window itself, already showing the edited
+// document) straight to PDF — no rebuild, so hand edits and live iframes match
+// exactly what the user sees.
+ipcMain.handle('autobot:artifactPrint', async (e, { key } = {}) => {
+  try {
+    const wc = e.sender;
+    const owner = BrowserWindow.fromWebContents(wc) || winFor(e);
+    const r = await dialog.showSaveDialog(owner, {
+      title: 'Export PDF',
+      defaultPath: (owner && owner.getTitle ? owner.getTitle() : 'artifact') + '.pdf',
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (r.canceled || !r.filePath) return { ok: true, path: null };
+    const data = await wc.printToPDF({ printBackground: true, pageSize: 'A4', margins: { marginType: 'default' } });
+    fs.writeFileSync(r.filePath, data);
+    if (key) artifactstore.patch(key, { printedAt: Date.now() });
+    return { ok: true, path: r.filePath };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : 'print failed' };
+  }
+});
+
+// "Save to Drive" from the Slides deck. Desktop reaches Google Drive through a
+// connected MCP server; when none is connected the deck gets one human line
+// instead of a raw JSON-RPC body.
+async function slidesUpload(payload) {
+  const { name, html } = payload || {};
+  const body = String(html == null ? '' : html);
+  if (!body) return { ok: false, error: 'nothing to upload' };
+  const wantServer = /drive|gdrive|google/i;
+  let found = null;
+  for (const [sid, entry] of mcp.servers) {
+    if (!wantServer.test(String(entry.name || '')) && !wantServer.test(sid)) continue;
+    const tool = (entry.fullTools || []).find((t) => /upload|create[_-]?file|files?[_-]create|create[_-]?doc/i.test(String(t.name || '')));
+    if (tool) { found = { sid, entry, tool }; break; }
+  }
+  if (!found) {
+    return { ok: false, needsConnector: true, error: 'Google Drive is not connected — connect it in Plugins, then save to Drive again.' };
+  }
+  // Fill the tool's inputs from its own schema so we never guess a wire format.
+  const schema = (found.tool.inputSchema && found.tool.inputSchema.properties) || {};
+  const args = {};
+  for (const prop of Object.keys(schema)) {
+    if (/^(name|title|file_?name)$/i.test(prop)) args[prop] = String(name || 'slides') + '.html';
+    else if (/^(content|body|text|data|html|file_?content)$/i.test(prop)) args[prop] = body;
+    else if (/^(mime_?type|content_?type|type)$/i.test(prop)) args[prop] = 'text/html';
+  }
+  try {
+    const result = await mcp.callTool(found.sid, found.tool.name, args);
+    return { ok: true, server: found.entry.name, tool: found.tool.name, result };
+  } catch (err) {
+    return { ok: false, error: describeConnectError(err) || 'the Drive upload failed' };
+  }
+}
+ipcMain.handle('autobot:slidesUpload', (e, payload) => slidesUpload(payload || {}));
 
 // ---- Link unfurl (Desktop `og` / `twitter` / `xlink` parity) ----
 // The renderer never fetches a link itself: the model or the user can put an
