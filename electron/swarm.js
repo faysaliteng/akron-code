@@ -30,12 +30,24 @@ function normalizeTier(t, fallback) {
 
 // ---------- roster ----------
 
+// Swarm is restricted to "big frontier" models. A provider opts in either by an
+// explicit `frontier: true` flag or by matching a known frontier model family.
+// Cheap/local models never enter a swarm roster (they remain fair game for the
+// automatic Task/Agent multi-agent path).
+const FRONTIER_RE = /(kimi|moonshot|deepseek|glm|zhipu|chatgpt|gpt-?[45]|\bo[1-4]\b|claude|sonnet|opus|gemini[- ]?(pro|ultra)|qwen.*(max|235b)|grok|command-r-plus|mistral-large|frontier)/i;
+function isFrontier(p) {
+  if (!p) return false;
+  if (p.frontier === true) return true;
+  const s = [p.model, p.name].filter(Boolean).join(' ');
+  return FRONTIER_RE.test(s);
+}
+
 // Build the pool of models the swarm may use. The orchestrator's provider list
 // is the pool; each entry may carry a `tier` (set in Settings). The currently
 // selected provider is always present so a swarm still works with the
 // orchestrator disabled — it simply runs every subtask on one model.
 function buildRoster(opts = {}) {
-  const { orchestrator, provider } = opts;
+  const { orchestrator, provider, frontierOnly } = opts;
   const roster = [];
   const seen = new Set();
   const add = (p, fallbackTier, role) => {
@@ -53,6 +65,7 @@ function buildRoster(opts = {}) {
       maxTokens: p.maxTokens,
       reasoningLevel: p.reasoningLevel,
       supportsTools: p.supportsTools !== false,
+      frontier: isFrontier(p),
       tier: normalizeTier(p.tier, fallbackTier),
       role,
     });
@@ -63,6 +76,26 @@ function buildRoster(opts = {}) {
   // The active provider is last but tagged critical when it is the only model,
   // so a single-model setup still gets sensible routing.
   if (provider) add(provider, roster.length ? 'heavy' : 'critical', 'active');
+
+  // Swarm: keep only frontier models. Mutate in place so callers hold the same
+  // array reference.
+  if (frontierOnly) {
+    const keep = roster.filter((r) => r.frontier);
+    roster.length = 0;
+    if (keep.length) {
+      roster.push(...keep);
+    } else {
+      // Never dead-end the user: if nothing in the pool is recognisably
+      // frontier, fall back to the provider that is actually in use (or the
+      // orchestrator's active entry), so a swarm still runs on one model.
+      const pick = provider
+        || (provs[orchestrator && orchestrator.activeIndex] || provs[0]);
+      if (pick) {
+        seen.clear();
+        add(pick, 'critical', 'active');
+      }
+    }
+  }
   return roster;
 }
 
@@ -260,7 +293,10 @@ async function swarm(goal, opts = {}) {
   if (!goal || !String(goal).trim()) throw new Error('swarm requires a goal');
   const emit = opts.emit || (() => {});
   const started = Date.now();
-  const roster = buildRoster({ orchestrator: opts.orchestrator, provider: opts.provider });
+  // Swarm runs only on frontier models: the supervisor and every worker draw
+  // from a frontier-only roster. (Automatic Task/Agent delegation still uses
+  // the full pool, including cheap models, and is unaffected.)
+  const roster = buildRoster({ orchestrator: opts.orchestrator, provider: opts.provider, frontierOnly: true });
 
   // Supervisor: an explicit pin wins; otherwise the strongest tier available.
   const supervisor = opts.supervisor

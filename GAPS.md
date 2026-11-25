@@ -977,3 +977,54 @@ A future edit that drops a tool, a property, or a subsystem symbol fails the bui
 | `test/live/plan-live.cjs` | **18 passed** |
 | `test/live/swarm-live.cjs` | **16 passed** (3 models, 3 tiers, concurrent) |
 | `test/live/bg-live.cjs` | **21 passed** |
+
+---
+
+## R. THE TWO COMPOSER CONTROLS — SWARM IS OPT-IN, THINKING IS VISIBLE (2026-11-25)
+
+The user's ask, verbatim: *"multi agent is a normal feature and runs automatically when needed, but
+swarm must be user-chosen and may use only big frontier models (Kimi, DeepSeek, GLM, ChatGPT,
+Claude)"* and *"where is the thinking level choose option with thinking models???"* — the second
+was a real discoverability bug: the reasoning-level control existed as a bare icon-only
+`<select>`, so nobody could find it.
+
+### R.1 Swarm is now user-gated, end to end
+
+| Layer | Change |
+|---|---|
+| Composer | `Swarm` pill (`Users` icon + "Swarm" + `On`/`Off` chip), `aria-pressed`, persisted in `localStorage['autobot:swarmEnabled']`; tooltip spells out that multi-agent `Task`/`Agent` still runs automatically |
+| Renderer | `swarmEnabled` state → `swarm: swarmEnabled` in **both** run payloads (`window.autobot.run` and the retry path) |
+| Main process | `autobot:run` destructures `swarm` → `runAgent({ swarm: swarm === true })` |
+| Agent loop | `isAllowed('Swarm')` returns **false** unless `opts.swarm === true`; the check runs **before** `toolAllow`, so a `toolAllow: ['*']` sub-agent cannot re-enable it |
+| Model surface | `Swarm` is omitted from the advertised `tools` array when off; it stays in `toolDefinitions`, `LONG_RUNNING`, `PARALLEL_SAFE`, the plan-safe set and the `runTool` dispatcher (the engine is always present — only the *option* is gated) |
+| System prompt | Delegation block now says call `Swarm` **only "if the `Swarm` tool is available (the user enabled it)"**, otherwise use `Task`/`Agent` |
+
+### R.2 Frontier-only roster
+
+`FRONTIER_RE` + `isFrontier(p)` accept an explicit `frontier: true` flag **or** a family match
+(kimi/moonshot, deepseek, glm/zhipu, chatgpt, gpt-4|5, o1–o4, claude/sonnet/opus, gemini
+pro|ultra, qwen-max|235b, grok, command-r-plus, mistral-large). `buildRoster({ frontierOnly: true })`
+prunes the pool in place; if nothing matches it falls back to the active provider (or the first
+orchestrator entry) so the user is never dead-ended, then `seen.clear()` re-adds the supervisor
+cleanly.
+
+### R.3 The Thinking control is labelled and findable
+
+Replaced the icon-only `<select>` with a real button: `ExtendedThinking` icon + the word
+**Thinking** + the current level chip (`Auto` · `Low` · `Medium` · `High`) + a `▾` caret, opening a
+`role="listbox"` menu with descriptions ("Model decides", "Fast, minimal thinking", "Balanced
+reasoning", "Deep, thorough reasoning"). Level persists with the provider
+(`localStorage['autobot:provider'].reasoningLevel`) and is applied by `buildDirectives()`.
+
+### R.4 Verification
+
+| Check | Result |
+|---|---|
+| `test/swarm-gate.test.js` (new, stubbed `fetch`) | **8/8 PASS** — `Swarm` absent when `swarm` is false/undefined, present when true, `toolAllow: ['*']` cannot override, sub-agent default off, `Task`/`Agent` unaffected, handler still reachable through `runTool` |
+| `test/swarm.test.js` | **47 passed** (added frontier-only pruning + mixed-pool fallback fixtures) |
+| `test/live/swarm-live.cjs` | **16/16 PASS** — supervisor planned on `frontier-1`, three tiers ran concurrently on three models, per-agent live counters, merged answer clean |
+| `test/live/swarm-real.cjs` | **11/11 PASS** — real TokenRouter supervisor + workers, files landed on disk |
+| `test/live/controls-live.cjs` (new) | **20/20 PASS** — Thinking button labelled + current level + caret + menu of 4 levels, choosing High updates label/menu/persistence, survives reload; Swarm defaults off, flips pressed + `active` styling, persists, survives reload |
+| Gate set | e2e **111**, hooks **49**, workflow **108**, parity-modules **PASS**, `parity-audit` **EXIT 0** |
+| Live set | parity-ui **22/22**, hooks-live **17**, plan-live **18**, bg-live **21**, parity-live **18** |
+| Screenshot | `screenshots/composer-controls.png` — both controls visible in one composer row |

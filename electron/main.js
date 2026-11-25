@@ -343,7 +343,7 @@ function applyFeatures(features) {
 }
 
 ipcMain.handle('autobot:run', async (event, payload) => {
-  const { runId, messages, provider, cwd, useMemory, maxSteps, orchestrator, permissions, title, convId } = payload || {};
+  const { runId, messages, provider, cwd, useMemory, maxSteps, orchestrator, permissions, title, convId, swarm } = payload || {};
   const ac = new AbortController();
   runs.set(runId, ac);
   const owner = winFor(event); // route streaming events back to the originating window
@@ -514,6 +514,10 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       turnId: 't' + Date.now(),
       // This is the top-level user turn: it owns the token-budget pool.
       turnStart: true,
+      // Swarm is user-opted. Unless the renderer explicitly enabled it, the
+      // `Swarm` tool is not offered to the model at all (multi-agent Task/Agent
+      // still is). The roster it may use is frontier-only.
+      swarm: swarm === true,
     });
     send({ type: 'complete', messages: finalMessages });
     // Persist the project mindmap so a later model switch continues seamlessly.

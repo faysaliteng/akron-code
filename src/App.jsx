@@ -162,6 +162,17 @@ const STYLES = [
   { id: 'code', name: 'Code-first', hint: 'Prioritize code', prompt: 'Prioritize working code and concrete examples over prose. Include full, runnable snippets.' },
 ];
 
+// ---------- Thinking level (user-facing control for reasoning models) ----------
+// Only meaningful for models that reason; harmless for the rest (the directive
+// is ignored and `reasoning_effort` is stripped on endpoints that reject it).
+const REASON_LEVELS = [
+  { id: 'auto',   name: 'Auto',   hint: 'Model decides' },
+  { id: 'low',    name: 'Low',    hint: 'Fast, minimal thinking' },
+  { id: 'medium', name: 'Medium', hint: 'Balanced reasoning' },
+  { id: 'high',   name: 'High',   hint: 'Deep, thorough reasoning' },
+];
+const REASON_LABELS = REASON_LEVELS.reduce((acc, l) => { acc[l.id] = l.name; return acc; }, {});
+
 // ---------- payload builders (pure) ----------
 const buildDirectives = (styleId, reasoningLevel, opts = {}) => {
   const style = STYLES.find((s) => s.id === styleId);
@@ -338,6 +349,12 @@ export default function App() {
   const [showFind, setShowFind] = useState(false);       // in-chat Find (⌘F)
   const [findQuery, setFindQuery] = useState('');
   const [webSearch, setWebSearch] = useState(false);
+  // Swarm is an OPT-IN escalation the user chooses, not something the model
+  // decides on its own: multi-agent (Task/Agent) is the automatic default, and
+  // `Swarm` only becomes visible to the model when this pill is on. The roster
+  // it uses is restricted to frontier models (see electron/swarm.js).
+  const [swarmEnabled, setSwarmEnabled] = useState(() => !!loadJSON('autobot:swarmEnabled', false));
+  useEffect(() => { saveJSON('autobot:swarmEnabled', swarmEnabled); }, [swarmEnabled]);
   const [dictating, setDictating] = useState(false);
   const [projects, setProjects] = useState(() => loadJSON('autobot:projects', [])); // { id, name, instructions }
   const [activeProject, setActiveProject] = useState(() => loadJSON('autobot:activeProject', null));
@@ -816,8 +833,10 @@ export default function App() {
       permissions,
       convId,
       title: convsRef.current.find((c) => c.id === convId)?.title || autoTitle,
+      // Gate for the Swarm tool: off by default, on only when the user opts in.
+      swarm: swarmEnabled,
     });
-  }, [activeId, convs, provider, cwd, settings.useMemory, streaming, orchestrator, attachments, styleId, webSearch, activeProject, permissions]);
+  }, [activeId, convs, provider, cwd, settings.useMemory, streaming, orchestrator, attachments, styleId, webSearch, activeProject, permissions, swarmEnabled]);
 
   const stop = useCallback(() => {
     if (runIdRef.current) window.autobot.cancel(runIdRef.current);
@@ -988,6 +1007,7 @@ export default function App() {
       runId, messages: payloadMessages, provider,
       cwd: cwd || undefined, useMemory: settings.useMemory, orchestrator, permissions,
       convId, title: conv.title || '',
+      swarm: swarmEnabled,
     });
   };
 
@@ -1325,6 +1345,7 @@ export default function App() {
             providerKeys={providerKeys} setProviderKeys={setProviderKeys}
             attachments={attachments} setAttachments={setAttachments}
             reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
+            swarmEnabled={swarmEnabled} setSwarmEnabled={setSwarmEnabled}
             styleId={styleId} setStyleId={setStyleId}
             webSearch={webSearch} setWebSearch={setWebSearch}
             dictating={dictating} setDictating={setDictating}
@@ -2860,8 +2881,9 @@ const PERM_MODES = [
 ];
 const PERM_SHORT = { auto: 'perm.auto', ask: 'perm.manual', acceptEdits: 'perm.acceptEdits', plan: 'perm.plan', bypass: 'perm.bypass' };
 
-function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, sendQueuedNow, T }) {
+function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, sendQueuedNow, T }) {
   const [styleOpen, setStyleOpen] = useState(false);
+  const [reasonOpen, setReasonOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [permOpen, setPermOpen] = useState(false);
   // Tracks whether the composer holds text so that, while a reply is streaming,
@@ -3178,16 +3200,61 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
               )}
             </div>
 
-            {/* Reasoning / thinking level (Auto · Low · Medium · High) */}
-            <label className={'reason-pick' + (reasoningLevel !== 'auto' ? ' active' : '')} title={'Reasoning / thinking level: ' + reasoningLevel}>
-              <Icon name="ExtendedThinking" size={16} />
-              <select value={reasoningLevel} onChange={(e) => setReasoningLevel(e.target.value)} aria-label="Reasoning level">
-                <option value="auto">Auto</option>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-              </select>
-            </label>
+            {/* Reasoning / thinking level — deliberately labelled so it is
+                discoverable: a bare icon select was impossible to find. */}
+            <div className="style-wrap">
+              <button
+                type="button"
+                className={'reason-pick' + (reasoningLevel !== 'auto' ? ' active' : '')}
+                title={'Thinking level — ' + (reasoningLevel === 'auto' ? 'model decides' : reasoningLevel) + ' (applies to reasoning models)'}
+                onClick={() => setReasonOpen(!reasonOpen)}
+                aria-haspopup="listbox"
+                aria-expanded={reasonOpen}
+                aria-label="Thinking level"
+              >
+                <Icon name="ExtendedThinking" size={16} />
+                <span className="reason-label">Thinking</span>
+                <span className="reason-val">{REASON_LABELS[reasoningLevel] || 'Auto'}</span>
+                <span className="reason-caret" aria-hidden="true">▾</span>
+              </button>
+              {reasonOpen && (
+                <div className="style-menu reason-menu" role="listbox">
+                  <div className="model-menu-head">Thinking level</div>
+                  {REASON_LEVELS.map((lv) => (
+                    <button
+                      key={lv.id}
+                      type="button"
+                      role="option"
+                      aria-selected={reasoningLevel === lv.id}
+                      className={'model-opt' + (reasoningLevel === lv.id ? ' on' : '')}
+                      onClick={() => { setReasoningLevel(lv.id); setReasonOpen(false); }}
+                    >
+                      <span className="model-opt-name">{lv.name}</span>
+                      <span className="model-opt-prov">{lv.hint}</span>
+                      {reasoningLevel === lv.id && <Icon name="Check" size={13} className="model-check" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Swarm — user-opted escalation to a frontier-model team. Off by
+                default; multi-agent (Task/Agent) still happens automatically.
+                Labelled on purpose: an icon-only toggle was invisible. */}
+            <button
+              type="button"
+              className={'swarm-pill' + (swarmEnabled ? ' active' : '')}
+              title={swarmEnabled
+                ? 'Swarm ON — the model may assemble a team of frontier models (Kimi, DeepSeek, GLM, GPT, Claude) when a task is big'
+                : 'Swarm OFF — click to allow a frontier-model team for big tasks (multi-agent Task/Agent still runs automatically)'}
+              aria-pressed={swarmEnabled}
+              aria-label={'Swarm ' + (swarmEnabled ? 'on' : 'off')}
+              onClick={() => setSwarmEnabled(!swarmEnabled)}
+            >
+              <Icon name="Users" size={15} />
+              <span className="swarm-label">Swarm</span>
+              <span className="swarm-state">{swarmEnabled ? 'On' : 'Off'}</span>
+            </button>
 
             {/* Web search toggle */}
             <button className={'icon-btn' + (webSearch ? ' active' : '')} title={webSearch ? 'Web search: on' : 'Web search: off'} onClick={() => setWebSearch(!webSearch)}>

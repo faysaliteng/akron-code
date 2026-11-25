@@ -156,6 +156,9 @@ async function evaluate(ws, expression) {
     supportsTools: true,
     reasoningLevel: 'auto',
     tier: s.tier,
+    // The swarm roster is frontier-only; these stubs stand in for the frontier
+    // pool, so they opt in explicitly.
+    frontier: true,
   }));
   // The app reads the pool from the main process (~/.autobot/orchestrator.json),
   // not localStorage, so back the real config up and restore it afterwards.
@@ -168,6 +171,7 @@ async function evaluate(ws, expression) {
     localStorage.setItem('autobot:provider', JSON.stringify(${JSON.stringify(providers[0])}));
     localStorage.setItem('autobot:activeId', 'null');
     localStorage.setItem('autobot:convs', '[]');
+    localStorage.setItem('autobot:swarmEnabled', 'true');
     Object.keys(localStorage).filter((k) => k.startsWith('autobot:workspace:')).forEach((k) => localStorage.removeItem(k));
   })()`);
   await rpc(ws, 'Page.reload', {});

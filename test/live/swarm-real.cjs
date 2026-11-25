@@ -88,6 +88,7 @@ let savedPool = null;   // restored on any exit path, including crashes
     localStorage.setItem('autobot:provider', ${JSON.stringify(JSON.stringify({ ...KIMI, apiKey: KEY, supportsTools: true, maxTokens: 32000, reasoningLevel: 'auto' }))});
     localStorage.setItem('autobot:activeId', 'null');
     localStorage.setItem('autobot:convs', '[]');
+    localStorage.setItem('autobot:swarmEnabled', 'true');
     Object.keys(localStorage).filter((k) => k.startsWith('autobot:workspace:')).forEach((k) => localStorage.removeItem(k));
     return 'ok';
   })()`);

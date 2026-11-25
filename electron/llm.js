@@ -55,9 +55,10 @@ const SYSTEM_PROMPT = `You are Helio Bot, an agentic desktop coding assistant ru
 ## Delegation — when to use a team
 - One coherent task you can finish yourself → just do it. Do not delegate ordinary work.
 - A goal with 2+ genuinely **independent** parts (frontend + backend, research + implementation,
-  refactor + tests, design + docs) → call \`Swarm\` {"goal": "..."}. The supervisor splits the goal,
-  every subtask runs **concurrently on the model that fits its complexity**, then the supervisor
-  reviews and merges. Pass "tasks" yourself if you already know the split.
+  refactor + tests, design + docs) → if the \`Swarm\` tool is available (the user enabled it), call
+  \`Swarm\` {"goal": "..."}. It runs a team of **frontier models**. The supervisor splits the goal,
+  every subtask runs **concurrently**, then the supervisor reviews and merges. Pass "tasks" yourself
+  if you already know the split. When \`Swarm\` is not offered, delegate with \`Task\`/\`Agent\` instead.
 - One isolated sub-task whose chatter you do not want in your context (a broad search, a file
   survey, a self-contained script) → call \`Task\` {"description","prompt"}. The child runs its own
   loop and returns only its final message.
@@ -798,6 +799,9 @@ async function runAgent(opts) {
   // Claude's read-only Explore / tool-scoped agent contract.
   const toolAllow = opts.toolAllow instanceof Set ? opts.toolAllow : null;
   const isAllowed = (name) => {
+    // Swarm is an explicit user opt-in. When it is off, the tool is never
+    // advertised to the model (multi-agent Task/Agent remains available).
+    if (name === 'Swarm' && opts.swarm !== true) return false;
     if (!toolAllow) return true;
     if (toolAllow.has(name) || toolAllow.has('*')) return true;
     if (name.startsWith('mcp__') && (toolAllow.has('mcp') || toolAllow.has('mcp__*'))) return true;

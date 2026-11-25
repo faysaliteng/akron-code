@@ -35,9 +35,11 @@ const orch = {
   enabled: true,
   activeIndex: 1,
   providers: [
-    { id: 'a', name: 'cheap', baseURL: 'https://small.example/v1', apiKey: 'k1', model: 'tiny-1', tier: 'small' },
-    { id: 'b', name: 'mid', baseURL: 'https://mid.example/v1', apiKey: 'k2', model: 'mid-1', tier: 'heavy' },
-    { id: 'c', name: 'front', baseURL: 'https://front.example/v1', apiKey: 'k3', model: 'front-1', tier: 'critical' },
+    // Swarm rosters are frontier-only, so the fixture pool opts in explicitly
+    // while still exercising the tier routing rules (cheap → heavy → strongest).
+    { id: 'a', name: 'cheap', baseURL: 'https://small.example/v1', apiKey: 'k1', model: 'tiny-1', tier: 'small', frontier: true },
+    { id: 'b', name: 'mid', baseURL: 'https://mid.example/v1', apiKey: 'k2', model: 'mid-1', tier: 'heavy', frontier: true },
+    { id: 'c', name: 'front', baseURL: 'https://front.example/v1', apiKey: 'k3', model: 'front-1', tier: 'critical', frontier: true },
   ],
 };
 const active = { baseURL: 'https://mid.example/v1', apiKey: 'k2', model: 'mid-1' };
@@ -56,6 +58,31 @@ const sparse = [ // no exact tier for 'small' => must fall to the cheapest avail
 eq('missing small tier falls to cheapest', swarm.pickProvider(sparse, 'small').model, 'mid-1');
 eq('missing critical tier falls to strongest', swarm.pickProvider(sparse, 'critical').model, 'front-1');
 eq('single provider gets every tier', swarm.buildRoster({ provider: active }).map((r) => r.model), ['mid-1']);
+
+// Swarm must never spend money on cheap/local models: `frontierOnly` prunes them,
+// while the automatic Task/Agent path (buildRoster without the flag) keeps them.
+const mixedOrch = {
+  enabled: true,
+  activeIndex: 0,
+  providers: [
+    { id: 'cheap', baseURL: 'https://cheap.example/v1', apiKey: 'k', model: 'tiny-1', tier: 'small' },
+    { id: 'kimi', baseURL: 'https://k.example/v1', apiKey: 'k', model: 'moonshotai/kimi-k3.1-pro', tier: 'critical' },
+    { id: 'ds', baseURL: 'https://d.example/v1', apiKey: 'k', model: 'deepseek/deepseek-v4.1-flash-1017', tier: 'heavy' },
+    { id: 'glm', baseURL: 'https://g.example/v1', apiKey: 'k', model: 'glm-4.6', tier: 'heavy' },
+    { id: 'local', baseURL: 'http://127.0.0.1:11434/v1', apiKey: '', model: 'llama3:8b', tier: 'small' },
+  ],
+};
+const fullRoster = swarm.buildRoster({ orchestrator: mixedOrch, provider: mixedOrch.providers[1] });
+eq('unfiltered roster keeps every model', fullRoster.length, 5);
+const frontierRoster = swarm.buildRoster({ orchestrator: mixedOrch, provider: mixedOrch.providers[1], frontierOnly: true });
+eq('frontier roster drops cheap + local', frontierRoster.map((r) => r.model).sort().join(','), [
+  'deepseek/deepseek-v4.1-flash-1017', 'glm-4.6', 'moonshotai/kimi-k3.1-pro',
+].sort().join(','));
+eq('frontier roster marks every entry frontier', frontierRoster.every((r) => r.frontier), true);
+eq('frontier keeps a single unknown provider usable', swarm.buildRoster({
+  orchestrator: { enabled: true, providers: [{ id: 'x', baseURL: 'https://x.example/v1', apiKey: 'k', model: 'mystery-9b', tier: 'heavy' }] },
+  frontierOnly: true,
+}).map((r) => r.model), ['mystery-9b']);
 
 // ---------------------------------------------------------------- parsing
 section('plan parsing');

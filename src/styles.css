@@ -228,19 +228,41 @@ button { font-family: inherit; letter-spacing: inherit; }
 
 /* Reasoning / thinking level picker (composer toolbar) */
 .reason-pick {
-  display: inline-flex; align-items: center; gap: 4px;
-  height: 28px; padding: 0 6px 0 7px; border-radius: 8px;
-  color: var(--text-400); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 28px; padding: 0 8px 0 8px; border: none; border-radius: 8px;
+  color: var(--text-400); background: none; cursor: pointer;
+  font: inherit; font-size: 12px;
   transition: background .12s ease, color .12s ease;
 }
 .reason-pick:hover { background: var(--bg-200); color: var(--text-000); }
 .reason-pick.active { color: var(--accent); background: var(--accent-soft); }
-.reason-pick select {
-  border: none; background: none; color: inherit; cursor: pointer;
-  font: inherit; font-size: 12px; padding: 0 2px; outline: none;
-  -webkit-appearance: none; appearance: none;
+.reason-label { font-size: 12px; font-weight: 500; white-space: nowrap; }
+.reason-val {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.01em;
+  padding: 1px 6px; border-radius: 6px;
+  background: var(--bg-300); color: var(--text-100);
 }
-.reason-pick select option { color: #111; background: #fff; }
+.reason-pick.active .reason-val { background: var(--accent); color: var(--bg-000); }
+.reason-caret { font-size: 9px; opacity: 0.7; line-height: 1; }
+.reason-menu { min-width: 210px; }
+
+/* Swarm opt-in pill (composer toolbar) — user-chosen, never automatic */
+.swarm-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 28px; padding: 0 8px; border: none; border-radius: 8px;
+  color: var(--text-400); background: none; cursor: pointer;
+  font: inherit; font-size: 12px;
+  transition: background .12s ease, color .12s ease;
+}
+.swarm-pill:hover { background: var(--bg-200); color: var(--text-000); }
+.swarm-pill.active { color: var(--accent); background: var(--accent-soft); }
+.swarm-label { font-size: 12px; font-weight: 500; white-space: nowrap; }
+.swarm-state {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 1px 5px; border-radius: 5px;
+  background: var(--bg-300); color: var(--text-300);
+}
+.swarm-pill.active .swarm-state { background: var(--accent); color: var(--bg-000); }
 
 .newchat {
   margin: 0 12px 10px; padding: 9px 12px;
