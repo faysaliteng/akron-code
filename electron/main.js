@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, globalShortcut, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, globalShortcut, nativeImage, protocol, session } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -19,8 +19,20 @@ const workspace = require('./workspace');
 const paths = require('./paths');
 const mindmap = require('./mindmap');
 const artifactcanvas = require('./artifactcanvas');
+const extensionhost = require('./extensionhost');
 
 const windows = new Set(); // all open BrowserWindows (multi-window parity)
+// BrowserWindow.id -> extension id, for the hosting windows created by
+// `createExtensionWindow` (Desktop's extension-page surfaces).
+const extensionWindows = new Map();
+
+// `chrome-extension://` navigation is owned by Chromium and cannot be
+// intercepted (ERR_BLOCKED_BY_CLIENT), so hosted extension pages fall back to
+// this scheme. It must be privileged before `app.whenReady()`.
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'helio-extension',
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+}]);
 const runs = new Map(); // runId -> AbortController
 const mcp = new MCPClient();
 
@@ -168,7 +180,10 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  win.on('closed', () => { windows.delete(win); });
+  win.on('closed', () => {
+    windows.delete(win);
+    try { extHost.detachSink(win.webContents); } catch (_) {}
+  });
   return win;
 }
 
@@ -340,6 +355,126 @@ function createArtifactWindow(payload) {
   win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
   return { ok: true, windowId: win.id };
+}
+
+// ---------- Hosted Chrome extensions (Example Desktop extension-host parity) ----------
+//
+// Three moving parts, mirroring Desktop:
+//   1. `ExtensionHost` (electron/extensionhost.js) answers the 11
+//      `extension-host:*` channels for any guest page.
+//   2. `helio-extension://` serves shipped files when Electron refuses to load
+//      the extension natively (see the preload shim for that case).
+//   3. `session.loadExtension` gives a genuine `chrome-extension://` origin and
+//      the real Chromium API surface whenever the manifest is loadable.
+const EXT_PARTITION = 'persist:helio-extensions';
+const extHost = extensionhost.createExtensionHost();
+let extSession = null;
+const nativeExtensionIds = new Map(); // folder id -> Chromium extension id
+
+function extensionsSession() {
+  if (!extSession) extSession = session.fromPartition(EXT_PARTITION);
+  return extSession;
+}
+
+async function loadNativeExtension(extensionId) {
+  if (nativeExtensionIds.has(extensionId)) return { ok: true, chromiumId: nativeExtensionIds.get(extensionId) };
+  const dir = extHost.extensionDir(extensionId);
+  if (!dir || !fs.existsSync(dir)) return { ok: false, error: 'Extension is not installed' };
+  try {
+    const loaded = await extensionsSession().loadExtension(dir, { allowFileAccess: true });
+    nativeExtensionIds.set(extensionId, loaded.id);
+    return { ok: true, chromiumId: loaded.id };
+  } catch (e) {
+    return { ok: false, error: extensionhost.sanitizeError(e) };
+  }
+}
+
+function defaultExtensionPage(manifest) {
+  const m = manifest || {};
+  if (m.action && m.action.default_popup) return String(m.action.default_popup);
+  if (m.browser_action && m.browser_action.default_popup) return String(m.browser_action.default_popup);
+  if (m.options_page) return String(m.options_page);
+  if (m.options_ui && m.options_ui.page) return String(m.options_ui.page);
+  return 'index.html';
+}
+
+function listExtensions() {
+  extHost.scan();
+  const rows = [];
+  for (const [id, entry] of extHost.extensions) {
+    const m = entry.manifest || {};
+    rows.push({
+      id,
+      name: String(m.name || id),
+      version: String(m.version || '0.0.0'),
+      description: String(m.description || ''),
+      manifestVersion: Number(m.manifest_version) || 2,
+      hasBackground: !!m.background,
+      permissions: Array.isArray(m.permissions) ? m.permissions.slice() : [],
+      defaultPage: defaultExtensionPage(m),
+    });
+  }
+  rows.sort((a, b) => a.name.localeCompare(b.name));
+  return rows;
+}
+
+async function createExtensionWindow(payload = {}) {
+  const id = extensionhost.normalizeExtensionId(payload.extensionId);
+  if (!id) return { ok: false, message: 'Invalid extension id' };
+  extHost.scan();
+  const info = extHost.installed(id);
+  if (!info.ok) return { ok: false, message: info.message || info.error || 'Extension is not installed' };
+  const page = extensionhost.safeExtensionPath(payload.path || defaultExtensionPage(info.manifest));
+  if (!page) return { ok: false, message: 'Invalid page path' };
+
+  const loaded = await loadNativeExtension(id);
+  const webPreferences = {
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: false,
+    partition: EXT_PARTITION,
+    // Always attach the shim: native pages keep Chromium's bindings and get the
+    // missing ones (chrome.storage.sync, notifications, …) filled in; hosted
+    // pages get the whole surface built for them.
+    preload: path.join(__dirname, 'extension-preload.js'),
+    additionalArguments: [`--helio-extension-id=${id}`],
+  };
+  let url;
+  if (loaded.ok) {
+    url = `chrome-extension://${loaded.chromiumId}/${page}`;
+    webPreferences.additionalArguments.push('--helio-native=1');
+  } else {
+    url = `helio-extension://${id}/${page}`;
+  }
+
+  const width = Number(payload.width);
+  const height = Number(payload.height);
+  const win = new BrowserWindow({
+    width: width > 200 ? width : 460,
+    height: height > 200 ? height : 620,
+    title: info.name || 'Extension',
+    backgroundColor: '#1e1f1c',
+    webPreferences,
+  });
+  extensionWindows.set(win.id, id);
+  win.on('closed', () => {
+    extensionWindows.delete(win.id);
+    try { extHost.detachSink(win.webContents); } catch (_) {}
+  });
+  win.webContents.setWindowOpenHandler(({ url: target }) => { shell.openExternal(target); return { action: 'deny' }; });
+  // A blocked scheme or missing file must not leave Chromium's error page in
+  // the app: report it once, one line, and let the UI decide.
+  win.webContents.on('did-fail-load', (_e, code, desc) => {
+    if (code === -3) return; // ERR_ABORTED (superseded navigation)
+    broadcast({ type: 'extension-window-error', extensionId: id, error: `${desc || 'load failed'} (${code})` });
+  });
+  try {
+    await win.loadURL(url);
+  } catch (e) {
+    try { win.destroy(); } catch (_) {}
+    return { ok: false, message: extensionhost.sanitizeError(e) };
+  }
+  return { ok: true, windowId: win.id, url, page, native: loaded.ok === true };
 }
 
 // Print-to-PDF (Example's "Design / print frame to PDF" surface): render HTML or
@@ -1145,6 +1280,30 @@ ipcMain.handle('autobot:openArtifactWindow', (e, payload) => createArtifactWindo
 ipcMain.handle('autobot:printToPdf', (e, payload) => printToPdf(e, payload || {}));
 ipcMain.handle('autobot:artifactDocument', async (e, payload) => artifactDocument(payload || {}));
 
+// ---- Hosted Chrome extensions (Desktop `extension-host` parity) ----
+// The 11 channel handlers, plus the app-facing helpers the Plugins/Extensions
+// views use. `registerIpc` attaches a sink per calling webContents, so events
+// reach any window holding an extension page.
+extensionhost.registerIpc(ipcMain, extHost);
+ipcMain.handle('autobot:extensionList', () => listExtensions());
+ipcMain.handle('autobot:extensionScan', () => { nativeExtensionIds.clear(); return listExtensions(); });
+ipcMain.handle('autobot:extensionOpen', (e, payload) => createExtensionWindow(payload || {}));
+ipcMain.handle('autobot:extensionServePage', (e, input) => extHost.servePage(input));
+ipcMain.handle('autobot:extensionClose', (e, windowId) => {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (w.id === Number(windowId) && extensionWindows.has(w.id)) { w.close(); return { ok: true }; }
+  }
+  return { ok: false, message: 'No such extension window' };
+});
+ipcMain.handle('autobot:extensionStatus', () => ({
+  ok: true,
+  count: extHost.extensions.size,
+  native: nativeExtensionIds.size,
+  windows: extensionWindows.size,
+  bridge: extHost.bridge ? { ready: !!extHost.bridge.ready, port: extHost.bridge.port || 0, reason: extHost.bridge.reason || null } : null,
+  sinks: extHost.sinkCount(),
+}));
+
 // Quick Entry submit: route the typed prompt into the primary chat window.
 // mode 'insert' places it in the composer; mode 'send' fires it immediately.
 ipcMain.handle('autobot:quickSubmit', async (e, { text, mode }) => {
@@ -1268,6 +1427,29 @@ app.whenReady().then(() => {
   // Repair any project folder split left by the old auto-create logic (files in
   // `project/` while the conversation points at a titled-but-empty folder).
   try { workspace.reconcile(); } catch (e) { console.error('workspace reconcile failed:', e.message); }
+  // Hosted extension pages that Electron cannot load natively are served from
+  // this scheme by the ExtensionHost (traversal + web_accessible rules apply).
+  try {
+    protocol.handle('helio-extension', (req) => {
+      const res = extHost.servePage(req.url);
+      if (!res || !res.ok) {
+        return new Response(String((res && (res.error || res.message)) || 'Not found'), {
+          status: (res && res.status) || 404,
+          headers: { 'content-type': 'text/plain; charset=utf-8' },
+        });
+      }
+      return new Response(res.body, {
+        status: 200,
+        headers: { 'content-type': res.mime || 'application/octet-stream' },
+      });
+    });
+  } catch (e) {
+    console.error('helio-extension scheme unavailable:', e.message);
+  }
+  // Loopback WebSocket bridge for a real Chrome extension (Desktop parity).
+  extHost.startBridge().then((r) => {
+    if (!r || !r.ok) console.error('extension bridge unavailable:', (r && r.error) || 'unknown');
+  }).catch((e) => console.error('extension bridge failed:', e.message));
   applyFeatures(store.getFeatures());
   buildMenu();
   createTray();
@@ -1287,6 +1469,7 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   try { scheduler.stop(); } catch (_) {}
+  try { extHost.stopBridge(); } catch (_) {}
 });
 
 app.on('window-all-closed', () => {

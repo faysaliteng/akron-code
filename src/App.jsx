@@ -2923,6 +2923,7 @@ function PluginsView() {
   const [err, setErr] = useState('');
   const [stats, setStats] = useState(null);
   const [shown, setShown] = useState(120);
+  const [tab, setTab] = useState('directory');
 
   const refreshStats = useCallback(async () => {
     try {
@@ -2992,6 +2993,14 @@ function PluginsView() {
         <h2>Plugins &amp; Connectors</h2>
         <span className="muted">{installedCount} installed · {items.length} available</span>
       </div>
+      <div className="seg">
+        <button className={tab === 'directory' ? 'on' : ''} onClick={() => setTab('directory')}>Directory</button>
+        <button className={tab === 'extensions' ? 'on' : ''} onClick={() => setTab('extensions')}>Chrome extensions</button>
+      </div>
+
+      {tab === 'extensions' && <ExtensionsView />}
+
+      {tab === 'directory' && (<>
       <p className="muted">Connect external services so the model can read your docs, issues, messages, and data. Installing a connector registers it with the MCP layer; connectors marked “needs sign-in” require credentials before their tools work.</p>
 
       <div className="skills-toolbar">
@@ -3060,6 +3069,109 @@ function PluginsView() {
           </button>
         </div>
       )}
+      </>)}
+    </div>
+  );
+}
+
+// ---------- Chrome extensions (Desktop `extension-host` parity) ----------
+function ExtensionsView() {
+  const [rows, setRows] = useState([]);
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [opened, setOpened] = useState({});
+
+  const refresh = useCallback(async () => {
+    try {
+      const list = await window.autobot.extensionList();
+      setRows(Array.isArray(list) ? list : []);
+      const st = await window.autobot.extensionStatus();
+      if (st) setStatus(st);
+    } catch (e) {
+      setErr(e && e.message ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  useEffect(() => window.autobot.onExtensionWindowError((msg) => {
+    setErr(String(msg || 'The extension window could not load.'));
+    refresh();
+  }), [refresh]);
+
+  const rescan = async () => {
+    setBusy(true); setErr('');
+    try { await window.autobot.extensionScan(); await refresh(); }
+    catch (e) { setErr(e && e.message ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+
+  const open = async (row) => {
+    setBusy(true); setErr('');
+    try {
+      const r = await window.autobot.extensionOpen({ extensionId: row.id, page: row.defaultPage });
+      if (!r || r.ok === false) setErr((r && (r.message || r.error)) || 'Could not open the extension.');
+      else setOpened((o) => ({ ...o, [row.id]: r.windowId }));
+      await refresh();
+    } catch (e) { setErr(e && e.message ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+
+  const close = async (row) => {
+    const id = opened[row.id];
+    if (!id) return;
+    await window.autobot.extensionClose(id);
+    setOpened((o) => { const n = { ...o }; delete n[row.id]; return n; });
+    await refresh();
+  };
+
+  return (
+    <div className="extensions-view">
+      <p className="muted">
+        Unpacked Chrome MV3/MV2 extensions are hosted with a real <code>chrome-extension://</code> origin and a
+        <code> chrome.*</code> surface backed by Helio Bot. Drop a folder in <code>~/.autobot/extensions/&lt;id&gt;</code> and rescan.
+      </p>
+      <div className="plugin-registry-row">
+        <span className="muted">
+          {rows.length} installed{status ? ` · ${status.native} native · ${status.windows} open · ${status.sinks} attached` : ''}
+          {status && status.bridge ? ` · bridge ${status.bridge.ready ? 'ready' : 'off'}${status.bridge.port ? ' on :' + status.bridge.port : ''}` : ''}
+        </span>
+        <button disabled={busy} onClick={rescan}>{busy ? 'Working…' : 'Rescan folder'}</button>
+      </div>
+
+      {err && <p className="form-error">{err}</p>}
+      {rows.length === 0 && (
+        <p className="muted">No extensions installed. Add one under <code>~/.autobot/extensions/&lt;id&gt;/manifest.json</code>.</p>
+      )}
+
+      <div className="plugin-grid">
+        {rows.map((row) => (
+          <div key={row.id} className="plugin-card">
+            <div className="plugin-card-head">
+              <div>
+                <b>{row.name}</b>
+                <span className="skill-src">{row.version} · MV{row.manifestVersion}{row.hasBackground ? ' · worker' : ''}</span>
+              </div>
+              <div className="ext-actions">
+                {opened[row.id]
+                  ? <button onClick={() => close(row)}>Close</button>
+                  : <button className="primary" disabled={busy} onClick={() => open(row)}>Open</button>}
+              </div>
+            </div>
+            {row.description && <p className="plugin-card-desc">{row.description}</p>}
+            <div className="plugin-card-foot">
+              <span className="muted mono-id">{row.id}</span>
+            </div>
+            {row.permissions.length > 0 && (
+              <div className="ext-perms">
+                {row.permissions.slice(0, 8).map((p) => <span key={p} className="badge">{p}</span>)}
+                {row.permissions.length > 8 && <span className="badge">+{row.permissions.length - 8}</span>}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

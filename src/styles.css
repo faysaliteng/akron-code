@@ -1216,3 +1216,13 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
   100% { background: transparent; }
 }
 .msg.msg-flash { animation: msgFlash 1.6s ease-out; border-radius: 12px; }
+
+/* ---- Chrome extensions view (Desktop `extension-host` parity) ---- */
+.extensions-view { display: flex; flex-direction: column; gap: 4px; }
+.ext-actions { display: flex; align-items: center; gap: 6px; }
+.ext-actions button { flex: 0 0 auto; padding: 4px 12px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg-200); color: var(--text-100); font-size: var(--fs-caption); cursor: pointer; }
+.ext-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ext-actions button:disabled { opacity: 0.55; cursor: default; }
+.ext-perms { display: flex; flex-wrap: wrap; gap: 4px; }
+.ext-perms .badge { font-family: var(--mono); font-size: 10px; }
+.mono-id { font-family: var(--mono); font-size: 10px; opacity: 0.75; }

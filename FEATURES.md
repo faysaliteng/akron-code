@@ -172,6 +172,34 @@ Example Desktop's sidebar now maps 1:1 onto working local features — not stubs
   Install/Remove per card, connected badge, directory stats line (built-in vs live MCP
   servers) and a **Refresh registry** button.
 
+### 5.1b Chrome extensions (Desktop `extension-host` parity)
+- Helio Bot hosts unpacked Chrome MV3/MV2 extensions with a **real
+  `chrome-extension://` origin** — `session.loadExtension()` first, with a
+  privileged `helio-extension://` fallback served by `extHost.servePage` when
+  native load fails.
+- `electron/extensionhost.js` implements 45 namespaces (21 natively: `runtime`,
+  `storage` (local/sync/session/managed), `tabs`, `windows`, `cookies`,
+  `notifications`, `action`, `alarms`, `i18n`, `permissions`, `management`,
+  `commands`, `contextMenus`, `extension`, `tabGroups`, `scripting`,
+  `sidePanel`, `debugger`, …), permission + manifest-key gating, page serving
+  with web-accessible-resource checks and path-traversal guards, event
+  delivery with ack, ports, and a loopback WebSocket bridge that forwards
+  anything unnamed to a real Chrome extension. Agentic ops are whitelisted to
+  three (`enable`, `fillCredential`, …) and rejected otherwise with
+  `{ok:false, reason:'op'}`.
+- `electron/extension-preload.js` runs in two modes: **hosted** (builds the
+  whole `chrome.*` surface over the main-process host) and **native**
+  (`--helio-native=1`, patches only the holes Electron leaves —
+  `storage.sync`/`managed`, `runtime.sendMessage` fallback,
+  `runtime.onMessage` bridging).
+- UI: **Plugins & Connectors → Chrome extensions** tab — installed list,
+  version/MV/worker badges, permission chips, Rescan folder, Open/Close, and a
+  live `installed · native · open · attached · bridge :port` status row.
+- IPC: `autobot:extensionList|extensionScan|extensionOpen|extensionServePage|extensionClose|extensionStatus`
+  (+ `autobot:extensionwindowError` broadcast on `did-fail-load`).
+- Storage lives in `~/.autobot/extensions/<id>/`, `~/.autobot/extension-storage.json`
+  and `~/.autobot/extension-state.json`.
+
 ### 5.2 MCP registry
 - Tools: `mcp-registry__list_connectors`, `mcp-registry__search_mcp_registry`,
   `mcp-registry__suggest_connectors` (shares the curated catalog and scoring).

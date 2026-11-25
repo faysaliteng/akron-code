@@ -506,3 +506,28 @@ in-chat preview and PDF export cannot drift.
 
 Tool surface: the `Artifact` tool description now documents both JSON contracts and
 `ARTIFACT_DEFAULT_FILE` names the outputs `design.json` / `slides.json`.
+
+---
+
+## 16. Browser-extension host — `extension-host` parity (2026-11-25)
+
+Example Desktop ships an `extension-host`: unpacked Chrome extensions run in a
+privileged page with a genuine `chrome-extension://` origin and the `chrome.*`
+surface. Helio Bot now does the same, in three files plus a UI tab.
+
+| Check | Result |
+|---|---|
+| Channel surface | ✅ 11 `CHANNELS` (+ aliases), `canonicalChannel`, 8 `registerIpc` handlers / 3 listeners |
+| Namespaces | ✅ 45 declared, 21 answered natively from `BUILTINS` |
+| Permission + manifest gating | ✅ `namespacesFor()` filters on declared permissions **and** manifest keys (`commands`, `tabs`, …) |
+| Page serving | ✅ `servePage` (own page / initiator-checked) rejects traversal, unknown ids, missing files; web-accessible globs honoured; `PAGE_SCHEMES` = `chrome-extension:`, `autobot-extension:`, `helio-extension:` |
+| Origin strategy | ✅ native `loadExtension()` first (real origin, no shim); `helio-extension://` + preload fallback (`chrome-extension:` cannot be intercepted by `protocol.handle` → `ERR_BLOCKED_BY_CLIENT -20`) |
+| `runtime.sendMessage` | ✅ host delivers Chromium-shaped `[message, sender]` args with `{id,url,origin}`; native mode wraps with a host fallback and bridges `runtime.onMessage` |
+| Storage | ✅ `local`/`sync`/`session`/`managed` isolated per area, persisted to `~/.autobot/extension-storage.json` |
+| Events / ack | ✅ `deliverEvent` + idempotent `ack`, `reportAgain` → `runtime.onInstalled` |
+| Agentic ops | ✅ 3-op whitelist, everything else `{ok:false, reason:'op'}`; no bridge → `reason:'unavailable'` |
+| Bridge | ✅ loopback WebSocket, garbage frames ignored, inbound events delivered |
+| Unit suite | ✅ `node test/extensionhost.test.js` → **162 passed, 0 failed** |
+| Live CDP (dev app on 9333) | ✅ fixture `aabbccddeeffgghhiijjkkllmmnnoopp` opens at `chrome-extension://hniiejk…/popup/index.html`; `window.__probe` **READY = true**, 15 namespaces, `storage.local` roundtrip + bytes + remove, `storage.sync` roundtrip, `notifications.create`, `alarms.create`, `i18n.getUILanguage`, `commands.getAll` (1), `tabs.query`, `permissions.contains(storage)=true` / `(downloads)=false`, `permissions.getAll`, `runtime.sendMessage` roundtrip **true** |
+| UI (Plugins → Chrome extensions) | ✅ card renders `1.0.0 · MV3 · worker` + 4 permission chips + id; status row `1 installed · 0 native · 0 open · 0 attached · bridge ready on :56097`; **Open** → `1 native · 1 open`, button becomes **Close**, window opens with the probe READY; **Close** → `0 open`, no extension page targets left |
+| Regression gates | ✅ e2e **112 passed / 0 failed**; `parity-audit.js` → *NO ATOMIC GAPS* (141 defs), EXIT 0 |

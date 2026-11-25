@@ -150,6 +150,21 @@ contextBridge.exposeInMainWorld('autobot', {
   openArtifactWindow: (payload) => ipcRenderer.invoke('autobot:openArtifactWindow', payload),
   artifactDocument: (payload) => ipcRenderer.invoke('autobot:artifactDocument', payload),
   printToPdf: (payload) => ipcRenderer.invoke('autobot:printToPdf', payload),
+
+  // ---- Hosted Chrome extensions (Desktop `extension-host` parity) ----
+  extensionList: () => ipcRenderer.invoke('autobot:extensionList'),
+  extensionScan: () => ipcRenderer.invoke('autobot:extensionScan'),
+  extensionOpen: (payload) => ipcRenderer.invoke('autobot:extensionOpen', payload),
+  extensionServePage: (input) => ipcRenderer.invoke('autobot:extensionServePage', input),
+  extensionClose: (windowId) => ipcRenderer.invoke('autobot:extensionClose', windowId),
+  extensionStatus: () => ipcRenderer.invoke('autobot:extensionStatus'),
+  onExtensionWindowError: (cb) => {
+    const handler = (event, evt) => {
+      if (evt && evt.type === 'extension-window-error') cb(evt);
+    };
+    ipcRenderer.on('autobot:event', handler);
+    return () => ipcRenderer.removeListener('autobot:event', handler);
+  },
   onQuickEntry: (cb) => {
     const handler = (event, payload) => cb(payload);
     ipcRenderer.on('autobot:quickEntry', handler);
