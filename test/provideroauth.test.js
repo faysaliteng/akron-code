@@ -66,7 +66,23 @@ const jwt = (claims) => 'h.' + b64url(claims) + '.sig';
     eq('claude speaks the anthropic transport', po.provider('claude').transport, 'anthropic');
     eq('chatgpt speaks the codex transport', po.provider('chatgpt').transport, 'codex');
     eq('antigravity speaks the google transport', po.provider('antigravity').transport, 'google');
-    eq('grok is a bearer provider', [po.provider('grok').kind, !!po.provider('grok').baseURL], ['bearer', true]);
+    eq('grok signs in through the browser like the CLI does', po.provider('grok').kind, 'oauth');
+    eq('grok speaks the grok transport', po.provider('grok').transport, 'grok');
+    eq('grok inference goes through the CLI proxy, not the public API',
+      po.provider('grok').baseURL, 'https://cli-chat-proxy.grok.com/v1');
+    eq('grok still accepts a pasted API key as a second route', po.provider('grok').allowBearer, true);
+    eq('grok verifies a pasted key against the public API base',
+      po.provider('grok').bearerBaseURL, 'https://api.x.ai/v1');
+    eq('grok redirects to 127.0.0.1 (xAI registers the IP, not localhost)',
+      po.provider('grok').redirectHost, '127.0.0.1');
+    eq('grok uses the CLI client id', po.provider('grok').clientId,
+      'b1a00492-073a-47ea-816f-4c329264a828');
+    eq('grok authorizes at auth.x.ai', po.provider('grok').authorizeUrl,
+      'https://auth.x.ai/oauth2/authorize');
+    eq('grok tokens come from auth.x.ai', po.provider('grok').tokenUrl,
+      'https://auth.x.ai/oauth2/token');
+    eq('grok asks for the CLI scopes', po.provider('grok').scopes.includes('grok-cli:access'), true);
+    eq('grok posts a form body', po.provider('grok').tokenFormat, 'form');
     eq('unknown provider is null, not a throw', po.provider('nope'), null);
   }
   {

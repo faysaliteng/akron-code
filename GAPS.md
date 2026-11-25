@@ -1365,24 +1365,111 @@ transports, a bought subscription was unusable in the app.
    "error":"Incorrect API key provided."}`. A 401-only verification would have
    stored a typo as a working account. The ladder now rejects any 4xx except
    `404` (no `/models` route) and keeps `429`/`5xx`/network failures, because
-   those judge the network rather than the key. Grok has no browser flow
-   (`kind: 'bearer'`), so the picker asks for a key and `Add key` proves it
-   before storage.
+   those judge the network rather than the key.
+7. **Grok *is* a browser flow.** The first cut shipped Grok as `kind: 'bearer'`
+   only, on the assumption that xAI's CLI client id was not a drivable web
+   client. It is: `auth.x.ai/oauth2/authorize`, PKCE S256, loopback callback on
+   `127.0.0.1`, and the resulting subscription token is good against
+   `cli-chat-proxy.grok.com/v1` in the OpenAI **Responses** shape — the same
+   flow AFK Pilot uses. Grok is now `kind: 'oauth'` **and** `allowBearer: true`,
+   so `Sign in` and a paste-key input coexist in the picker.
+8. **A public-API key must never be POSTed at the CLI proxy.** `resolve()`
+   splits by origin: `source: 'api-key'` → `bearerBaseURL`
+   (`https://api.x.ai/v1`) with `transport: 'openai'`; only OAuth/subscription
+   accounts use `transport: 'grok'`. The two credential worlds never cross.
+9. **The loopback redirect host is not the bind host.** Grok's callback is
+   registered for `127.0.0.1`, and the authorize page is cross-origin to
+   `localhost`, so the server takes a separate `redirectHost` and answers
+   preflight with a narrow CORS allow-list (`accounts.x.ai`, `auth.x.ai`,
+   `grok.com`) plus `access-control-allow-private-network: true`.
+10. **Duplicated provider text.** `chatWithFailover` wrapped an error the
+    adapter had already phrased, so a rate limit rendered as
+    `…rate limiting this key — …rate limiting this key — {json}`.
+    `humanizeLLMError` now drops a prefix it generated itself and lifts the
+    vendor envelope's `message` instead of quoting JSON.
 
 ## V.4 Verification
 
 | Check | Result |
 |---|---|
-| `node test/provideroauth.test.js` (new) | **170 passed / 0 failed** (incl. bearer verdict ladder) |
-| `node test/providertransport.test.js` (new) | **93 passed / 0 failed** |
+| `node test/provideroauth.test.js` (new) | **180 passed / 0 failed** (incl. bearer verdict ladder, `resolve()` api-key routing, loopback CORS) |
+| `node test/providertransport.test.js` (new) | **108 passed / 0 failed** (incl. Grok Responses shape) |
 | Live inference | imported token → `api.anthropic.com` → `OAUTH-OK` (15 in / 7 out) |
 | Live in the app (CDP) | account picked → turn streamed `RUN-OK` with `usage`/`done`/`complete`; bogus account → `needsSignIn:true` with one human line |
-| Live bearer path (CDP) | Grok group renders a password field + `Add key`; a bogus key → `Grok rejected that key — Incorrect API key provided. …` in the picker and **0** accounts stored; Claude turn still `STILL-OK` in 0.6 s after the change |
+| Live Grok path (CDP) | the Grok group renders **both** `Sign in` and the paste-key input; a bogus key → `Grok rejected that key — Incorrect API key provided…` and **0** accounts stored, `rawHasMarkup: false`; a bogus bearer at `cli-chat-proxy.grok.com/v1` → 401 |
 | Gates | parity-audit EXIT 0; tool definitions unchanged at **141** |
 
 **Honesty:** only **Claude** is verified end-to-end here. Codex / Gemini / Grok
 are implemented from their published wire formats and unit-tested; the UI marks
-them `unverified` instead of claiming otherwise. The Claude Code *refresh* token
-on this machine is dead — the current access token works and auto-refreshes
-from our own stored copy, but a `claude /login` is still needed once that copy
-expires without a usable refresh token.
+them `unverified` instead of claiming otherwise. Grok's browser sign-in has not
+completed a real round-trip on this machine — `auth.x.ai/oauth2/authorize`
+answers Cloudflare 403 to a Node `fetch` and needs a live tab and a real account;
+what *is* live-proven for Grok is the paste-key route and the proxy's 401.
+The Claude Code *refresh* token on this machine is dead — the current access
+token works and auto-refreshes from our own stored copy, but a `claude /login`
+is still needed once that copy expires without a usable refresh token.
+
+---
+
+## W. COMPUTER USE + DESKTOP LIFECYCLE — the last channel groups with no equivalent (2026-11-25)
+
+### W.1 The gap
+
+Desktop's `cu` (14) and `computer` (3) namespaces were the only remaining
+channel groups with no implementation at all. The app could browse web pages
+through its own pane but could not see or touch the user's actual desktop, and
+there was no consent model to gate it. Two smaller lifecycle behaviours were
+also missing: the window never remembered its geometry across launches, and
+`helio://` links did nothing.
+
+### W.2 What was built
+
+- `electron/computeruse.js` — all 17 channels, a three-tier consent lattice
+  (`full_control ⊃ access`, `teach_access` standalone), grant persistence,
+  mask rectangles, DRM/protected-content detection, panel state, and one
+  `invoke()` dispatcher.
+- `electron/computer-panel.html` — a floating always-on-top window with live
+  preview, drag-to-mask, pin/unpin and Stop.
+- IPC: `autobot:cu` plus `autobot:computerUseStatus|Request|Grant|Revoke|Permissions`
+  and `autobot:openComputerPanel`; preload exposes `cuInvoke`, `computerUse*`,
+  `openComputerPanel`, `onComputerUse`.
+- Renderer: `ComputerUseModal` + `cuConsent` state, so the consent prompt is a
+  real dialog with a tier description, not a browser `confirm()`.
+- `electron/windowstate.js` — geometry restored from
+  `~/.autobot/window-state.json`, debounced 400 ms, position dropped when it no
+  longer intersects a display (≥120 px visible), maximise applied on `show`;
+  geometry errors are never fatal.
+- Deep links: `helio://` → new/chat/search/settings/ask?q=; unknown routes are
+  ignored. A single-instance lock makes a second launch focus the running
+  window and deliver its link rather than fight over `~/.autobot`.
+- `settings.launchAtLogin` mirrored to `app.setLoginItemSettings` on boot and
+  on change.
+
+### W.3 The bug that made the whole surface dead
+
+`isMutatingTool()` in `electron/tools.js` decided whether a tool call needed
+approval by testing the **raw** name against `/^computer_/`. The model never
+sends `computer_screenshot`; it sends `mcp__computer__screenshot`, which
+`executorsByTool` maps to `computer_screenshot`. The regex therefore never
+matched, `approveTool` was never called, and no consent prompt could ever
+appear — the feature looked implemented and silently wasn't. Two fixes:
+
+1. `isMutatingTool` resolves through `executorsByTool` before testing, so the
+   alias is gated exactly like the canonical name.
+2. `approveTool` normalises `mcp__computer__*` → `computer_*` before choosing a
+   tier, otherwise the tier rules would compare against the wrong name.
+
+And the principle behind it: **read-only is not harmless.** A screenshot reads
+the entire screen, so every Computer Use tool is gated regardless of mutation.
+
+### W.4 Verification
+
+| Check | Result |
+|---|---|
+| `node test/computeruse.test.js` (new) | **67 assertions / EXIT 0** — tiers, grant lattice, session-vs-remembered persistence, mask clamping/caps, protected-content parsing, dispatcher coverage |
+| `node test/computergate.test.js` (new) | **6 assertions / EXIT 0** — screenshot/click/screen_size all reach `approveTool`; deny → `denied: true`; `Read` never prompts; allow passes through |
+| Runtime (dev `:9333`) | bridge present; `status()` → `{grant:null, tiers:3, missing:["Accessibility"]}`; `grant('access')` ok with `remember:false`; masks add/clear round-trip; panel opened with live preview `shotW: 2462` |
+| Window state | restore/debounce/off-screen-drop/maximise covered by `test/windowstate.test.js` **18/0**; runtime round-trip verified |
+| Deep link | second launch with `helio://settings` focused the running window and routed it, no store fight |
+| Launch at login | on→off round-trip with no leftover login item |
+| Not yet proven | ⚠️ the live consent **modal** click-through (Allow → grant persists → tool proceeds) has not been captured, because every attempt hit `rate_limit_error` from the model before a tool call was emitted. Gate, tiers and panel are proven; the click-through is not |

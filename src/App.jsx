@@ -523,6 +523,7 @@ export default function App() {
   const [voiceMode, setVoiceMode] = useState(false); // full-duplex conversational voice session
   const [permissions, setPermissions] = useState(() => loadJSON('autobot:permissions', 'auto')); // 'auto' | 'ask' (B8 Example Code mode)
   const [permission, setPermission] = useState(null); // pending permission prompt { id, tool, args, summary }
+  const [cuConsent, setCuConsent] = useState(null); // pending Computer Use consent { id, tier, tool, sensitive }
   const [planMode, setPlanMode] = useState(null); // active plan-mode banner { active, file }
 
   const bottomRef = useRef(null);
@@ -552,7 +553,11 @@ export default function App() {
   // Mirror the active provider into the main-process settings so headless runs
   // (scheduled tasks) use the same model the user picked.
   useEffect(() => { try { window.autobot.setSettings({ provider }); } catch (_) {} }, [provider]);
-  useEffect(() => { saveJSON('autobot:settings', settings); }, [settings]);
+  useEffect(() => {
+    saveJSON('autobot:settings', settings);
+    // Push the OS-level toggle to main (it drives app.setLoginItemSettings).
+    try { window.autobot.setSettings({ launchAtLogin: !!settings.launchAtLogin }); } catch (_) {}
+  }, [settings]);
   useEffect(() => { saveJSON('autobot:account', account); }, [account]);
   useEffect(() => { saveJSON('autobot:projects', projects); }, [projects]);
   useEffect(() => { saveJSON('autobot:activeProject', activeProject); }, [activeProject]);
@@ -782,6 +787,11 @@ export default function App() {
         case 'permission':
           setPermission({ id: evt.id, tool: evt.tool, args: evt.args || {}, summary: evt.summary || '' });
           break;
+        case 'computerUseConsent':
+          // Desktop's `computer:request_access` / `request_full_control` /
+          // `request_teach_access`. The turn is blocked until the user answers.
+          setCuConsent({ id: evt.id, tier: evt.tier || 'access', tool: evt.tool || '', sensitive: !!evt.sensitive });
+          break;
         case 'permissionMode':
           // Plan mode (or any mode change) requested by the agent itself, e.g.
           // EnterPlanMode / ExitPlanMode approval. Keep the pill in sync.
@@ -884,6 +894,32 @@ export default function App() {
             setCompliance((prev) => ({ ...(prev || { profile: null, catalog: [] }), state: evt.state }));
           }
           break;
+        case 'deeplink': {
+          // Desktop's launcher.js routes claude:// links to app surfaces. We map
+          // the equivalent helio:// forms: new chat, a specific conversation,
+          // settings, search, and a prefilled prompt (`helio://ask?q=…`).
+          // Unknown routes are ignored rather than erroring.
+          const raw = String(evt.url || '');
+          let u = null;
+          try { u = new URL(raw); } catch (_) { u = null; }
+          if (!u) break;
+          const parts = u.pathname.replace(/^\/+/, '').split('/').filter(Boolean);
+          const route = (u.hostname || parts.shift() || '').toLowerCase();
+          const rest = parts[0] ? decodeURIComponent(parts[0]) : '';
+          if (route === 'new' || route === 'chat') {
+            if (rest) selectConv(rest); else newChat();
+          } else if (route === 'search') {
+            setPanel('search');
+          } else if (route === 'settings') {
+            setShowSettings(true);
+          } else if (route === 'ask') {
+            newChat();
+            const q = u.searchParams.get('q') || u.searchParams.get('prompt') || '';
+            if (q) setNotice(`Prompt loaded — press Enter to send: ${q}`);
+            setTimeout(() => { const el = inputRef.current; if (el) { el.value = q; el.dispatchEvent(new Event('input', { bubbles: true })); el.focus(); } }, 60);
+          }
+          break;
+        }
         default:
           break;
       }
@@ -1128,6 +1164,18 @@ export default function App() {
     setPermission(null);
     await window.autobot.answerPermission(id, allow);
   }, [permission]);
+
+  // Computer Use consent: allow grants the requested tier (which resolves the
+  // blocked turn in the main process), deny revokes so the tool call fails fast.
+  const answerCuConsent = useCallback(async (allow, remember = false) => {
+    if (!cuConsent) return;
+    const { tier } = cuConsent;
+    setCuConsent(null);
+    try {
+      if (allow) await window.autobot.computerUseGrant(tier, { remember });
+      else await window.autobot.computerUseRevoke(tier);
+    } catch (_) {}
+  }, [cuConsent]);
 
   // The live stream belongs to one conversation; don't paint it into another one.
   const liveForActive = live && (!runConvRef.current || runConvRef.current === activeId) ? live : null;
@@ -2176,6 +2224,10 @@ export default function App() {
 
       {permission && (
         <PermissionModal permission={permission} answer={answerPermission} />
+      )}
+
+      {cuConsent && (
+        <ComputerUseModal consent={cuConsent} answer={answerCuConsent} />
       )}
 
 
@@ -4595,16 +4647,17 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                                 </div>
                               );
                             })}
-                            {!accounts.length && (pv.canBrowserSignIn ? (
+                            {!accounts.length && pv.canBrowserSignIn && !pv.canPasteKey && (
                               <div className="prov-none">Not signed in</div>
-                            ) : (
+                            )}
+                            {pv.canPasteKey && (
                               <div className="prov-token">
                                 <input
                                   className="prov-token-in"
                                   type="password"
                                   autoComplete="off"
                                   spellCheck={false}
-                                  placeholder={'Paste your ' + pv.vendor + ' API key'}
+                                  placeholder={(accounts.length ? 'or paste a ' : 'Paste your ') + pv.vendor + ' API key'}
                                   value={provToken[pv.id] || ''}
                                   disabled={!!provBusy}
                                   onChange={(e) => setProvToken((m) => ({ ...m, [pv.id]: e.target.value }))}
@@ -4621,7 +4674,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                                   onClick={() => providerAction('bearer', pv.id, (provToken[pv.id] || '').trim())}
                                 >{provBusy === 'bearer:' + pv.id ? 'Checking…' : 'Add key'}</button>
                               </div>
-                            ))}
+                            )}
                           </div>
                         );
                       })}
@@ -5104,6 +5157,7 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
         </div>
         <p className="muted">{T('code.permissions.hint')}</p>
         <label className="check"><input type="checkbox" checked={settings.useMemory} onChange={(e) => setSettings({ ...settings, useMemory: e.target.checked })} /> Inject long-term memory into prompts</label>
+        <label className="check"><input type="checkbox" checked={!!settings.launchAtLogin} onChange={(e) => setSettings({ ...settings, launchAtLogin: e.target.checked })} /> Launch Helio Bot at login</label>
         <div className="row">
           <label>{T('settings.theme')}
             <select value={settings.theme} onChange={(e) => setSettings({ ...settings, theme: e.target.value })}>
@@ -5194,6 +5248,37 @@ function PermissionModal({ permission, answer }) {
         <div className="modal-actions">
           <button onClick={() => answer(false)}>Deny</button>
           <button className="primary" onClick={() => answer(true)}>Allow</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Computer Use consent (Desktop `computer:request_*`) ----------
+const CU_TIERS = {
+  access: { label: 'See the screen', blurb: 'Helio Bot can look at your screen and click/type to finish this task.' },
+  full_control: { label: 'Full control', blurb: 'Helio Bot can drive any app, window, and keyboard shortcut without asking again.' },
+  teach_access: { label: 'Watch and learn', blurb: 'Helio Bot records your screen while you do a task once, then repeats it.' },
+};
+function ComputerUseModal({ consent, answer }) {
+  const [remember, setRemember] = useState(false);
+  const info = CU_TIERS[consent.tier] || CU_TIERS.access;
+  return (
+    <div className="modal-overlay">
+      <div className="modal">
+        <h2>Allow Computer Use?</h2>
+        <div className="perm-tool">{info.label}</div>
+        <p style={{ opacity: 0.82, margin: '8px 0 4px' }}>{info.blurb}</p>
+        {consent.tool && (
+          <pre className="perm-summary">{consent.tool}{consent.sensitive ? '  (global shortcut / right-click)' : ''}</pre>
+        )}
+        <label className="check" style={{ marginTop: 8 }}>
+          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+          Remember this until I turn it off
+        </label>
+        <div className="modal-actions">
+          <button onClick={() => answer(false)}>Deny</button>
+          <button className="primary" onClick={() => answer(true, remember)}>Allow</button>
         </div>
       </div>
     </div>

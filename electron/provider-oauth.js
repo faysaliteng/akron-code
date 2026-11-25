@@ -130,16 +130,33 @@ const PROVIDERS = {
     id: 'grok',
     label: 'Grok',
     vendor: 'xAI',
-    kind: 'bearer',
-    transport: 'openai',
-    baseURL: 'https://api.x.ai/v1',
-    // xAI also supports OAuth for first-party clients; the token endpoint is
-    // the same shape, so an account added either way lands in the same slot.
-    authorizeUrl: 'https://accounts.x.ai/oauth2/authorize',
-    tokenUrl: 'https://accounts.x.ai/oauth2/token',
-    clientId: 'grok-cli',
-    scopes: ['openid', 'profile', 'email', 'offline_access'],
+    kind: 'oauth',
+    transport: 'grok',
+    // Subscription inference goes through the first-party CLI proxy, not the
+    // public API — the OAuth token is not an xAI API key and api.x.ai rejects
+    // it. `bearerBaseURL` is where a *real* API key is checked instead.
+    baseURL: 'https://cli-chat-proxy.grok.com/v1',
+    bearerBaseURL: 'https://api.x.ai/v1',
+    // OIDC discovery: https://auth.x.ai/.well-known/openid-configuration
+    authorizeUrl: 'https://auth.x.ai/oauth2/authorize',
+    tokenUrl: 'https://auth.x.ai/oauth2/token',
+    userinfoUrl: 'https://auth.x.ai/oauth2/userinfo',
+    tokenFormat: 'form',
+    // Public client id of xAI's own CLI (PKCE, no secret). Same id used by
+    // pi-grok-cli and vercel-labs/fx, corroborated by live token-endpoint probes.
+    clientId: 'b1a00492-073a-47ea-816f-4c329264a828',
+    scopes: ['openid', 'profile', 'email', 'offline_access', 'grok-cli:access', 'api:access'],
+    redirectPort: 56121,
+    // xAI registers `http://127.0.0.1:<port>/callback`, not `localhost`.
+    redirectHost: '127.0.0.1',
+    redirectPath: '/callback',
+    // Their authorize endpoint wants a nonce even in the code flow.
+    authNonce: true,
+    extraAuthParams: { plan: 'generic', referrer: 'helio-bot' },
+    // A pasted xAI API key still works as a secondary way in.
+    allowBearer: true,
     models: [
+      { id: 'grok-4.5', label: 'Grok 4.5' },
       { id: 'grok-4', label: 'Grok 4' },
       { id: 'grok-4-fast', label: 'Grok 4 Fast' },
       { id: 'grok-code-fast-1', label: 'Grok Code Fast' },
@@ -649,9 +666,36 @@ function callbackPage(payload) {
     '<div class="c"><h1>' + escapeHtml(title) + '</h1><p>' + detail + '</p></div>';
 }
 
+// xAI's browser flow opens the callback from an xAI origin and probes the
+// loopback listener with a private-network preflight. Both are required for the
+// real browser to follow the redirect without a CORS error page.
+const LOOPBACK_ORIGINS = [
+  'https://accounts.x.ai',
+  'https://auth.x.ai',
+  'https://grok.com',
+];
+
+function corsHeaders(origin) {
+  if (!origin || LOOPBACK_ORIGINS.indexOf(origin) === -1) {
+    return { vary: 'Origin' };
+  }
+  return {
+    'access-control-allow-origin': origin,
+    'access-control-allow-methods': 'GET, OPTIONS',
+    'access-control-allow-headers': 'content-type',
+    'access-control-allow-private-network': 'true',
+    'access-control-max-age': '600',
+    vary: 'Origin',
+  };
+}
+
 function startLoopbackServer(opts) {
   const o = opts || {};
-  const host = '127.0.0.1';
+  const host = o.host || '127.0.0.1';
+  // The redirect *host* is what the provider's console registered and what the
+  // browser is sent to; it is not necessarily the bind address (xAI wants
+  // `127.0.0.1`, Google wants `localhost`).
+  const redirectHost = o.redirectHost || 'localhost';
   const wantPath = o.path || '/callback';
   return new Promise((resolve, reject) => {
     let settle = null;
@@ -665,14 +709,23 @@ function startLoopbackServer(opts) {
       try { server.close(); } catch (_) {}
     };
     const server = http.createServer((req, res) => {
+      // Some first-party clients probe the loopback listener from their own
+      // origin before redirecting. Answer the preflight instead of a 404.
+      const origin = String((req.headers && req.headers.origin) || '');
+      const cors = corsHeaders(origin);
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, cors);
+        res.end();
+        return;
+      }
       let u;
       try { u = new URL(req.url, 'http://' + host); } catch (_) {
-        res.writeHead(400, { 'content-type': 'text/plain' });
+        res.writeHead(400, Object.assign({ 'content-type': 'text/plain' }, cors));
         res.end('bad request');
         return;
       }
       if (u.pathname !== wantPath) {
-        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+        res.writeHead(404, Object.assign({ 'content-type': 'text/plain; charset=utf-8' }, cors));
         res.end('not found');
         return;
       }
@@ -682,7 +735,10 @@ function startLoopbackServer(opts) {
         error: u.searchParams.get('error'),
         errorDescription: u.searchParams.get('error_description') || u.searchParams.get('error_message'),
       };
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      res.writeHead(200, Object.assign({
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+      }, cors));
       res.end(callbackPage(payload));
       stop();
       settle(payload);
@@ -699,7 +755,7 @@ function startLoopbackServer(opts) {
     });
     server.listen(o.port || 0, host, () => {
       const port = server.address().port;
-      const redirectUri = 'http://localhost:' + port + wantPath;
+      const redirectUri = 'http://' + redirectHost + ':' + port + wantPath;
       timer = setTimeout(() => {
         stop();
         settle({ code: null, state: null, error: 'timeout', errorDescription: 'sign-in was not completed in time' });
@@ -769,6 +825,25 @@ async function identify(provId, tokens, opts) {
     } catch (_) {}
   }
 
+  if (!out.account && provId === 'grok' && (tokens.refreshToken || tokens.idToken)) {
+    // xAI's userinfo is the only stable identity source: the ID token's claims
+    // are ES256 and not something we verify here, so read the account from the
+    // endpoint the token was minted for.
+    try {
+      const doFetch = o.fetchImpl || fetch;
+      const res = await doFetch(prov.userinfoUrl || 'https://auth.x.ai/oauth2/userinfo', {
+        headers: { authorization: 'Bearer ' + tokens.accessToken, accept: 'application/json' },
+      });
+      if (res.ok) {
+        const d = await res.json();
+        const email = (d && (d.email || d.preferred_username)) || '';
+        if (email) out.account = email;
+        if (d && (d.name || d.given_name)) out.label = d.name || d.given_name;
+        if (d && d.sub) out.accountId = String(d.sub);
+      }
+    } catch (_) {}
+  }
+
   if (!out.account) out.account = provId + '-' + fingerprint(tokens);
   out.account = slug(out.account);
   if (!out.label) out.label = prov.label + ' · ' + out.account;
@@ -788,6 +863,8 @@ function buildAuthorizeUrl(prov, params) {
   u.searchParams.set('state', p.state);
   u.searchParams.set('code_challenge', p.challenge);
   u.searchParams.set('code_challenge_method', 'S256');
+  // xAI's authorize endpoint expects an OIDC nonce even in the code flow.
+  if (p.nonce) u.searchParams.set('nonce', p.nonce);
   for (const [k, v] of Object.entries(prov.extraAuthParams || {})) u.searchParams.set(k, String(v));
   return u.toString();
 }
@@ -806,13 +883,15 @@ async function authorize(provId, opts) {
 
   const { verifier, challenge } = mcpoauth.pkce();
   const state = mcpoauth.randomState();
+  const nonce = prov.authNonce ? mcpoauth.randomState() : '';
   // Listen before we open the browser: the redirect can land instantly.
   const loop = await startLoopbackServer({
     path: prov.redirectPath,
     port: prov.redirectPort,
+    redirectHost: prov.redirectHost,
     timeoutMs: o.timeoutMs || 10 * 60 * 1000,
   });
-  const url = buildAuthorizeUrl(prov, { redirectUri: loop.redirectUri, state, challenge });
+  const url = buildAuthorizeUrl(prov, { redirectUri: loop.redirectUri, state, challenge, nonce });
   try { o.openExternal(url); } catch (_) {}
   let cb;
   try {
@@ -878,11 +957,14 @@ async function addBearer(provId, token, opts) {
   //   404            -> no /models route, can't tell, keep it
   //   429 / 5xx / net-> transient, keep it (the user may be offline or limited)
   let plan = '';
-  if (o.verify !== false && prov.baseURL) {
+  // Verify against the *API* base, not the subscription proxy: a Grok OAuth
+  // token is refused by api.x.ai and an xAI API key is refused by the proxy.
+  const verifyBase = prov.bearerBaseURL || prov.baseURL;
+  if (o.verify !== false && verifyBase) {
     let res = null;
     try {
       const doFetch = o.fetchImpl || fetch;
-      res = await doFetch(prov.baseURL.replace(/\/+$/, '') + '/models', {
+      res = await doFetch(verifyBase.replace(/\/+$/, '') + '/models', {
         headers: { authorization: 'Bearer ' + value },
       });
     } catch (e) {
@@ -912,7 +994,8 @@ async function addBearer(provId, token, opts) {
   const ident = await identify(provId, { accessToken: value, refreshToken: '' }, { fetchImpl: o.fetchImpl });
   return addAccount(provId, {
     account: o.account || ident.account,
-    label: o.label || (prov.label + ' · ' + (ident.account || 'api key')),
+    // A key has no identity to name, so don't print a hash as if it were one.
+    label: o.label || (prov.label + ' · ' + (ident.account === slug(ident.account) && /^[a-z]+-[0-9a-f]{8}$/.test(ident.account) ? 'API key' : (ident.account || 'API key'))),
     plan,
     source: 'api-key',
     tokens: { accessToken: value, refreshToken: '', expiresAt: 0, tokenType: 'Bearer', scopes: [] },
@@ -1036,6 +1119,9 @@ function status() {
       accounts: listAccounts(id),
       active: activeAccount(id),
       canBrowserSignIn: prov.kind === 'oauth',
+      // A provider that signs in through the browser may still accept a pasted
+      // API key as a secondary route (Grok today).
+      canPasteKey: prov.kind !== 'oauth' || prov.allowBearer === true,
     });
   }
   out.total = db.accounts.length;
@@ -1052,14 +1138,19 @@ async function resolve(id, opts) {
   if (!account) throw new Error('no ' + prov.label + ' account is signed in');
   const token = await ensureToken(provId, account, opts);
   const rec = getAccount(provId, account);
+  // A pasted API key is a public-API credential, not a subscription token: it
+  // must not be sent to the first-party CLI proxy (which refuses it), and the
+  // proxy's `responses` shape does not exist on api.x.ai. Route it to the plain
+  // OpenAI-compatible path against the bearer base.
+  const viaKey = !!(rec && rec.source === 'api-key' && prov.bearerBaseURL);
   return {
     provider: provId,
     account,
     label: rec ? rec.label : prov.label,
     accessToken: token.accessToken,
     expiresAt: token.expiresAt,
-    transport: prov.transport,
-    baseURL: prov.baseURL || '',
+    transport: viaKey ? 'openai' : prov.transport,
+    baseURL: viaKey ? prov.bearerBaseURL : (prov.baseURL || ''),
     models: prov.models,
     plan: rec ? rec.plan : '',
   };

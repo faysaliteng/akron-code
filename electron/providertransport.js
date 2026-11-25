@@ -343,6 +343,122 @@ function codexReasoning(level) {
   return { effort: 'medium', summary: 'auto' };
 }
 
+/**
+ * Shared `responses` runner. Both the Codex subscription backend and the Grok
+ * CLI proxy speak this event vocabulary, so the SSE absorb loop lives once and
+ * only the URL/headers/body differ. Returns the internal message shape.
+ */
+async function responsesChat(o) {
+  const label = o.label || 'codex';
+  const onDelta = o.onDelta || (() => {});
+  const doFetch = o.fetchImpl || fetch;
+  const res = await doFetch(o.url, {
+    method: 'POST', headers: o.headers, body: JSON.stringify(o.body), signal: o.signal,
+  });
+  if (!res.ok) throw httpError(label, res, await res.text().catch(() => ''));
+
+  const message = { role: 'assistant', content: '', tool_calls: [] };
+  const byItem = new Map(); // output item id -> tool acc
+  const byCall = new Map(); // call id -> tool acc (stream and final body can both report it)
+  const ct = res.headers.get('content-type') || '';
+
+  const addCall = (callId, name) => {
+    const id = String(callId || '');
+    if (id && byCall.has(id)) return byCall.get(id);
+    const acc = newToolAcc(callId, name);
+    if (id) byCall.set(id, acc);
+    message.tool_calls.push(acc);
+    return acc;
+  };
+
+  const absorb = (resp) => {
+    if (!resp) return;
+    if (resp.usage) {
+      message.usage = {
+        input_tokens: num(resp.usage.input_tokens),
+        output_tokens: num(resp.usage.output_tokens),
+        total_tokens: num(resp.usage.total_tokens) ||
+          num(resp.usage.input_tokens) + num(resp.usage.output_tokens),
+      };
+    }
+    for (const item of resp.output || []) {
+      if (item.type === 'message' && Array.isArray(item.content)) {
+        for (const c of item.content) {
+          if (c && typeof c.text === 'string' && c.text && !message.content.includes(c.text)) {
+            message.content += c.text;
+          }
+        }
+      }
+      if (item.type === 'function_call') {
+        // The final body repeats what the stream already delivered — reuse the
+        // accumulator instead of running the same tool twice.
+        const acc = byCall.get(String(item.call_id || item.id || '')) || addCall(item.call_id || item.id, item.name);
+        if (typeof item.arguments === 'string' && item.arguments) acc.function.arguments = item.arguments;
+        if (item.name && !acc.function.name) acc.function.name = item.name;
+        if (item.call_id) acc.id = item.call_id;
+      }
+    }
+    if (resp.status === 'incomplete') message.finish_reason = 'length';
+  };
+
+  const finish = () => {
+    if (!message.finish_reason) message.finish_reason = message.tool_calls.length ? 'tool_calls' : 'stop';
+    return message;
+  };
+
+  if (!ct.includes('text/event-stream')) {
+    const data = await readJsonBody(res);
+    absorb(data);
+    if (!message.content) {
+      for (const item of (data && data.output) || []) {
+        if (item.type === 'message') {
+          for (const c of item.content || []) if (c.text) { message.content += c.text; onDelta(c.text); }
+        }
+      }
+    }
+    return finish();
+  }
+
+  for await (const ev of sseEvents(res)) {
+    const type = ev.type || '';
+    if (type === 'response.output_text.delta') {
+      if (ev.delta) { message.content += ev.delta; onDelta(ev.delta); }
+    } else if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') {
+      if (ev.delta) onDelta(ev.delta, true);
+    } else if (type === 'response.output_item.added') {
+      const item = ev.item || {};
+      if (item.type === 'function_call') {
+        const acc = addCall(item.call_id || item.id, item.name);
+        if (item.id) byItem.set(item.id, acc);
+      }
+    } else if (type === 'response.function_call_arguments.delta') {
+      const acc = byItem.get(ev.item_id);
+      if (acc) pushToolArg(acc, ev.delta);
+    } else if (type === 'response.function_call_arguments.done') {
+      const acc = byItem.get(ev.item_id);
+      if (acc && typeof ev.arguments === 'string' && ev.arguments) acc.function.arguments = ev.arguments;
+    } else if (type === 'response.output_item.done') {
+      const item = ev.item || {};
+      const acc = byItem.get(item.id) || byCall.get(String(item.call_id || ''));
+      if (acc) {
+        if (item.name && !acc.function.name) acc.function.name = item.name;
+        if (item.call_id) acc.id = item.call_id;
+        // A complete `arguments` string on the item is authoritative.
+        if (typeof item.arguments === 'string' && item.arguments) acc.function.arguments = item.arguments;
+      }
+    } else if (type === 'response.completed' || type === 'response.done' || type === 'response.incomplete') {
+      absorb(ev.response);
+    } else if (type === 'response.failed' || type === 'response.error') {
+      const r = ev.response || ev;
+      const e = (r && r.error) || {};
+      const err = new Error('LLM ' + label + ': ' + (e.message || 'the response failed'));
+      err.transient = true;
+      throw err;
+    }
+  }
+  return finish();
+}
+
 async function codexChat(provider, messages, tools, onDelta, signal, maxTokensOverride) {
   const { instructions, input } = toCodexInput(messages);
   const body = {
@@ -368,93 +484,14 @@ async function codexChat(provider, messages, tools, onDelta, signal, maxTokensOv
   if (provider.accountId) headers['chatgpt-account-id'] = String(provider.accountId);
   if (provider.sessionId) headers.session_id = String(provider.sessionId);
 
-  const res = await fetch(trimBase(provider.codexUrl || CODEX_RESPONSES_URL), {
-    method: 'POST', headers, body: JSON.stringify(body), signal,
+  return responsesChat({
+    label: 'codex',
+    url: trimBase(provider.codexUrl || CODEX_RESPONSES_URL),
+    headers,
+    body,
+    onDelta,
+    signal,
   });
-  if (!res.ok) throw httpError('codex', res, await res.text().catch(() => ''));
-
-  const message = { role: 'assistant', content: '', tool_calls: [] };
-  const byItem = new Map(); // output item id -> tool acc
-  const ct = res.headers.get('content-type') || '';
-
-  const absorb = (resp) => {
-    if (!resp) return;
-    if (resp.usage) {
-      message.usage = {
-        input_tokens: num(resp.usage.input_tokens),
-        output_tokens: num(resp.usage.output_tokens),
-        total_tokens: num(resp.usage.total_tokens) ||
-          num(resp.usage.input_tokens) + num(resp.usage.output_tokens),
-      };
-    }
-    for (const item of resp.output || []) {
-      if (item.type === 'message' && Array.isArray(item.content)) {
-        for (const c of item.content) {
-          if (c && typeof c.text === 'string' && c.text && !message.content.includes(c.text)) {
-            message.content += c.text;
-          }
-        }
-      }
-      if (item.type === 'function_call') {
-        const acc = newToolAcc(item.call_id || item.id, item.name);
-        acc.function.arguments = item.arguments || '{}';
-        message.tool_calls.push(acc);
-      }
-    }
-    if (resp.status === 'incomplete') message.finish_reason = 'length';
-  };
-
-  if (!ct.includes('text/event-stream')) {
-    const data = await readJsonBody(res);
-    absorb(data);
-    if (!message.content) {
-      for (const item of (data && data.output) || []) {
-        if (item.type === 'message') {
-          for (const c of item.content || []) if (c.text) { message.content += c.text; onDelta(c.text); }
-        }
-      }
-    }
-    message.finish_reason = message.finish_reason || (message.tool_calls.length ? 'tool_calls' : 'stop');
-    return message;
-  }
-
-  for await (const ev of sseEvents(res)) {
-    const type = ev.type || '';
-    if (type === 'response.output_text.delta') {
-      if (ev.delta) { message.content += ev.delta; onDelta(ev.delta); }
-    } else if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') {
-      if (ev.delta) onDelta(ev.delta, true);
-    } else if (type === 'response.output_item.added') {
-      const item = ev.item || {};
-      if (item.type === 'function_call') {
-        const acc = newToolAcc(item.call_id || item.id, item.name);
-        byItem.set(item.id, acc);
-        message.tool_calls.push(acc);
-      }
-    } else if (type === 'response.function_call_arguments.delta') {
-      const acc = byItem.get(ev.item_id);
-      if (acc) pushToolArg(acc, ev.delta);
-    } else if (type === 'response.output_item.done') {
-      const item = ev.item || {};
-      const acc = byItem.get(item.id);
-      if (acc) {
-        if (item.name && !acc.function.name) acc.function.name = item.name;
-        if (item.call_id) acc.id = item.call_id;
-        // A complete `arguments` string on the item is authoritative.
-        if (typeof item.arguments === 'string' && item.arguments) acc.function.arguments = item.arguments;
-      }
-    } else if (type === 'response.completed') {
-      absorb(ev.response);
-    } else if (type === 'response.failed' || type === 'response.error') {
-      const r = ev.response || ev;
-      const e = (r && r.error) || {};
-      const err = new Error('LLM codex: ' + (e.message || 'the response failed'));
-      err.transient = true;
-      throw err;
-    }
-  }
-  message.finish_reason = message.finish_reason || (message.tool_calls.length ? 'tool_calls' : 'stop');
-  return message;
 }
 
 // ---------------------------------------------------------------------------
@@ -634,12 +671,80 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
 }
 
 // ---------------------------------------------------------------------------
+// xAI Grok — subscription `responses` through the first-party CLI proxy
+//
+// Endpoint: https://cli-chat-proxy.grok.com/v1/responses (verified live: a bad
+// bearer answers 401 from *this* host, so the route exists). The body shape is
+// the OpenAI Responses shape with the CLI proxy's extra `include`/`text`
+// fields; the subscription path also sends two token-auth headers. Wire-format
+// unit-tested, not field-verified — no Grok subscription credential exists on
+// this machine.
+// ---------------------------------------------------------------------------
+const GROK_RESPONSES_URL = 'https://cli-chat-proxy.grok.com/v1/responses';
+const GROK_UA = 'grok-shell/1.0.46 (macos; aarch64)';
+
+function grokChat(provider, messages, tools, onDelta, signal, maxTokensOverride) {
+  const { instructions, input } = toCodexInput(messages);
+  const toolDefs = toCodexTools(tools);
+  const body = {
+    model: provider.model,
+    instructions: instructions || 'You are a helpful assistant.',
+    input,
+    store: false,
+    stream: true,
+    include: ['reasoning.encrypted_content'],
+    text: { verbosity: 'low' },
+  };
+  if (toolDefs.length) {
+    body.tools = toolDefs;
+    body.tool_choice = 'auto';
+    body.parallel_tool_calls = true;
+  }
+  if (provider.reasoningLevel && provider.reasoningLevel !== 'auto') {
+    body.reasoning = { effort: provider.reasoningLevel, summary: 'auto' };
+  }
+  const maxOut = Number(maxTokensOverride || provider.maxTokens) > 0
+    ? Number(maxTokensOverride || provider.maxTokens) : 0;
+  if (maxOut) body.max_output_tokens = maxOut;
+
+  const headers = {
+    'content-type': 'application/json',
+    accept: 'text/event-stream',
+    authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
+    'user-agent': GROK_UA,
+    'x-xai-token-auth': 'xai-grok-cli',
+    'x-authenticateresponse': 'authenticate-response',
+    'x-grok-client-identifier': 'helio-bot',
+    'x-grok-client-version': '1.0.0',
+    'x-grok-model-override': String(provider.model || ''),
+  };
+  if (provider.accountId) headers['x-grok-user-id'] = String(provider.accountId);
+  if (provider.sessionId) headers['x-grok-conv-id'] = String(provider.sessionId);
+
+  // `provider.baseURL` is the `/v1` root from the provider registry; the
+  // subscription route is `<root>/responses`. If a caller already hands us a
+  // full `/responses` URL, don't append a second one.
+  const root = trimBase(provider.baseURL || GROK_RESPONSES_URL);
+  const url = /\/responses$/.test(root) ? root : root + '/responses';
+
+  return responsesChat({
+    label: 'grok',
+    url,
+    headers,
+    body,
+    onDelta,
+    signal,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 const ADAPTERS = {
   anthropic: anthropicChat,
   codex: codexChat,
   google: googleChat,
+  grok: grokChat,
 };
 
 /** True when this provider needs a native adapter instead of /chat/completions. */
@@ -660,7 +765,7 @@ module.exports = {
   // exported for tests
   _internal: {
     sseEvents, toAnthropicBody, anthropicAuth, anthropicFinish,
-    toCodexInput, toCodexTools, toGeminiContents, geminiFinish,
-    CLAUDE_UA, CODEX_RESPONSES_URL, CLOUDCODE_BASE, DEFAULT_ANTHROPIC_BASE, cloudcodeBase,
+    toCodexInput, toCodexTools, toGeminiContents, geminiFinish, responsesChat,
+    CLAUDE_UA, CODEX_RESPONSES_URL, GROK_RESPONSES_URL, CLOUDCODE_BASE, DEFAULT_ANTHROPIC_BASE, cloudcodeBase,
   },
 };

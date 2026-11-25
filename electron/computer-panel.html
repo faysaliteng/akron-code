@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+<title>Computer Use</title>
+<style>
+  :root {
+    --bg: #1b1b19;
+    --panel: #24241f;
+    --line: rgba(255,255,255,.10);
+    --ink: #f6f3ec;
+    --dim: #a8a49a;
+    --accent: #d97757;
+    --ok: #4d9a6a;
+    --warn: #c9a227;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink); font: 12.5px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+  }
+  header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 10px 8px; border-bottom: 1px solid var(--line);
+    -webkit-app-region: drag;
+  }
+  header .name { font-weight: 600; letter-spacing: .01em; font-size: 12px; }
+  header .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
+  header .dot.live { background: var(--ok); box-shadow: 0 0 0 3px rgba(77,154,106,.18); }
+  header .spacer { flex: 1; }
+  header button {
+    -webkit-app-region: no-drag;
+    background: transparent; border: 1px solid var(--line); color: var(--dim);
+    border-radius: 6px; height: 22px; min-width: 24px; padding: 0 7px; cursor: pointer;
+    font-size: 11px; line-height: 1;
+  }
+  header button:hover { color: var(--ink); border-color: rgba(255,255,255,.24); }
+  header button.on { color: var(--accent); border-color: rgba(217,119,87,.5); }
+
+  #stage { position: relative; flex: 1; min-height: 0; background: #0f0f0e; display: grid; place-items: center; overflow: hidden; }
+  #shot { max-width: 100%; max-height: 100%; display: block; opacity: 0; transition: opacity .18s ease; }
+  #shot.ready { opacity: 1; }
+  #empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--dim); padding: 16px; }
+  #empty.hide { display: none; }
+  #overlay { position: absolute; inset: 0; pointer-events: none; }
+  #overlay.arming { pointer-events: auto; cursor: crosshair; }
+  .mask { position: absolute; background: rgba(217,119,87,.20); border: 1px solid rgba(217,119,87,.75); border-radius: 2px; }
+  #marquee { position: absolute; border: 1px dashed var(--accent); background: rgba(217,119,87,.16); display: none; border-radius: 2px; }
+
+  footer { border-top: 1px solid var(--line); padding: 8px 10px; display: flex; align-items: center; gap: 8px; }
+  footer .tier { font-size: 11px; color: var(--dim); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  footer button { border-radius: 7px; height: 26px; padding: 0 11px; cursor: pointer; font-size: 11.5px; font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+  footer button.stop { color: #ffd9cf; border-color: rgba(217,119,87,.55); background: rgba(217,119,87,.16); }
+  footer button:hover { filter: brightness(1.12); }
+  #note { padding: 0 10px 8px; font-size: 10.5px; color: var(--warn); display: none; }
+  #note.show { display: block; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="dot" id="dot"></span>
+    <span class="name">Computer Use</span>
+    <span class="spacer"></span>
+    <button id="pin" title="Keep on top">Pin</button>
+    <button id="maskbtn" title="Draw a redaction box">Mask</button>
+    <button id="close" title="Hide panel">✕</button>
+  </header>
+
+  <div id="stage">
+    <div id="empty">Waiting for the screen…<br /><span style="opacity:.7">Grant Screen Recording in System Settings if this stays blank.</span></div>
+    <img id="shot" alt="" />
+    <div id="overlay"></div>
+    <div id="marquee"></div>
+  </div>
+
+  <footer>
+    <span class="tier" id="tier">No access granted</span>
+    <button id="stop" class="stop">Stop</button>
+  </footer>
+  <div id="note"></div>
+
+<script>
+(() => {
+  const api = window.autobot || {};
+  const $ = (id) => document.getElementById(id);
+  const shot = $('shot');
+  const overlay = $('overlay');
+  const dot = $('dot');
+  const tierEl = $('tier');
+  const noteEl = $('note');
+  const marquee = $('marquee');
+
+  let masks = [];
+  let arming = false;
+  let dragging = null;
+  let timer = null;
+  let pinned = true;
+  let lastOk = false;
+
+  const cu = (channel, payload) => (api.cuInvoke ? api.cuInvoke(channel, payload || {}) : Promise.resolve({ ok: false }));
+
+  function note(msg) {
+    if (!msg) { noteEl.classList.remove('show'); noteEl.textContent = ''; return; }
+    noteEl.textContent = msg;
+    noteEl.classList.add('show');
+  }
+
+  function renderMasks() {
+    [...overlay.querySelectorAll('.mask')].forEach((n) => n.remove());
+    const w = shot.clientWidth, h = shot.clientHeight;
+    if (!w || !h || !shot.naturalWidth) return;
+    const sx = w / shot.naturalWidth, sy = h / shot.naturalHeight;
+    for (const m of masks) {
+      const d = document.createElement('div');
+      d.className = 'mask';
+      d.style.left = Math.max(0, m.x * sx) + 'px';
+      d.style.top = Math.max(0, m.y * sy) + 'px';
+      d.style.width = Math.min(w, m.w * sx) + 'px';
+      d.style.height = Math.min(h, m.h * sy) + 'px';
+      overlay.appendChild(d);
+    }
+  }
+
+  async function refresh() {
+    let res = null;
+    try { res = await cu('cu:to_bitmap', {}); } catch (_) {}
+    if (res && res.ok && res.dataUrl) {
+      if (res.dataUrl !== shot.src) shot.src = res.dataUrl;
+      shot.classList.add('ready');
+      $('empty').classList.add('hide');
+      lastOk = true;
+      note('');
+    } else {
+      if (!lastOk) {
+        $('empty').classList.remove('hide');
+        shot.classList.remove('ready');
+      }
+      if (res && res.error) note(res.error);
+    }
+    let st = null;
+    try { st = await api.computerUseStatus(); } catch (_) {}
+    if (st) {
+      if (Array.isArray(st.masks) && st.masks.length !== masks.length) { masks = st.masks; }
+      dot.classList.toggle('live', !!st.grant);
+      tierEl.textContent = st.grant
+        ? ({ access: 'Screen access', full_control: 'Full control', teach_access: 'Watching & learning' }[st.grant] || st.grant)
+        : 'No access granted';
+      if (st.panel && typeof st.panel.pinned === 'boolean') {
+        pinned = st.panel.pinned;
+        $('pin').classList.toggle('on', pinned);
+      }
+      const missing = st.permissions && st.permissions.missing;
+      if (Array.isArray(missing) && missing.length) note('Needs ' + missing.join(' + ') + ' permission.');
+    }
+    renderMasks();
+  }
+
+  function start() {
+    if (timer) return;
+    refresh();
+    timer = setInterval(refresh, 1000);
+  }
+
+  shot.addEventListener('load', renderMasks);
+  window.addEventListener('resize', renderMasks);
+
+  $('pin').addEventListener('click', async () => {
+    pinned = !pinned;
+    $('pin').classList.toggle('on', pinned);
+    await cu('cu:side_panel_unpin', { pin: pinned });
+  });
+
+  $('maskbtn').addEventListener('click', () => {
+    arming = !arming;
+    $('maskbtn').classList.toggle('on', arming);
+    overlay.classList.toggle('arming', arming);
+  });
+
+  overlay.addEventListener('mousedown', (e) => {
+    if (!arming) return;
+    const r = shot.getBoundingClientRect();
+    dragging = { x0: e.clientX - r.left, y0: e.clientY - r.top, r };
+    marquee.style.display = 'block';
+    marquee.style.left = dragging.x0 + 'px';
+    marquee.style.top = dragging.y0 + 'px';
+    marquee.style.width = '0px';
+    marquee.style.height = '0px';
+  });
+
+  overlay.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const x1 = e.clientX - dragging.r.left, y1 = e.clientY - dragging.r.top;
+    marquee.style.left = Math.min(dragging.x0, x1) + 'px';
+    marquee.style.top = Math.min(dragging.y0, y1) + 'px';
+    marquee.style.width = Math.abs(x1 - dragging.x0) + 'px';
+    marquee.style.height = Math.abs(y1 - dragging.y0) + 'px';
+  });
+
+  overlay.addEventListener('mouseup', async (e) => {
+    if (!dragging) return;
+    const x1 = e.clientX - dragging.r.left, y1 = e.clientY - dragging.r.top;
+    const w = shot.clientWidth, h = shot.clientHeight;
+    const dispW = shot.naturalWidth || w, dispH = shot.naturalHeight || h;
+    const px = (v) => Math.round(v * (dispW / (w || 1)));
+    const py = (v) => Math.round(v * (dispH / (h || 1)));
+    const rect = {
+      x: px(Math.min(dragging.x0, x1)),
+      y: py(Math.min(dragging.y0, y1)),
+      w: px(Math.abs(x1 - dragging.x0)),
+      h: py(Math.abs(y1 - dragging.y0)),
+    };
+    dragging = null;
+    marquee.style.display = 'none';
+    arming = false;
+    $('maskbtn').classList.remove('on');
+    overlay.classList.remove('arming');
+    if (rect.w > 4 && rect.h > 4) {
+      const res = await cu('cu:mask_rects', { mask: rect });
+      if (res && Array.isArray(res.masks)) masks = res.masks;
+      renderMasks();
+    }
+  });
+
+  overlay.addEventListener('dblclick', async () => {
+    const res = await cu('cu:mask_rects', { clear: true });
+    if (res && Array.isArray(res.masks)) masks = res.masks;
+    renderMasks();
+  });
+
+  $('stop').addEventListener('click', async () => {
+    try { await api.computerUseRevoke(); } catch (_) {}
+    try { await cu('cu:unhide_apps'); } catch (_) {}
+    dot.classList.remove('live');
+    tierEl.textContent = 'Stopped';
+  });
+
+  $('close').addEventListener('click', () => window.close());
+
+  start();
+})();
+</script>
+</body>
+</html>

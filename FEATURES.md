@@ -302,20 +302,62 @@ Example Desktop's sidebar now maps 1:1 onto working local features — not stubs
 - **Import what's already on this Mac** — the Claude Code keychain item, Codex
   `auth.json`, Gemini creds, Grok config. Anything that isn't there is skipped
   rather than faked.
-- **Key-based providers ask for a key, not a browser.** Grok (xAI) has no
-  first-party web flow we can drive, so its row is a password field plus
-  `Add key`; the key is checked against `GET /models` before it is stored, and
-  a wrong key is refused with one plain line (xAI answers `400`, not `401`) so
+- **Grok signs in with a browser, like Claude does.** `Sign in` opens
+  `auth.x.ai/oauth2/authorize` with PKCE S256 and a loopback callback on
+  `127.0.0.1`; the resulting subscription token is good against the
+  first-party CLI proxy (`cli-chat-proxy.grok.com/v1`, OpenAI **Responses**
+  shape) — the same flow the AFK Pilot VS Code extension uses. A paste-key
+  input sits next to it for anyone holding a public-API key: the two
+  coexist, and `resolve()` keeps them apart, so a public key only ever goes
+  to `api.x.ai/v1` and a subscription token never leaves the CLI proxy.
+  A pasted key is checked against `GET /models` before it is stored, and a
+  wrong one is refused with one plain line (xAI answers `400`, not `401`) so
   it can never masquerade as a working account.
 - **Honest labels.** Only Claude is verified end-to-end on this machine; the
-  ChatGPT / Antigravity / Grok rows carry an `unverified` chip because their
-  adapters are built from published wire formats and unit tests, not from a live
-  account here.
+  ChatGPT / Antigravity rows carry an `unverified` chip because their adapters
+  are built from published wire formats and unit tests, not from a live account
+  here. Grok keeps the chip too: the paste-key path and the proxy's 401 are
+  live-proven, but the browser round-trip has not completed against a real
+  account.
 - **Dead account is a sign-in problem, not an LLM error**: one human line
   ("ChatGPT needs to be signed in again — open the model menu and choose Sign
   in.") and `needsSignIn: true`, never a raw OAuth code or markup.
 - Files: `electron/provider-oauth.js`, `electron/providertransport.js`; suites
-  `test/provideroauth.test.js` (160) and `test/providertransport.test.js` (93).
+  `test/provideroauth.test.js` (180) and `test/providertransport.test.js` (108).
+
+### Computer Use — see and drive the desktop, with consent
+
+- **A real consent gate, not a checkbox.** Nothing reads the screen or moves
+  the mouse until you grant a tier: `Access` (screenshot, click, type, scroll)
+  or `Full control` (launching apps, global shortcuts, right-click). A grant
+  can be session-only or remembered across restarts; session grants are never
+  written to disk.
+- **Floating live panel** (`electron/computer-panel.html`) — the model's-eye
+  view, always-on-top, with drag-to-mask, pin/unpin and a Stop button.
+- **Masks** hide regions of the screen from the model (≤32 rectangles,
+  degenerate ones dropped). **Protected content** (video call sharing, Netflix,
+  Hulu, Apple TV, Spotify…) is detected and withheld automatically.
+- **Read-only is not harmless**: every Computer Use tool is gated, including
+  `screenshot` — it reads your whole screen.
+- **Shared with the browser tools**: the same turn can drive the built-in
+  browser pane *and* the desktop.
+- Files: `electron/computeruse.js`, `electron/computer-panel.html`,
+  `electron/tools.js` (`isMutatingTool`), `electron/main.js` (`approveTool`);
+  suites `test/computeruse.test.js` (67), `test/computergate.test.js` (6).
+
+### Desktop lifecycle — geometry, deep links, launch at login
+
+- **The window remembers where it was.** Geometry persists to
+  `~/.autobot/window-state.json`, debounced 400 ms; a position that no longer
+  touches any display is dropped instead of opening off-screen; maximise is
+  reapplied on show.
+- **`helio://` links work.** `helio://new`, `helio://chat/<id>`,
+  `helio://search?q=…`, `helio://settings`, `helio://ask?q=…`. A second launch
+  focuses the running window and hands it the link (single-instance lock), so
+  two processes never fight over `~/.autobot`.
+- **Launch at login** is a Settings toggle mirrored to the OS login item.
+- Files: `electron/windowstate.js`, `electron/main.js`; suite
+  `test/windowstate.test.js` (18).
 
 ### Local filesystem + per-conversation project folders
 

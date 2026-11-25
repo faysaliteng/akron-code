@@ -1206,10 +1206,18 @@ async function runTool(name, args, ctx) {
     'mcp__workspace__write_file', 'mcp__workspace__edit_file',
     'mcp__terminal__run_in_terminal', 'mcp__terminal__open_terminal_tab',
   ]);
-  // Any MCP tool whose name implies a state change is gated too.
-  const isMutatingTool = (name) =>
-    MUTATING.has(name) ||
-    (/^mcp__/.test(name) && /(write|edit|create|delete|remove|run|exec|move|rename|upload|patch)/i.test(name));
+  // Any MCP tool whose name implies a state change is gated too, and every
+  // Computer Use tool is gated regardless of whether it mutates: a screenshot
+  // reads the user's screen, so read-only is not the same as harmless. The
+  // model calls them as `mcp__computer__*`, so gate on the resolved executor
+  // name as well as the raw one. The consent tier itself is enforced in
+  // main.js's approveTool.
+  const isMutatingTool = (name) => {
+    const exec = executorsByTool[name] || name;
+    return MUTATING.has(name) ||
+      /^computer_/.test(exec) ||
+      (/^mcp__/.test(name) && /(write|edit|create|delete|remove|run|exec|move|rename|upload|patch)/i.test(name));
+  };
   if (approveTool && isMutatingTool(name)) {
     const ok = await approveTool(name, args);
     if (!ok) return { content: `Blocked: permission not granted for ${name} (denied or disallowed in the current permission mode).`, isError: true, denied: true };

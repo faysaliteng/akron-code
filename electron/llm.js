@@ -404,7 +404,6 @@ function humanizeLLMError(e) {
     .replace(/^\s*LLM\s+\d{3}\s*:?\s*/i, '')
     .replace(/\s+/g, ' ')
     .trim();
-  if (body.length > 200) body = body.slice(0, 197).trimEnd() + '…';
   const friendly = {
     400: 'The provider rejected the request',
     401: 'The API key was rejected',
@@ -420,6 +419,22 @@ function humanizeLLMError(e) {
     504: 'The provider’s gateway timed out (504)',
     529: 'The provider is overloaded (529)',
   }[status];
+  // The adapters format their own HTTP failures, and `chatWithFailover` then
+  // formats the wrapper — without this, the banner read
+  // "…rate limiting this key — …rate limiting this key — {json}".
+  if (friendly && body.toLowerCase().startsWith(friendly.toLowerCase())) {
+    body = body.slice(friendly.length).replace(/^\s*[—–-]+\s*/, '');
+  }
+  // Vendor error envelopes are JSON, not prose. Lift the message so the banner
+  // says something useful instead of quoting the envelope.
+  try {
+    const j = JSON.parse(body);
+    if (j && typeof j === 'object') {
+      const msg = (j.error && (j.error.message || j.error.error)) || j.message || j.detail || j.error;
+      if (typeof msg === 'string' && msg.trim()) body = msg.trim();
+    }
+  } catch (_) {}
+  if (body.length > 200) body = body.slice(0, 197).trimEnd() + '…';
   const head = friendly || (status ? `The provider returned HTTP ${status}` : raw.split('\n')[0].slice(0, 120));
   // Only append the scrubbed detail when it is prose, not boilerplate. Gateway
   // pages are the status phrase repeated a few times with the server name, so

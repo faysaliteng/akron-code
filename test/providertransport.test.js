@@ -262,6 +262,72 @@ const noop = () => {};
     eq('originator header identifies the CLI', req.headers.originator, 'codex_cli_rs');
     eq('body carries instructions, not a system message', typeof req.body.instructions, 'string');
     eq('body is streamed and stateless', [req.body.stream, req.body.store], [true, false]);
+    await s.close();
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\ntransport — Grok (subscription responses via the CLI proxy)');
+  // -------------------------------------------------------------------------
+  {
+    // Non-stream shape first: exercises the same absorb path as a JSON reply.
+    const s = await server((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        output: [{ type: 'message', content: [{ type: 'output_text', text: 'done' }] }],
+        usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+        status: 'completed',
+      }));
+    });
+    const msg = await t.chatCompletion(
+      { transport: 'grok', model: 'grok-4.5', accessToken: 'ok-tok', baseURL: s.base + '/v1' },
+      [{ role: 'user', content: 'hi' }], null, noop,
+    );
+    eq('non-stream text assembled', msg.content, 'done');
+    eq('non-stream finish is stop', msg.finish_reason, 'stop');
+    eq('usage mapped', msg.usage.total_tokens, 5);
+    const req = s.seen.requests[0];
+    eq('posts to <base>/v1/responses, not /chat/completions', req.url, '/v1/responses');
+    eq('bearer auth on the wire', req.headers.authorization, 'Bearer ok-tok');
+    eq('grok client headers present',
+      [req.headers['x-grok-client-identifier'], req.headers['x-xai-token-auth']],
+      ['helio-bot', 'xai-grok-cli']);
+    eq('body is streamed and stateless', [req.body.stream, req.body.store], [true, false]);
+    eq('body carries instructions, not a system message', typeof req.body.instructions, 'string');
+    eq('body asks for encrypted reasoning', req.body.include, ['reasoning.encrypted_content']);
+    await s.close();
+  }
+  {
+    // Streaming + tool call, mirroring the Codex vocabulary the proxy uses.
+    const s = await server((req, res) => sse(res, [
+      { type: 'response.created', response: {} },
+      { type: 'response.output_text.delta', delta: 'Hel' },
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'fcX', name: 'Write', call_id: 'cX' } },
+      { type: 'response.function_call_arguments.delta', item_id: 'fcX', delta: '{"path":"a.txt"}' },
+      { type: 'response.completed', response: { usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } },
+    ]));
+    const msg = await t.chatCompletion(
+      { transport: 'grok', model: 'grok-4.5', accessToken: 'ok-tok', baseURL: s.base + '/v1' },
+      [{ role: 'user', content: 'go' }], null, noop,
+    );
+    eq('grok stream text assembled', msg.content, 'Hel');
+    eq('grok tool name captured', msg.tool_calls[0].function.name, 'Write');
+    eq('grok arguments stay a JSON string', typeof msg.tool_calls[0].function.arguments, 'string');
+    eq('grok call_id preferred', msg.tool_calls[0].id, 'cX');
+    eq('grok finish is tool_calls', msg.finish_reason, 'tool_calls');
+    await s.close();
+  }
+  {
+    // A full /responses URL is passed through, not doubled.
+    const s = await server((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ output: [] }));
+    });
+    await t.chatCompletion(
+      { transport: 'grok', model: 'grok-4.5', accessToken: 't', baseURL: s.base + '/v1/responses' },
+      [{ role: 'user', content: 'x' }], null, noop,
+    );
+    eq('a full responses URL is not doubled', s.seen.requests[0].url, '/v1/responses');
+    await s.close();
   }
 
   // -------------------------------------------------------------------------

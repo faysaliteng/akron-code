@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, globalShortcut, nativeImage, protocol, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, globalShortcut, nativeImage, protocol, session, screen } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -26,8 +26,13 @@ const extensionhost = require('./extensionhost');
 const unfurlMod = require('./unfurl');
 const compliance = require('./compliance');
 const mcpoauth = require('./mcpoauth');
+const computeruse = require('./computeruse');
+const windowstate = require('./windowstate');
 
 const windows = new Set(); // all open BrowserWindows (multi-window parity)
+// The primary chat window (first created). Desktop's launcher focuses it when a
+// second instance is started or a deep link arrives.
+let primaryWindow = null;
 // artifact key -> Set<BrowserWindow>: artifact windows currently showing that
 // canvas document, so an edit made in the chat preview refreshes them too.
 const artifactWindows = new Map();
@@ -43,6 +48,78 @@ protocol.registerSchemesAsPrivileged([{
   privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
 }]);
 const runs = new Map(); // runId -> AbortController
+
+// ---------------------------------------------------------------------------
+// Single instance + deep links (Desktop's launcher.js parity)
+// ---------------------------------------------------------------------------
+// Two copies of the app would fight over the same ~/.autobot store (settings,
+// conversation index, provider accounts), so a second launch focuses the
+// running window instead. A `helio://` link that arrives while we are still
+// booting is parked and delivered once the window can receive it.
+const gotSingleInstance = app.requestSingleInstanceLock();
+if (!gotSingleInstance) app.quit();
+
+const PROTOCOL = 'helio';
+let pendingDeepLink = '';
+
+function isDeepLink(v) {
+  return typeof v === 'string' && v.toLowerCase().slice(0, PROTOCOL.length + 3) === PROTOCOL + '://';
+}
+
+function findMainWindow() {
+  if (primaryWindow && !primaryWindow.isDestroyed()) return primaryWindow;
+  for (const w of windows) if (!w.isDestroyed()) return w;
+  return null;
+}
+
+function focusMainWindow() {
+  const win = findMainWindow();
+  if (!win) { if (app.isReady()) createWindow(); return; }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+function routeDeepLink(url) {
+  if (!isDeepLink(url)) return;
+  const win = findMainWindow();
+  if (!win || win.webContents.isLoading()) { pendingDeepLink = url; return; }
+  win.webContents.send('autobot:event', { type: 'deeplink', url });
+  focusMainWindow();
+}
+
+function flushDeepLink(win) {
+  if (!pendingDeepLink || !win || win.isDestroyed()) return;
+  const url = pendingDeepLink;
+  pendingDeepLink = '';
+  try { win.webContents.send('autobot:event', { type: 'deeplink', url }); } catch (_) {}
+}
+
+function registerProtocol() {
+  try {
+    if (process.defaultApp && process.argv.length >= 2) {
+      // Dev run: the OS has to be told which script to boot under Electron.
+      app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
+    } else {
+      app.setAsDefaultProtocolClient(PROTOCOL);
+    }
+  } catch (_) { /* unsupported platform / no permission: links still work via argv */ }
+}
+
+// macOS delivers links through `open-url`, sometimes before `ready`.
+app.on('open-url', (e, url) => {
+  e.preventDefault();
+  if (!app.isReady()) { pendingDeepLink = url; return; }
+  routeDeepLink(url);
+});
+
+app.on('second-instance', (_e, argv) => {
+  const link = (argv || []).find(isDeepLink);
+  if (link) routeDeepLink(link);
+  else focusMainWindow();
+});
+
+
 // Connector id -> in-flight OAuth promise, so double-clicks join one flow.
 const authFlights = new Map();
 // OAuth-gated connectors get their bearer from the encrypted secret store, so
@@ -167,10 +244,19 @@ let nextQuestionId = 1;
 let pendingPermissions = new Map();
 let nextPermissionId = 1;
 
+// Pending Computer Use consent prompts (Desktop `computer:request_*`). Only one
+// can be outstanding at a time, so a boolean-once resolver is enough.
+let pendingComputerUse = null;
+
 function createWindow() {
+  // Restore the last size/position (Desktop mainWindow.js). Bounds that no
+  // longer intersect a display are dropped rather than restoring off-screen.
+  const geo = windowstate.restore(screen.getAllDisplays());
+  const { __maximized, ...bounds } = geo;
   const win = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    width: bounds.width,
+    height: bounds.height,
+    ...(bounds.x !== undefined ? { x: bounds.x, y: bounds.y } : {}),
     minWidth: 940,
     minHeight: 600,
     title: 'Helio Bot',
@@ -186,7 +272,11 @@ function createWindow() {
     },
   });
 
+  if (!primaryWindow || primaryWindow.isDestroyed()) primaryWindow = win;
   windows.add(win);
+  windowstate.track(win, { onRestore: true });
+  // A deep link that arrived during boot is delivered once the page can hear it.
+  win.webContents.once('did-finish-load', () => flushDeepLink(win));
 
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) {
@@ -724,6 +814,35 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     return reply;
   };
   const approveTool = async (toolName, toolArgs) => {
+    // Computer Use consent (Desktop `computer:request_access` /
+    // `request_full_control`). Nothing touches the user's machine until a tier
+    // has been granted, and a grant of `access` does not silently authorise
+    // global shortcuts or launching apps. The model calls these as
+    // `mcp__computer__screenshot`, so normalise to the executor name first —
+    // matching only `/^computer_/` silently skipped every real call.
+    const cuName = String(toolName || '').replace(/^mcp__computer__/, 'computer_');
+    if (/^computer_/.test(cuName)) {
+      const st = computeruse.status();
+      const sensitive = cuName === 'computer_open_app'
+        || (cuName === 'computer_key' && /cmd|command|ctrl|control|alt|option/i.test(String((toolArgs || {}).keys || '')))
+        || (cuName === 'computer_click' && (toolArgs || {}).button === 'right');
+      const want = sensitive ? 'full_control' : 'access';
+      if (!computeruse.satisfies(st.grant, want)) {
+        const granted = await new Promise((resolve) => {
+          const id = 'cu' + Date.now();
+          pendingComputerUse = { id, resolve, tier: want };
+          send({ type: 'computerUseConsent', id, tier: want, tool: cuName, sensitive });
+          setTimeout(() => {
+            if (pendingComputerUse && pendingComputerUse.id === id) { pendingComputerUse = null; resolve(false); }
+          }, 300000);
+        });
+        if (!granted) {
+          send({ type: 'notice', text: 'Computer Use blocked — you did not grant screen access.' });
+          return false;
+        }
+        computer.setEnabled(true);
+      }
+    }
     const mode = permissions || 'auto';
     // settings.json `permissions.allow/deny/ask` rules run BEFORE the mode, the
     // way Example Code evaluates them: deny always wins (even in bypass), ask
@@ -1296,7 +1415,17 @@ ipcMain.handle('autobot:secretStatus', () => secretstore.status());
 // ── Transcript / workspace search ──
 ipcMain.handle('autobot:searchAll', (e, payload) => search.searchAll(payload || {}));
 ipcMain.handle('autobot:searchFiles', (e, payload) => search.searchFiles(payload || {}));
-ipcMain.handle('autobot:setSettings', (e, patch) => store.setSettings(patch));
+ipcMain.handle('autobot:setSettings', (e, patch) => {
+  const next = store.setSettings(patch);
+  // Launch-at-login is an OS setting, not just a stored flag (Desktop parity:
+  // its General pane toggles the login item directly).
+  if (patch && Object.prototype.hasOwnProperty.call(patch, 'launchAtLogin')) {
+    try {
+      app.setLoginItemSettings({ openAtLogin: !!patch.launchAtLogin, openAsHidden: false });
+    } catch (err) { console.error('login item update failed:', err.message); }
+  }
+  return next;
+});
 
 // ── Example-parity config surface (commands / agents / memory / permissions / rewind) ──
 // The renderer's slash menu and settings panes read the SAME `.claude/` files
@@ -1717,6 +1846,77 @@ ipcMain.handle('autobot:complianceDeleteCheck', (e, meta) => {
 });
 ipcMain.handle('autobot:complianceAudit', (e, limit) => compliance.readAudit(limit));
 
+// ---- Computer Use (Desktop `computer:*` consent + `cu:*` capture) ----
+// The 3 consent channels and the 14 `cu:*` channels go through one dispatcher so
+// the renderer and the floating panel share exactly one code path.
+ipcMain.handle('autobot:cu', async (e, channel, payload) => computeruse.invoke(channel, payload || {}));
+ipcMain.handle('autobot:computerUseStatus', () => Object.assign(
+  { ok: true },
+  computeruse.status(),
+  { permissions: computeruse.probePermissions() },
+));
+ipcMain.handle('autobot:computerUseRequest', (e, tier) => computeruse.request(tier));
+ipcMain.handle('autobot:computerUseGrant', (e, tier, opts) => {
+  const res = computeruse.grant(tier, opts || {});
+  computer.setEnabled(!!res.grant);
+  if (pendingComputerUse && computeruse.satisfies(res.grant, pendingComputerUse.tier)) {
+    const p = pendingComputerUse;
+    pendingComputerUse = null;
+    p.resolve(true);
+  }
+  broadcast({ type: 'computerUse', state: computeruse.status() });
+  return res;
+});
+ipcMain.handle('autobot:computerUseRevoke', (e, tier) => {
+  const res = computeruse.revoke(tier);
+  computer.setEnabled(!!res.grant);
+  if (pendingComputerUse) {
+    const p = pendingComputerUse;
+    pendingComputerUse = null;
+    p.resolve(false);
+  }
+  broadcast({ type: 'computerUse', state: computeruse.status() });
+  return res;
+});
+ipcMain.handle('autobot:computerUsePermissions', (e, ask) => (ask ? computeruse.requestOsPermissions() : computeruse.probePermissions()));
+ipcMain.handle('autobot:openComputerPanel', (e, payload) => createComputerPanel(payload || {}));
+
+// The floating Computer Use panel: the live screen preview the user watches
+// while Helio drives the machine, plus the mask/stop controls. Not a chat
+// window, so it is tracked separately from `windows`.
+let computerPanelWin = null;
+function createComputerPanel(payload = {}) {
+  if (computerPanelWin && !computerPanelWin.isDestroyed()) {
+    computerPanelWin.show();
+    computerPanelWin.focus();
+    return { ok: true, windowId: computerPanelWin.id, existing: true };
+  }
+  const saved = computeruse.panelState();
+  const disp = screen.getPrimaryDisplay().workArea;
+  const W = 420, H = 300;
+  const x = Number.isFinite(Number(saved.x)) ? Number(saved.x) : Math.round(disp.x + disp.width - W - 24);
+  const y = Number.isFinite(Number(saved.y)) ? Number(saved.y) : Math.round(disp.y + disp.height - H - 24);
+  computerPanelWin = new BrowserWindow({
+    width: W, height: H, x, y,
+    minWidth: 320, minHeight: 220,
+    frame: false, resizable: true, movable: true, hasShadow: true,
+    alwaysOnTop: !!saved.pinned, skipTaskbar: true, show: false,
+    backgroundColor: '#1b1b19',
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
+  });
+  computerPanelWin.loadFile(path.join(__dirname, 'computer-panel.html'));
+  computerPanelWin.once('ready-to-show', () => { computerPanelWin.show(); });
+  computerPanelWin.on('moved', () => {
+    if (!computerPanelWin || computerPanelWin.isDestroyed()) return;
+    const b = computerPanelWin.getBounds();
+    computeruse.sidePanelMove({ x: b.x, y: b.y });
+  });
+  computerPanelWin.on('closed', () => { computerPanelWin = null; computeruse.sidePanelVisibility(false); });
+  computeruse.sidePanelVisibility(true);
+  if (payload && payload.grant) computeruse.grant(payload.grant, { remember: false });
+  return { ok: true, windowId: computerPanelWin.id };
+}
+
 // ---- Hosted Chrome extensions (Desktop `extension-host` parity) ----
 // The 11 channel handlers, plus the app-facing helpers the Plugins/Extensions
 // views use. `registerIpc` attaches a sink per calling webContents, so events
@@ -1891,8 +2091,21 @@ app.whenReady().then(() => {
     if (!r || !r.ok) console.error('extension bridge unavailable:', (r && r.error) || 'unknown');
   }).catch((e) => console.error('extension bridge failed:', e.message));
   applyFeatures(store.getFeatures());
+  // Re-assert the login item on boot so a moved/reinstalled app keeps working
+  // (macOS stores the path, and it changes between dev and packaged builds).
+  try {
+    const s = store.getSettings();
+    if (typeof s.launchAtLogin === 'boolean') {
+      app.setLoginItemSettings({ openAtLogin: s.launchAtLogin });
+    }
+  } catch (err) { console.error('login item restore failed:', err.message); }
   buildMenu();
   createTray();
+  registerProtocol();
+  // A `helio://` link passed as an argv on a cold start (Windows/Linux, or a
+  // first macOS launch before open-url is registered) becomes the pending link.
+  const bootLink = (process.argv || []).find(isDeepLink);
+  if (bootLink) pendingDeepLink = bootLink;
   createWindow();
   // Start the scheduled-task ticker (fires tasks due on their cadence and
   // notifies every window so the Scheduled panel can refresh).

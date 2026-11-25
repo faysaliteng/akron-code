@@ -188,6 +188,20 @@ contextBridge.exposeInMainWorld('autobot', {
   complianceDeleteCheck: (meta) => ipcRenderer.invoke('autobot:complianceDeleteCheck', meta),
   complianceAudit: (limit) => ipcRenderer.invoke('autobot:complianceAudit', limit),
 
+  // ---- Computer Use (Desktop `computer:*` consent + `cu:*` capture) ----
+  cuInvoke: (channel, payload) => ipcRenderer.invoke('autobot:cu', channel, payload || {}),
+  computerUseStatus: () => ipcRenderer.invoke('autobot:computerUseStatus'),
+  computerUseRequest: (tier) => ipcRenderer.invoke('autobot:computerUseRequest', tier),
+  computerUseGrant: (tier, opts) => ipcRenderer.invoke('autobot:computerUseGrant', tier, opts),
+  computerUseRevoke: (tier) => ipcRenderer.invoke('autobot:computerUseRevoke', tier),
+  computerUsePermissions: (ask) => ipcRenderer.invoke('autobot:computerUsePermissions', !!ask),
+  openComputerPanel: (payload) => ipcRenderer.invoke('autobot:openComputerPanel', payload || {}),
+  onComputerUse: (cb) => {
+    const handler = (event, evt) => { if (evt && evt.type === 'computerUse') cb(evt.state); };
+    ipcRenderer.on('autobot:event', handler);
+    return () => ipcRenderer.removeListener('autobot:event', handler);
+  },
+
   // ---- Hosted Chrome extensions (Desktop `extension-host` parity) ----
   extensionList: () => ipcRenderer.invoke('autobot:extensionList'),
   extensionScan: () => ipcRenderer.invoke('autobot:extensionScan'),
