@@ -626,16 +626,29 @@ function prettyModelId(id) {
   if (!s) return s;
   // Tokens the vendor itself upper-cases; title-casing them reads as a typo.
   const ABBR = { xhigh: 'XHigh', oss: 'OSS', gpt: 'GPT', api: 'API', agy: 'AGY', pro: 'Pro', xl: 'XL' };
-  return s
-    .split(/[-_]+/)
-    .filter(Boolean)
-    .map((tok) => {
-      const low = tok.toLowerCase();
-      if (ABBR[low]) return ABBR[low];
-      if (/^[0-9]+(\.[0-9]+)*[a-z]*$/.test(tok)) return tok;
-      return tok.charAt(0).toUpperCase() + tok.slice(1);
-    })
-    .join(' ');
+  // Reasoning levels are a parenthesised suffix in the vendor's own naming
+  // ("Claude Opus 5.5 (High)"), so a slug's trailing level should read the same
+  // way instead of landing as a bare word beside its neighbours.
+  const LEVELS = new Set(['high', 'xhigh', 'medium', 'low', 'minimal', 'thinking', 'orchestrator']);
+  const words = [];
+  for (const tok of s.split(/[-_]+/).filter(Boolean)) {
+    const low = tok.toLowerCase();
+    let w;
+    if (ABBR[low]) w = ABBR[low];
+    // "120b" / "3b" — keep the number, upper-case the size suffix (120B, 3B).
+    else if (/^[0-9]+(\.[0-9]+)*[a-z]+$/.test(tok)) w = tok.replace(/^([0-9.]+)([a-z]+)$/, (m, a, b) => a + b.toUpperCase());
+    else if (/^[0-9]+(\.[0-9]+)*$/.test(tok)) w = tok;
+    else w = tok.charAt(0).toUpperCase() + tok.slice(1);
+    // "claude-sonnet-5-5-medium" is version 5.5, not version 5 word 5.
+    const prev = words[words.length - 1];
+    if (/^[0-9]$/.test(w) && prev && /^[0-9]$/.test(prev)) { words[words.length - 1] = prev + '.' + w; continue; }
+    words.push(w);
+  }
+  const last = words[words.length - 1];
+  if (words.length > 1 && last && LEVELS.has(last.toLowerCase())) {
+    return words.slice(0, -1).join(' ') + ' (' + last + ')';
+  }
+  return words.join(' ');
 }
 
 // Ids that exist only to serve the editor's inline completion, not chat.

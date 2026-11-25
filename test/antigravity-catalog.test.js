@@ -24,13 +24,16 @@ const CATALOG = {
     'gemini-3.8-flash-tiered': { apiProvider: 'API_PROVIDER_GOOGLE', maxTokens: 1048576 },
     'gemini-4-hydrogen-sonar': { apiProvider: 'API_PROVIDER_GOOGLE', maxTokens: 1048576 },
     'gemini-4-hydrogen-xhigh': { apiProvider: 'API_PROVIDER_GOOGLE', maxTokens: 1048576 },
+    'gemini-4-hydrogen-high': { apiProvider: 'API_PROVIDER_GOOGLE', maxTokens: 1048576 },
+    'gemini-4-hydrogen-tiered-high': { apiProvider: 'API_PROVIDER_GOOGLE', maxTokens: 1048576 },
+    'claude-sonnet-5-5-medium': { apiProvider: 'API_PROVIDER_ANTHROPIC', maxTokens: 1000000 },
     'tab_flash_lite_preview': { apiProvider: 'API_PROVIDER_GOOGLE', maxTokens: 16384 },
     'tab_jump_flash_lite_preview': { apiProvider: 'API_PROVIDER_GOOGLE', maxTokens: 16384 },
+    'gpt-oss-120b-medium': { apiProvider: 'API_PROVIDER_OPENAI_VERTEX', maxTokens: 131072 },
     // Vendor duplicate display names (real: four all say "Gemini 3.5 Flash Lite")
     'gemini-2.5-flash': { displayName: 'Gemini 3.5 Flash Lite', apiProvider: 'API_PROVIDER_GOOGLE', maxTokens: 1048576 },
     'gemini-2.5-flash-lite': { displayName: 'Gemini 3.5 Flash Lite', apiProvider: 'API_PROVIDER_GOOGLE', maxTokens: 1048576 },
     'claude-opus-5-5-high': { displayName: 'Claude Opus 5.5 (High)', apiProvider: 'API_PROVIDER_ANTHROPIC', maxTokens: 1000000 },
-    'gpt-oss-120b-medium': { displayName: 'GPT-OSS 120B (Medium)', apiProvider: 'API_PROVIDER_OPENAI_VERTEX', maxTokens: 131072 },
   },
 };
 
@@ -47,7 +50,7 @@ const byId = Object.fromEntries(list.map((m) => [m.id, m]));
 t('internal tab-completion models are not offered as chat models', () => {
   assert.ok(!byId.tab_flash_lite_preview, 'tab_flash_lite_preview leaked');
   assert.ok(!byId.tab_jump_flash_lite_preview, 'tab_jump_flash_lite_preview leaked');
-  assert.strictEqual(list.length, 8);
+  assert.strictEqual(list.length, 11);
 });
 
 t('a slug-only model is prettified, never shown raw', () => {
@@ -55,8 +58,16 @@ t('a slug-only model is prettified, never shown raw', () => {
   assert.strictEqual(byId['gemini-4-hydrogen-sonar'].label, 'Gemini 4 Hydrogen Sonar');
 });
 
-t('vendor abbreviations keep their casing', () => {
-  assert.strictEqual(byId['gemini-4-hydrogen-xhigh'].label, 'Gemini 4 Hydrogen XHigh');
+t('a trailing reasoning level is parenthesised like the vendor\'s own names', () => {
+  assert.strictEqual(byId['gemini-4-hydrogen-xhigh'].label, 'Gemini 4 Hydrogen (XHigh)');
+  assert.strictEqual(byId['gemini-4-hydrogen-high'].label, 'Gemini 4 Hydrogen (High)');
+  assert.strictEqual(byId['gemini-4-hydrogen-tiered-high'].label, 'Gemini 4 Hydrogen Tiered (High)');
+});
+
+t('size suffixes are upper-cased and dotted versions stay dotted', () => {
+  assert.strictEqual(byId['gpt-oss-120b-medium'].label, 'GPT OSS 120B (Medium)');
+  assert.strictEqual(byId['claude-sonnet-5-5-medium'].label, 'Claude Sonnet 5.5 (Medium)');
+  assert.strictEqual(byId['gemini-3.8-flash-tiered'].label, 'Gemini 3.8 Flash Tiered');
 });
 
 t('an explicit displayName is kept verbatim', () => {
