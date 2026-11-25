@@ -638,7 +638,8 @@ so the token works where it was issued.
 
 | Check | Result |
 |---|---|
-| Providers wired | ✅ `claude` (`anthropic` transport), `chatgpt` (`codex`), `antigravity` (`google`), `grok` (`codex`) — public first-party client IDs, real authorize/token URLs |
+| Providers wired | ✅ `claude` (`anthropic` transport), `chatgpt` (`codex`), `antigravity` (`google`), `grok` (`openai` bearer) — public first-party client IDs, real authorize/token URLs |
+| Bearer provider (Grok) | ✅ no browser flow: the picker shows a password field + `Add key`; the key is proved against `GET {baseURL}/models` first. Verdict ladder: `2xx` good · `401`/`403`/`400` rejected (xAI answers **400** `Incorrect API key provided`, never 401) · `404`/`429`/`5xx`/network kept. A rejected key stores nothing (live: bogus key → one human line in the picker, `accts: 0`) |
 | Token endpoint corrections (learned live) | ✅ Claude token URL is `api.anthropic.com/v1/oauth/token` (`console.anthropic.com` **429s** the identical grant) and it requires an `application/json` body — form-encoded returns **400**. Refresh body is exactly `{grant_type, refresh_token, client_id}`, **no** `scope` echo |
 | Multi-account storage | ✅ index `~/.autobot/provider-oauth.json` (`0600`, non-secret: provider/account/label/plan/scopes/expiresAt/source); tokens in `secretstore` under `provider-oauth:<provider>:<account>` — never in the renderer, never in logs (`publicRecord` strips tokens, asserted) |
 | Refresh | ✅ lazy ~120 s before expiry (`REFRESH_SKEW_MS`); rotated refresh token written back and mirrored into the source app's store when the account was imported |
@@ -648,7 +649,7 @@ so the token works where it was issued.
 | Never leaks a token to the wrong host | ✅ `normalizeProvider` no longer defaults `baseURL` to `http://localhost:11434/v1` when `transport` is set, so a subscription bearer can't be POSTed at Ollama; failover pool preserves `transport`/`oauth`/`accessToken`/`account`/`accountId`/`sessionId`/`codexUrl`/`cloudcodeUrl`/`project` |
 | Dead account | ✅ `hydrateProvider` throws one human line with `err.code = 'provider_needs_signin'`; `autobot:run`, `chatOnce`, `compact`, `testProvider`, `runScheduledPrompt` all pre-hydrate and return `{ok:false, needsSignIn:true}` |
 | UI | ✅ `Model → Subscription accounts`: per-provider label, `unverified` chip on the three adapters with no local account to prove, `Sign in` / `Add account`, one row per account (`● label · plan`, `×` sign out), `Import accounts from this Mac`, one-line error strip. Picking an account stores only `provider.oauthProvider`; hand-editing `baseURL`/`apiKey` clears the binding |
-| Unit suites | ✅ `node test/provideroauth.test.js` → **160 passed, 0 failed**; `node test/providertransport.test.js` → **93 passed, 0 failed** |
+| Unit suites | ✅ `node test/provideroauth.test.js` → **170 passed, 0 failed** (incl. the bearer verdict ladder); `node test/providertransport.test.js` → **93 passed, 0 failed** |
 | **Live inference** | ✅ imported token against real `api.anthropic.com` → `OAUTH-OK` (usage 15 in / 7 out) |
 | **Live in the app (CDP)** | ✅ menu shows Claude (account row `Claude · max`), ChatGPT / Antigravity / Grok with `unverified`; picking the account + one turn streamed `RUN-OK` in ~2 s with `usage`, `done`, `complete`; bogus account → `{ok:false, needsSignIn:true, error:"ChatGPT needs to be signed in again — open the model menu and choose Sign in."}` |
 | Honesty | ⚠️ only **Claude** is verified end-to-end on this machine. Codex / Gemini / Grok are built from the published wire formats and unit-tested; the UI labels them `unverified` rather than claiming they were tested |

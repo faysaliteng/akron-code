@@ -16,6 +16,7 @@ const pluginsDir = require('./plugins');
 const scheduler = require('./scheduler');
 const providerStatus = require('./providerstatus');
 const providerOauth = require('./provider-oauth');
+const providertransport = require('./providertransport');
 const workspace = require('./workspace');
 const paths = require('./paths');
 const mindmap = require('./mindmap');
@@ -591,7 +592,7 @@ async function hydrateProvider(provider) {
     err.cause = e;
     throw err;
   }
-  return Object.assign({}, provider, {
+  const out = Object.assign({}, provider, {
     // Native transport wins over any OpenAI-compatible baseURL the renderer had.
     transport: r.transport,
     accessToken: r.accessToken,
@@ -599,6 +600,17 @@ async function hydrateProvider(provider) {
     oauth: true,
     model: provider.model || (r.models && r.models[0] && r.models[0].id) || '',
   });
+  // Providers with no bespoke wire adapter are plain OpenAI-compatible bearers
+  // (xAI/Grok today). Hand the token over as the key so the ordinary
+  // `{baseURL}/chat/completions` path uses it, and clear `transport` so
+  // nothing tries to find an adapter that doesn't exist.
+  if (!providertransport.needsTransport({ transport: r.transport })) {
+    out.transport = '';
+    out.apiKey = r.accessToken;
+    out.baseURL = r.baseURL || provider.baseURL || '';
+    out.supportsTools = true;
+  }
+  return out;
 }
 
 ipcMain.handle('autobot:run', async (event, payload) => {
@@ -890,8 +902,7 @@ ipcMain.handle('autobot:testProvider', async (event, provider) => {
       return { ok: false, error: e.message, needsSignIn: e.code === 'provider_needs_signin' };
     }
     if (p.transport) {
-      const { chatCompletion } = require('./providertransport');
-      const msg = await chatCompletion(p, [{ role: 'user', content: 'ping' }], [], () => {}, null, 16);
+      const msg = await providertransport.chatCompletion(p, [{ role: 'user', content: 'ping' }], [], () => {}, null, 16);
       const text = typeof msg.content === 'string'
         ? msg.content
         : (Array.isArray(msg.content) ? msg.content.map((x) => (x && x.text) || '').join('') : '');

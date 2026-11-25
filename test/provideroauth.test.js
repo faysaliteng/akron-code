@@ -439,5 +439,62 @@ const jwt = (claims) => 'h.' + b64url(claims) + '.sig';
     ok('resolving an unknown provider names it', !!(e4 && /unknown provider/.test(e4.message)));
   }
 
+  // -------------------------------------------------------------------------
+  console.log('\nbearer verification verdict ladder (xAI answers 400, not 401)');
+  // -------------------------------------------------------------------------
+  {
+    const before = I.readDb().accounts.filter((a) => a.provider === 'grok').length;
+    const fake = (status, body) => async () => ({
+      status,
+      text: async () => body,
+      json: async () => ({ data: [] }),
+    });
+
+    // A wrong key must never become an "account".
+    let e400 = null;
+    try {
+      await po.addBearer('grok', 'sk-bogus-test-key', {
+        fetchImpl: fake(400, '{"code":"invalid-argument","error":"Incorrect API key provided."}'),
+      });
+    } catch (e) { e400 = e; }
+    ok('a 400 "Incorrect API key" is a rejection, not an account',
+      !!(e400 && /rejected that key/.test(e400.message) && /Incorrect API key/.test(e400.message)), e400 && e400.message);
+    eq('a rejected key stores nothing',
+      I.readDb().accounts.filter((a) => a.provider === 'grok').length, before);
+
+    for (const [name, status] of [['403', 403], ['401', 401]]) {
+      let e = null;
+      try { await po.addBearer('grok', 'sk-bogus-test-key', { fetchImpl: fake(status, '{}') }); } catch (x) { e = x; }
+      ok('a ' + name + ' is a rejection', !!(e && /rejected that key/.test(e.message)));
+    }
+
+    // Anything we cannot judge is kept: no /models route, rate limit, server
+    // error, or a network failure (offline user).
+    for (const [name, status] of [['404', 404], ['429', 429], ['500', 500], ['200', 200]]) {
+      let id = '';
+      try {
+        const rec = await po.addBearer('grok', 'sk-unverifiable-test-key', { fetchImpl: fake(status, '') });
+        id = rec && rec.account;
+        ok('a ' + name + ' is kept (cannot judge the key)', !!id, rec);
+      } catch (e) {
+        ok('a ' + name + ' is kept (cannot judge the key)', false, e.message);
+      } finally {
+        if (id) { try { po.removeAccount('grok', id); } catch (_) { /* already gone */ } }
+      }
+    }
+    let netKept = '';
+    try {
+      const rec = await po.addBearer('grok', 'sk-offline-test-key', { fetchImpl: async () => { throw new Error('ENOTFOUND'); } });
+      netKept = rec && rec.account;
+      ok('a network failure keeps the key (offline user)', !!netKept);
+    } catch (e) {
+      ok('a network failure keeps the key (offline user)', false, e.message);
+    } finally {
+      if (netKept) { try { po.removeAccount('grok', netKept); } catch (_) { /* gone */ } }
+    }
+    eq('the ladder leaves the account index clean',
+      I.readDb().accounts.filter((a) => a.provider === 'grok').length, before);
+  }
+
   console.log('\n=== RESULT: ' + pass + ' passed, ' + (process.exitCode ? 'FAILURES' : '0 failed') + ' ===');
 })().catch((e) => { console.error('SUITE CRASHED', e); process.exit(1); });

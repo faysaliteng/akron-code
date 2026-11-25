@@ -302,6 +302,11 @@ Example Desktop's sidebar now maps 1:1 onto working local features — not stubs
 - **Import what's already on this Mac** — the Claude Code keychain item, Codex
   `auth.json`, Gemini creds, Grok config. Anything that isn't there is skipped
   rather than faked.
+- **Key-based providers ask for a key, not a browser.** Grok (xAI) has no
+  first-party web flow we can drive, so its row is a password field plus
+  `Add key`; the key is checked against `GET /models` before it is stored, and
+  a wrong key is refused with one plain line (xAI answers `400`, not `401`) so
+  it can never masquerade as a working account.
 - **Honest labels.** Only Claude is verified end-to-end on this machine; the
   ChatGPT / Antigravity / Grok rows carry an `unverified` chip because their
   adapters are built from published wire formats and unit tests, not from a live

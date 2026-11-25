@@ -872,22 +872,41 @@ async function addBearer(provId, token, opts) {
   const value = String(token || '').trim();
   if (!value) throw new Error('empty token');
   // Prove the token works before storing it, so a typo cannot look like a
-  // working account. A provider that has no /models route is kept anyway.
+  // working account. Verdict ladder:
+  //   2xx            -> good
+  //   401/403, 4xx   -> rejected (xAI answers **400** "Incorrect API key", not 401)
+  //   404            -> no /models route, can't tell, keep it
+  //   429 / 5xx / net-> transient, keep it (the user may be offline or limited)
   let plan = '';
   if (o.verify !== false && prov.baseURL) {
+    let res = null;
     try {
       const doFetch = o.fetchImpl || fetch;
-      const res = await doFetch(prov.baseURL.replace(/\/+$/, '') + '/models', {
+      res = await doFetch(prov.baseURL.replace(/\/+$/, '') + '/models', {
         headers: { authorization: 'Bearer ' + value },
       });
-      if (res.status === 401 || res.status === 403) {
-        const err = new Error(prov.label + ' rejected that token');
-        err.status = res.status;
+    } catch (e) {
+      res = null; // network failure: store it anyway
+    }
+    if (res) {
+      const st = Number(res.status) || 0;
+      const keep = st >= 200 && st < 300 ? true : (st === 404 || st === 429 || st >= 500);
+      if (!keep) {
+        let detail = '';
+        try {
+          const body = await res.text();
+          const j = JSON.parse(body);
+          detail = String((j && (j.error_description || j.error || j.message)) || '').trim();
+          if (typeof (j && j.error) === 'object' && j.error) {
+            detail = String(j.error.message || j.error.description || detail || '').trim();
+          }
+        } catch (e) { /* not JSON: no detail */ }
+        detail = detail.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
+        const err = new Error(prov.label + ' rejected that key' + (detail ? ' — ' + detail : ''));
+        err.status = st;
+        err.human = true;
         throw err;
       }
-    } catch (e) {
-      if (e && (e.status === 401 || e.status === 403)) throw e;
-      // Network failure: store it anyway, the user may be offline.
     }
   }
   const ident = await identify(provId, { accessToken: value, refreshToken: '' }, { fetchImpl: o.fetchImpl });

@@ -4083,6 +4083,8 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
   const [provOauth, setProvOauth] = useState(null);
   const [provBusy, setProvBusy] = useState('');
   const [provNotice, setProvNotice] = useState('');
+  // Bearer providers (xAI/Grok) have no browser flow: the user pastes a key.
+  const [provToken, setProvToken] = useState({});
 
   const loadProvOauth = useCallback(async () => {
     const r = await Promise.resolve(window.autobot.providerStatus()).catch(() => null);
@@ -4103,11 +4105,13 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
       if (kind === 'signin') r = await window.autobot.providerSignIn(id);
       else if (kind === 'signout') r = await window.autobot.providerSignOut(id, account);
       else if (kind === 'import') r = await window.autobot.providerImport();
+      else if (kind === 'bearer') r = await window.autobot.providerAddBearer(id, account);
       if (r && r.ok === false && r.error) {
         // One human line, never a stack trace or raw markup.
         setProvNotice(String(r.error).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 220));
       } else {
         setProvNotice('');
+        if (kind === 'bearer') setProvToken({});
       }
       await loadProvOauth();
       return r;
@@ -4591,9 +4595,33 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                                 </div>
                               );
                             })}
-                            {!accounts.length && (
-                              <div className="prov-none">{pv.canBrowserSignIn ? 'Not signed in' : 'Add a token in Settings'}</div>
-                            )}
+                            {!accounts.length && (pv.canBrowserSignIn ? (
+                              <div className="prov-none">Not signed in</div>
+                            ) : (
+                              <div className="prov-token">
+                                <input
+                                  className="prov-token-in"
+                                  type="password"
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                  placeholder={'Paste your ' + pv.vendor + ' API key'}
+                                  value={provToken[pv.id] || ''}
+                                  disabled={!!provBusy}
+                                  onChange={(e) => setProvToken((m) => ({ ...m, [pv.id]: e.target.value }))}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && (provToken[pv.id] || '').trim()) {
+                                      e.preventDefault();
+                                      providerAction('bearer', pv.id, (provToken[pv.id] || '').trim());
+                                    }
+                                  }}
+                                />
+                                <button
+                                  className="prov-link"
+                                  disabled={!!provBusy || !(provToken[pv.id] || '').trim()}
+                                  onClick={() => providerAction('bearer', pv.id, (provToken[pv.id] || '').trim())}
+                                >{provBusy === 'bearer:' + pv.id ? 'Checking…' : 'Add key'}</button>
+                              </div>
+                            ))}
                           </div>
                         );
                       })}

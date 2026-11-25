@@ -1361,15 +1361,23 @@ transports, a bought subscription was unusable in the app.
    `tool_calls` always wins over `stop` when settling `finish_reason`.
 5. **Codex's input array order matters**: assistant prose must be emitted as an
    `output_text` item *before* the `function_call` item, or indices shift.
+6. **xAI answers `400`, not `401`, for a bad key** — `{"code":"invalid-argument",
+   "error":"Incorrect API key provided."}`. A 401-only verification would have
+   stored a typo as a working account. The ladder now rejects any 4xx except
+   `404` (no `/models` route) and keeps `429`/`5xx`/network failures, because
+   those judge the network rather than the key. Grok has no browser flow
+   (`kind: 'bearer'`), so the picker asks for a key and `Add key` proves it
+   before storage.
 
 ## V.4 Verification
 
 | Check | Result |
 |---|---|
-| `node test/provideroauth.test.js` (new) | **160 passed / 0 failed** |
+| `node test/provideroauth.test.js` (new) | **170 passed / 0 failed** (incl. bearer verdict ladder) |
 | `node test/providertransport.test.js` (new) | **93 passed / 0 failed** |
 | Live inference | imported token → `api.anthropic.com` → `OAUTH-OK` (15 in / 7 out) |
 | Live in the app (CDP) | account picked → turn streamed `RUN-OK` with `usage`/`done`/`complete`; bogus account → `needsSignIn:true` with one human line |
+| Live bearer path (CDP) | Grok group renders a password field + `Add key`; a bogus key → `Grok rejected that key — Incorrect API key provided. …` in the picker and **0** accounts stored; Claude turn still `STILL-OK` in 0.6 s after the change |
 | Gates | parity-audit EXIT 0; tool definitions unchanged at **141** |
 
 **Honesty:** only **Claude** is verified end-to-end here. Codex / Gemini / Grok
