@@ -272,6 +272,8 @@ async function evaluate(ws, expression) {
   };
   console.log(JSON.stringify(report, null, 2));
 
+  // Leave the composer at its defaults so other UI suites are not affected.
+  await evaluate(ws, `localStorage.setItem('autobot:swarmEnabled','false')`).catch(() => {});
   ws.close();
   servers.forEach((s) => s.close());
   // Put the user's real provider pool back exactly as it was.

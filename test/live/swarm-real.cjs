@@ -160,6 +160,8 @@ let savedPool = null;   // restored on any exit path, including crashes
   const alphaOk = fs.existsSync(alphaPath);
   const betaOk = fs.existsSync(betaPath);
 
+  // Leave the composer at its defaults so other UI suites are not affected.
+  await evaluate(ws, `localStorage.setItem('autobot:swarmEnabled','false')`).catch(() => {});
   ws.close();
   if (savedOrch != null) fs.writeFileSync(orchFile, savedOrch);
   else { try { fs.unlinkSync(orchFile); } catch (_) {} }

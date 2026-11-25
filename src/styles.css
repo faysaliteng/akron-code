@@ -244,7 +244,15 @@ button { font-family: inherit; letter-spacing: inherit; }
 }
 .reason-pick.active .reason-val { background: var(--accent); color: var(--bg-000); }
 .reason-caret { font-size: 9px; opacity: 0.7; line-height: 1; }
-.reason-menu { min-width: 210px; }
+/* Wide enough that the level hints read in full ("Deep, thorough reasoning"),
+   not truncated to "Deep, thorou…". */
+.reason-menu { min-width: 300px; }
+.reason-menu .model-opt { gap: 12px; }
+.reason-menu .model-opt-name { flex: 0 0 auto; overflow: visible; }
+.reason-menu .model-opt-prov {
+  max-width: none; margin-left: auto; text-align: right;
+  white-space: normal; overflow: visible; text-overflow: clip;
+}
 
 /* Swarm opt-in pill (composer toolbar) — user-chosen, never automatic */
 .swarm-pill {
