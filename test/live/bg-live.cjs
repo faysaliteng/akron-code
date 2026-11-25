@@ -1,4 +1,4 @@
-// Live proof that Claude Code's background-work surface actually works through
+// Live proof that Example Code's background-work surface actually works through
 // the real tool dispatcher (electron/tools.js -> electron/bg.js):
 //
 //   Bash { run_in_background:true } -> shell_* id, polled with TaskOutput, killed with KillShell

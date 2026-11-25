@@ -1,5 +1,5 @@
 'use strict';
-// Sub-agent definitions — Claude's `.claude/agents/*.md` model.
+// Sub-agent definitions — Example's `.claude/agents/*.md` model.
 //
 // A definition is a markdown file with frontmatter:
 //
@@ -13,7 +13,7 @@
 //
 // Built-in types (general-purpose, Explore, Plan, Bash, claude-code-guide,
 // statusline-setup, output-style-setup) always exist, and a user definition
-// with the same name overrides the built-in — exactly like Claude Code.
+// with the same name overrides the built-in — exactly like Example Code.
 
 const path = require('path');
 const cc = require('./claudeconfig');
@@ -85,11 +85,11 @@ const BUILTIN = {
   },
   'claude-code-guide': {
     name: 'claude-code-guide',
-    description: 'Answers questions about Claude Code, the Claude Agent SDK, and the Claude API.',
+    description: 'Answers questions about Example Code, the Example Agent SDK, and the Example API.',
     model: 'haiku',
     tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'],
     body: [
-      'You answer questions about (1) Claude Code — features, hooks, slash commands, MCP servers, settings, IDE integrations, keyboard shortcuts; (2) the Claude Agent SDK — building custom agents; (3) the Claude API — tool use, streaming, SDK usage.',
+      'You answer questions about (1) Example Code — features, hooks, slash commands, MCP servers, settings, IDE integrations, keyboard shortcuts; (2) the Example Agent SDK — building custom agents; (3) the Example API — tool use, streaming, SDK usage.',
       'Answer from what you know plus the local documentation you can read. Be concise and concrete; include a code snippet when it helps.',
     ].join('\n'),
   },
@@ -181,7 +181,7 @@ function resolve(name, cwd) {
   const list = discover(cwd, { fresh: true });
   const exact = list.find((d) => d.name.toLowerCase() === want.toLowerCase());
   if (exact) return exact;
-  // Claude also accepts undefined alias spellings for the built-ins.
+  // Example also accepts undefined alias spellings for the built-ins.
   const aliases = { general: 'general-purpose', 'general purpose': 'general-purpose', explorer: 'explore', planner: 'plan', 'code-reviewer': null };
   const alt = aliases[want.toLowerCase()];
   if (alt) return list.find((d) => d.name.toLowerCase() === alt) || null;
@@ -189,7 +189,7 @@ function resolve(name, cwd) {
 }
 
 // A definition's tool list, expanded to the tool names the runtime actually
-// dispatches (our Edit/Write/Read names already match Claude's).
+// dispatches (our Edit/Write/Read names already match Example's).
 function allowedToolSet(def) {
   if (!def || !Array.isArray(def.tools) || !def.tools.length) return null;
   return new Set(def.tools.map((t) => String(t).split('(')[0].trim()).filter(Boolean));

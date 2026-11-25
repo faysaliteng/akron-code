@@ -3,7 +3,7 @@
 // MINDMAP.md in each conversation's project folder. On a model switch the next
 // model reads this (injected as <project_mindmap>) and immediately understands
 // the goal, progress, decisions and files — cross-model continuity without any
-// shared provider state. Claude Desktop parity: a project context that survives
+// shared provider state. Example Desktop parity: a project context that survives
 // swapping gemma4 → Kimi → DeepSeek → Nemotron → TokenRouter.
 
 const fs = require('fs');

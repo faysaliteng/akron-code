@@ -196,10 +196,10 @@ async function main() {
     assert.match(toolMsg.content, /from-tool/);
   });
 
-  // Claude's loop runs until the model stops calling tools. A fixed 40-step
+  // Example's loop runs until the model stops calling tools. A fixed 40-step
   // ceiling used to cut long builds off with no explanation — the user saw an
   // agent that "stopped after 5 steps" and blamed a limit.
-  await test('agent loop has no artificial step cap (Claude parity)', async () => {
+  await test('agent loop has no artificial step cap (Example parity)', async () => {
     const plan = [];
     for (let i = 0; i < 45; i++) plan.push({ tool_calls: [{ name: 'Bash', args: { command: 'echo step-' + i } }] });
     plan.push({ content: 'all-45-done' });
@@ -266,7 +266,7 @@ async function main() {
       if (e.type === 'tool') rows.push(i);
       if (e.type === 'toolResult') results.push(i);
     });
-    assert.strictEqual(rows.length, 3, 'three tool rows (Claude shows parallel calls at once)');
+    assert.strictEqual(rows.length, 3, 'three tool rows (Example shows parallel calls at once)');
     assert.strictEqual(results.length, 3, 'three results');
     assert.ok(Math.max(...rows) < Math.min(...results), 'every row is emitted before the batch resolves');
     assert.ok(events.filter((e) => e.type === 'toolResult').every((e) => !e.isError), 'all reads succeed');
@@ -752,7 +752,7 @@ async function main() {
     assert.ok(/const override = typeof textOverride === 'string' \? textOverride : undefined;/.test(src),
       'send() must type-check textOverride before calling .trim()');
   });
-  await test('tool cards render above the assistant answer (Claude order)', () => {
+  await test('tool cards render above the assistant answer (Example order)', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8');
     const start = src.indexOf('function Message(');
     const end = src.indexOf('// Share / export dropdown', start);
@@ -1620,9 +1620,9 @@ async function main() {
     assert.match(failed[0].result, /requires a "content"/i);
   });
 
-  // ---- Claude-style argument aliasing: models trained on Claude's schema keep
+  // ---- Example-style argument aliasing: models trained on Example's schema keep
   // sending file_path/old_str/file_text. Those must not dead-end a build ----
-  console.log('\nClaude-convention tool arguments (aliasing):');
+  console.log('\nExample-convention tool arguments (aliasing):');
   const aliasDir = fs.mkdtempSync(path.join(os.tmpdir(), 'helio-alias-'));
   const art = async (name, args) => {
     const r = await runTool(name, args, { cwd: aliasDir });

@@ -12,7 +12,7 @@ Design System type: published. With `type_url` on your Artifact tool, or to revi
 3. **Build** (checks everything as the page will):
 
    ```bash
-   bun run ${CLAUDE_SKILL_DIR}/scripts/make.ts ./acme-ds --title "Acme Design System" --by you --note "first cut" --out acme-ds.site
+   bun run ${EXAMPLE_SKILL_DIR}/scripts/make.ts ./acme-ds --title "Acme Design System" --by you --note "first cut" --out acme-ds.site
    ```
 
    Writes the FOLDER `acme-ds.site/`: `index.html` (the page) plus a
@@ -23,7 +23,7 @@ Design System type: published. With `type_url` on your Artifact tool, or to revi
    TSX/JSX components: `--components-src <dir>/components/src/index.tsx
    --namespace AcmeDS` compiles `components/bundle.js`.
    No `bun` on this machine? `tsx` runs the same script, same arguments.
-4. **Publish** the folder as ONE multi-file artifact — in Claude Code the
+4. **Publish** the folder as ONE multi-file artifact — in Example Code the
    `Artifact` tool: `file_path`, `root`
    and `files` exactly as the `.files.json` lists them, an `icon` word if
    the tool has one (generic; first publish), a one-line `description`,
@@ -76,7 +76,7 @@ copy of anything you must read).
 The user wants a system but gave you nothing to build from: `mkdir
 ember-ds`, build it as is (an EMPTY directory builds the empty system)
 with the real `--title`, publish, watch the artifact where your tool
-offers it (Claude Code: publishing subscribes you; else `Artifact`
+offers it (Example Code: publishing subscribes you; else `Artifact`
 `action: "watch"`), and say ONE thing: it's open and empty; drop logos, icons, font files, screenshots, a
 deck or a PDF guide onto the page (or attach them here). The page files fonts under `fonts/`, a folder under
 its own name, the rest under `assets/` (what you READ) and SAVES ITSELF —

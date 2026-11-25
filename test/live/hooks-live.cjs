@@ -1,4 +1,4 @@
-// Live proof that Claude Code's lifecycle hooks actually fire inside the real
+// Live proof that Example Code's lifecycle hooks actually fire inside the real
 // agent loop (electron/llm.js), not just inside electron/hooks.js.
 //
 // A local OpenAI-compatible stub plays the model. The agent is given a temp

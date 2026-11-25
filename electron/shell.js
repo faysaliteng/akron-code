@@ -1,7 +1,7 @@
 'use strict';
 const { spawn } = require('child_process');
 
-// Background shell manager — mirrors Claude's terminal MCP (mcp__terminal__*)
+// Background shell manager — mirrors Example's terminal MCP (mcp__terminal__*)
 // and powers the Bash tool's background mode + KillShell.
 // Each shell is a long-lived zsh process with a PTY-like I/O buffer.
 

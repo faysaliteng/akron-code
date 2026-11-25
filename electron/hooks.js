@@ -1,7 +1,7 @@
 'use strict';
-// Helio Bot — lifecycle hooks (Claude Code parity).
+// Helio Bot — lifecycle hooks (Example Code parity).
 //
-// Claude Code lets a user attach shell commands, prompts, or agents to ten
+// Example Code lets a user attach shell commands, prompts, or agents to ten
 // lifecycle events. Helio Bot implements the same ten events and the same
 // on-disk contract, so a `.claude/settings.json` hooks block works unchanged.
 //
@@ -187,7 +187,7 @@ async function runEvent(event, payload = {}, opts = {}) {
       const record = { event: name, hook: hook.command || hook.prompt || hook.type, exitCode: res.exitCode, output: parsed, stderr: res.stderr };
       verdict.results.push(record);
 
-      // Exit code 2 = block (Claude's documented convention).
+      // Exit code 2 = block (Example's documented convention).
       if (res.exitCode === 2) {
         verdict.blocked = true;
         verdict.reason = parsed.reason || res.stderr || String(parsed.systemMessage || 'Blocked by PreToolUse hook');

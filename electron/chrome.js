@@ -1,7 +1,7 @@
 'use strict';
 // Chrome control via Chrome DevTools Protocol (CDP) over WebSocket.
 // Requires Chrome/Chromium running with --remote-debugging-port=9222.
-// Mirrors Claude Desktop's Chrome/Computer-Use browser tooling as a local equivalent.
+// Mirrors Example Desktop's Chrome/Computer-Use browser tooling as a local equivalent.
 
 const WebSocket = require('ws');
 const http = require('http');

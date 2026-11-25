@@ -1,7 +1,7 @@
-# Helio Bot vs Claude Desktop — Final Verified Parity Report
+# Helio Bot vs Example Desktop — Final Verified Parity Report
 
 **Date:** 2026-11-25
-**Target:** Claude Desktop `v6.28899.6` (reverse-engineered via REA from
+**Target:** Example Desktop `v6.28899.6` (reverse-engineered via REA from
 `/Applications/Claude.app/Contents/Resources/app.asar` — 1575 i18n strings, bundled
 skills/MCPs, browser pane, voice, multi-window mapped).
 
@@ -13,27 +13,27 @@ wasn't observed in a real tool response.
 
 ---
 
-## A. WHAT Helio Bot DOES THAT CLAUDE DESKTOP DOESN'T (verifiably MORE advanced)
+## A. WHAT Helio Bot DOES THAT EXAMPLE DESKTOP DOESN'T (verifiably MORE advanced)
 
-These are structural capabilities with no Claude Desktop equivalent — not cosmetic.
+These are structural capabilities with no Example Desktop equivalent — not cosmetic.
 
-| # | Feature | Why Claude Desktop lacks it |
+| # | Feature | Why Example Desktop lacks it |
 |---|---------|------------------------------|
-| 1 | **Orchestrator — 100+ API keys, auto-failover** | Claude Desktop binds a single Anthropic account. Helio Bot keeps a provider pool and `chatWithFailover` hot-switches on rate-limit / `limit-reached` / 429 without user action. |
-| 2 | **Model-agnostic pluggable layer** | Any OpenAI-compatible `/v1/chat/completions` endpoint (NVIDIA NIM, OpenAI, Anthropic-compat, local). Claude is locked to Anthropic models. |
-| 3 | **Local, free Computer Use** | Helio Bot drives macOS via `screencapture` + `osascript` System Events (`electron/computer.js`). Claude's Computer Use is cloud-hosted and metered. |
+| 1 | **Orchestrator — 100+ API keys, auto-failover** | Example Desktop binds a single Anthropic account. Helio Bot keeps a provider pool and `chatWithFailover` hot-switches on rate-limit / `limit-reached` / 429 without user action. |
+| 2 | **Model-agnostic pluggable layer** | Any OpenAI-compatible `/v1/chat/completions` endpoint (NVIDIA NIM, OpenAI, Anthropic-compat, local). Example is locked to Anthropic models. |
+| 3 | **Local, free Computer Use** | Helio Bot drives macOS via `screencapture` + `osascript` System Events (`electron/computer.js`). Example's Computer Use is cloud-hosted and metered. |
 | 4 | **Local, free Chrome control** | Direct CDP → `127.0.0.1:9222` (`electron/chrome.js`). No per-action Anthropic billing. |
-| 5 | **Local built-in browser as agent tools** | Electron `<webview>` + `browser_*` tools + `electron/browser.js`. Claude's browser is a cloud-managed MCP. |
-| 6 | **Recursive sub-agent orchestration tree** | `runAgent` recursion tracked in `subagentControllers` Map with per-agent `AbortController` + live subagent panel. Claude Desktop doesn't expose a user-visible recursive subagent tree. |
-| 7 | **95 tool executors** | `bash`, `read/write/edit`, `glob`, `grep`, `web_fetch`, `web_search`, `todo_write`, notebooks, skills, slash commands, `JavaScript` eval, etc. — a superset of Claude's bundled MCP tool surface. |
+| 5 | **Local built-in browser as agent tools** | Electron `<webview>` + `browser_*` tools + `electron/browser.js`. Example's browser is a cloud-managed MCP. |
+| 6 | **Recursive sub-agent orchestration tree** | `runAgent` recursion tracked in `subagentControllers` Map with per-agent `AbortController` + live subagent panel. Example Desktop doesn't expose a user-visible recursive subagent tree. |
+| 7 | **95 tool executors** | `bash`, `read/write/edit`, `glob`, `grep`, `web_fetch`, `web_search`, `todo_write`, notebooks, skills, slash commands, `JavaScript` eval, etc. — a superset of Example's bundled MCP tool surface. |
 | 8 | **MCP: 3 transports + config UI** | stdio + SSE + streamable-HTTP (`electron/mcp.js`, 212 lines) with per-server transport select. |
 | 9 | **Bot bridges (`cowork` equivalents)** | Local `electron/cowork.js` — no cloud relay dependency. |
 
 ---
 
-## B. GENUINELY MISSING vs Claude Desktop (real gaps, honestly stated)
+## B. GENUINELY MISSING vs Example Desktop (real gaps, honestly stated)
 
-These are features the real Claude Desktop ships that Helio Bot does **not** yet have. Not
+These are features the real Example Desktop ships that Helio Bot does **not** yet have. Not
 a claim-by-absence — each was confirmed absent in source and not observed in the running
 app.
 
@@ -44,7 +44,7 @@ app.
    Settings section (`AccountSection` + persisted `autobot:account`): OAuth "Connect to
    Anthropic" / SSO IdP-config scaffold, plan + upgrade row, and a sync-status row — each
    opening the real Anthropic endpoint in the system browser via `autobot:openExternal`.
-   This is an honest scaffold: there is still **no true Anthropic sign-in, no Claude.ai
+   This is an honest scaffold: there is still **no true Anthropic sign-in, no Example.ai
    history import, no cross-device sync** behind it (single `BrowserWindow`; no account
    IPC that talks to Anthropic's backend).
 2. ~~**Multi-window.**~~ **RESOLVED (2026-11-24).** `electron/main.js` now tracks a
@@ -78,12 +78,12 @@ app.
    2026-11-25).** The `Account & Billing` Settings section now renders plan + upgrade,
    SSO IdP config, and sync-status UI. Still local-only (settings live in `~/.autobot` +
    localStorage); no real enterprise IdP handshake or plan/billing backend.
-8. ~~**Claude Code CLI integration.**~~ **RESOLVED (2026-11-25).** New repo-aware `Code`
+8. ~~**Example Code CLI integration.**~~ **RESOLVED (2026-11-25).** New repo-aware `Code`
    panel (sidebar `Code` button → `panel === 'code'` → `CodeView`): live Git dashboard
    (branch / remote / ahead-behind / changed-file counts / porcelain status lines / recent
    commits) via `electron/git.js` (`gitInfo` → `findRoot` + `git status --porcelain` +
    `rev-list --left-right --count` + `log`), folder-open via `autobot:pickFolder`, and a
-   unified LCS diff viewer via `autobot:diff`. **Permission gating** (Claude Code's
+   unified LCS diff viewer via `autobot:diff`. **Permission gating** (Example Code's
    ask-before-write model): `permissions` (`auto`|`ask`|`acceptEdits`|`plan`|`bypass`, persisted `autobot:permissions`) →
    threaded `autobot:run` payload → `runAgent` opts → `approveTool` ctx → `runTool` gate on
    the `MUTATING` set (`Bash`/`Write`/`Edit`/`MultiEdit`/`mcp__workspace__write_file`/
@@ -108,7 +108,7 @@ app.
 
 ### ⚪ Intentional extras (NOT gaps — out-of-model panels)
 
-`Notebooks`, `Terminal`, and `Skills` are **Claude Code** concepts, not Claude Desktop
+`Notebooks`, `Terminal`, and `Skills` are **Example Code** concepts, not Example Desktop
 concepts. They are extra surface added beyond strict 1:1 Desktop parity. If strict Desktop
 parity is the goal, the sidebar should be `Chats / Recents / Projects / (account +
 settings)` and these three panels are out-of-model additions, not parity gaps.
@@ -117,7 +117,7 @@ settings)` and these three panels are out-of-model additions, not parity gaps.
 
 ## B2. PROJECT-FOLDER & CODING/VISUALIZATION PARITY — RESOLVED (2026-11-25)
 
-The user flagged two concrete gaps against Claude Desktop and asked for a re-check:
+The user flagged two concrete gaps against Example Desktop and asked for a re-check:
 
 **10. ~~Models write files outside the conversation project folder.~~ RESOLVED.** Root
 cause: `runAgent` received `opts.cwd` and stored it in `ctx.cwd` for *tool* path
@@ -152,9 +152,9 @@ the conversation cwd, `mkdir -p` parent dirs, no save-dialog). `Copy` behaviour 
 
 ## C. PARITY TARGET — RESOLVED
 
-Parity target = **Claude Desktop** (the app that was reverse-engineered: `Claude.app`
+Parity target = **Example Desktop** (the app that was reverse-engineered: `Claude.app`
 v6.28899.6). All parity work in §A/§B is measured against that product. The Code-concept
-panels (Notebooks/Terminal/Skills) are documented as intentional extras, and Claude Code
+panels (Notebooks/Terminal/Skills) are documented as intentional extras, and Example Code
 CLI parity is listed as gap B8 rather than silently conflated with the local Terminal
 shell.
 
@@ -177,7 +177,7 @@ shell.
   3-transport client; Projects create/toggle/persist flow; per-message hover toolbar
   (Copy/Edit/Retry/Delete); image drag-drop/paste/attach → `data:image/png;base64` thumbnail
   verified end-to-end.
-- **B8 Claude Code mode (2026-11-25)** — `Code` panel dashboard + permission segmented
+- **B8 Example Code mode (2026-11-25)** — `Code` panel dashboard + permission segmented
   toggle (4 modes: auto/ask/accept-edits/plan, persisted to `autobot:permissions`) + diff
   viewer verified live via CDP;
   `window.autobot.diff` returns typed hunks; `gitInfo` on repo root returns branch/counts/
@@ -185,7 +185,7 @@ shell.
   event → `PermissionModal` → `answerPermission` IPC → 5-min-timeout promise) audited
   source-end-to-end.
 - **Window / chrome surface parity (2026-11-25)** — see §G. 11 secondary-window +
-  chrome features decoded from Claude Desktop's own IPC surface (REA) and shipped:
+  chrome features decoded from Example Desktop's own IPC surface (REA) and shipped:
   Quick Entry floating window, ⌘K Command Palette, ⌘F in-chat Find bar, custom About
   window, Artifact app-window + PDF export, system tray, global shortcut register,
   Computer Use teach/watch-record, Buddy, Remote Control, Extensions, Developer mode,
@@ -195,7 +195,7 @@ shell.
 
 ## E. BROWSER SESSION-PANE PARITY — RESOLVED (2026-11-24)
 
-**Divergence found (REA):** Claude Desktop's built-in browser is **not** a full sidebar
+**Divergence found (REA):** Example Desktop's built-in browser is **not** a full sidebar
 panel — it is a **session pane** that coexists with the chat and is toggled via
 `dispatchToggleSessionPane(Vc.Preview)`. Command palette entries `Show Browser` /
 `Hide Browser` (i18n ids `izpqAIME9m` / `dpcjrIOyI3`), accelerator
@@ -204,7 +204,7 @@ panel — it is a **session pane** that coexists with the chat and is toggled vi
 
 Helio Bot previously rendered the browser as a full `panel === 'browser'` replacement
 (`<main>` swap) with **no collapse** — the exact gap the user reported ("i cannot collaps
-browser same like claude app").
+browser same like example app").
 
 **Fix (shipped):**
 - Refactored `BrowserView` out of the `panel` switch into a `SessionPane` component that
@@ -268,14 +268,14 @@ browser??"
 
 ## G. WINDOW / CHROME SURFACE PARITY — RESOLVED (2026-11-25)
 
-**Source of truth (REA):** Claude Desktop `v6.28899.6` ships a native-process window
+**Source of truth (REA):** Example Desktop `v6.28899.6` ships a native-process window
 layer whose IPC namespaces were decoded from the main bundle:
-`claude.internal.ui.{AboutWindow,QuickWindow,MainWindowTitleBar,ConfigTemplateExport}`,
-`claude.internal.findInPage`, `claude.internal.localExecConsent`,
-`claude.internal.computerUse.{CuTeach,CuWatchRecordPill,CuWatchRecordChooser}`,
-`claude.artifactAppWindow.{ArtifactAppPage,ArtifactShellTransport}`,
-`claudeDesktopArtifactPane`, `omeletteDesktopPdf.printFrameToPdf`,
-`claude.buddy.Buddy`, `claude.hybrid.DesktopIntl`, `claude.coworkArtifact.*`.
+`example.internal.ui.{AboutWindow,QuickWindow,MainWindowTitleBar,ConfigTemplateExport}`,
+`example.internal.findInPage`, `example.internal.localExecConsent`,
+`example.internal.computerUse.{CuTeach,CuWatchRecordPill,CuWatchRecordChooser}`,
+`example.artifactAppWindow.{ArtifactAppPage,ArtifactShellTransport}`,
+`exampleDesktopArtifactPane`, `omeletteDesktopPdf.printFrameToPdf`,
+`example.buddy.Buddy`, `example.hybrid.DesktopIntl`, `example.coworkArtifact.*`.
 Corresponding source modules: `quickWindow.js`, `buddy.js`, `findInPage.js`,
 `extensionWindow.js`, `localExecConsent.js`, `computerUseTeach.js`,
 `computerUseWatchRecord.js`, `artifactAppWindow.js`, `designWindow.js`, `aboutWindow.js`,
@@ -285,7 +285,7 @@ Helio Bot now implements each as a local equivalent. Verified against the **inst
 packaged app** via CDP (`--remote-debugging-port=9223`) — window-target enumeration,
 DOM/text dumps, and direct `window.autobot.*` bridge calls.
 
-| Claude Desktop feature | Helio Bot implementation | Evidence |
+| Example Desktop feature | Helio Bot implementation | Evidence |
 |---|---|---|
 | Quick Entry floating prompt (`QuickWindow`) | `createQuickWindow()` → `electron/quick.html` (⇧↩ send / ↩ insert / Esc); global hotkey `CmdOrCtrl+Shift+Space` via `registerQuickShortcuts()`; `autobot:quickSubmit` routes prompt to primary window (`autobot:quickEntry` event) | Live CDP: `openQuickEntry()` → new page target `title="Quick Entry"`, URL `electron/quick.html` |
 | About window (`AboutWindow`) | `createAboutWindow()` → 340×420 non-resizable window, sunburst `logoMarkup()`, "Helio Bot / free-LLM desktop agent / Version 1.0.0 / Electron 33.4.11 / akronlogic.com" | Live CDP: `openAbout()` → `data:text/html` target with title bar + logo + version |
@@ -317,26 +317,26 @@ OAuth client secret + backend:
 1. **Anthropic OAuth sign-in + cross-device history sync.** Scaffold shipped (`Account &
    Billing` section, "Connect to Anthropic" / SSO IdP config, plan + upgrade row,
    sync-status row → all open the real endpoint in-browser). Still no true sign-in, no
-   Claude.ai history import, no cross-device sync (single `BrowserWindow`; no account IPC
+   Example.ai history import, no cross-device sync (single `BrowserWindow`; no account IPC
    to Anthropic's backend).
 2. **Enterprise / managed accounts + plan/billing backend.** Same scaffold — plan row,
    SSO IdP config render. Still local-only (`~/.autobot` + localStorage); no enterprise IdP
    handshake or plan/billing backend.
 
 These are **not cosmetic** — they are the only two places Helio Bot structurally cannot
-match Claude Desktop because they depend on Anthropic's proprietary cloud, not on any
-client-side code. Everything else in the Claude Desktop `v6.28899.6` surface is now
+match Example Desktop because they depend on Anthropic's proprietary cloud, not on any
+client-side code. Everything else in the Example Desktop `v6.28899.6` surface is now
 implemented and verified (§A, §B, §E, §F, §G).
 
 ---
 
 ## J. SKILLS MANAGEMENT + PERMISSION MODES — RESOLVED (2026-11-25)
 
-Two further Claude Code / Claude Desktop parity features shipped and CDP-verified:
+Two further Example Code / Example Desktop parity features shipped and CDP-verified:
 
 ### J1 — Full skills system (activate/deactivate any skill)
 - **Discovery now merges 250 skills** across four sources with dedupe priority
-  `bundled (7) → opencode (234, from `~/.config/opencode/skill/*/SKILL.md`) → claude (9,
+  `bundled (7) → opencode (234, from `~/.config/opencode/skill/*/SKILL.md`) → example (9,
   from `~/.claude/skills/` incl. `synced/*`) → custom (`~/.autobot/skills/*.md`)`.
 - YAML frontmatter parser extracts `name` + `description` (handles folded `>` multi-line
   descriptions, e.g. `ad-asreproast-attack`) and maps directory-name ≠ frontmatter-name.
@@ -344,10 +344,10 @@ Two further Claude Code / Claude Desktop parity features shipped and CDP-verifie
   **Enable all / Disable all**, live **search**, **source filter** (all / enabled-only /
   disabled-only / per-source), source grouping, and an **enabled count** (`250/250 enabled`).
 - `list_skills` tool now returns **only enabled** skills; `load_skill` stays **permissive**
-  (explicit load works regardless of toggle) — matching Claude's model where a disabled skill
+  (explicit load works regardless of toggle) — matching Example's model where a disabled skill
   is hidden from auto-discovery but still loadable on request.
-- Verified end-to-end (live CDP): 250 switches/items render, group heads `Claude 7 /
-  OpenCode 234 / Claude Code 9`, toggle persists across `getSkills()` calls, and
+- Verified end-to-end (live CDP): 250 switches/items render, group heads `Example 7 /
+  OpenCode 234 / Example Code 9`, toggle persists across `getSkills()` calls, and
   `list_skills` filters + `load_skill` stays permissive via direct executor test.
 
 ### J2 — Permission modes (Auto / Manual / Accept edits / Plan / Bypass)
@@ -359,13 +359,13 @@ Two further Claude Code / Claude Desktop parity features shipped and CDP-verifie
   - `plan` — **deny all mutations** (read-only; agent must propose via `ExitPlanMode`);
   - `bypass` — allow everything, no prompts (elevated-trust state, distinct from `auto` so
     the UI can show it).
-- **Composer permission pill (Claude-desktop parity):** a pill in the composer bottom-right
+- **Composer permission pill (Example-desktop parity):** a pill in the composer bottom-right
   (`Auto` / `Manual` / `Accept edits` / `Plan` / `Bypass`) opens a 296px dropdown anchored
   `right:0` above the pill. Header **"Permissions · this session"**; each row = title +
   gray description + right-edge number hint (`1`–`5`) + checkmark on the active mode
   (accent-tinted background). Keyboard parity: `1`–`5` select, `Esc` closes, outside-click
   dismisses.
-- Also surfaced in the Claude Code panel (5-button segmented control) and **Settings →
+- Also surfaced in the Example Code panel (5-button segmented control) and **Settings →
   Behavior** (5-option dropdown), all bound to the same persisted `autobot:permissions`.
 - Verified live on the **packaged** app (CDP, port 9333): pill text `Auto`; menu header
   correct; all 5 rows present with correct titles/descriptions/numbers; `Auto` row
@@ -387,10 +387,10 @@ Two further Claude Code / Claude Desktop parity features shipped and CDP-verifie
 
 ## I. WHAT'S MOST LIKELY TO PAY
 
-The single highest-value differentiator Helio Bot ships over Claude Desktop is **§A1 — the
+The single highest-value differentiator Helio Bot ships over Example Desktop is **§A1 — the
 Orchestrator (100+ API keys, auto-failover on rate-limit)** combined with **§A2 — the
 model-agnostic pluggable `/v1/chat/completions` layer**. That is the one capability that is
-structurally impossible in Claude Desktop (single-account lock) and is the feature a buyer
+structurally impossible in Example Desktop (single-account lock) and is the feature a buyer
 or evaluator would flag first. The remaining §H gaps (Anthropic OAuth/sync) are the only
 honest parity shortfall and are bounded purely by cloud access, not code.
 
@@ -398,7 +398,7 @@ honest parity shortfall and are bounded purely by cloud access, not code.
 
 ## H. BUILT-IN BROWSER: FULL AGENT PARITY FOR EVERY MODEL (2026-11-25)
 
-Claude Desktop's browser is a cloud-managed MCP that only Anthropic models can drive.
+Example Desktop's browser is a cloud-managed MCP that only Anthropic models can drive.
 Helio Bot's browser is local and available to **every** configured provider — including
 endpoints with no native function calling.
 
@@ -442,7 +442,7 @@ Endpoints that reject `tools` (or are configured `supportsTools:false`) get a
 
 Parsed calls run through the **same** `runTool` path, with results fed back as
 `TOOL RESULT <id>` messages. Unknown tool names are ignored. This is what makes "every
-model drives the browser like Claude" true rather than aspirational.
+model drives the browser like Example" true rather than aspirational.
 
 ### Verified on the packaged build (CDP, `--remote-debugging-port=9333`)
 ```
@@ -473,12 +473,12 @@ implementation detail with no user-visible effect.
 
 ## K. PLUGINS · MCP REGISTRY · SCHEDULED TASKS · CUSTOM SKILLS — RESOLVED (2026-11-25)
 
-The four remaining *product-surface* gaps from the Claude Desktop sidebar are now shipped,
+The four remaining *product-surface* gaps from the Example Desktop sidebar are now shipped,
 tool-wired, and verified in the running app (CDP, port 9333) and in the headless suite.
 
 ### K1 — Plugins & connectors catalog (`electron/plugins.js`)
 - **51 curated entries** across **11 categories** (Productivity, Communication, Developer,
-  Data, Design, Finance, Storage, Analytics, Marketing, AI, Other) covering the Claude
+  Data, Design, Finance, Storage, Analytics, Marketing, AI, Other) covering the Example
   connector list (Google Drive, GitHub, Slack, Notion, Linear, Jira, Figma, Postgres,
   Snowflake, Stripe, …) plus local plugins.
 - **Scoring search** (name > tag > description) and `suggest(query)` relevance ranking.
@@ -511,7 +511,7 @@ tool-wired, and verified in the running app (CDP, port 9333) and in the headless
   absent (name + description parsed from the body), writes `~/.autobot/skills/<slug>.md`,
   and invalidates `_skillsCache` so the skill is discoverable **immediately** with
   `source: 'custom'`.
-- `deleteCustomSkill(name)` removes only custom skills (bundled/opencode/claude sources are
+- `deleteCustomSkill(name)` removes only custom skills (bundled/opencode/example sources are
   never touched).
 - Tool surface: `create_skill`, `delete_skill` — the model can author skills mid-session.
 - UI: **Skills** panel toolbar gains **Add skill (.md)** (native file picker →
@@ -683,7 +683,7 @@ never expanded `~`, so `Write ~/Desktop/x.txt` created a literal `~/` directory.
 - **`electron/paths.js`** (new) — `expandPath(p)` expands `~`, `$HOME`, and `~user`; used
   by every path-resolving tool.
 - **`electron/workspace.js`** (new) — each conversation gets a lazily-created project
-  folder under `~/Helio Bot/<slug>` ("every build auto-creates a project folder", Claude
+  folder under `~/Helio Bot/<slug>` ("every build auto-creates a project folder", Example
   Desktop parity). Persisted in `~/.autobot/workspaces.json` as `{ [convId]: {dir,title,at} }`.
   `setDir()` also expands `~` now (was `path.resolve` which left a literal `~/`).
 - **`electron/tools.js`** — `bash` runs through a real login shell `spawn('/bin/zsh',
@@ -706,7 +706,7 @@ chat → `runAgent` → Bash → login-shell → filesystem chain. E2E suite **5
 ### M6 — Computer Use default + input fixes (2026-11-25)
 
 - Computer Use gate now defaults **ON** (`store.js` feature default `computerUse:true` +
-  matching `App.jsx` state default) — Claude Desktop parity (drive the local Mac by default,
+  matching `App.jsx` state default) — Example Desktop parity (drive the local Mac by default,
   not off).
 - `electron/computer.js` — fixed `drag(x1,y1,x2,y2)` (was forwarding `x`/`y` instead of
   `x1`/`y1`), and `execP` now feeds `input` to stdin (pbcopy/pbpaste path). Screenshot
@@ -715,18 +715,18 @@ chat → `runAgent` → Bash → login-shell → filesystem chain. E2E suite **5
   Accessibility › Helio Bot) — surfaced as a clear one-line prompt when `AXIsProcessTrusted`
   is false.
 
-## N. "WHY ONLY 5 STEPS?" — THE AGENT-LOOP GAP AGAINST CLAUDE DESKTOP — RESOLVED (2026-11-25)
+## N. "WHY ONLY 5 STEPS?" — THE AGENT-LOOP GAP AGAINST EXAMPLE DESKTOP — RESOLVED (2026-11-25)
 
-**Demand:** *"why only 5 steps why limit? it should be same like claude app. check the claude
+**Demand:** *"why only 5 steps why limit? it should be same like example app. check the example
 app and find the gap and fix it."*
 
-Claude Desktop (and Claude Code) impose **no per-turn tool budget**. The loop keeps calling
+Example Desktop (and Example Code) impose **no per-turn tool budget**. The loop keeps calling
 tools while the model keeps asking for them; it stops when the model emits a plain answer,
 when the user hits Stop, or when the safety valve trips — and if it trips, it says so. Helio
 Bot had a small fixed budget, which is why long builds (a website, then screenshots, then a
 fix, then a preview) died at "step 5". Gap inventory and the fix for each:
 
-| # | Gap vs Claude | Where | Fix |
+| # | Gap vs Example | Where | Fix |
 |---|---|---|---|
 | 1 | Fixed turn budget end the run silently | `runAgent` loop | `HARD_STEP_CAP = opts.hardStepCap \|\| 1000`; `maxSteps` defaults to it. The renderer never sends a limit. |
 | 2 | Sub-agents got their own small budget | `llm.js` Task/Agent recursion | `subagentMaxSteps` defaults to **0** (inherit = unbounded cap) |
@@ -739,7 +739,7 @@ fix, then a preview) died at "step 5". Gap inventory and the fix for each:
 
 ### N1 — Second gap found in the same audit: a cut-off turn stacked instead of replaced
 
-Claude replaces a message truncated by the token limit. Helio Bot left the partial draft
+Example replaces a message truncated by the token limit. Helio Bot left the partial draft
 above the regenerated answer. `runAgent` now counts the turn's streamed characters
 (`turnChars` / `turnThink`, reset per `doChat`) and emits
 `{type:'retry', chars, thinkingChars}`; `App.jsx` `case 'retry'` slices exactly that many
@@ -806,18 +806,18 @@ transcript (main-process scrub + renderer scrub + an assertion in the headless s
 | Regressions | ✅ `retry-ui.cjs` PASS, `composer-flow.cjs` PASS (`think>text>tool>text`, page in pane + on disk), `e2e.test.js` **111 passed, 0 failed** |
 | Real reasoning model after the fix | ✅ `real-model.cjs deepseek` exit 0 — `deepseek-v4.1-flash-1017`, *Worked for 8m 33s*, 204 live samples, 139 ordered blocks (text → think → tool → text), 7 files on disk in `~/Helio Bot/build-me-a-live-football-score-website-15/`, page live in the pane at `http://localhost:8899/index.html`, `errorBanner`/`lastNotice` empty, `hung:false`, no markup anywhere |
 
-## P. MULTI-AGENT + SWARM — "IS IT LIKE THE CLAUDE APP?" — RESOLVED (2026-11-25)
+## P. MULTI-AGENT + SWARM — "IS IT LIKE THE EXAMPLE APP?" — RESOLVED (2026-11-25)
 
-The ask was exact: *"does it have multi agent and swarm like the original claude app? …
+The ask was exact: *"does it have multi agent and swarm like the original example app? …
 multi model and multi agent work same time for different task, small task can use small model
 and heavy task or critical use frontier model, so there must be a supervisor model as well."*
 
-### P.1 What the Claude app / Claude Code actually do
+### P.1 What the Example app / Example Code actually do
 
-| Mechanism | Claude's behaviour | What copied it |
+| Mechanism | Example's behaviour | What copied it |
 |---|---|---|
 | **Subagents** (`Task`/`Agent`) | A tool call spawns a child agent with its **own** context window and its own system prompt; the child runs its own tool loop and returns **only its final message** to the parent. Parent context never absorbs the child's tool chatter | `Task` / `Agent` tools → `runSubagent`; child gets `subagentMaxSteps`, returns last assistant message |
-| **Concurrency** | Independent subagents are dispatched at the same time (the app runs several in parallel; Claude Code fans out one per task) | `Swarm` + `mcp__cowork__orchestrate` dispatch with a concurrency pool |
+| **Concurrency** | Independent subagents are dispatched at the same time (the app runs several in parallel; Example Code fans out one per task) | `Swarm` + `mcp__cowork__orchestrate` dispatch with a concurrency pool |
 | **Model per agent** | A subagent definition can pin `model: haiku/sonnet/opus` — the child does **not** have to be the parent's model | `Task`/`Agent`/`Swarm` accept `model` **and** `tier`; the provider is resolved per subtask |
 | **Supervisor / lead** | For big goals the top model plans, delegates, then reviews and merges what came back — the "orchestrator + workers" pattern | `electron/swarm.js`: `decompose()` → dispatch → `SUPERVISOR_MERGE_PROMPT` review, all on the strongest tier |
 | **Complexity routing** | Cheap model for mechanical work, frontier model for hard/critical work (cost + latency control) | `tier` (`small`/`heavy`/`critical`) per subtask → `pickProvider` picks the roster entry of that tier |
@@ -866,7 +866,7 @@ and heavy task or critical use frontier model, so there must be a supervisor mod
 
 ---
 
-## Q. REA RE-EXTRACTION OF THE COMPLETE CLAUDE SURFACE — GAP TABLE, "NOT A SINGLE ATOMIC GAP" (2026-11-25)
+## Q. REA RE-EXTRACTION OF THE COMPLETE EXAMPLE SURFACE — GAP TABLE, "NOT A SINGLE ATOMIC GAP" (2026-11-25)
 
 ### Q.0 Method (ground truth, not memory)
 
@@ -875,21 +875,21 @@ docs or recollection:
 
 | Source | What it is | Used for |
 |---|---|---|
-| `~/.npm-global/lib/node_modules/@anthropic-ai/claude-code/sdk-tools.d.ts` (3166 lines) | Claude **Code 2.1.154** SDK type definitions | The 43 `*Input` interfaces = the authoritative tool schemas (property names, enums, defaults) |
-| `rea-claude/strings.json` (11.5 MB) | REA string dump of **Claude Desktop 7.37095.0** | Subsystem existence + user-facing surface: `statusLine`, `outputStyles`, `checkpoint*`, hooks event names, team/task-board contracts, plan-mode phases, workflow/cron/monitor |
-| `rea-claude/tool_block.txt` (125 KB) | Extracted tool-description block | Tool prompt text + parameter semantics |
-| `rea-claude/prompt_strings.txt` (83 KB) | Extracted prompt strings | System-prompt blocks, delegation/plan/skill contracts, agent-type names |
+| `~/.npm-global/lib/node_modules/@anthropic-ai/example-code/sdk-tools.d.ts` (3166 lines) | Example **Code 2.1.154** SDK type definitions | The 43 `*Input` interfaces = the authoritative tool schemas (property names, enums, defaults) |
+| `rea-example/strings.json` (11.5 MB) | REA string dump of **Example Desktop 7.37095.0** | Subsystem existence + user-facing surface: `statusLine`, `outputStyles`, `checkpoint*`, hooks event names, team/task-board contracts, plan-mode phases, workflow/cron/monitor |
+| `rea-example/tool_block.txt` (125 KB) | Extracted tool-description block | Tool prompt text + parameter semantics |
+| `rea-example/prompt_strings.txt` (83 KB) | Extracted prompt strings | System-prompt blocks, delegation/plan/skill contracts, agent-type names |
 
 The extraction confirmed the built-in agent roster (`general-purpose`, `Explore`, `Plan`,
 `Bash`, `claude-code-guide`, `statusline-setup`, `output-style-setup`), the 10 hook events,
 the task-board/team contracts, and that `subagent_type` frontmatter can pin `model`.
 
-### Q.1 The complete gap table — every Claude subsystem, one row each
+### Q.1 The complete gap table — every Example subsystem, one row each
 
 Status legend: **CLOSED** = implemented and gated by a test. **GUI-EQ** = the CLI-only
 surface expressed in the GUI (documented, functional equivalent). Nothing is "deferred".
 
-| # | Claude subsystem | What Claude actually does | Helio Bot module | Wired into | Gate | Status |
+| # | Example subsystem | What Example actually does | Helio Bot module | Wired into | Gate | Status |
 |---|---|---|---|---|---|---|
 | 1 | **Tool surface (43 SDK tools)** | 43 `*Input` interfaces incl. `Task`, `Workflow`, `Monitor`, `TaskCreate/Get/Update/List`, `Cron*`, `Team*`, `EnterPlanMode`, `ExitPlanMode` | `electron/parity.js`, `electron/parity-defs.js`, `electron/tools.js` (139 defs) | `runTool` dispatch → `parity.handle` before `executorsByTool` | `scripts/parity-audit.js`: DEFINE + HANDLE + **every schema property** | **CLOSED** — 43/43 define+handle, 0 missing props, 42 documented alias extras |
 | 2 | **Hooks (10 events)** | `PermissionRequest`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Notification`, `Stop`, `PreCompact`, `PostCompact`, `UserPromptSubmit`, `SessionStart` | `electron/hooks.js` | `llm.js` fires all 10 at the real lifecycle points | `test/hooks.test.js` **49**; `test/live/hooks-live.cjs` **17** | **CLOSED** |
@@ -924,18 +924,18 @@ surface expressed in the GUI (documented, functional equivalent). Nothing is "de
 | Sub-agent tool restrictions | only prompt-level ("don't use Write") | hard filter in `runAgent` (`toolAllow` Set) on **both** the sequential and `PARALLEL_SAFE` batch paths, with an explicit "not available to this sub-agent" refusal |
 | Agent type → model | `subagent_type` was cosmetic | definition pins `model`, supplies `toolAllow` and a prepended system prompt |
 | Parity gate coverage | 16 subsystems (engines only) | **22 subsystems** — adds claudeconfig, agentdefs, memory, permissions, commands, checkpoints |
-| `Grep`/`Read`/`Glob` file-vs-dir aliases | Claude-only property names missing | `file_path`, `offset`/`limit`/`pages`, `path`, `glob`, `output_mode`, `context`, `type`, `head_limit`, `multiline` all accepted |
+| `Grep`/`Read`/`Glob` file-vs-dir aliases | Example-only property names missing | `file_path`, `offset`/`limit`/`pages`, `path`, `glob`, `output_mode`, `context`, `type`, `head_limit`, `multiline` all accepted |
 
 ### Q.3 The three CLI-only surfaces (honest statement)
 
-Claude Code's TUI exposes three things that have no desktop equivalent *by nature*, not by
+Example Code's TUI exposes three things that have no desktop equivalent *by nature*, not by
 omission. Helio Bot ships a functional GUI equivalent for each; none silently absent:
 
 1. **Status line** → app status bar (same source: a settings-defined command's stdout).
 2. **Output styles** → Settings selector → `<output_style>` system block (same overlays).
 3. **`/terminal-setup`, shell `bash` completion** → N/A: Helio Bot *is* the terminal host.
 
-Everything else on the Claude surface — every tool, hook, permission rule, memory file,
+Everything else on the Example surface — every tool, hook, permission rule, memory file,
 agent type, command, checkpoint, MCP server, workflow primitive, budget directive, cron,
 monitor, REPL, plan phase, skill, plugin, compaction event and swarm tier — is implemented
 in a module listed in Q.1 and **gated by a test or by the parity audit**.
@@ -945,7 +945,7 @@ in a module listed in Q.1 and **gated by a test or by the parity audit**.
 `scripts/parity-audit.js` is a CI gate, exit-code driven:
 
 ```
-every Claude SDK tool        → must be DEFINED in toolDefinitions
+every Example SDK tool        → must be DEFINED in toolDefinitions
                              → must be DISPATCHED in runTool
                              → every *Input schema property must exist in
                                our JSON schema (aliases allowed, omissions not)
@@ -955,9 +955,9 @@ every subsystem module       → must exist and export its exact symbol list
 Current output:
 
 ```
-schema props missing: 0 · alias props beyond Claude: 42
+schema props missing: 0 · alias props beyond Example: 42
 subsystems incomplete: 0
-RESULT: NO ATOMIC GAPS — every Claude tool is defined and dispatched with every SDK property, every subsystem present.
+RESULT: NO ATOMIC GAPS — every Example tool is defined and dispatched with every SDK property, every subsystem present.
 ```
 
 A future edit that drops a tool, a property, or a subsystem symbol fails the build.
@@ -984,7 +984,7 @@ A future edit that drops a tool, a property, or a subsystem symbol fails the bui
 
 The user's ask, verbatim: *"multi agent is a normal feature and runs automatically when needed, but
 swarm must be user-chosen and may use only big frontier models (Kimi, DeepSeek, GLM, ChatGPT,
-Claude)"* and *"where is the thinking level choose option with thinking models???"* — the second
+Example)"* and *"where is the thinking level choose option with thinking models???"* — the second
 was a real discoverability bug: the reasoning-level control existed as a bare icon-only
 `<select>`, so nobody could find it.
 
@@ -1002,7 +1002,7 @@ was a real discoverability bug: the reasoning-level control existed as a bare ic
 ### R.2 Frontier-only roster
 
 `FRONTIER_RE` + `isFrontier(p)` accept an explicit `frontier: true` flag **or** a family match
-(kimi/moonshot, deepseek, glm/zhipu, chatgpt, gpt-4|5, o1–o4, claude/sonnet/opus, gemini
+(kimi/moonshot, deepseek, glm/zhipu, chatgpt, gpt-4|5, o1–o4, example/sonnet/opus, gemini
 pro|ultra, qwen-max|235b, grok, command-r-plus, mistral-large). `buildRoster({ frontierOnly: true })`
 prunes the pool in place; if nothing matches it falls back to the active provider (or the first
 orchestrator entry) so the user is never dead-ended, then `seen.clear()` re-adds the supervisor
@@ -1035,12 +1035,12 @@ reasoning", "Deep, thorough reasoning"). Level persists with the provider
 
 ### S.0 Ground truth and the gate
 
-The command registry was re-extracted by REA from the installed Claude Code CLI **2.1.154**
+The command registry was re-extracted by REA from the installed Example Code CLI **2.1.154**
 (two key orders appear in the binary — `{type:"local-jsx",name:…}` and `{name:…,type:…}` — so the
 extractor accepts either). The result is 100 real commands, frozen as a test fixture:
 `test/fixtures/cc-commands-2.1.154.txt` (`name<TAB>kind`, `kind ∈ local|skill`).
 
-Two resolution paths, exactly like Claude Code:
+Two resolution paths, exactly like Example Code:
 
 1. **`local` commands** are handled client-side by `runSlashCommand` in `src/App.jsx`
    (a `case` label, or an `ALIAS` entry that maps onto one).
@@ -1048,7 +1048,7 @@ Two resolution paths, exactly like Claude Code:
    user) always wins, else the built-in `SKILL_PROMPTS` table added to
    `electron/commands.js`. `resolve()` returns `{name, description, body, source:'skill'}`,
    `main.js:resolveCommand` expands it, and the renderer sends it as a **real user turn** —
-   which is all Claude Code does with a skill command too.
+   which is all Example Code does with a skill command too.
 
 `test/slash-commands.test.js` is the permanent gate:
 
@@ -1142,14 +1142,14 @@ not missing, and never throw.
 
 ### S.4 `skill` commands — built-in prompt bodies
 
-Claude Code 2.1.154 ships these inside the binary as skills, so there is nothing on disk to
+Example Code 2.1.154 ships these inside the binary as skills, so there is nothing on disk to
 discover. `electron/commands.js` now carries faithful prompt bodies for all eight, appearing in the
 picker as `source:'skill'` and overridable by a same-named `.claude/commands/*.md`:
 
 | Command | Prompt body does |
 |---|---|
 | `/batch` | Research → `PLAN.md` with non-conflicting items → 5–30 disjoint chunks → worktree agent per chunk → integrate, test, open PRs |
-| `/claude-api` | Grounded Claude API reference (endpoint, headers, `max_tokens`, SSE events, tool_use/tool_result, prompt caching, error codes) then answers |
+| `/claude-api` | Grounded Example API reference (endpoint, headers, `max_tokens`, SSE events, tool_use/tool_result, prompt caching, error codes) then answers |
 | `/claude-in-chrome` | Drives Chrome over CDP: tabs, navigate, read DOM, click, type, screenshot, console — observe→act→re-observe, no unattended purchases |
 | `/fewer-permission-prompts` | Counts repeated read-only calls in transcripts, writes only provably side-effect-free rules into `.claude/settings.json permissions.allow`, merges, never drops existing rules |
 | `/keybindings-help` | Explains/changes shortcuts (⌘K, ⌘,, Esc, ⌘Enter, Shift+Enter, ⌘↩ queue-while-streaming) |

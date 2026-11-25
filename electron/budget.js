@@ -1,7 +1,7 @@
 'use strict';
-// Token budget pool — Claude Code's `budget` workflow global.
+// Token budget pool — Example Code's `budget` workflow global.
 //
-// Claude exposes `budget: { total, spent(), remaining() }` to workflow scripts and
+// Example exposes `budget: { total, spent(), remaining() }` to workflow scripts and
 // backs it with a per-turn output-token pool that is SHARED by the main agent loop
 // and every workflow agent. `total` comes from a "+500k"-style directive in the
 // user's message; null means "no target" and `remaining()` is Infinity. The target

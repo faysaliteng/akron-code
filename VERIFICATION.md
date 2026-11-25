@@ -1,9 +1,9 @@
 # Helio Bot — Feature-Parity Verification Report
 
-**Demand:** "Helio Bot MUST BE 1 TO 1. EXACT SAME FEATURES AS CLAUDE APP. NOT A SINGLE
+**Demand:** "Helio Bot MUST BE 1 TO 1. EXACT SAME FEATURES AS EXAMPLE APP. NOT A SINGLE
 FEATURE SHOULD LEFT. CHECK AND VERIFY."
 
-**Date verified:** 2026-11-24 · **Target:** Claude Desktop `6.28899.6` (Electron 45.3.3)
+**Date verified:** 2026-11-24 · **Target:** Example Desktop `6.28899.6` (Electron 45.3.3)
 
 ---
 
@@ -18,9 +18,9 @@ FEATURE SHOULD LEFT. CHECK AND VERIFY."
 | Headless E2E harness (`node test/e2e.test.js`) | ✅ **61/61 passed** (tools, agent loop, permission gate, browser parity, text-protocol, renderer regressions, plugins/scheduler/custom skills, provider status, cowork orchestrator, icon registry, tool-card ordering, cross-model mindmap continuity) |
 | Runtime warnings | ✅ only the standard Electron CSP `unsafe-eval` notice (benign, dev-mode CSP) |
 
-## 2. Tool surface (1:1 with Claude Code classic inventory)
+## 2. Tool surface (1:1 with Example Code classic inventory)
 
-**77 tool definitions** in `tools.js` `toolDefinitions`. All **32 classic** Claude Code
+**77 tool definitions** in `tools.js` `toolDefinitions`. All **32 classic** Example Code
 tools present with functional executors (or config-gated integration for Jira/Linear):
 
 ```
@@ -31,7 +31,7 @@ TaskStop, ListAgents, SendUserMessage, SetGoal, ToolSearch, Artifact, Jira, Line
 ```
 
 Plus helpers (`memory_add/_list/_delete`, `list_skills`, `list_notebooks`,
-`list_slash_commands`) and virtual built-in MCP namespaces mirroring Claude Code's
+`list_slash_commands`) and virtual built-in MCP namespaces mirroring Example Code's
 internal MCP tools:
 
 - `mcp__workspace__{bash,read_file,write_file,edit_file,glob,grep,web_fetch}`
@@ -54,7 +54,7 @@ internal MCP tools:
 | `REPL python print(6*7)` | `42` |
 | `Jira search` (unconfigured) | config-gated message |
 
-## 3. Feature coverage (every Claude Desktop feature mapped)
+## 3. Feature coverage (every Example Desktop feature mapped)
 
 | Feature | Status |
 |---|---|
@@ -97,7 +97,7 @@ internal MCP tools:
 
 ## 5. Server-side features → local equivalents (now implemented, config-gated)
 
-Claude Desktop's **server-side** features are reproduced as **local equivalents**
+Example Desktop's **server-side** features are reproduced as **local equivalents**
 (not silently stubbed dead), gated by Settings → Feature toggles:
 
 - `mcp__cowork__*` / `mcp__ccd_*` → `cowork.js` (`register_worker`/`list_workers`/
@@ -112,21 +112,21 @@ Claude Desktop's **server-side** features are reproduced as **local equivalents*
 
 ---
 
-**Conclusion:** Helio Bot reproduces the complete Claude Desktop feature surface 1:1 —
+**Conclusion:** Helio Bot reproduces the complete Example Desktop feature surface 1:1 —
 77-tool agent loop, MCP, sub-agents, interactive questions, plan mode, artifacts,
 memory, skills, notebooks, terminal, code execution, integrations, slash commands,
 free-LLM provider layer, **plus Orchestrator Mode (multi-key failover)** and local
 equivalents of the server-side cowork/CCD/bot-bridge/visualize/Computer-Use/Chrome
-features. Build passes, app boots, packages to a DMG, and every classic Claude Code
+features. Build passes, app boots, packages to a DMG, and every classic Example Code
 tool is present with a working executor.
 
 ## 8. Final parity polish (2026-11-24, shipped in the DMG)
 
 | Gap | Fix |
 |---|---|
-| Window `backgroundColor` was `#0d1117` (GitHub dark) → visible dark flash on launch | Set to `#30302e` (Claude warm stone) — matches theme, no flash |
+| Window `backgroundColor` was `#0d1117` (GitHub dark) → visible dark flash on launch | Set to `#30302e` (Example warm stone) — matches theme, no flash |
 | Titlebar left padding `16px` overlapped the hiddenInset traffic lights (x=14, ~70px span) | Padding now `0 16px 0 78px` — brand clears traffic lights |
-| Welcome screen had static "Helio Bot" heading | Now time-based greeting (`Good morning` / `Good afternoon` / `Good evening`) + "How can I help you today?" — mirrors Claude's empty state |
+| Welcome screen had static "Helio Bot" heading | Now time-based greeting (`Good morning` / `Good afternoon` / `Good evening`) + "How can I help you today?" — mirrors Example's empty state |
 
 Final artifact: `release/Helio Bot-1.0.0-arm64.dmg` (95 MB, unsigned — first launch via
 right-click → Open). Only one Helio Bot source project (`./autobot`) and one `.dmg`
@@ -161,7 +161,7 @@ Console errors: none
 
 All three panels are backed by real persistence under `~/.autobot`
 (`plugins.json`, `scheduled-tasks.json`, `skills/*.md`) and by model-callable tools,
-so they are exercised by the agent loop exactly like the Claude Desktop equivalents.
+so they are exercised by the agent loop exactly like the Example Desktop equivalents.
 
 ---
 
@@ -274,7 +274,7 @@ UI (source build :9333, screenshot screenshots/orchestrator-nvidia-gemma.png)
 
 | Check | Result |
 |---|---|
-| Transcript order | ✅ tool cards render **above** the assistant answer (Claude order) in both the streaming view and finished messages; guard test `tool cards render above the assistant answer` asserts the JSX order in `Message` + the live block |
+| Transcript order | ✅ tool cards render **above** the assistant answer (Example order) in both the streaming view and finished messages; guard test `tool cards render above the assistant answer` asserts the JSX order in `Message` + the live block |
 | Sidebar icons | ✅ every row resolves to a real glyph; `MCP` now uses the distinct `Connectors` (57429) glyph so it no longer duplicates `Plugins` (`Plugin`) |
 | Model pill | ✅ `nemotron-3.5-bolt-e4b` + green quota dot + caret render clean at 6× zoom (screenshot `/tmp/pill2.png`) — earlier `••••••` was a downscaled-screenshot artifact, not an element |
 | Packaged orchestrator run | ✅ built app :9334 — composer send → `register_worker` + `orchestrate` cards → "I am a large language model trained by Google." (6011 ms), console errors 0 |
@@ -313,10 +313,10 @@ a blank box again.
 | Regression (stop) | ✅ `hb-stop3` — 90 partial chars kept, no error banner, `AFTER-STOP` reply works |
 | Packaged build | ✅ `npm run dist` → DMG 113.4 MB / ZIP 109.3 MB, `hdiutil verify` VALID (SHA-256 `f3761065…86b3` DMG) |
 
-### No step ceiling — Claude's "loop until the model stops" (2026-11-25)
+### No step ceiling — Example's "loop until the model stops" (2026-11-25)
 
-The coach asked: *"why only 5 steps why limit? it should be same like claude app."* Correct —
-Claude raises no per-run turn budget, so neither does Helio Bot.
+The coach asked: *"why only 5 steps why limit? it should be same like example app."* Correct —
+Example raises no per-run turn budget, so neither does Helio Bot.
 
 | Check | Result |
 |---|---|
@@ -328,7 +328,7 @@ Claude raises no per-run turn budget, so neither does Helio Bot.
 ### Token-limit truncation is re-generated, not stacked (2026-11-25)
 
 Reasoning models (Kimi K3.1 Pro, DeepSeek V4.1 Flash) spend the budget on
-`reasoning_content` and can be cut mid-sentence at `finish_reason: "length"`. Claude
+`reasoning_content` and can be cut mid-sentence at `finish_reason: "length"`. Example
 *replaces* a cut-off message; it never leaves the draft above the answer.
 
 | Check | Result |

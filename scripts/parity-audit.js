@@ -1,7 +1,7 @@
 'use strict';
-// Atomic capability audit: Claude Code's authoritative tool surface vs Helio Bot.
+// Atomic capability audit: Example Code's authoritative tool surface vs Helio Bot.
 //
-// Ground truth is /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/sdk-tools.d.ts
+// Ground truth is /opt/homebrew/lib/node_modules/@anthropic-ai/example-code/sdk-tools.d.ts
 // (43 input schemas) plus the tool names recovered from the binary by REA. For
 // each tool we prove it is DEFINED (toolDefinitions) and HANDLED (a dispatch
 // path exists: runTool special case, executorsByTool, or parity.handle).
@@ -18,7 +18,7 @@ const { toolDefinitions } = require(path.join(ROOT, 'electron', 'tools'));
 const parity = require(path.join(ROOT, 'electron', 'parity'));
 const toolsSrc = fs.readFileSync(path.join(ROOT, 'electron', 'tools.js'), 'utf8');
 
-// Every input interface in sdk-tools.d.ts (authoritative Claude Code tool set),
+// Every input interface in sdk-tools.d.ts (authoritative Example Code tool set),
 // mapped to the tool name the model actually calls.
 const SDK_MAP = {
   AgentInput: 'Agent',
@@ -63,7 +63,7 @@ const EXTRA = [
   'TeamCreate', 'TeamDelete', 'SendMessage', 'Skill', 'ToolSearch',
   'StructuredOutput', 'PowerShell', 'Brief', 'SendUserFile', 'SendUserMessage',
   'ConnectGitHub', 'KillShell', 'MultiEdit', 'LS', 'Search',
-  // legacy aliases Claude Code still accepts
+  // legacy aliases Example Code still accepts
   'Read', 'Write', 'Edit',
 ];
 
@@ -98,11 +98,11 @@ function addRow(tool, source) {
 for (const [iface, tool] of Object.entries(SDK_MAP)) addRow(tool, iface.replace(/Input$/, ''));
 for (const tool of EXTRA) addRow(tool, 'REA/binary');
 
-// ── Schema gate: every property Claude's sdk-tools.d.ts declares for a tool
+// ── Schema gate: every property Example's sdk-tools.d.ts declares for a tool
 // must exist in our tool definition, so the model can pass exactly the
-// arguments Claude's own prompt tells it to pass. Extra properties are fine
+// arguments Example's own prompt tells it to pass. Extra properties are fine
 // (they are our aliases), but they are listed so they stay deliberate.
-const DTS = '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/sdk-tools.d.ts';
+const DTS = '/opt/homebrew/lib/node_modules/@anthropic-ai/example-code/sdk-tools.d.ts';
 
 function parseInterfaceProps(src, iface) {
   // Body = from `export interface X {` to the first `}` at column 0.
@@ -170,7 +170,7 @@ const SUBSYSTEMS = [
   ['background jobs', 'electron/bg.js', ['startShell', 'startAgent', 'startMonitor', 'waitFor', 'stopJob', 'view', 'listJobs']],
   ['parity handlers', 'electron/parity.js', ['handle', 'NAMES']],
   ['parity defs', 'electron/parity-defs.js', ["name: 'TaskCreate'", "name: 'Workflow'", "name: 'Monitor'"]],
-  ['claude config loader', 'electron/claudeconfig.js', ['loadSettings', 'parseFrontmatter', 'listMarkdown', 'loadMcpServers']],
+  ['example config loader', 'electron/claudeconfig.js', ['loadSettings', 'parseFrontmatter', 'listMarkdown', 'loadMcpServers']],
   ['agent definitions', 'electron/agentdefs.js', ['BUILTIN', 'discover', 'resolve', 'allowedToolSet', 'promptFor']],
   ['project memory', 'electron/memory.js', ['memoryFiles', 'loadMemoryText', 'listMemory', 'expandImports']],
   ['permission rules', 'electron/permissions.js', ['loadPermissions', 'decide', 'ruleMatches', 'matchBash', 'matchGlob']],
@@ -201,7 +201,7 @@ for (const [label, file, symbols] of SUBSYSTEMS) {
 
 // ── Report ──────────────────────────────────────────────────────────────────
 const pad = (s, n) => String(s).padEnd(n);
-console.log('\n=== CLAUDE CODE TOOL SURFACE (' + rows.length + ') ===');
+console.log('\n=== EXAMPLE CODE TOOL SURFACE (' + rows.length + ') ===');
 console.log(pad('TOOL', 22) + pad('SOURCE', 16) + 'DEFINED  HANDLED');
 for (const r of rows) {
   console.log(pad(r.tool, 22) + pad(r.source, 16) + pad(r.defined ? 'yes' : 'NO', 9) + (r.handled ? 'yes' : 'NO'));
@@ -227,7 +227,7 @@ for (const r of schemaRows) {
 }
 
 console.log('\nDEFS: ' + defs.size + ' · tools missing definition: ' + missingDef + ' · tools missing handler: ' + missingHandler);
-console.log('schema props missing: ' + missingProps + ' · alias props beyond Claude: ' + extraProps);
+console.log('schema props missing: ' + missingProps + ' · alias props beyond Example: ' + extraProps);
 const subBad = subRows.filter((s) => !s.ok).length;
 console.log('subsystems incomplete: ' + subBad);
 
@@ -235,4 +235,4 @@ if (missingDef || missingHandler || subBad || missingProps) {
   console.log('\nRESULT: GAPS PRESENT');
   process.exit(1);
 }
-console.log('\nRESULT: NO ATOMIC GAPS — every Claude tool is defined and dispatched with every SDK property, every subsystem present.');
+console.log('\nRESULT: NO ATOMIC GAPS — every Example tool is defined and dispatched with every SDK property, every subsystem present.');

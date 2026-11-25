@@ -23,8 +23,8 @@ const windows = new Set(); // all open BrowserWindows (multi-window parity)
 const runs = new Map(); // runId -> AbortController
 const mcp = new MCPClient();
 
-// ── MCP auto-connect (Claude Code parity) ────────────────────────────────
-// Claude Code starts every server declared in `.mcp.json`, `~/.claude.json`
+// ── MCP auto-connect (Example Code parity) ────────────────────────────────
+// Example Code starts every server declared in `.mcp.json`, `~/.claude.json`
 // and its own config the moment a session begins. We do the same, once per
 // server name per cwd, and remember the id so tools land in `extraTools`.
 const autoMcp = new Map(); // `${cwd}::${name}` -> serverId
@@ -65,7 +65,7 @@ function mcpStatus() {
 }
 const shells = new ShellManager();
 
-let tray = null;      // macOS menu-bar icon (Claude parity: system tray)
+let tray = null;      // macOS menu-bar icon (Example parity: system tray)
 let quickWin = null;  // Quick Entry window (menu-bar / global-hotkey prompt)
 
 // Resolve the BrowserWindow that owns a given IPC event (for per-window replies
@@ -103,7 +103,7 @@ function summarizeTool(name, args) {
 let pendingQuestions = new Map();
 let nextQuestionId = 1;
 
-// Pending write/bash permission prompts (B8 Claude Code mode) (id -> resolver).
+// Pending write/bash permission prompts (B8 Example Code mode) (id -> resolver).
 let pendingPermissions = new Map();
 let nextPermissionId = 1;
 
@@ -144,7 +144,7 @@ function createWindow() {
   return win;
 }
 
-// ---------- Secondary windows (Claude Desktop parity) ----------
+// ---------- Secondary windows (Example Desktop parity) ----------
 
 // Helio Bot sunburst mark (same artwork as the renderer <Logo/>), for About /
 // Quick Entry / Artifact chrome that render outside the React tree.
@@ -208,7 +208,7 @@ function createAboutWindow() {
     <h1>Helio Bot</h1>
     <p class="sub">free-LLM desktop agent</p>
     <span class="ver">Version ${app.getVersion()}</span>
-    <div class="row">A free-LLM desktop agent.<br>Claude Desktop–compatible.<br>Electron ${process.versions.electron}</div>
+    <div class="row">A free-LLM desktop agent.<br>Example Desktop–compatible.<br>Electron ${process.versions.electron}</div>
     <div class="foot"><a href="https://akronlogic.com">akronlogic.com</a></div>
   </div></body></html>`;
   win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
@@ -285,7 +285,7 @@ function registerQuickShortcuts(enable) {
 }
 
 // Artifact app window: opens an artifact (code/HTML/SVG/markdown) in its own
-// standalone window, mirroring Claude's "open in app" artifact surface.
+// standalone window, mirroring Example's "open in app" artifact surface.
 function createArtifactWindow({ name, language, content }) {
   const win = new BrowserWindow({
     width: 960, height: 700, minWidth: 520, minHeight: 360,
@@ -309,7 +309,7 @@ function createArtifactWindow({ name, language, content }) {
   return { ok: true, windowId: win.id };
 }
 
-// Print-to-PDF (Claude's "Design / print frame to PDF" surface): render HTML or
+// Print-to-PDF (Example's "Design / print frame to PDF" surface): render HTML or
 // plain text to a PDF via the user's save dialog.
 async function printToPdf(event, { defaultName, html, content }) {
   try {
@@ -419,7 +419,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     return `Resource not found: ${uri}`;
   };
 
-  // B8 Claude Code mode: prompt for approval before mutating tools (Bash/Write/Edit).
+  // B8 Example Code mode: prompt for approval before mutating tools (Bash/Write/Edit).
   // Permission modes: 'auto' (allow all), 'ask' (prompt for every mutating tool),
   // 'acceptEdits' (auto-allow file edits, prompt for shell/terminal), 'plan' (deny all
   // mutations — the model must propose a plan via ExitPlanMode instead),
@@ -444,7 +444,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   const approveTool = async (toolName, toolArgs) => {
     const mode = permissions || 'auto';
     // settings.json `permissions.allow/deny/ask` rules run BEFORE the mode, the
-    // way Claude Code evaluates them: deny always wins (even in bypass), ask
+    // way Example Code evaluates them: deny always wins (even in bypass), ask
     // forces a prompt, allow skips it.
     try {
       const perms = require('./permissions').loadPermissions(runCwd);
@@ -775,9 +775,9 @@ ipcMain.handle('autobot:searchAll', (e, payload) => search.searchAll(payload || 
 ipcMain.handle('autobot:searchFiles', (e, payload) => search.searchFiles(payload || {}));
 ipcMain.handle('autobot:setSettings', (e, patch) => store.setSettings(patch));
 
-// ── Claude-parity config surface (commands / agents / memory / permissions / rewind) ──
+// ── Example-parity config surface (commands / agents / memory / permissions / rewind) ──
 // The renderer's slash menu and settings panes read the SAME `.claude/` files
-// Claude Code reads, so anything defined there shows up here too.
+// Example Code reads, so anything defined there shows up here too.
 const cwdFor = (cwd) => cwd || store.getSettings().lastCwd || require('./workspace').ROOT;
 
 ipcMain.handle('autobot:listCommands', (e, cwd) => {
@@ -827,7 +827,7 @@ ipcMain.handle('autobot:setFeatures', (e, patch) => {
 });
 ipcMain.handle('autobot:getDefaultCwd', (event, convId, title) => {
   // Every conversation gets its own project folder under ~/Helio Bot/<slug>,
-  // created lazily — "every build auto-creates a project folder" (Claude parity).
+  // created lazily — "every build auto-creates a project folder" (Example parity).
   const ws = workspace.ensure(convId, title);
   return ws.dir;
 });
@@ -900,7 +900,7 @@ ipcMain.handle('autobot:saveFile', async (event, { defaultName, content, filters
   }
 });
 
-// "Apply to file" (Claude Code parity): write a code block straight into the
+// "Apply to file" (Example Code parity): write a code block straight into the
 // conversation's project folder (or an absolute/`~`/relative path) with no dialog.
 ipcMain.handle('autobot:writeFile', async (event, { file, content, cwd }) => {
   try {
@@ -915,7 +915,7 @@ ipcMain.handle('autobot:writeFile', async (event, { file, content, cwd }) => {
   }
 });
 
-// macOS TTS (Claude Desktop parity: "speak" uses the system voice). `say` ships
+// macOS TTS (Example Desktop parity: "speak" uses the system voice). `say` ships
 // with macOS; non-darwin is a no-op.
 let sayProc = null;
 ipcMain.handle('autobot:speak', (e, text) => {
@@ -1015,7 +1015,7 @@ ipcMain.handle('autobot:shellRead', (e, id) => shells.read(id));
 ipcMain.handle('autobot:shellList', () => shells.list());
 ipcMain.handle('autobot:shellKill', (e, id) => shells.kill(id));
 
-// Repo-aware "Claude Code" mode (B8): git introspection + unified diff.
+// Repo-aware "Example Code" mode (B8): git introspection + unified diff.
 ipcMain.handle('autobot:gitInfo', async (e, cwd) => git.gitInfo(cwd));
 ipcMain.handle('autobot:gitRun', async (e, cwd, args) => {
   try {
@@ -1051,7 +1051,7 @@ ipcMain.handle('autobot:browserRegister', (e, webContentsId) => browser.register
 ipcMain.handle('autobot:browserUnregister', (e, webContentsId) => browser.unregister(webContentsId));
 ipcMain.handle('autobot:browserLoadURL', (e, url, cwd) => browser.loadURL(url, cwd));
 // Resolve a typed/pasted path or folder to a real page URL (folder → index.html)
-// so the omnibox behaves like Claude's browser instead of landing on a directory.
+// so the omnibox behaves like Example's browser instead of landing on a directory.
 ipcMain.handle('autobot:resolveUrl', (e, url, cwd) => browser.normalizeUrl(url, cwd));
 ipcMain.handle('autobot:browserGoBack', () => browser.goBack());
 ipcMain.handle('autobot:browserGoForward', () => browser.goForward());
@@ -1072,7 +1072,7 @@ ipcMain.handle('autobot:browserScreenshot', (e, fullPage) => browser.screenshot(
 ipcMain.handle('autobot:browserSyncTabs', (e, state) => browser.syncTabs(state));
 ipcMain.handle('autobot:browserListTabs', () => browser.listTabs());
 
-// ---- Secondary-window / chrome IPC (Claude Desktop parity surfaces) ----
+// ---- Secondary-window / chrome IPC (Example Desktop parity surfaces) ----
 ipcMain.handle('autobot:openAbout', () => { createAboutWindow(); return { ok: true }; });
 ipcMain.handle('autobot:openQuickEntry', () => { createQuickWindow(); return { ok: true }; });
 ipcMain.handle('autobot:openArtifactWindow', (e, payload) => createArtifactWindow(payload || {}));

@@ -1,8 +1,8 @@
 'use strict';
-// Helio Bot — persistent REPL sessions (Claude Code `REPLInput` parity).
+// Helio Bot — persistent REPL sessions (Example Code `REPLInput` parity).
 //
 // One vm context per session id (defaults to the project cwd, so each project
-// folder gets its own REPL the way Claude's does). State survives across calls:
+// folder gets its own REPL the way Example's does). State survives across calls:
 // top-level `var`/`let`/`const`/`function`/`class` declared in the context's
 // global lexical scope remain visible to later evaluations in the SAME context
 // (verified against V8 — separate `vm.runInContext` scripts share the context's

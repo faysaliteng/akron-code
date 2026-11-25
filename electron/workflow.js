@@ -1,7 +1,7 @@
 'use strict';
-// Helio Bot — Workflow DSL (Claude Code `Workflow` parity).
+// Helio Bot — Workflow DSL (Example Code `Workflow` parity).
 //
-// Claude Code's Workflow tool takes a self-contained JavaScript script that
+// Example Code's Workflow tool takes a self-contained JavaScript script that
 // MUST begin with
 //
 //     export const meta = { name, description, phases }   // pure literal
@@ -65,7 +65,7 @@ function normalizeScript(src) {
 function parseMeta(src) {
   const norm = normalizeScript(src);
   // Find `const meta = {` then scan to the matching brace so single-line and
-  // multi-line literals both work (Claude's examples are multi-line, but a
+  // multi-line literals both work (Example's examples are multi-line, but a
   // one-liner is the same thing).
   const startM = /const\s+meta\s*=\s*\{/.exec(norm);
   if (!startM) return { ok: false, error: 'Workflow script must begin with `export const meta = { name, description, phases }` (pure literal, no computed values) followed by the script body using agent()/parallel()/pipeline()/phase().' };
@@ -100,7 +100,7 @@ function parseMeta(src) {
   }
   if (!meta || typeof meta !== 'object') return { ok: false, error: 'meta must be an object' };
   if (!meta.name) return { ok: false, error: 'meta.name is required' };
-  // Claude's contract: `name` and `description` are required; `whenToUse` and
+  // Example's contract: `name` and `description` are required; `whenToUse` and
   // `phases` are optional. A phase entry is either a plain string or
   // { title, detail, model }. Normalize both shapes so the rest of the engine
   // never has to care which the author wrote.
@@ -169,12 +169,12 @@ async function runWorkflow(opts = {}) {
   log({ type: 'start', meta, args: opts.args === undefined ? null : opts.args, resumed: Boolean(resume) });
 
   // ---- runtime globals ----------------------------------------------------
-  // Claude caps concurrent agent() calls at min(16, cores-2) per workflow and
+  // Example caps concurrent agent() calls at min(16, cores-2) per workflow and
   // caps total agents at 1000 as a runaway-loop backstop. Both exist so a
   // 100-item fan-out queues instead of forking 100 subprocesses at once.
   //
   // `shared` is inherited across a nested workflow() call so the child shares the
-  // parent's concurrency cap, agent counter and token budget — exactly Claude's
+  // parent's concurrency cap, agent counter and token budget — exactly Example's
   // contract — instead of opening a second independent pool.
   const cores = (os.cpus() || []).length || 4;
   const MAX_CONCURRENT = Math.max(1, Math.min(16, cores - 2));
@@ -228,7 +228,7 @@ async function runWorkflow(opts = {}) {
       return cache[key];
     }
     // The token target is a HARD ceiling, not advice: once the shared pool is
-    // spent, further agent() calls throw (Claude's contract).
+    // spent, further agent() calls throw (Example's contract).
     if (shared.budget && shared.budget.total != null) {
       const used = Number(shared.budget.spent()) || 0;
       if (used >= Number(shared.budget.total)) {
@@ -261,7 +261,7 @@ async function runWorkflow(opts = {}) {
       release();
     }
     // A user may skip an agent mid-run; that surfaces as null so the script can
-    // `.filter(Boolean)` it, exactly like Claude.
+    // `.filter(Boolean)` it, exactly like Example.
     if (res === undefined) res = null;
     cache[key] = res;
     writeJSON(cacheFile, cache); // write-through: a crash keeps finished work
@@ -313,7 +313,7 @@ async function runWorkflow(opts = {}) {
   };
 
   // ---- determinism guards -------------------------------------------------
-  // Claude's runtime throws on Math.random(), Date.now() and argless new Date():
+  // Example's runtime throws on Math.random(), Date.now() and argless new Date():
   // a resumed run must replay cached results exactly, so a workflow may not read
   // wall-clock time or entropy. Shadow the two functions instead of handing the
   // script the host objects, so the shim also cannot mutate host intrinsics.
@@ -338,7 +338,7 @@ async function runWorkflow(opts = {}) {
   });
 
   // ---- nested workflow() --------------------------------------------------
-  // Claude allows ONE level of nesting; the child shares this run's concurrency
+  // Example allows ONE level of nesting; the child shares this run's concurrency
   // cap, agent counter and token budget, and returns whatever it returns.
   const childWorkflow = async (ref, childArgs) => {
     if (shared.depth >= 1) {
@@ -375,7 +375,7 @@ async function runWorkflow(opts = {}) {
   const sandbox = {
     meta,
     // `args` is passed VERBATIM — arrays/objects stay arrays/objects, exactly like
-    // Claude (a JSON-encoded string would reach the script as one string and
+    // Example (a JSON-encoded string would reach the script as one string and
     // `args.map` would throw).
     args: opts.args === undefined ? undefined : opts.args,
     agent,

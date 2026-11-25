@@ -1,7 +1,7 @@
 'use strict';
-// Claude-compatible configuration surface.
+// Example-compatible configuration surface.
 //
-// Helio Bot reads the SAME files Claude Code reads, so a project that already
+// Helio Bot reads the SAME files Example Code reads, so a project that already
 // has .claude/agents, .claude/commands, CLAUDE.md, .mcp.json or settings.json
 // behaves identically here instead of needing to be migrated.
 //
@@ -41,7 +41,7 @@ function readText(file) {
 }
 
 // ── frontmatter ────────────────────────────────────────────────────────────
-// YAML-lite: enough for every frontmatter block Claude writes. Supports
+// YAML-lite: enough for every frontmatter block Example writes. Supports
 // scalars, quoted scalars, inline arrays [a, b], block lists (- a), and block
 // scalars (| / >). Anything unrecognised is kept as a raw string.
 function parseFrontmatter(text) {
@@ -139,7 +139,7 @@ function isPlainObject(v) {
   return v && typeof v === 'object' && !Array.isArray(v);
 }
 
-// Arrays are unioned (Claude merges hook/permission arrays across scopes),
+// Arrays are unioned (Example merges hook/permission arrays across scopes),
 // objects are merged, scalars are replaced by the later (more local) scope.
 function deepMerge(base, over) {
   if (!isPlainObject(base)) return over;
@@ -207,7 +207,7 @@ function listDirs(dir) {
 }
 
 // ── mcp config ─────────────────────────────────────────────────────────────
-// Claude reads .mcp.json (project, `mcpServers`) and ~/.claude.json (user).
+// Example reads .mcp.json (project, `mcpServers`) and ~/.claude.json (user).
 function loadMcpServers(cwd) {
   const merged = {};
   const sources = [];

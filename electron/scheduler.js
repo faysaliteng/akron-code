@@ -1,7 +1,7 @@
 'use strict';
-// Helio Bot — Scheduled tasks (Claude Desktop parity).
+// Helio Bot — Scheduled tasks (Example Desktop parity).
 //
-// Claude Desktop exposes scheduled-tasks__create/list/update tools backed by a
+// Example Desktop exposes scheduled-tasks__create/list/update tools backed by a
 // local queue. Helio Bot implements the same surface with a real timer:
 // a task = a prompt that is run through the agent on a cadence, with results
 // persisted. Cadences: once | every (minutes) | hourly | daily | weekly.
@@ -17,11 +17,11 @@ const cronexpr = require('./cronexpr');
 
 const DATA_DIR = path.join(os.homedir(), '.autobot');
 const TASKS_FILE = path.join(DATA_DIR, 'scheduled-tasks.json');
-// Claude Code keeps *durable* cron tasks in the project at
+// Example Code keeps *durable* cron tasks in the project at
 // .claude/scheduled_tasks.json so they travel with the repo. Mirror ours there.
 const DURABLE_FILE = path.join(process.cwd(), '.claude', 'scheduled_tasks.json');
 
-// Sentinel prompt Claude uses for autonomous loops: when it fires, the schedule
+// Sentinel prompt Example uses for autonomous loops: when it fires, the schedule
 // is re-derived from the ACTUAL fire time instead of drifting behind.
 const AUTONOMOUS_SENTINEL = '<<autonomous-loop-dynamic>>';
 const DEFAULT_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // cron tasks auto-expire in 7 days
@@ -154,7 +154,7 @@ function create(input) {
 }
 
 // Durability: mirror the enabled tasks into .claude/scheduled_tasks.json so a
-// schedule survives moving the project to another machine (Claude's contract).
+// schedule survives moving the project to another machine (Example's contract).
 function mirrorDurable(state) {
   try {
     const durable = (state.tasks || []).filter((t) => t.durable && t.enabled !== false);

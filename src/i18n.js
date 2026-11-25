@@ -1,7 +1,7 @@
 // ---------- Helio Bot localization ----------
-// Claude Desktop ships 1575 localized UI strings; Helio Bot's local equivalent is a
+// Example Desktop ships 1575 localized UI strings; Helio Bot's local equivalent is a
 // keyed dictionary over the app chrome with a persisted locale and a Settings switcher.
-// Strings are Helio Bot's own (not copied from Claude's proprietary i18n bundle).
+// Strings are Helio Bot's own (not copied from Example's proprietary i18n bundle).
 
 export const LOCALES = [
   { code: 'en',    label: 'English',        dir: 'ltr' },
@@ -79,7 +79,7 @@ const STRINGS = {
     'account.sync.last': 'Last sync',
     'account.sync.never': 'Never',
     'account.sync.devices': 'Devices',
-    'account.import': 'Import Claude.ai history',
+    'account.import': 'Import Example.ai history',
     'code.title': 'Code',
     'code.subtitle': 'Repo-aware agent mode',
     'code.openFolder': 'Open folder',
@@ -112,10 +112,10 @@ const STRINGS = {
     'code.permissions.planHint': 'Block all mutations — the agent reads and proposes a plan for approval first.',
     'code.permissions.hint': 'Controls which actions the agent may take without approval. Auto = no prompts; Ask = prompt before every edit/bash; Accept edits = auto-approve file edits but confirm shell; Plan = read-only until you approve its plan.',
 
-    // Permissions dropdown — Claude Desktop parity (title + description + shortcut number)
+    // Permissions dropdown — Example Desktop parity (title + description + shortcut number)
     'perm.sessionHead': 'Permissions · this session',
     'perm.auto': 'Auto',
-    'perm.autoDesc': 'Claude decides when to ask for approval',
+    'perm.autoDesc': 'Example decides when to ask for approval',
     'perm.manual': 'Manual',
     'perm.manualDesc': 'Always ask before making changes',
     'perm.acceptEdits': 'Accept edits',
@@ -192,7 +192,7 @@ const STRINGS = {
     'account.sync.last': 'শেষ সিঙ্ক',
     'account.sync.never': 'কখনো না',
     'account.sync.devices': 'ডিভাইস',
-    'account.import': 'Claude.ai ইতিহাস ইমপোর্ট করুন',
+    'account.import': 'Example.ai ইতিহাস ইমপোর্ট করুন',
     'code.title': 'ক্লড কোড',
     'code.subtitle': 'রিপো-সচেতন এজেন্ট মোড',
     'code.openFolder': 'ফোল্ডার খুলুন',
@@ -223,7 +223,7 @@ const STRINGS = {
 
     'perm.sessionHead': 'অনুমতি · এই সেশন',
     'perm.auto': 'স্বয়ংক্রিয়',
-    'perm.autoDesc': 'কখন জিজ্ঞাসা করবে তা Claude ঠিক করে',
+    'perm.autoDesc': 'কখন জিজ্ঞাসা করবে তা Example ঠিক করে',
     'perm.manual': 'ম্যানুয়াল',
     'perm.manualDesc': 'পরিবর্তনের আগে সবসময় জিজ্ঞাসা করুন',
     'perm.acceptEdits': 'সম্পাদনা গ্রহণ',

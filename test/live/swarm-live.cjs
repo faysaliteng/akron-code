@@ -101,7 +101,7 @@ function startStub(stub) {
       // 3. The supervisor merges.
       if (kind === 'merge') { await streamText(res, 'MERGED: all three agents reported in.', 'stop', 15); return finish(); }
       // 4. A worker — streamed slowly enough that the UI has to paint it as
-      //    running (Claude shows live agents for seconds, not milliseconds).
+      //    running (Example shows live agents for seconds, not milliseconds).
       if (kind === 'worker') { await streamText(res, `done on ${stub.model} :: ${(prompt.match(/YOUR SUBTASK[^\n]*/) || ['?'])[0]}`, 'stop', 180); return finish(); }
       // 5. Outer agent after the tool returned.
       await streamText(res, 'Swarm verified.', 'stop', 10);

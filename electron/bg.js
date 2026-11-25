@@ -1,7 +1,7 @@
 'use strict';
 // Background job registry.
 //
-// Claude Code can start work that outlives the tool call:
+// Example Code can start work that outlives the tool call:
 //   Bash  { run_in_background: true }      -> id you poll with TaskOutput / stop with KillShell
 //   Agent { run_in_background: true }      -> id you poll with TaskOutput / stop with TaskStop
 //   Monitor                                -> id you stop with TaskStop

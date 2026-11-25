@@ -1,10 +1,10 @@
 'use strict';
-// Checkpoints / rewind — Claude's file-state snapshots.
+// Checkpoints / rewind — Example's file-state snapshots.
 //
 // Before any mutating tool (Write/Edit/MultiEdit/NotebookEdit) changes a file,
 // the ORIGINAL is copied into ~/.autobot/checkpoints/<conv>/<turn>/<n>-<rel>.
 // That lets the user rewind the working tree to how it looked at any earlier
-// point, which is what Claude's "rewind" affordance does.
+// point, which is what Example's "rewind" affordance does.
 //
 // A checkpoint stores:
 //   <snap>/meta.json     { id, conv, turn, at, cwd, files:[{path, backup, existed}] }

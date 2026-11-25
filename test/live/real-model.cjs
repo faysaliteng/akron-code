@@ -139,7 +139,7 @@ const PROBE = `(() => {
     frozen = sig === prevSig ? frozen + 1 : 0;
     prevSig = sig;
     if (frozen >= 240) { frozenAt = Date.now(); break; }
-    // Idle only counts once the run really stopped: Claude clears the activity
+    // Idle only counts once the run really stopped: Example clears the activity
     // line between tool calls, so one empty sample proves nothing.
     const finished = last && (last.workedFor || (last.blocks || []).length && !last.streaming && !last.activity);
     idle = finished ? idle + 1 : 0;
@@ -202,7 +202,7 @@ const PROBE = `(() => {
     'live activity sampled': report.liveSamples > 0,
   };
   const ok = Object.values(gates).every(Boolean);
-  // Claude parity: the run must not have stopped on a step budget, and the
+  // Example parity: the run must not have stopped on a step budget, and the
   // transcript must be ordered segments rather than one glued paragraph.
   if (/Paused after \d+ tool turns/.test(report.lastNotice)) {
     console.log('\nFAIL: the run hit the runaway safety valve and stopped early');

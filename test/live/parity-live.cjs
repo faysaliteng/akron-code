@@ -1,5 +1,5 @@
 'use strict';
-// Live exercise of the Claude-parity config surface introduced for gap closure:
+// Live exercise of the Example-parity config surface introduced for gap closure:
 // custom commands, agent definitions, CLAUDE.md memory, permission rules,
 // checkpoints/rewind, and MCP config discovery. Each test writes REAL files in
 // a throwaway project dir and drives the real modules — no mocks.

@@ -1,7 +1,7 @@
 'use strict';
-// Helio Bot — shared task board + team model (Claude Code parity).
+// Helio Bot — shared task board + team model (Example Code parity).
 //
-// Claude Code's multi-agent runtime is built on two pieces of shared state:
+// Example Code's multi-agent runtime is built on two pieces of shared state:
 //
 //   * a TEAM  — a named group with a lead ("team-lead") and named teammates.
 //     Teammates address each other by NAME; a teammate can be resumed by
@@ -11,8 +11,8 @@
 //     Teammates poll the board for work: pending + unowned + nothing blocking.
 //
 // Both live under ~/.autobot (deliberately NOT ~/.claude, so Helio Bot never
-// mutates a real Claude Code installation's state). The on-disk shape mirrors
-// Claude's so a board can be inspected or migrated with plain jq.
+// mutates a real Example Code installation's state). The on-disk shape mirrors
+// Example's so a board can be inspected or migrated with plain jq.
 //
 //   ~/.autobot/teams/<team>/config.json     { name, description, members[], createdAt }
 //   ~/.autobot/teams/<team>/inbox/<to>.json [{ from, summary, message, ts }]
@@ -208,7 +208,7 @@ function updateTask(input = {}) {
     t.status = s;
   }
   if (input.owner !== undefined) t.owner = input.owner === null ? null : String(input.owner);
-  // metadata: a null value deletes that key (Claude's contract).
+  // metadata: a null value deletes that key (Example's contract).
   if (input.metadata && typeof input.metadata === 'object') {
     t.metadata = t.metadata || {};
     for (const [k, v] of Object.entries(input.metadata)) {
@@ -216,7 +216,7 @@ function updateTask(input = {}) {
       else t.metadata[k] = v;
     }
   }
-  // Dependency edges are bidirectional in Claude: adding blockedBy here also
+  // Dependency edges are bidirectional in Example: adding blockedBy here also
   // adds blocks to the other task, so the board can be read from either side.
   const addBlocks = (input.addBlocks || input.add_blocks || []).map(String);
   const addBlockedBy = (input.addBlockedBy || input.add_blocked_by || []).map(String);
@@ -248,7 +248,7 @@ function updateTask(input = {}) {
 }
 
 // Claimable = pending, unowned, and not blocked by any unfinished task.
-// Lowest id first, exactly like Claude's teammates poll for work.
+// Lowest id first, exactly like Example's teammates poll for work.
 function listTasks(input = {}) {
   const team = safeName(input.team_name || input.team || 'default');
   const all = readAllTasks(team);
@@ -291,7 +291,7 @@ function sendMessage(input = {}) {
   const cfg = ensureTeam(team);
   const known = (cfg.members || []).map((m) => m.name);
   if (!known.includes(to)) {
-    // Claude errors on an unknown recipient rather than silently queuing.
+    // Example errors on an unknown recipient rather than silently queuing.
     return { ok: false, error: `No teammate "${to}" in team "${team}". Members: ${known.join(', ')}` };
   }
   const msg = {

@@ -1,6 +1,6 @@
 'use strict';
 // Computer Use — full macOS screen capture + mouse/keyboard/app control.
-// Claude Desktop parity: screenshot, click, double-click, right-click, drag,
+// Example Desktop parity: screenshot, click, double-click, right-click, drag,
 // scroll, type, key chords, open/activate apps, list windows, clipboard.
 //
 // Input is synthesized two ways and the best available is picked at runtime:
@@ -15,7 +15,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
-let enabled = true; // gate: computer control (Claude parity — on by default)
+let enabled = true; // gate: computer control (Example parity — on by default)
 let lastShot = null;
 
 function setEnabled(v) { enabled = !!v; return enabled; }

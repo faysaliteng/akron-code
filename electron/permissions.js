@@ -1,5 +1,5 @@
 'use strict';
-// Permission rules engine — Claude's settings.json `permissions` block.
+// Permission rules engine — Example's settings.json `permissions` block.
 //
 //   permissions: {
 //     allow: ["Bash(git diff:*)", "Read", "Edit(src/**)"],
@@ -16,7 +16,7 @@
 //   Edit(src/**)     → file path glob (gitignore-style)
 //   Read(./.env)     → exact path (relative to cwd)
 //
-// Precedence (matches Claude Code): deny > ask > allow > defaultMode.
+// Precedence (matches Example Code): deny > ask > allow > defaultMode.
 // Everything here is pure so the parity gate can exercise it.
 
 const cc = require('./claudeconfig');
@@ -59,7 +59,7 @@ function matchBash(spec, command) {
   const cmd = String(command || '').trim();
   let s = String(spec || '').trim();
   if (!cmd) return false;
-  // `prefix:*` (Claude's canonical form)
+  // `prefix:*` (Example's canonical form)
   let m = /^(.*?):\*$/.exec(s);
   if (m) {
     const prefix = m[1].trim();

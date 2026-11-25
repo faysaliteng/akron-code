@@ -2,7 +2,7 @@
 const { exec } = require('child_process');
 const path = require('path');
 
-// Repo-aware git introspection — the "Claude Code" surface. Runs git commands in a
+// Repo-aware git introspection — the "Example Code" surface. Runs git commands in a
 // given cwd and returns a structured snapshot: root, branch, status, ahead/behind,
 // recent commits, and a short file tree. All failures degrade to `{ isRepo: false }`
 // rather than throwing, so a non-repo directory is a clean no-op.

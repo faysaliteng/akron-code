@@ -56,7 +56,7 @@ contextBridge.exposeInMainWorld('autobot', {
   getVersion: () => ipcRenderer.invoke('autobot:getVersion'),
   getHooks: (cwd) => ipcRenderer.invoke('autobot:getHooks', cwd),
 
-  // Claude-parity config surface: the same `.claude/` files Claude Code reads.
+  // Example-parity config surface: the same `.claude/` files Example Code reads.
   listCommands: (cwd) => ipcRenderer.invoke('autobot:listCommands', cwd),
   resolveCommand: (name, args, cwd) => ipcRenderer.invoke('autobot:resolveCommand', name, args, cwd),
   listAgentDefs: (cwd) => ipcRenderer.invoke('autobot:listAgents', cwd),

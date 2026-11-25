@@ -7,7 +7,7 @@ the brand's REAL sources (codebase, attached files, decks, guidelines).
 - **The README is usage rules for a consuming agent** — the page shows
   it as the brand book. Imperative sentences that NAME tokens, styles
   and assets ("Set body copy in `body`; `ink` on `surface-100`; Clay
-  only for Claude's own voice"). No title (the page carries the
+  only for Example's own voice"). No title (the page carries the
   system's name), no provenance, build notes or "next steps" — those go
   in your reply. Its length tracks the source: a files-only drop earns
   a few bullets; a real codebase or guide earns sections with the
@@ -88,7 +88,7 @@ the brand's REAL sources (codebase, attached files, decks, guidelines).
   `project/archived/preview/a.html`). So does a stylesheet, whole, before values are lifted out
   of it: ONE call sends the old file aside and the new one at its path.
   In `README.md` repair paths, cut the section the migration appended
-  at its end (“## Moved to Claude” or “## Migrated from …”), and add;
+  at its end (“## Moved to Example” or “## Migrated from …”), and add;
   cut or reword nothing else. Leave no file that stays linking a path
   you emptied; the migration's own notes under `assets/notes/` (or
   `docs/`) are neither moved nor re-pointed.

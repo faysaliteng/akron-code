@@ -1,5 +1,5 @@
 'use strict';
-// Tests for the Claude-parity lifecycle hooks engine (electron/hooks.js) and a
+// Tests for the Example-parity lifecycle hooks engine (electron/hooks.js) and a
 // few parity tools that are pure enough to test without a model.
 //
 // Everything runs against a throwaway cwd: hooks read
@@ -165,7 +165,7 @@ function makeCwd(hooksConfig) {
       'Notification', 'Stop', 'PreCompact', 'PostCompact', 'UserPromptSubmit', 'SessionStart',
     ];
     ok('exactly ten events', hooks.EVENTS.length === 10, String(hooks.EVENTS.length));
-    ok('every Claude event is implemented', expected.every((e) => hooks.EVENTS.includes(e)),
+    ok('every Example event is implemented', expected.every((e) => hooks.EVENTS.includes(e)),
       expected.filter((e) => !hooks.EVENTS.includes(e)).join(','));
     ok('prompt/agent hooks are limited to tool events',
       hooks.TOOL_EVENTS.has('PreToolUse') && hooks.TOOL_EVENTS.has('PostToolUse') && !hooks.TOOL_EVENTS.has('Stop'));

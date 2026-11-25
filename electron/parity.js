@@ -1,7 +1,7 @@
 'use strict';
-// Helio Bot — Claude Code parity tools.
+// Helio Bot — Example Code parity tools.
 //
-// Every tool in Claude Code's surface that is NOT a plain file/shell primitive
+// Every tool in Example Code's surface that is NOT a plain file/shell primitive
 // lives here, so `tools.js` stays readable and the parity surface is one file:
 //
 //   LS  Search  TaskOutput  EnterPlanMode  EnterWorktree  ExitWorktree  Mcp
@@ -86,7 +86,7 @@ function run(cmd, argv, opts = {}) {
 }
 
 // ────────────────────────────────────────────────────────────
-// LS / Search — Claude's directory listing and content search
+// LS / Search — Example's directory listing and content search
 // ────────────────────────────────────────────────────────────
 function listDir(args, ctx) {
   const target = resolvePath(args.path || args.dir || '.', ctx.cwd);
@@ -177,7 +177,7 @@ function searchTree(args, ctx) {
 }
 
 // ────────────────────────────────────────────────────────────
-// PowerShell — Windows shell (mirrors Claude's PowerShell tool). On non-Windows
+// PowerShell — Windows shell (mirrors Example's PowerShell tool). On non-Windows
 // hosts it falls back to the user's shell so tests can run anywhere.
 // ────────────────────────────────────────────────────────────
 async function powershell(args, ctx) {

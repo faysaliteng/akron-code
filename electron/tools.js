@@ -61,7 +61,7 @@ const SLASH_COMMANDS = {
 const executors = {
   async bash({ command, cwd, timeout, description, run_in_background, dangerouslyDisableSandbox }) {
     if (!command) return 'Error: command required';
-    // Claude's Bash runs either to completion or detached. A detached job must
+    // Example's Bash runs either to completion or detached. A detached job must
     // outlive the tool call and be addressable by TaskOutput / KillShell.
     if (run_in_background) {
       const job = bg.startShell({ command, cwd: resolveDir(cwd) });
@@ -279,7 +279,7 @@ const executors = {
     const target = p ? resolvePath(p, cwd) : resolveDir(cwd);
     const gp = sandbox.isReadAllowed(target);
     if (gp !== true) return 'Error: ' + gp.reason;
-    // `path` may be a FILE (Claude accepts either). rg's cwd must be a real
+    // `path` may be a FILE (Example accepts either). rg's cwd must be a real
     // directory, so search from the file's parent and match just that file.
     let searchCwd = target;
     let onlyFile = null;
@@ -825,12 +825,12 @@ function runCode(lang, code, cwd, timeoutMs) {
 }
 
 // ---------- tool definitions (OpenAI function-calling schema) ----------
-// Names/descriptions mirror Claude Code's tool surface 1:1 where applicable.
+// Names/descriptions mirror Example Code's tool surface 1:1 where applicable.
 const toolDefinitions = [
   { name: 'Bash', description: 'Run a shell command in zsh (run code, git, install deps, list/inspect files). Do NOT create or edit files with heredocs, echo, tee or sed -i — use Write/Edit for file content. Set run_in_background:true for long jobs (servers, builds, watches) and poll them with TaskOutput or stop them with KillShell.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'The command to execute' }, description: { type: 'string', description: 'Short human label shown in the UI (3–5 words)' }, cwd: { type: 'string', description: 'Working directory' }, timeout: { type: 'number', description: 'Timeout in ms (max 600000)' }, run_in_background: { type: 'boolean', description: 'Run detached; returns a shell id for TaskOutput/KillShell' }, dangerouslyDisableSandbox: { type: 'boolean', description: 'Accepted for parity; commands already run unsandboxed on macOS' } }, required: ['command'] } },
   { name: 'Read', description: 'Read a text file from disk. Returns up to `limit` lines starting at 1-based `offset` (default 2000 lines per call). For PDFs, pass `pages` (e.g. "1-10") to extract a page range. Always Read a file before editing it.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias for path' }, offset: { type: 'number', description: '1-based line to start at' }, limit: { type: 'number', description: 'Max lines to return (default 2000)' }, pages: { type: 'string', description: 'PDF page range, e.g. "1-10"' }, cwd: { type: 'string' } }, required: ['path'] } },
   { name: 'Write', description: 'Create a new file or fully overwrite an existing one. Provide the COMPLETE final contents (no placeholders, no elisions). Relative paths resolve inside the project folder. This is the only correct way to create files — never use bash heredocs.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File path, relative to the project folder' }, file_path: { type: 'string', description: 'Alias for path' }, content: { type: 'string', description: 'The complete file contents' }, cwd: { type: 'string' } }, required: ['path', 'content'] } },
-  { name: 'Edit', description: 'Make a targeted change to an existing file: replace old_string with new_string (first match). Read the file first and copy old_string exactly, including indentation. Whitespace drift is tolerated.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path (Claude-style)' }, old_string: { type: 'string', description: 'Exact text to replace (copy from Read output)' }, new_string: { type: 'string', description: 'Replacement text' }, replace_all: { type: 'boolean', description: 'Replace every occurrence' }, cwd: { type: 'string' } }, required: ['path', 'old_string', 'new_string'] } },
+  { name: 'Edit', description: 'Make a targeted change to an existing file: replace old_string with new_string (first match). Read the file first and copy old_string exactly, including indentation. Whitespace drift is tolerated.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path (Example-style)' }, old_string: { type: 'string', description: 'Exact text to replace (copy from Read output)' }, new_string: { type: 'string', description: 'Replacement text' }, replace_all: { type: 'boolean', description: 'Replace every occurrence' }, cwd: { type: 'string' } }, required: ['path', 'old_string', 'new_string'] } },
   { name: 'MultiEdit', description: 'Apply several {old_string,new_string} replacements to one file in a single call (all-or-nothing). Use instead of many separate Edits.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path' }, edits: { type: 'array', items: { type: 'object', properties: { old_string: { type: 'string' }, new_string: { type: 'string' } }, required: ['old_string', 'new_string'] } }, cwd: { type: 'string' } }, required: ['path', 'edits'] } },
   { name: 'Glob', description: 'Find files matching a glob pattern (supports **, *, ?). Use `path` to set the search root.', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string', description: 'Directory to search from (default: cwd)' }, cwd: { type: 'string' } }, required: ['pattern'] } },
   { name: 'Grep', description: 'Search file contents for a regex pattern recursively. output_mode: content (default) | files_with_matches | count. Filter with glob/type, add context lines, and page results with offset/head_limit.', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string', description: 'File or directory to search' }, glob: { type: 'string', description: 'Only files matching this glob, e.g. "*.js"' }, type: { type: 'string', description: 'File type filter, e.g. js, py, rust' }, output_mode: { type: 'string', enum: ['content', 'files_with_matches', 'count'] }, context: { type: 'number', description: 'Lines of context around each match' }, head_limit: { type: 'number', description: 'Max results (default 250)' }, offset: { type: 'number', description: 'Skip first N results' }, multiline: { type: 'boolean', description: 'Allow patterns to span lines' }, '-i': { type: 'boolean', description: 'Case-insensitive' }, cwd: { type: 'string' } }, required: ['pattern'] } },
@@ -868,7 +868,7 @@ const toolDefinitions = [
   { name: 'Linear', description: 'Interact with Linear (list/search issues) if LINEAR_API_KEY is configured.', parameters: { type: 'object', properties: { action: { type: 'string', description: 'issues | search' }, query: { type: 'string' } } } },
   { name: 'mcp__secrets__request_secret', description: '[secrets] Request a secret value (e.g. API key) by name from the secrets store.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
 
-  // ---- Virtual built-in MCP namespaces (mirror Claude Code's internal MCP tools 1:1) ----
+  // ---- Virtual built-in MCP namespaces (mirror Example Code's internal MCP tools 1:1) ----
   { name: 'mcp__workspace__bash', description: '[workspace] Run a shell command.', parameters: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeout: { type: 'number' } }, required: ['command'] } },
   { name: 'mcp__workspace__read_file', description: '[workspace] Read a file.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias for path' }, cwd: { type: 'string' } }, required: ['path'] } },
   { name: 'mcp__workspace__write_file', description: '[workspace] Write a file.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, cwd: { type: 'string' } }, required: ['path', 'content'] } },
@@ -918,7 +918,7 @@ const toolDefinitions = [
   { name: 'mcp__botbridge__register', description: '[botbridge] Register a webhook route that forwards messages to a sub-agent bot.', parameters: { type: 'object', properties: { route: { type: 'string' }, method: { type: 'string' }, bot: { type: 'string' } }, required: ['route'] } },
   { name: 'mcp__bots__send', description: '[bots] Send a message to a connected bot bridge / notify the user.', parameters: { type: 'object', properties: { bot: { type: 'string' }, message: { type: 'string' } }, required: ['message'] } },
 
-  // ---- Built-in Browser (in-app <webview> pane, mirrors Claude Desktop's browser) ----
+  // ---- Built-in Browser (in-app <webview> pane, mirrors Example Desktop's browser) ----
   { name: 'browser_open', description: 'Open a URL in the built-in browser pane (in-app webview). Use for browsing the web visually.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
   { name: 'browser_navigate', description: 'Navigate the built-in browser to a URL.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
   { name: 'browser_back', description: 'Go back in the built-in browser history.', parameters: { type: 'object', properties: {} } },
@@ -962,7 +962,7 @@ const toolDefinitions = [
   { name: 'create_skill', description: 'Create a new custom skill from Markdown content (the model writes a SKILL.md-style document with name/description frontmatter).', parameters: { type: 'object', properties: { name: { type: 'string' }, content: { type: 'string', description: 'Full Markdown skill document' } }, required: ['name', 'content'] } },
   { name: 'delete_skill', description: 'Delete a custom skill by name.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
 
-  // ---- Claude-parity surface (see parity.js / parity-defs.js) ----
+  // ---- Example-parity surface (see parity.js / parity-defs.js) ----
   ...require('./parity-defs'),
 ];
 
@@ -1102,8 +1102,8 @@ function fileHead(fp, raw, lines) {
   return `First ${lines || 60} lines of ${path.basename(fp)}:\n${head}`;
 }
 
-// Claude Code's file tools use `file_path` / `file_text`; other models copy
-// that convention. Accepting it here means a Claude-shaped Write from any
+// Example Code's file tools use `file_path` / `file_text`; other models copy
+// that convention. Accepting it here means a Example-shaped Write from any
 // backend actually lands on disk instead of "path argument required".
 const FILE_TOOLS = new Set([
   'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
@@ -1131,12 +1131,12 @@ function normalizeFileArgs(args) {
 }
 
 // A tool that never resolves used to freeze the whole run forever: the spinner
-// kept ticking, the composer stayed locked and no result ever arrived. Claude's
+// kept ticking, the composer stayed locked and no result ever arrived. Example's
 // tools fail fast and let the model recover, so give every executor a deadline.
 const LONG_RUNNING = new Set([
   'Task', 'Agent', 'Swarm', 'mcp__cowork__orchestrate', 'mcp__botbridge__register',
   'mcp__ccd_submit', 'mcp__bots__send', 'mcp__visualize__visualize',
-  // Claude's own long-lived tools: a Workflow script can run for minutes, a
+  // Example's own long-lived tools: a Workflow script can run for minutes, a
   // Monitor blocks up to an hour, TaskOutput waits on a background task, and a
   // REPL evaluation can take 10 minutes.
   'Workflow', 'Monitor', 'TaskOutput', 'REPL', 'RemoteTrigger',
@@ -1176,7 +1176,7 @@ async function runTool(name, args, ctx) {
   }
   const { shell, askUser, runSubagent, exitPlanMode, mcpListResources, mcpReadResource, setCwd, listAgents, stopTask, sendUserMessage, setGoal, createArtifact, requestSecret, approveTool } = ctx;
 
-  // B8 Claude Code mode: require user approval before mutating tools.
+  // B8 Example Code mode: require user approval before mutating tools.
   const MUTATING = new Set([
     'Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'JavaScript', 'REPL',
     'KillShell', 'Jira', 'Linear', 'POST',
@@ -1195,7 +1195,7 @@ async function runTool(name, args, ctx) {
   // Special tools handled via context
   if (name === 'Task' || name === 'Agent') {
     if (!runSubagent) return 'Sub-agents unavailable (no subagent runner).';
-    // Claude's AgentInput.run_in_background: the agent keeps working after the
+    // Example's AgentInput.run_in_background: the agent keeps working after the
     // tool call returns, and the model polls it with TaskOutput / stops it with
     // TaskStop. Same job registry as background shells and monitors.
     if (args && args.run_in_background) {
@@ -1303,7 +1303,7 @@ async function runTool(name, args, ctx) {
     return await requestSecret(args.name || '');
   }
 
-  // ---- Claude-parity tools (parity.js owns LS/Search/task board/teams/
+  // ---- Example-parity tools (parity.js owns LS/Search/task board/teams/
   // Workflow/plan mode/worktrees/Mcp/cron/monitor/notify/etc). Returns null
   // when the name is not one of ours, so normal dispatch continues.
   {
@@ -1311,7 +1311,7 @@ async function runTool(name, args, ctx) {
     if (handled != null) return handled;
   }
 
-  // ---- Virtual terminal MCP namespace (mirrors Claude Code's mcp__terminal__*) ----
+  // ---- Virtual terminal MCP namespace (mirrors Example Code's mcp__terminal__*) ----
   if (name === 'mcp__terminal__list_terminal_tabs') {
     if (!shell) return 'No shell manager available.';
     const tabs = await shell.list();

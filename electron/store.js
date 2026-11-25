@@ -11,9 +11,9 @@ const FEATURES_FILE = path.join(DATA_DIR, 'features.json');
 const SKILLS_DIR = path.join(DATA_DIR, 'skills');
 const SKILLS_STATE_FILE = path.join(DATA_DIR, 'skills-state.json');
 const NOTEBOOKS_DIR = path.join(DATA_DIR, 'notebooks');
-// Bundled Claude skills (extracted 1:1 from Claude.app v6.28899.6 bundled-skills).
+// Bundled Example skills (extracted 1:1 from Claude.app v6.28899.6 bundled-skills).
 const BUNDLED_SKILLS_DIR = path.join(__dirname, '..', 'resources', 'skills');
-// External skill sources discovered on-disk (OpenCode + Claude Code built-in skills).
+// External skill sources discovered on-disk (OpenCode + Example Code built-in skills).
 const OPENCODE_SKILLS_DIR = path.join(os.homedir(), '.config', 'opencode', 'skill');
 const CLAUDE_SKILLS_DIR = path.join(os.homedir(), '.claude', 'skills');
 
@@ -78,7 +78,7 @@ function setSettings(patch) {
 }
 
 // ---- Skills ----
-// The 7 Claude Desktop bundled skills (manifest from Claude.app v6.28899.6).
+// The 7 Example Desktop bundled skills (manifest from Claude.app v6.28899.6).
 const BUNDLED_SKILLS = [
   { name: 'docx', description: 'Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx) or Word templates (.dotx). Triggers include: any mention of Microsoft Word Documents, such as "Word doc", ".docx", ".dotx", "microsoft doc". Also use when extracting or reorganizing content from .docx/.dotx files, inserting/replacing images, find-and-replace, tracked changes/comments, or converting content into a polished Word document. Do NOT use for PDFs, spreadsheets, Google Docs, or unrelated coding.' },
   { name: 'pdf', description: 'Use this skill whenever the user wants to do anything with PDF files: reading or extracting text/tables, combining/merging, splitting, rotating pages, adding watermarks, creating PDFs, filling forms, encrypting/decrypting, extracting images, and OCR on scanned PDFs.' },
@@ -119,7 +119,7 @@ function parseSkillFrontmatter(text) {
   return out;
 }
 
-// ---- Skill discovery (bundled + OpenCode + Claude Code + custom) ----
+// ---- Skill discovery (bundled + OpenCode + Example Code + custom) ----
 let _skillsCache = null;
 
 function addDirSkills(list, seen, dir, source) {
@@ -148,7 +148,7 @@ function discoverSkills() {
   const list = [];
   const seen = new Set();
 
-  // 1. Bundled Claude Desktop skills (always present).
+  // 1. Bundled Example Desktop skills (always present).
   for (const s of BUNDLED_SKILLS) {
     seen.add(s.name);
     list.push({
@@ -162,9 +162,9 @@ function discoverSkills() {
   // 2. OpenCode built-in skills (~/.config/opencode/skill/*/SKILL.md).
   addDirSkills(list, seen, OPENCODE_SKILLS_DIR, 'opencode');
 
-  // 3. Claude Code skills (~/.claude/skills/*/SKILL.md).
+  // 3. Example Code skills (~/.claude/skills/*/SKILL.md).
   addDirSkills(list, seen, CLAUDE_SKILLS_DIR, 'claude');
-  // Claude Code "synced" skills (~/.claude/skills/synced/<uuid>/*/SKILL.md).
+  // Example Code "synced" skills (~/.claude/skills/synced/<uuid>/*/SKILL.md).
   const synced = path.join(CLAUDE_SKILLS_DIR, 'synced');
   if (fs.existsSync(synced)) {
     let subs = [];
@@ -352,12 +352,12 @@ function setOrchestrator(patch) {
 // ---- Feature toggles (computer use / chrome / bridges / developer / buddy) ----
 function getFeatures() {
   return readJSON(FEATURES_FILE, {
-    computerUse: true,         // Computer Use (screen + mouse + keyboard) — ON by default, Claude Desktop parity
+    computerUse: true,         // Computer Use (screen + mouse + keyboard) — ON by default, Example Desktop parity
     chrome: false,
     bridges: false,
     chromeHost: '127.0.0.1',
     chromePort: 9222,
-    // Claude Desktop parity extras (local equivalents of the REA-mapped surfaces):
+    // Example Desktop parity extras (local equivalents of the REA-mapped surfaces):
     extensions: false,        // Extensions / "Settings › Developer" worker host
     developerMode: false,     // developer-only toggles (local-exec consent, debug overlays)
     buddy: false,             // Buddy / Hardware Buddy device control

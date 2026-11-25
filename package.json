@@ -2,7 +2,7 @@
   "name": "heliobot",
   "productName": "Helio Bot",
   "version": "1.0.0",
-  "description": "Helio Bot \u2014 a free-LLM desktop agent (Claude Desktop-compatible)",
+  "description": "Helio Bot \u2014 a free-LLM desktop agent (Example Desktop-compatible)",
   "main": "electron/main.js",
   "author": "Helio Bot",
   "license": "MIT",

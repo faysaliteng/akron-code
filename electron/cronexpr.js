@@ -1,5 +1,5 @@
 'use strict';
-// Minimal 5-field cron parser (local time), matching the semantics Claude Code
+// Minimal 5-field cron parser (local time), matching the semantics Example Code
 // uses for CronCreate: "minute hour day-of-month month day-of-week".
 //
 //   *  *  *  *  *     any

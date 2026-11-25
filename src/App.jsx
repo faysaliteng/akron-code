@@ -9,7 +9,7 @@ import { t as _t, LOCALES, localeDir } from './i18n.js';
 import { stripToolProtocol } from './textproto.mjs';
 import { normBase, LOCAL_BASE, KEY_STATUS_TTL, keySig, statusOf, presetStatus } from './providerstatus-ui.mjs';
 
-// ---------- Anthropicons (Claude's icon font, PUA U+E000+) ----------
+// ---------- Anthropicons (Example's icon font, PUA U+E000+) ----------
 const iconChar = (name) => {
   const cp = iconsMap[name];
   if (!cp) return '';
@@ -30,7 +30,7 @@ function Icon({ name, size = 16, className = '', title, style }) {
 }
 
 // ---------- markdown ----------
-// Parse a code fence info string into { lang, file }. Supports Claude Code's
+// Parse a code fence info string into { lang, file }. Supports Example Code's
 // ` ```lang path/to/file.ext ` and ` ```lang:file.ext ` conventions so the
 // "Apply to file" button knows where to write the block.
 function parseCodeInfo(infostring) {
@@ -152,7 +152,7 @@ const PRESETS = [
 // Status classification lives in ./providerstatus-ui.mjs (unit-tested).
 const PRESET_KEYS = PRESETS.reduce((acc, p) => { if (p.apiKey && p.baseURL) acc[normBase(p.baseURL)] = p.apiKey; return acc; }, {});
 
-// ---------- Styles (Claude Desktop parity: preset writing styles) ----------
+// ---------- Styles (Example Desktop parity: preset writing styles) ----------
 const STYLES = [
   { id: 'default', name: 'Default', hint: '', prompt: '' },
   { id: 'concise', name: 'Concise', hint: 'Keep it short', prompt: 'Be concise and direct. Prefer short answers, bullet points, and skip preamble.' },
@@ -224,7 +224,7 @@ const contextWindowFor = (model) => {
   if (/gpt-4/i.test(m)) return 128000;
   if (/qwen/i.test(m)) return 128000;
   if (/grok/i.test(m)) return 131072;
-  if (/claude|sonnet|opus|haiku/i.test(m)) return 200000;
+  if (/sonnet|opus|haiku|anthropic/i.test(m)) return 200000;
   return 128000;
 };
 const msgText = (m) => {
@@ -305,7 +305,7 @@ function loadJSON(key, fallback) {
 }
 function saveJSON(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
 
-// ---------- voice dictation (Web Speech API; matches Claude Desktop dictate) ----------
+// ---------- voice dictation (Web Speech API; matches Example Desktop dictate) ----------
 let _rec = null;
 function toggleDictation(inputRef, setDictating) {
   const SR = (window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -429,7 +429,7 @@ export default function App() {
   const [sessionPane, setSessionPane] = useState({ type: null, width: 460 }); // type: null | 'browser' | 'files' | 'terminal' | 'diff'
   const [previewUrl, setPreviewUrl] = useState(null); // file the browser pane should show (generated site)
   const [voiceMode, setVoiceMode] = useState(false); // full-duplex conversational voice session
-  const [permissions, setPermissions] = useState(() => loadJSON('autobot:permissions', 'auto')); // 'auto' | 'ask' (B8 Claude Code mode)
+  const [permissions, setPermissions] = useState(() => loadJSON('autobot:permissions', 'auto')); // 'auto' | 'ask' (B8 Example Code mode)
   const [permission, setPermission] = useState(null); // pending permission prompt { id, tool, args, summary }
   const [planMode, setPlanMode] = useState(null); // active plan-mode banner { active, file }
 
@@ -445,7 +445,7 @@ export default function App() {
   const active = convs.find((c) => c.id === activeId) || null;
   const messages = active ? active.messages : [];
 
-  // Claude parity: session panes coexist with chat and toggle via dispatchToggleSessionPane semantics
+  // Example parity: session panes coexist with chat and toggle via dispatchToggleSessionPane semantics
   const toggleSessionPane = useCallback((type) => {
     setSessionPane((p) => (p.type === type ? { ...p, type: null } : { ...p, type }));
     // Opening a session pane always returns the main area to the chat context
@@ -483,7 +483,7 @@ export default function App() {
   }, []);
 
   // When the active conversation changes, switch the working folder to its
-  // project workspace (or create one) — Claude Desktop per-project parity.
+  // project workspace (or create one) — Example Desktop per-project parity.
   useEffect(() => {
     if (!activeId) return;
     window.autobot.getWorkspace(activeId).then((d) => {
@@ -516,7 +516,7 @@ export default function App() {
     setSkills(next);
   }, []);
 
-  // Claude parity: CmdOrCtrl+Shift+B toggles the Browser session pane
+  // Example parity: CmdOrCtrl+Shift+B toggles the Browser session pane
   useEffect(() => {
     const onKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'B' || e.key === 'b')) {
@@ -537,7 +537,7 @@ export default function App() {
     });
   }, []);
 
-  // Claude parity: CmdOrCtrl+K command palette, CmdOrCtrl+F in-chat find
+  // Example parity: CmdOrCtrl+K command palette, CmdOrCtrl+F in-chat find
   useEffect(() => {
     const onKey = (e) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -573,7 +573,7 @@ export default function App() {
       // A sub-agent's stream belongs to ITS row, never to the parent reply. Without
       // this, three concurrent workers interleaved their tokens into one garbled
       // paragraph ("done on cheadone on mid-…") and every worker tool row landed in
-      // the parent's tool list. Claude keeps subagent output out of the transcript.
+      // the parent's tool list. Example keeps subagent output out of the transcript.
       if (evt.subagent && /^(delta|thinking|tool|toolResult|retry|limit)$/.test(evt.type)) {
         setSubAgents((prev) => prev.map((a) => {
           if (a.key !== String(evt.subagent) && a.name !== String(evt.subagent)) return a;
@@ -593,7 +593,7 @@ export default function App() {
         case 'retry':
           // The turn was cut at the token limit and is being re-generated. Drop
           // the truncated attempt so the transcript shows one clean answer, the
-          // way Claude replaces a cut-off message instead of stacking a second.
+          // way Example replaces a cut-off message instead of stacking a second.
           setLive((l) => {
             if (!l) return l;
             const segments = (l.segments || []).slice();
@@ -632,7 +632,7 @@ export default function App() {
           });
           break;
         case 'thinking':
-          // Claude shows reasoning inline in the transcript ("Thought for 4s"),
+          // Example shows reasoning inline in the transcript ("Thought for 4s"),
           // not just in the status line. Keep it as an ordered segment so the
           // record reads: thinking → text → tools → text, in the real order.
           setThinking((t) => t + evt.text);
@@ -850,7 +850,7 @@ export default function App() {
     const text = (override !== undefined ? override : (inputRef.current?.value || '')).trim();
     const atts = Array.isArray(attsOverride) ? attsOverride : attachments;
     if (!text && atts.length === 0) return;
-    // Claude parity: a message sent while a reply is streaming is not dropped —
+    // Example parity: a message sent while a reply is streaming is not dropped —
     // it is queued and dispatched the moment the current turn finishes.
     if (streamingRef.current) {
       if (override === undefined) inputRef.current.value = '';
@@ -934,7 +934,7 @@ export default function App() {
     if (runIdRef.current) window.autobot.cancel(runIdRef.current);
   }, []);
 
-  // Claude parity: anything queued while a reply was streaming is dispatched the
+  // Example parity: anything queued while a reply was streaming is dispatched the
   // instant that run settles — no message is ever swallowed.
   useEffect(() => {
     if (streaming || !queued.length) return;
@@ -1113,7 +1113,7 @@ export default function App() {
     });
   };
 
-  // "Apply to file" (Claude Code parity): write a code block into the project
+  // "Apply to file" (Example Code parity): write a code block into the project
   // folder the block's fence names, resolving relative to the active workspace.
   const applyBlock = async (e) => {
     const btn = e.target.closest('.apply-btn');
@@ -1224,14 +1224,14 @@ export default function App() {
 
   // ---- Slash commands ----
   // Built-ins are client-side; everything else is resolved against the SAME
-  // command files Claude Code reads (`.claude/commands/*.md`, bundled, user).
-  // Every command Claude Code 2.1.x ships is either implemented here, mapped to
+  // command files Example Code reads (`.claude/commands/*.md`, bundled, user).
+  // Every command Example Code 2.1.x ships is either implemented here, mapped to
   // its GUI surface, or documented as GUI-EQ / N-A — never silently "unknown".
   const runSlashCommand = async (raw) => {
     const body = String(raw || '').replace(/^\//, '');
     const [head, ...rest] = body.trim().split(/\s+/);
     const rawCmd = (head || '').toLowerCase();
-    // Claude Code 2.1.x aliases → canonical command (matches the real registry's
+    // Example Code 2.1.x aliases → canonical command (matches the real registry's
     // aliases[] fields exactly; undocumented ones are noted inline).
     const ALIAS = {
       q: 'quit', exit: 'quit', bye: 'quit',
@@ -1724,7 +1724,7 @@ export default function App() {
       case 'init-verifiers':
         note('`/init-verifiers` — add test/verification steps to `CLAUDE.md`. Use `/init` first, then describe how to verify changes.');
         break;
-      // ---------- remaining Claude Code 2.1.x commands implemented in the GUI ----------
+      // ---------- remaining Example Code 2.1.x commands implemented in the GUI ----------
       case 'rename': {
         if (!argText) { note('Usage: `/rename <new title>` (alias: `/name`).'); break; }
         setConvs((cs) => cs.map((c) => (c.id === activeId ? { ...c, title: argText } : c)));
@@ -1944,7 +1944,7 @@ export default function App() {
       <div className="titlebar"><Logo size={16} /><span className="brand">Helio Bot</span><span className="sub">{T('brand.sub')}</span></div>
 
       <div className="layout">
-        {/* Sidebar — Claude parity: wordmark / search / collapse, New chat, Recents, Tools, account+settings */}
+        {/* Sidebar — Example parity: wordmark / search / collapse, New chat, Recents, Tools, account+settings */}
         <aside className={'sidebar' + (sidebarCollapsed ? ' collapsed' : '')}>
           <div className="sidebar-head">
             <div className="wordmark"><Logo size={18} /><span className="brand">Helio Bot</span></div>
@@ -1994,6 +1994,9 @@ export default function App() {
               <span className="account-name">Helio Bot</span>
             </button>
             <button className="icon-btn settings-icon" title={T('sidebar.settings')} onClick={() => setShowSettings(true)}><Icon name="Settings" size={17} /></button>
+          </div>
+          <div className="sidebar-mark">
+            <a href="https://akronlogic.com" target="_blank" rel="noreferrer">akronlogic.com</a>
           </div>
         </aside>
 
@@ -2107,7 +2110,7 @@ function shortPath(p) {
   return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : p;
 }
 
-// Turn a raw tool call into the human line Claude shows ("Writing index.html").
+// Turn a raw tool call into the human line Example shows ("Writing index.html").
 function describeTool(name, args) {
   const a = args || {};
   const base = (p) => String(p || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || '';
@@ -2207,7 +2210,7 @@ function Logo({ size = 20 }) {
 }
 
 // ---------- Conversation export / share ----------
-// Claude Desktop's "Share chat" publishes a public link; Helio Bot has no backend, so
+// Example Desktop's "Share chat" publishes a public link; Helio Bot has no backend, so
 // the local equivalent is a self-contained HTML share file (open in any browser, no
 // server) plus Markdown/JSON export. All three route through the renderer and land in
 // a native save dialog via `autobot:saveFile`.
@@ -2332,7 +2335,7 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, planMode, co
 // Rendering that order (instead of "all tools, then one giant paragraph") is
 // what makes a long agent run readable, and keeps separate steps from being
 // glued into a single sentence.
-// Claude's transcript carries the model's reasoning as a collapsible block you
+// Example's transcript carries the model's reasoning as a collapsible block you
 // can peek at, streaming live and folding to one line when done.
 function ThinkBlock({ text, streaming }) {
   const [open, setOpen] = useState(false);
@@ -2448,7 +2451,7 @@ function ExportMenu({ conv, exportConv, T }) {
   );
 }
 
-// Claude renders the agent's todo list as a live checklist; a raw
+// Example renders the agent's todo list as a live checklist; a raw
 // "Planning — 5 steps" row made it look like a step *limit*. Show the items.
 function TodoList({ todos }) {
   return (
@@ -2497,7 +2500,7 @@ function ToolCard({ t }) {
 
 // ---------- Artifacts ----------
 // Live interactive preview for artifact blocks (HTML/SVG/Mermaid/React/markdown),
-// mirroring Claude Desktop's sandboxed artifact runtime. HTML/SVG/Mermaid render
+// mirroring Example Desktop's sandboxed artifact runtime. HTML/SVG/Mermaid render
 // fully offline; React/JSX use a sandboxed iframe with CDN React + Babel (best-effort).
 function ArtifactPreview({ block }) {
   const lang = (block.lang || 'text').toLowerCase().trim();
@@ -2730,7 +2733,7 @@ function MemoryView({ memory, addMemory, clearMemory }) {
 }
 
 // ---------- Skills ----------
-const SKILL_SOURCE_LABELS = { bundled: 'Claude', opencode: 'OpenCode', claude: 'Claude Skills', custom: 'Custom' };
+const SKILL_SOURCE_LABELS = { bundled: 'Example', opencode: 'OpenCode', claude: 'Example Skills', custom: 'Custom' };
 const SKILL_SOURCE_ORDER = ['bundled', 'opencode', 'claude', 'custom'];
 
 function SkillsView({ skills, toggleSkill, setAllSkills, refreshSkills }) {
@@ -2886,7 +2889,7 @@ function SkillsView({ skills, toggleSkill, setAllSkills, refreshSkills }) {
   );
 }
 
-// ---------- Plugins & Connectors (Claude Desktop parity: directory + install) ----------
+// ---------- Plugins & Connectors (Example Desktop parity: directory + install) ----------
 function PluginsView() {
   const [items, setItems] = useState([]);
   const [cats, setCats] = useState([]);
@@ -2980,7 +2983,7 @@ function PluginsView() {
   );
 }
 
-// ---------- Scheduled tasks (Claude Desktop parity) ----------
+// ---------- Scheduled tasks (Example Desktop parity) ----------
 const CADENCES = [
   { id: 'once', label: 'Once' },
   { id: 'every', label: 'Every N minutes' },
@@ -3090,7 +3093,7 @@ function ScheduledView() {
   );
 }
 
-// ---------- Projects (Claude Desktop parity: bundled custom instructions) ----------
+// ---------- Projects (Example Desktop parity: bundled custom instructions) ----------
 function ProjectsView({ projects, setProjects, activeProject, setActiveProject }) {
   const [name, setName] = useState('');
   const [instructions, setInstructions] = useState('');
@@ -3240,7 +3243,7 @@ function TerminalView({ terminal, setTerminal, startTerminal, runInTerminal, wri
   );
 }
 
-// ---------- Claude Code (repo-aware) ----------
+// ---------- Example Code (repo-aware) ----------
 function CodeView({ cwd, setCwd, permissions, setPermissions, T }) {
   const [info, setInfo] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -3597,7 +3600,7 @@ function BrowserView({ cwd, previewUrl }) {
   );
 }
 
-// ---------- Session pane (Claude parity: coexisting resizable pane toggled via dispatchToggleSessionPane) ----------
+// ---------- Session pane (Example parity: coexisting resizable pane toggled via dispatchToggleSessionPane) ----------
 function SessionPane({ icon, title, width, onWidth, onHide, children }) {
   const dragRef = useRef(null);
   const startX = useRef(0);
@@ -3635,7 +3638,7 @@ function SessionPane({ icon, title, width, onWidth, onHide, children }) {
   );
 }
 
-// ---------- Input bar (composer) — Claude parity: model-selector pill bottom-left, attach + style + think + send right ----------
+// ---------- Input bar (composer) — Example parity: model-selector pill bottom-left, attach + style + think + send right ----------
 const PERM_MODES = [
   { id: 'auto',        title: 'perm.auto',        desc: 'perm.autoDesc',        icon: 'LockOpen' },
   { id: 'ask',         title: 'perm.manual',      desc: 'perm.manualDesc',      icon: 'LockShield' },
@@ -3651,7 +3654,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
   const [dragOver, setDragOver] = useState(false);
   const [permOpen, setPermOpen] = useState(false);
   // Tracks whether the composer holds text so that, while a reply is streaming,
-  // the send arrow can appear alongside the stop button (Claude parity: type a
+  // the send arrow can appear alongside the stop button (Example parity: type a
   // follow-up mid-stream and the arrow queues it instead of being lost).
   const [hasText, setHasText] = useState(() => !!((inputRef.current && inputRef.current.value) || '').trim());
   const permWrapRef = useRef(null);
@@ -3805,14 +3808,14 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
     return /:11434\b/.test(b) && ollama[b] && !(ollama[b].ok && ollama[b].models && ollama[b].models.length);
   });
 
-  // Claude parity: opening the picker scrolls the current model into view.
+  // Example parity: opening the picker scrolls the current model into view.
   useEffect(() => {
     if (!modelMenuOpen) return;
     const el = modelMenuRef.current && modelMenuRef.current.querySelector('.model-opt.on');
     if (el) el.scrollIntoView({ block: 'center' });
   }, [modelMenuOpen]);
 
-  // Permissions dropdown: outside-click dismiss + 1..5 shortcut selection (Claude parity)
+  // Permissions dropdown: outside-click dismiss + 1..5 shortcut selection (Example parity)
   useEffect(() => {
     if (!permOpen) return;
     const onDocDown = (e) => {
@@ -4009,7 +4012,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
               type="button"
               className={'swarm-pill' + (swarmEnabled ? ' active' : '')}
               title={swarmEnabled
-                ? 'Swarm ON — the model may assemble a team of frontier models (Kimi, DeepSeek, GLM, GPT, Claude) when a task is big'
+                ? 'Swarm ON — the model may assemble a team of frontier models (Kimi, DeepSeek, GLM, GPT, Example) when a task is big'
                 : 'Swarm OFF — click to allow a frontier-model team for big tasks (multi-agent Task/Agent still runs automatically)'}
               aria-pressed={swarmEnabled}
               aria-label={'Swarm ' + (swarmEnabled ? 'on' : 'off')}
@@ -4137,7 +4140,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
 }
 
 // ---------- Settings ----------
-// ---------- Account & Billing (local equivalent of Claude's account/SSO/plan surface) ----------
+// ---------- Account & Billing (local equivalent of Example's account/SSO/plan surface) ----------
 // Honest scaffold: identity/SSO/plan/sync state is local (~/.autobot + localStorage); the
 // OAuth and upgrade actions open the real Anthropic endpoints in the default browser. True
 // cloud SSO/device-sync needs an account backend — documented as the residual B7 gap.
@@ -4155,7 +4158,7 @@ function AccountSection({ account, setAccount, T }) {
   const signOut = () => set({ signedIn: false, authMethod: null, email: '', sync: { ...account.sync, enabled: false, status: 'signed-out' } });
   const syncNow = () => setAccount((a) => ({ ...a, sync: { ...a.sync, lastSync: new Date().toISOString(), status: 'synced' } }));
   const importHistory = () => {
-    // Local equivalent of "import Claude.ai history": open the export page in-browser.
+    // Local equivalent of "import Example.ai history": open the export page in-browser.
     window.autobot.openExternal('https://claude.ai/settings/export');
     setAccount((a) => ({ ...a, sync: { ...a.sync, status: 'import-ready' } }));
   };
@@ -4494,7 +4497,7 @@ function QuestionModal({ question, answer }) {
   );
 }
 
-// ---------- B8 permission prompt (Claude Code mode) ----------
+// ---------- B8 permission prompt (Example Code mode) ----------
 function PermissionModal({ permission, answer }) {
   return (
     <div className="modal-overlay">
@@ -4511,7 +4514,7 @@ function PermissionModal({ permission, answer }) {
   );
 }
 
-// ---------- Search (Claude parity: fuzzy search across conversations + messages) ----------
+// ---------- Search (Example parity: fuzzy search across conversations + messages) ----------
 function CommandPalette({ onClose, onNewChat, onSearch, onToggleBrowser, onToggleCode, onSettings, onQuickEntry, onAbout, onExport, onToggleSidebar, onToggleTheme }) {
   const [q, setQ] = useState('');
   const inputRef = useRef(null);
@@ -4569,7 +4572,7 @@ function CommandPalette({ onClose, onNewChat, onSearch, onToggleBrowser, onToggl
   );
 }
 
-// ---------- In-chat Find (⌘F) — Claude parity ----------
+// ---------- In-chat Find (⌘F) — Example parity ----------
 function FindBar({ query, setQuery, messages, onClose }) {
   const [idx, setIdx] = useState(0);
   const inputRef = useRef(null);

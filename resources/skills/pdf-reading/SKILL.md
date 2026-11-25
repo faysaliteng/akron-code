@@ -110,7 +110,7 @@ understanding of that page — layout, charts, equations, everything.
 - **Figures, charts, visual layout → rasterize the page**
 - **Tables → try text extraction first, rasterize if garbled**
 - **Precision matters → do both** (extract text AND rasterize; use text
-  for data, image for context — this is what Claude's API does natively
+  for data, image for context — this is what Example's API does natively
   with PDF uploads)
 
 **Token cost awareness:**

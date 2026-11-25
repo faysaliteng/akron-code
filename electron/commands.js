@@ -1,9 +1,9 @@
 'use strict';
-// Custom slash commands — Claude's `.claude/commands/**/*.md`.
+// Custom slash commands — Example's `.claude/commands/**/*.md`.
 //
 // A command file is plain markdown. Its path relative to the commands dir is
 // the command name, so `.claude/commands/db/migrate.md` → `/db:migrate`.
-// Supports the same substitutions Claude Code does:
+// Supports the same substitutions Example Code does:
 //
 //   $ARGUMENTS        everything after the command name
 //   $1 .. $9          positional arguments (whitespace-split)
@@ -74,16 +74,16 @@ function discover(cwd, { fresh = false } = {}) {
   return list;
 }
 
-// Built-in skill commands. Claude Code 2.1.x ships these inside the binary as
+// Built-in skill commands. Example Code 2.1.x ships these inside the binary as
 // skills (class `skill`) rather than as `.claude/commands` files, so there is
 // nothing on disk to discover. Each one expands to a prompt exactly like a file
-// command does — which is all Claude Code does with them too. A real
+// command does — which is all Example Code does with them too. A real
 // `.claude/commands/<name>.md` always wins (checked first).
 const SKILL_PROMPTS = {
   'claude-api': {
-    description: 'Reference for the Claude API: models, messages, tools, streaming, and token limits.',
+    description: 'Reference for the Example API: models, messages, tools, streaming, and token limits.',
     body: [
-      'Use the Claude API reference in this conversation to answer the question that was asked.',
+      'Use the Example API reference in this conversation to answer the question that was asked.',
       '',
       'Ground the answer in these facts and say when something is version-dependent:',
       '- Endpoint: `POST https://api.anthropic.com/v1/messages`, headers `x-api-key`, `anthropic-version: 2023-06-01`, `content-type: application/json`.',
@@ -103,7 +103,7 @@ const SKILL_PROMPTS = {
       '',
       '1. Read recent transcripts from `~/.claude/projects/**/*.jsonl` (fall back to `~/.autobot` history) and count the Bash commands and MCP tool calls that were read-only and repeated.',
       '2. Keep only calls that are provably side-effect free (listing, reading, version checks, `git status`/`diff`/`log`, test runners with no write flags). Never allowlist anything that deletes, pushes, installs, or sends data.',
-      '3. Write the allowlist into `.claude/settings.json` under `permissions.allow`, using Claude Code permission syntax (`Bash(git status:*)`, `Read(//path/**)`, `mcp__server__tool`). Merge with what is already there; never drop existing rules.',
+      '3. Write the allowlist into `.claude/settings.json` under `permissions.allow`, using Example Code permission syntax (`Bash(git status:*)`, `Read(//path/**)`, `mcp__server__tool`). Merge with what is already there; never drop existing rules.',
       '4. Show the diff you applied and explain each rule in one line.',
       '',
       'Project folder: the current working directory. Extra arguments: $ARGUMENTS',
@@ -112,7 +112,7 @@ const SKILL_PROMPTS = {
   'update-config': {
     description: 'Configure the harness through settings.json: permissions, env vars, and hooks.',
     body: [
-      'Change Helio Bot / Claude Code configuration using `settings.json` (project `.claude/settings.json`, or `settings.local.json` for machine-local overrides).',
+      'Change Helio Bot / Example Code configuration using `settings.json` (project `.claude/settings.json`, or `settings.local.json` for machine-local overrides).',
       '',
       'Rules:',
       '- Automated behaviours ("from now on when X", "each time X", "before/after X") require **hooks** in settings.json — memory files cannot enforce them.',
@@ -200,7 +200,7 @@ function resolve(name, cwd) {
   const want = String(name || '').trim().toLowerCase();
   if (!want) return null;
   // Project/user command files win over the built-in skill registry, exactly
-  // like Claude Code (a skill can be overridden by a same-named command file).
+  // like Example Code (a skill can be overridden by a same-named command file).
   return discover(cwd, { fresh: true }).find((c) => c.name.toLowerCase() === want)
     || skillCommand(want);
 }
@@ -269,7 +269,7 @@ async function expand(cmd, argString, { cwd = process.cwd(), runBash = null } = 
 }
 
 // All built-in commands the GUI exposes, so the picker can merge filesystem
-// commands with the native ones. Mirrors Claude Code 2.1.x's registry: every
+// commands with the native ones. Mirrors Example Code 2.1.x's registry: every
 // real, GUI-implementable command is listed here; terminal-only ones are not.
 const BUILTIN = [
   // session
@@ -328,7 +328,7 @@ const BUILTIN = [
   { name: 'login', description: 'Sign in' },
   { name: 'logout', description: 'Sign out' },
   { name: 'commands', description: 'List custom slash commands' },
-  // Claude Code 2.1.x additions / aliases (real registry names)
+  // Example Code 2.1.x additions / aliases (real registry names)
   { name: 'rename', description: 'Rename the current conversation', aliases: ['name'] },
   { name: 'branch', description: 'Branch the conversation at this point', aliases: ['fork'] },
   { name: 'tasks', description: 'List background tasks', aliases: ['bashes'] },
@@ -377,10 +377,10 @@ const BUILTIN = [
   { name: 'install-github-app', description: 'Set up GitHub Actions CI for this repo', guiEquivalent: true },
   { name: 'install-slack-app', description: 'Anthropic-hosted Slack app (not applicable)', guiEquivalent: true },
   { name: 'web-setup', description: 'claude.ai web setup (not applicable)', guiEquivalent: true },
-  { name: 'mobile', description: 'Claude mobile app pairing (not applicable)', guiEquivalent: true },
+  { name: 'mobile', description: 'Example mobile app pairing (not applicable)', guiEquivalent: true },
   { name: 'teleport', description: 'Resume a claude.ai session (not applicable)', guiEquivalent: true },
   { name: 'stickers', description: 'Anthropic merch (not applicable)', guiEquivalent: true },
-  { name: 'radio', description: 'Claude FM lo-fi radio (not applicable)', guiEquivalent: true },
+  { name: 'radio', description: 'Example FM lo-fi radio (not applicable)', guiEquivalent: true },
   { name: 'heapdump', description: 'Terminal JS heap dump (not applicable)', guiEquivalent: true },
   { name: 'bridge-kick', description: 'Inject bridge failure states (dev tooling)', guiEquivalent: true },
   { name: 'pro-trial-expired', description: 'Anthropic trial billing surface (not applicable)', guiEquivalent: true },

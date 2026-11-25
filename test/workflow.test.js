@@ -82,7 +82,7 @@ function makeRunner(behaviour = {}) {
     const one = `export const meta = { name: 'one', description: 'd', phases: [{title:'Only'}] }\nreturn 2`;
     ok('single-line meta literal parses', wf.parseMeta(one).ok);
 
-    // Missing description must fail (Claude requires it).
+    // Missing description must fail (Example requires it).
     const noDesc = `export const meta = { name: 'n', phases: ['A'] }\nreturn 3`;
     ok('missing description rejected', wf.parseMeta(noDesc).ok === false, JSON.stringify(wf.parseMeta(noDesc)));
 
@@ -182,7 +182,7 @@ function makeRunner(behaviour = {}) {
     // A cached null must still count as a hit. An agent that is SKIPPED returns
     // null (not a throw) — that null is cached and must be replayed on resume.
     // (A thrown agent is an error, is NOT cached, and is retried on resume —
-    //  only completed calls are cached, exactly like Claude.)
+    //  only completed calls are cached, exactly like Example.)
     const nullCacheRun = await wf.runWorkflow({
       script: `export const meta={name:'n',description:'d',phases:['A']}\nreturn await parallel([()=>agent('skipme')])`,
       runAgent: makeRunner({ skipme: null }).runner,

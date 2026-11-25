@@ -1,6 +1,6 @@
 'use strict';
 // Session project folders — the "auto create a project folder for every build"
-// behaviour Claude Desktop has. Each conversation gets its own working directory
+// behaviour Example Desktop has. Each conversation gets its own working directory
 // under ~/Helio Bot/<slug>, created lazily on first run and shown in the composer.
 //
 // Persistence: ~/.autobot/workspaces.json  ->  { [convId]: { dir, title, at } }

@@ -40,7 +40,7 @@ async function streamToolCall(res) {
   // used to collapse into one glued paragraph, so the stub reproduces it.
   sseHead(res);
   writeSse(res, { choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] });
-  // Reasoning models (DeepSeek/Kimi) stream chain-of-thought first. Claude shows
+  // Reasoning models (DeepSeek/Kimi) stream chain-of-thought first. Example shows
   // that as a collapsible block in the transcript, so verify it renders there.
   for (const think of ['The user wants a live score page. ', 'I will write one self-contained index.html.']) {
     writeSse(res, { choices: [{ index: 0, delta: { reasoning_content: think } }] });

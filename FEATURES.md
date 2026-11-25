@@ -1,6 +1,6 @@
-# Claude Desktop — Reverse Engineering Report (→ Helio Bot build spec)
+# Example Desktop — Reverse Engineering Report (→ Helio Bot build spec)
 
-**Target:** `/Applications/Claude.app` — "Claude Desktop" by Anthropic PBC
+**Target:** `/Applications/Claude.app` — "Example Desktop" by Anthropic PBC
 **Version:** `6.28899.6` (commit `2f5fc59b2d1c672dd9dced86720c50f48cca0cf9`, 2026-11-20)
 **Bundle ID:** `com.anthropic.claudefordesktop` · package `@ant/desktop`
 **Runtime:** Electron **45.3.3** · Node ≥22 · Vite + Ionic UI
@@ -11,11 +11,11 @@
 
 ```
 Claude.app (Electron 45.3.3)
-├── MacOS/Claude                    (120 KB launcher stub — Mach-O universal arm64)
+├── MacOS/Example                    (120 KB launcher stub — Mach-O universal arm64)
 ├── Resources/
 │   ├── app.asar                    (106 MB → 208 MB unpacked — the desktop UI shell)
 │   │   └── .vite/build/*.js        (Vite-bundled renderer + main-process modules)
-│   ├── ion-dist.asar               (224 MB — embedded "Claude Code" engine)
+│   ├── ion-dist.asar               (224 MB — embedded "Example Code" engine)
 │   ├── app.asar.unpacked/
 │   │   ├── resources/github-mcp/   (bundled GitHub MCP server)
 │   │   ├── resources/office365-mcp/ (bundled Office365 MCP server: msal-node-runtime)
@@ -26,11 +26,11 @@ Claude.app (Electron 45.3.3)
 
 **Monorepo workspaces** (from `package.json` deps):
 - `@ant/desktop` — the Electron shell
-- `@ant/claude-native` — native (Swift/ObjC) bridge
-- `@ant/claude-swift` — Swift helpers
+- `@ant/example-native` — native (Swift/ObjC) bridge
+- `@ant/example-swift` — Swift helpers
 - `@ant/computer-use-mcp` — Computer Use MCP server
 - `@ant/imagine-server` — image generation server
-- `@ant/claude-for-chrome-mcp` — Chrome control MCP
+- `@ant/example-for-chrome-mcp` — Chrome control MCP
 
 **Key runtime deps:** `ws` (WebSocket bridge), `https-proxy-agent`, `node-pty` (terminal), `@loc/electron-window`.
 
@@ -39,9 +39,9 @@ Claude.app (Electron 45.3.3)
 ## 2. Full feature surface (extracted from the bundle)
 
 ### 2.1 Model families
-`claude-3-5-haiku`, `claude-3-5-sonnet`, `claude-3-7-sonnet`, `claude-3p` / `claude-3p-dev` (preview line), `claude-agent-sdk`.
+`claude-3-5-haiku`, `claude-3-5-sonnet`, `claude-3-7-sonnet`, `claude-3p` / `claude-3p-dev` (preview line), `example-agent-sdk`.
 
-### 2.2 Core chat/tool capabilities (Claude Code engine)
+### 2.2 Core chat/tool capabilities (Example Code engine)
 `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep`, `WebSearch`, `WebFetch`, `Task`, `Agent`, `TodoWrite`, `NotebookEdit`, `NotebookRead`, `AskUserQuestion`, `KillShell`, `SlashCommand`, `Skill`, `ExitPlanMode`.
 
 ### 2.3 Native MCP tool surface (67 tools) — grouped
@@ -61,14 +61,14 @@ Claude.app (Electron 45.3.3)
 | **GitHub** | `github__get_*` |
 
 ### 2.4 Product features (feature-flag strings)
-- **Artifacts** — `artifactAppWindow`, `coworkArtifact`, `claudePagePreview`, `artifactsEnabled`, `artifactsSlidesEnabled`, `artifactsDesignEnabled`
+- **Artifacts** — `artifactAppWindow`, `coworkArtifact`, `examplePagePreview`, `artifactsEnabled`, `artifactsSlidesEnabled`, `artifactsDesignEnabled`
 - **Computer Use** — `computerUseTeach`, `computerUseWatchRecord`, Android `emulator-grpc-worker`
 - **Extensions** — `extensionWindow`, `extensionWorker`
 - **File indexing** — `file-index-worker`
 - **MCP** — `mcpServers`, `mcpEnableServer`, `mcpReconnect`, `mcpCallTool`, `mcpListResources`, `mcpReadResource`, `mcpAuthenticate`, `mcpSubmitOAuthCallbackUrl`, `mcpToolTimeoutSec`, `mcpCallsPerMinute`, `mcpPersistentAlwaysAllowEnabled`, `mcpServerPolicy`
 - **Memory** — `.auto-memory`
 - **Projects / Spaces / Shares / Notebooks / Scheduled tasks**
-- **Chrome import** — `claude-chrome-import`, screenshots
+- **Chrome import** — `example-chrome-import`, screenshots
 - **Buddy** (embedded pairing assistant)
 
 ### 2.5 API surface
@@ -78,11 +78,11 @@ Claude.app (Electron 45.3.3)
 
 ## 3. What Helio Bot reproduces
 
-The build below mirrors this surface with a **pluggable OpenAI-compatible LLM adapter** (works with Ollama, LM Studio, Groq, OpenRouter, OpenAI, and any custom `/v1/chat/completions` endpoint), so it behaves like Claude Desktop but runs on **any free LLM API**:
+The build below mirrors this surface with a **pluggable OpenAI-compatible LLM adapter** (works with Ollama, LM Studio, Groq, OpenRouter, OpenAI, and any custom `/v1/chat/completions` endpoint), so it behaves like Example Desktop but runs on **any free LLM API**:
 
 1. **Chat UI** — streaming, markdown + code highlighting, copy buttons.
-2. **Agent tool loop** — function calling with the full classic Claude Code tool surface (56 tools, see §4).
-3. **MCP client** — connect to external stdio MCP servers, list & call their tools (the defining Claude feature).
+2. **Agent tool loop** — function calling with the full classic Example Code tool surface (56 tools, see §4).
+3. **MCP client** — connect to external stdio MCP servers, list & call their tools (the defining Example feature).
 4. **Artifacts panel** — code/files render in a live preview pane (+ explicit `Artifact` tool).
 5. **Memory** — persistent `.auto-memory` store.
 6. **Skills registry** — list/load skills.
@@ -102,14 +102,14 @@ The build below mirrors this surface with a **pluggable OpenAI-compatible LLM ad
 19. **Cowork + CCD** — local multi-agent orchestration with **per-worker provider pinning** and parallel fan-out (cloud + local LLMs in one goal), plus the drain registry (`cowork.js`).
 20. **Bot bridges** — local HTTP webhook bridge server for hearthbot/slackbot/teamsbot/webagent.
 21. **Visualize** — built-in SVG chart renderer (`visualize.js`).
-22. **Claude-order transcript** — tool cards render above the assistant answer (streaming and
-    finished), so a run reads call-then-conclusion like Claude Desktop.
+22. **Example-order transcript** — tool cards render above the assistant answer (streaming and
+    finished), so a run reads call-then-conclusion like Example Desktop.
 
 ---
 
 ## 4. Tool parity — 1:1 verification
 
-The complete classic Claude Code tool inventory is reproduced:
+The complete classic Example Code tool inventory is reproduced:
 
 `Bash, Edit, Write, Read, Glob, Grep, WebSearch, WebFetch, Task, Agent, TodoWrite,
 NotebookEdit, NotebookRead, AskUserQuestion, KillShell, SlashCommand, Skill,
@@ -120,7 +120,7 @@ TaskStop, ListAgents, SendUserMessage, SetGoal, ToolSearch, Artifact, Jira, Line
 
 ### Server-side features → local equivalents (config-gated in Settings)
 
-Claude Desktop's server-side multi-agent / cloud-collaboration / bot-bridge features are
+Example Desktop's server-side multi-agent / cloud-collaboration / bot-bridge features are
 reproduced as **local equivalents** (not stubbed dead), each gated by a Settings → Feature
 toggle:
 
@@ -145,11 +145,11 @@ toggle:
 
 ## 5. Product-surface parity: Plugins, Scheduled tasks, Custom skills (2026-11-25)
 
-Claude Desktop's sidebar now maps 1:1 onto working local features — not stubs.
+Example Desktop's sidebar now maps 1:1 onto working local features — not stubs.
 
 ### 5.1 Plugins & connectors
 - Catalog: **51 curated entries / 11 categories** (`electron/plugins.js`), covering the
-  Claude connector list (Google Drive, GitHub, Slack, Notion, Linear, Jira, Figma,
+  Example connector list (Google Drive, GitHub, Slack, Notion, Linear, Jira, Figma,
   Postgres, Snowflake, Stripe, …) plus local plugins.
 - Ranking search (name > tag > description) + `suggest()` relevance.
 - Install state persisted in `~/.autobot/plugins.json`; `install` / `uninstall` /
@@ -221,7 +221,7 @@ Claude Desktop's sidebar now maps 1:1 onto working local features — not stubs.
 - **`electron/paths.js`** — `expandPath`/`resolvePath` expand `~`/`$HOME`/`~user` so every
   tool lands files in the real filesystem, never a literal `~/` directory.
 - **`electron/workspace.js`** — every conversation gets a project folder under
-  `~/Helio Bot/<slug>` created on demand (Claude "auto create a project folder" parity),
+  `~/Helio Bot/<slug>` created on demand (Example "auto create a project folder" parity),
   persisted in `~/.autobot/workspaces.json`, with a `scratch()` folder for headless runs.
 - **Bash tool** runs through a genuine login shell (`/bin/zsh -l -c`) so `brew`/`npm`/`pip`
   binaries resolve exactly as in Terminal.

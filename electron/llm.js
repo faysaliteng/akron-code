@@ -13,7 +13,7 @@ const subagentControllers = new Map(); // name -> AbortController
 // else that starts with mcp__ is an external MCP server tool.
 const localToolNames = new Set(toolDefinitions.map((t) => t.name));
 
-const SYSTEM_PROMPT = `You are Helio Bot, an agentic desktop coding assistant running on the user's Mac (a local alternative to the Claude desktop app). You work inside the user's project folder and you actually create, edit, and run code. You do not just describe code — you build it.
+const SYSTEM_PROMPT = `You are Helio Bot, an agentic desktop coding assistant running on the user's Mac (a local alternative to the Example desktop app). You work inside the user's project folder and you actually create, edit, and run code. You do not just describe code — you build it.
 
 ## Working style
 - Be concise. Do the work with tools; narrate only the key steps.
@@ -207,7 +207,7 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   let res = await doFetch(req);
   // Negotiate the request shape instead of failing outright. Some providers
   // reject `reasoning_effort` (unknown field); some cap `max_tokens` below the
-  // budget we asked for. Claude Code always sends a large output budget, so when
+  // budget we asked for. Example Code always sends a large output budget, so when
   // a provider says "too large" we step down rather than killing the run — a
   // hard failure here looked to the user like the agent simply stopped.
   for (let attempt = 0; attempt < 4 && !res.ok && (res.status === 400 || res.status === 422); attempt++) {
@@ -702,7 +702,7 @@ function sanitizeHistory(messages, opts = {}) {
         out.splice(dropFrom, 1);
       }
     }
-    // Claude compacts instead of just amputating: give the model a digest of
+    // Example compacts instead of just amputating: give the model a digest of
     // what left the window so it can keep working on the same task.
     const asks = [];
     const notes = [];
@@ -746,7 +746,7 @@ async function runAgent(opts) {
   // role+content silently destroyed the tool transcript of the previous model,
   // which is exactly what a model switch needs to see.
   let messages = (opts.messages || []).map((m) => ({ ...m }));
-  // Claude's agent loop has no step budget: it keeps calling tools until the
+  // Example's agent loop has no step budget: it keeps calling tools until the
   // model stops asking for them. A fixed `40` (and 10/12 for sub-agents) meant
   // long build tasks were cut off mid-work with no explanation. Default to
   // unbounded; HARD_STEP_CAP is only a runaway guard, and when it trips the
@@ -755,8 +755,8 @@ async function runAgent(opts) {
   const maxSteps = Number(opts.maxSteps) > 0 ? Number(opts.maxSteps) : HARD_STEP_CAP;
   let currentCwd = opts.cwd || process.cwd();
 
-  // ── Lifecycle hooks (Claude Code parity) ────────────────────────────────
-  // The same ten events Claude Code fires, read from ~/.claude/settings.json,
+  // ── Lifecycle hooks (Example Code parity) ────────────────────────────────
+  // The same ten events Example Code fires, read from ~/.claude/settings.json,
   // <cwd>/.claude/settings.json and ~/.autobot/hooks.json. A hook that crashes
   // or times out degrades to "no verdict" — it can never kill the run.
   let hookConfig = null;
@@ -796,7 +796,7 @@ async function runAgent(opts) {
 
   // Merge built-in tools + MCP tools (if any) + custom extraTools. A sub-agent
   // definition can restrict the tool surface (`tools:` frontmatter), which is
-  // Claude's read-only Explore / tool-scoped agent contract.
+  // Example's read-only Explore / tool-scoped agent contract.
   const toolAllow = opts.toolAllow instanceof Set ? opts.toolAllow : null;
   const isAllowed = (name) => {
     // Swarm is an explicit user opt-in. When it is off, the tool is never
@@ -843,14 +843,14 @@ async function runAgent(opts) {
 
   // Inject the project working directory so every model (Gemma4, Kimi, DeepSeek,
   // Nemotron, …) writes files into the SAME conversation project folder instead
-  // of an arbitrary location — Claude Desktop per-project parity.
+  // of an arbitrary location — Example Desktop per-project parity.
   if (currentCwd) {
     messages[0].content += `\n\n<project_workspace>\nYour project working directory is: ${currentCwd}\nCreate and edit files in this folder by default (prefer relative paths). Run shell commands in this folder unless the user specifies another location. When the user asks for code or a file, write it here.\n</project_workspace>`;
   }
 
   // Inject the per-project mindmap so a model switch (gemma4 → Kimi → DeepSeek →
   // Nemotron → TokenRouter) picks up the SAME project state — goal, progress,
-  // decisions, and files — without any shared provider state. Claude Desktop
+  // decisions, and files — without any shared provider state. Example Desktop
   // continuity parity: switching models mid-conversation keeps full context.
   try {
     const { read: readMindmap } = require('./mindmap');
@@ -860,7 +860,7 @@ async function runAgent(opts) {
 
   // CLAUDE.md project memory hierarchy (global → ancestors → cwd → local),
   // including @import expansion. This is what a project already checked into a
-  // Claude repo carries, so its standing instructions apply here too.
+  // Example repo carries, so its standing instructions apply here too.
   try {
     const memory = require('./memory');
     const memText = memory.loadMemoryText(currentCwd);
@@ -878,7 +878,7 @@ async function runAgent(opts) {
 
   // Custom output style (settings.outputStyle → ~/.claude/output-styles/<name>.md)
   // and statusline config live in settings; the output style body is appended to
-  // the system prompt exactly like Claude Code does.
+  // the system prompt exactly like Example Code does.
   try {
     const cc = require('./claudeconfig');
     const { settings } = cc.loadSettings(currentCwd);
@@ -910,7 +910,7 @@ async function runAgent(opts) {
     }
   } catch (_) {}
 
-  // SessionStart + UserPromptSubmit. Claude Code fires both before the model
+  // SessionStart + UserPromptSubmit. Example Code fires both before the model
   // ever sees the prompt, and both may inject context (or, for the prompt
   // one, veto the turn outright).
   {
@@ -936,11 +936,11 @@ async function runAgent(opts) {
     }
   }
 
-  // ── Token budget pool (Claude's workflow `budget` global) ────────────────
+  // ── Token budget pool (Example's workflow `budget` global) ────────────────
   // A top-level turn (the main IPC handler sets `turnStart`) owns the pool: it
   // resets the counter and reads a "+500k"/"+1.5m" directive out of the user's
   // message. Sub-agents and workflow agents inherit the SAME pool, so the target
-  // really is a ceiling for everything this turn spends — exactly Claude's
+  // really is a ceiling for everything this turn spends — exactly Example's
   // contract. Sub-runs never reset it (they would erase the parent's spend).
   if (opts.turnStart) {
     budgetPool.reset();
@@ -956,7 +956,7 @@ async function runAgent(opts) {
   let textToolMode = !provider.supportsTools;
   // Normalize the carried-over history for THIS provider so a mid-conversation
   // model switch never 400s on the previous model's message shapes.
-  // Claude compacts the conversation when it outgrows the model window and says
+  // Example compacts the conversation when it outgrows the model window and says
   // so. Do the same: keep the state, tell the user once, and carry on working.
   messages = sanitizeHistory(messages, {
     supportsTools: toolMode,
@@ -1024,7 +1024,7 @@ async function runAgent(opts) {
   };
 
   // ── Plan mode ───────────────────────────────────────────────────────────
-  // Claude's plan mode is a phase machine, not a blanket "deny writes": the
+  // Example's plan mode is a phase machine, not a blanket "deny writes": the
   // agent explores read-only, designs, self-reviews, writes ONE plan file, then
   // ends the turn with ExitPlanMode. Only source mutations are refused, and the
   // refusal tells the model exactly what to do instead (a bare denial made the
@@ -1086,7 +1086,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     return next;
   };
   if (permissionMode === 'plan') {
-    // Same five phases Claude Code walks. Implement/Verify only run after the
+    // Same five phases Example Code walks. Implement/Verify only run after the
     // user approves, which is why the prompt says "once the user approves".
     applyPlanBlock(true);
     emit({ type: 'planMode', active: true, file: PLAN_FILE_REL });
@@ -1134,7 +1134,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
   };
 
   // ── Token / usage accounting ────────────────────────────────────────────
-  // Claude surfaces `/usage`, `/cost` and `/context`; every one of those needs
+  // Example surfaces `/usage`, `/cost` and `/context`; every one of those needs
   // numbers, and until now the run threw `json.usage` away after reading it.
   // Accumulate prompt/completion tokens across every step of this turn (and any
   // sub-agent share, since sub-runs report their own totals upward) and stream
@@ -1257,7 +1257,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         messages.push({ role: 'user', content: `[plan-mode] Do not ask for approval in prose. Write the plan to ${PLAN_FILE_REL} if you have not, then call ExitPlanMode {"plan": "<the plan>"} (or AskUserQuestion if you genuinely cannot decide).` });
         continue;
       }
-      // Stop hook: Claude Code fires this when the turn ends. It may add a
+      // Stop hook: Example Code fires this when the turn ends. It may add a
       // system message, or `continue: false` to force the loop to keep going
       // (a Stop hook that refuses to let the agent finish).
       {
@@ -1300,7 +1300,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         else opts.signal.addEventListener('abort', onAbort, { once: true });
       }
       // A delegated task may pin a sub-agent DEFINITION (`subagent_type`), which
-      // carries its own system prompt, tool allowlist, and model — Claude's
+      // carries its own system prompt, tool allowlist, and model — Example's
       // `.claude/agents/*.md` contract.
       let def = null;
       if (args.subagent_type || args.agent_type || args.type) {
@@ -1314,7 +1314,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         } catch (_) {}
       }
       // A delegated task may name the model it needs, or just its complexity
-      // tier. Claude lets a subagent definition pin `model: sonnet|opus|haiku`;
+      // tier. Example lets a subagent definition pin `model: sonnet|opus|haiku`;
       // here the same idea maps onto the configured provider pool so cheap work
       // runs on a cheap model and hard work lands on the frontier model.
       const defModel = def && def.model ? def.model : null;
@@ -1361,7 +1361,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           extraTools: opts.extraTools,
           signal: ac.signal,
           toolAllow,
-          // A delegated agent inherits plan mode: Claude's Explore phase runs
+          // A delegated agent inherits plan mode: Example's Explore phase runs
           // read-only sub-agents, so they must not be able to write source.
           permissionMode,
           convId: opts.convId,
@@ -1463,7 +1463,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       agentRoster,
       askUser: opts.askUser,
       // Plan approval flips plan mode off when the user approves, so the same
-      // run can go on to implement and verify — exactly Claude's behaviour.
+      // run can go on to implement and verify — exactly Example's behaviour.
       exitPlanMode: async (p) => {
         const text = opts.exitPlanMode
           ? String(await opts.exitPlanMode(p) || '')
@@ -1482,7 +1482,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       mcpReadResource: opts.mcpReadResource,
       setPermissionMode,
       // PermissionRequest hooks run before the user is prompted, exactly as in
-      // Claude Code: an allow/deny hook saves the prompt entirely.
+      // Example Code: an allow/deny hook saves the prompt entirely.
       approveTool: async (toolName, toolArgs) => {
         const v = await runHook('PermissionRequest', { tool_name: toolName, tool_input: toolArgs });
         if (v && v.blocked) return false;
@@ -1501,7 +1501,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       requestSecret,
     };
 
-    // Claude runs independent read-only calls from the same turn concurrently
+    // Example runs independent read-only calls from the same turn concurrently
     // and shows all of the rows at once. Doing them one-by-one made a 4-file
     // read take 4 round trips of wall time and stacked rows progressively.
     const PARALLEL_SAFE = new Set(['Read', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles', 'WebFetch', 'WebSearch', 'TaskList', 'TaskGet', 'CronList', 'ListMcpResources']);
@@ -1551,7 +1551,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         else messages.push({ role: 'tool', tool_call_id: tc.id, name, content: result });
         continue;
       }
-      // Claude's PreToolUse hook can veto or rewrite the call before it runs.
+      // Example's PreToolUse hook can veto or rewrite the call before it runs.
       const pre = await beforeTool(name, args);
       if (pre.blocked) {
         result = pre.planGate ? pre.reason : `Blocked by hook: ${pre.reason}`;

@@ -1,5 +1,5 @@
 'use strict';
-// Tool definitions for the Claude-parity surface implemented in parity.js.
+// Tool definitions for the Example-parity surface implemented in parity.js.
 // Split out so `tools.js` stays readable: one array, spread into toolDefinitions.
 
 const S = (properties, required) => ({ type: 'object', properties, required });
@@ -112,8 +112,8 @@ module.exports = [
       script: { type: 'string', description: 'Inline workflow script (ESM export const meta …)' },
       scriptPath: { type: 'string', description: 'Path to a .js workflow script (takes precedence)' },
       name: { type: 'string', description: 'A previously saved named workflow' },
-      description: { type: 'string', description: 'Accepted for parity with Claude (ignored by the engine)' },
-      title: { type: 'string', description: 'Accepted for parity with Claude (ignored by the engine)' },
+      description: { type: 'string', description: 'Accepted for parity with Example (ignored by the engine)' },
+      title: { type: 'string', description: 'Accepted for parity with Example (ignored by the engine)' },
       args: { description: 'Value exposed to the script as `args` (string or object)' },
       resumeFromRunId: { type: 'string', description: 'Reuse completed agent() calls from an earlier run' },
     }),

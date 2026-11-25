@@ -1,7 +1,7 @@
 'use strict';
-// Helio Bot — Plugins & Connectors directory (Claude Desktop parity).
+// Helio Bot — Plugins & Connectors directory (Example Desktop parity).
 //
-// Claude Desktop ships a directory of connectors (remote MCP servers) plus
+// Example Desktop ships a directory of connectors (remote MCP servers) plus
 // installable plugins. Helio Bot reproduces that surface locally: a curated
 // catalog with categories, search, install/uninstall state persisted to
 // ~/.autobot/plugins.json, and model-facing tools

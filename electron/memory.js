@@ -1,7 +1,7 @@
 'use strict';
-// Project memory — Claude's CLAUDE.md hierarchy.
+// Project memory — Example's CLAUDE.md hierarchy.
 //
-// Claude Code loads, in order, and concatenates:
+// Example Code loads, in order, and concatenates:
 //   ~/.claude/CLAUDE.md                  (global user memory)
 //   <ancestor dirs>/CLAUDE.md            (root → cwd, project memory)
 //   <cwd>/CLAUDE.md

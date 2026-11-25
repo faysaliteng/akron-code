@@ -1,7 +1,7 @@
 'use strict';
 // Supervisor-led multi-agent swarm with complexity-based model routing.
 //
-// This is the local equivalent of what the Claude app/Claude Code do when a
+// This is the local equivalent of what the Example app/Example Code do when a
 // task is big enough to need a team: a *lead* model (the supervisor) reads the
 // goal, splits it into independent subtasks, tags each subtask with a
 // complexity tier, the host routes every subtask to the model tier that fits it
@@ -34,7 +34,7 @@ function normalizeTier(t, fallback) {
 // explicit `frontier: true` flag or by matching a known frontier model family.
 // Cheap/local models never enter a swarm roster (they remain fair game for the
 // automatic Task/Agent multi-agent path).
-const FRONTIER_RE = /(kimi|moonshot|deepseek|glm|zhipu|chatgpt|gpt-?[45]|\bo[1-4]\b|claude|sonnet|opus|gemini[- ]?(pro|ultra)|qwen.*(max|235b)|grok|command-r-plus|mistral-large|frontier)/i;
+const FRONTIER_RE = /(kimi|moonshot|deepseek|glm|zhipu|chatgpt|gpt-?[45]|\bo[1-4]\b|anthropic|sonnet|opus|haiku|gemini[- ]?(pro|ultra)|qwen.*(max|235b)|grok|command-r-plus|mistral-large|frontier)/i;
 function isFrontier(p) {
   if (!p) return false;
   if (p.frontier === true) return true;

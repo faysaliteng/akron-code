@@ -1,5 +1,5 @@
 /* ============================================================
-   AUTOBOT — Claude Desktop design system (CDS) parity
+   AUTOBOT — Example Desktop design system (CDS) parity
    Extracted 1:1 from Claude.app v6.28899.6 renderer bundle.
    Warm stone/cream neutrals, coral brand #d97757, AnthropicSans.
    ============================================================ */
@@ -54,7 +54,7 @@
   font-display: swap;
 }
 
-/* ---------- Design tokens (dark = default, matching Claude) ---------- */
+/* ---------- Design tokens (dark = default, matching Example) ---------- */
 :root {
   /* warm neutrals */
   --bg-000: #30302e;
@@ -68,7 +68,7 @@
   --border: rgba(222, 220, 209, 0.12);
   --border-strong: rgba(222, 220, 209, 0.2);
 
-  /* brand — Claude coral */
+  /* brand — Example coral */
   --accent: #d97757;
   --accent-strong: #c6613f;
   --accent-soft: rgba(217, 119, 87, 0.14);
@@ -88,7 +88,7 @@
   --serif: 'AnthropicSerif', Georgia, 'Times New Roman', serif;
   --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
 
-  /* type scale (Claude CDS) */
+  /* type scale (Example CDS) */
   --fs-body: 0.9375rem;   /* 15px prose */
   --fs-footnote: 0.8125rem; /* 13px */
   --fs-caption: 0.75rem;  /* 12px */
@@ -141,7 +141,7 @@ body {
 }
 button { font-family: inherit; letter-spacing: inherit; }
 
-/* Anthropicons glyph rendering (Claude's icon font, PUA U+E000+) */
+/* Anthropicons glyph rendering (Example's icon font, PUA U+E000+) */
 .icon {
   font-family: 'Anthropicons-Variable', 'AnthropicInterface', sans-serif;
   font-weight: 400;
@@ -331,6 +331,11 @@ button { font-family: inherit; letter-spacing: inherit; }
   border-top: 1px solid var(--border); padding: 8px 10px;
   display: flex; align-items: center; gap: 6px;
 }
+.sidebar-mark {
+  padding: 0 12px 10px; font-size: 10.5px; letter-spacing: .02em;
+}
+.sidebar-mark a { color: var(--text-400); text-decoration: none; }
+.sidebar-mark a:hover { color: var(--accent); text-decoration: underline; }
 .account-row {
   flex: 1; display: flex; align-items: center; gap: 8px;
   padding: 6px 8px; border: none; background: none; cursor: pointer;
@@ -462,7 +467,7 @@ button { font-family: inherit; letter-spacing: inherit; }
 
 .worked-for { display: inline-flex; align-items: center; gap: 5px; margin-top: 8px; color: var(--text-400); font-size: var(--fs-footnote); }
 
-/* Reasoning trace — collapsible, like Claude's "Thought for 4s" block. */
+/* Reasoning trace — collapsible, like Example's "Thought for 4s" block. */
 .thinkblock { margin: 2px 0 10px; }
 .think-head { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 3px 9px 3px 6px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-100); color: var(--text-300); font-size: var(--fs-caption); cursor: pointer; }
 .think-head:hover { background: var(--bg-200); color: var(--text-200); }
@@ -489,7 +494,7 @@ button { font-family: inherit; letter-spacing: inherit; }
 .tool-args { color: var(--text-400); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 0.9em; }
 .caret { color: var(--text-400); }
 .tool-result { margin: 0; padding: 12px 14px; background: var(--bg-300); color: var(--text-200); overflow-x: auto; font-size: var(--fs-caption); max-height: 320px; overflow-y: auto; border-top: 1px solid var(--border); }
-/* Agent todo list — Claude shows this as a live checklist, not a step counter. */
+/* Agent todo list — Example shows this as a live checklist, not a step counter. */
 .todolist { padding: 8px 14px 11px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 5px; }
 .todo { display: flex; align-items: flex-start; gap: 8px; font-size: var(--fs-caption); color: var(--text-200); line-height: 1.45; }
 .todo-mark { color: var(--text-400); width: 12px; flex: 0 0 12px; font-family: var(--mono); }
@@ -653,7 +658,7 @@ button { font-family: inherit; letter-spacing: inherit; }
 .model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-caret { color: var(--text-400); }
 
-/* Permission pill (composer) — Claude parity: mode selector next to the model pill */
+/* Permission pill (composer) — Example parity: mode selector next to the model pill */
 .perm-pill-wrap { position: relative; flex: 0 0 auto; }
 .perm-pill {
   display: inline-flex; align-items: center; gap: 6px;
@@ -815,7 +820,7 @@ button { font-family: inherit; letter-spacing: inherit; }
 }
 .attach-x:hover { color: var(--text-000); }
 
-/* Queued messages (sent while a reply was streaming) — Claude parity */
+/* Queued messages (sent while a reply was streaming) — Example parity */
 .queue-bar {
   max-width: 760px; margin: 0 auto 8px;
   border: 1px dashed var(--border-strong); border-radius: 12px;
@@ -1016,7 +1021,7 @@ button { font-family: inherit; letter-spacing: inherit; }
 .term-input input { flex: 1; border: none; outline: none; background: none; color: var(--text-000); font-family: var(--mono); font-size: var(--fs-footnote); }
 
 /* ============================================================
-   Claude Code (repo-aware) mode — B8
+   Example Code (repo-aware) mode — B8
    ============================================================ */
 .code-panel { max-width: 860px; }
 .code-head-actions { display: flex; gap: 8px; }
@@ -1062,17 +1067,17 @@ button { font-family: inherit; letter-spacing: inherit; }
 
 
 /* ============================================================
-   Built-in Browser (Claude Desktop Browser-pane parity)
+   Built-in Browser (Example Desktop Browser-pane parity)
    ============================================================ */
 .browser-panel { max-width: none; padding: 0; display: flex; flex-direction: column; overflow: hidden; flex: 1; min-height: 0; height: 100%; }
 .spin { animation: spin 1s linear infinite; }
 
-/* Session pane (Claude parity: coexisting, resizable, collapsible) */
+/* Session pane (Example parity: coexisting, resizable, collapsible) */
 .session-pane {
   flex: 0 1 auto;
   display: flex; flex-direction: column;
   min-height: 0; min-width: 320px;
-  /* Never let the pane crush the chat column — Claude caps the split too. */
+  /* Never let the pane crush the chat column — Example caps the split too. */
   max-width: min(900px, 62vw);
   background: var(--bg-100);
   border-left: 1px solid var(--border);

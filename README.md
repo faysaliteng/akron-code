@@ -1,16 +1,16 @@
 # ⚡ Helio Bot
 
-**Helio Bot** — a Claude Desktop–compatible desktop AI agent that runs
+**Helio Bot** — a Example Desktop–compatible desktop AI agent that runs
 on **any free LLM API** (OpenAI-compatible).
 
-Built by reverse-engineering Claude Desktop (`/Applications/Claude.app`, Electron 45.3.3)
+Built by reverse-engineering Example Desktop (`/Applications/Claude.app`, Electron 45.3.3)
 with REA and reproducing its full feature surface on a pluggable local/remote LLM layer.
 
 ---
 
-## Features (feature parity with Claude Desktop)
+## Features (feature parity with Example Desktop)
 
-| Claude feature | Helio Bot equivalent |
+| Example feature | Helio Bot equivalent |
 |---|---|
 | Streaming chat w/ markdown + code | ✅ SSE streaming, `marked` + `highlight.js` + DOMPurify |
 | Agent tool loop (full classic surface, **56 tools**) | ✅ built-in function-calling loop with no-tools fallback |
@@ -58,7 +58,7 @@ OpenAI-compatible base URL + key), then **Test connection**.
 
 ### Tool toggles
 
-The agent exposes the complete classic Claude Code tool surface (56 total definitions)
+The agent exposes the complete classic Example Code tool surface (56 total definitions)
 to the model: `Bash, Edit, Write, Read, Glob, Grep, WebSearch, WebFetch, Task, Agent,
 TodoWrite, NotebookEdit, NotebookRead, AskUserQuestion, KillShell, SlashCommand, Skill,
 ExitPlanMode, MultiEdit, REPL, JavaScript, Cd, ListMcpResources, ReadMcpResource,
