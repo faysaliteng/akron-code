@@ -1529,7 +1529,8 @@ window tab read `Design — Design`. Two fixes, both permanent:
 | `node test/artifactcanvas.test.js` | **100 checks / EXIT 0** — +10 for the markdown title/section-naming/render rules and content-titled documents |
 | Runtime (dev `:9333`) | `artifactType({language:'design'})` → title `Design`, tint `#8b7bf5`, slug `bcd2878f-…`, contract `0.2.47`; `slides` → tint `#e0b64a`, slug `3e9dc3d6-…`, `mcp.enabled:false` + reason; `artifactType({language:'html'})` → `null` |
 | UI (dev `:9333`, CDP) | tabs `🎨Design` / `📽️Slides` with `--artifact-tint` `#8b7bf5` / `#e0b64a`; header `Design` / `Slides` + `contract 0.2.47`; `Drive not connected` on Slides only |
-| Artifact window | Open → new target titled **`Landing — Design`** (document `<title>` and `<h2>` both `Landing`), emoji favicon, `1` board; deck → **`Deck — Slides`**, `1` slide thumb |
+| Artifact window | Open → new target titled **`Landing — Design`** (document `<title>` and `<h2>` both `Landing`), emoji favicon, `1` board, rail `Hero`; deck → **`Deck — Slides`**, `1` slide thumb |
+| Packaged build (`release/mac-arm64`, `:9444`) | `npm run dist` → DMG + zip; the packaged app reproduces the whole matrix from `app.asar`: both bridges, `schemaVersion 1` / `contract 0.2.47` / pinned slugs and tints, 12 + 9 flags, `mcp.enabled:false` with reason and `Google Drive:false/0`, `user`/`room`/`paste` false with reasons, `comments`/`db` true, unknown language → `null`, tabs `🎨Design` / `📽️Slides`, and windows titled `Landing — Design` / `Deck — Slides` |
 
 ### X.6 The second title bug: the frame type was the only title source
 
