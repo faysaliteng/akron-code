@@ -112,6 +112,34 @@ w2.fire('show');
 ok('maximize applied on show', maximizedOnShow === true);
 
 // ---------------------------------------------------------------------------
+console.log('\nwindowstate — getNormalBounds() beats the maximized rect');
+// ---------------------------------------------------------------------------
+// A zoomed window reports the screen rect from getBounds() but its floating
+// rect from getNormalBounds(). The floating rect is what has to be stored, or
+// un-maximizing lands wrong.
+const wnb = fakeWin({ width: 1920, height: 1080, x: 0, y: 0 });
+wnb.isMaximized = () => true;
+wnb.getNormalBounds = () => ({ width: 1010, height: 720, x: 61, y: 72 });
+ws.track(wnb);
+wnb.fire('close');
+const nb = ws.read();
+eq('normal bounds are stored while maximized', [nb.width, nb.height, nb.x, nb.y], [1010, 720, 61, 72]);
+ok('maximized flag still set', nb.maximized === true);
+
+// The first-ever save happening while maximized must not produce a bounds-less
+// file (read() would reject it and the next boot would fall back to defaults).
+try { fs.unlinkSync(ws.FILE); } catch (_) {}
+const wfirst = fakeWin({ width: 1920, height: 1080, x: 0, y: 0 });
+wfirst.isMaximized = () => true;
+wfirst.getNormalBounds = () => ({ width: 1200, height: 800, x: 100, y: 50 });
+ws.track(wfirst);
+wfirst.fire('close');
+const first = ws.read();
+ok('first save while maximized keeps a usable size', !!first && first.width === 1200 && first.height === 800, first);
+eq('first save keeps the floating position', [first && first.x, first && first.y], [100, 50]);
+ok('first save restores as maximized', ws.restore([DISPLAY]).__maximized === true);
+
+// ---------------------------------------------------------------------------
 console.log('\nwindowstate — atomic-ish write leaves no temp files');
 // ---------------------------------------------------------------------------
 const leftovers = fs.readdirSync(path.dirname(ws.FILE)).filter((f) => f.includes('.tmp'));

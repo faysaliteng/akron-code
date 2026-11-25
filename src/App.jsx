@@ -2714,7 +2714,7 @@ function ArtifactPreview({ block }) {
     setCanvasDoc('');
     const api = window.autobot;
     const p = api && api.artifactDocument
-      ? api.artifactDocument({ name: block.label || lang, language: lang, content: code })
+      ? api.artifactDocument({ name: block.label || '', language: lang, content: code })
       : Promise.resolve('');
     Promise.resolve(p)
       .then((h) => {
@@ -2905,6 +2905,28 @@ function ArtifactsView({ blocks }) {
   const [idx, setIdx] = useState(0);
   const [mode, setMode] = useState('preview'); // 'preview' | 'code'
   const block = blocks[idx];
+  // Frame type manifests (🎨 Design / 📽️ Slides) come from main so the tab strip,
+  // header and Open button use the same title/tint/icon as the artifact window.
+  const langs = blocks.map((b) => String(b.lang || '').toLowerCase().trim());
+  const typeMeta = useArtifactTypes(langs);
+  const meta = block ? typeMeta[String(block.lang || '').toLowerCase().trim()] || null : null;
+  // Tab labels read like Desktop: the explicit artifact name, else the frame
+  // type ("Design"/"Slides"), else the fence language. A number is only added
+  // when more than one artifact of that type exists, so the common case is a
+  // clean "🎨 Design" instead of "🎨design #1".
+  const tabLabels = useMemo(() => {
+    const counts = {};
+    for (const l of langs) counts[l] = (counts[l] || 0) + 1;
+    const seen = {};
+    return blocks.map((b) => {
+      const l = String(b.lang || '').toLowerCase().trim();
+      const mt = typeMeta[l];
+      const base = b.label || (mt && mt.title) || b.lang || 'artifact';
+      if ((counts[l] || 0) < 2) return base;
+      seen[l] = (seen[l] || 0) + 1;
+      return base + ' ' + seen[l];
+    });
+  }, [blocks, langs.join('|'), typeMeta]);
   let highlighted = '';
   if (block) {
     try {
@@ -2919,19 +2941,42 @@ function ArtifactsView({ blocks }) {
       {blocks.length > 0 && (
         <>
           <div className="artifact-tabs">
-            {blocks.map((b, i) => (
-              <button key={i} className={i === idx ? 'on' : ''} onClick={() => { setIdx(i); setMode('preview'); }}>{b.label || b.lang} #{i + 1}</button>
-            ))}
+            {blocks.map((b, i) => {
+              const mt = typeMeta[String(b.lang || '').toLowerCase().trim()];
+              return (
+                <button key={i} className={i === idx ? 'on' : ''} onClick={() => { setIdx(i); setMode('preview'); }}
+                  style={mt ? { '--artifact-tint': mt.tintColor } : undefined}
+                  title={mt ? `${mt.title} · contract ${mt.contract}` : undefined}>
+                  {mt && <span className="artifact-tab-emoji" aria-hidden="true">{mt.favicon}</span>}
+                  {tabLabels[i]}
+                </button>
+              );
+            })}
           </div>
           {block && (
             <div className="artifact-body">
               <div className="artifact-toolbar">
-                <div className="codeblock-head"><span>{block.lang}</span></div>
+                {meta ? (
+                  <div className="codeblock-head artifact-type-head" style={{ '--artifact-tint': meta.tintColor }}>
+                    <span className="artifact-type-badge">
+                      <Icon name={meta.icon || 'Artifacts'} size={14} />
+                      {meta.title}
+                    </span>
+                    <span className="artifact-type-contract">contract {meta.contract}</span>
+                    {meta.mcp && meta.mcp.length > 0 && (
+                      <span className={meta.mcp.some((s) => s.available) ? 'artifact-cap on' : 'artifact-cap'} title={meta.mcp.some((s) => s.available) ? 'Save to Drive is available' : 'Connect Google Drive to save decks there'}>
+                        {meta.mcp.some((s) => s.available) ? 'Drive ready' : 'Drive not connected'}
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <div className="codeblock-head"><span>{block.lang}</span></div>
+                )}
                 <div className="artifact-toggle">
                   <button className={mode === 'preview' ? 'on' : ''} onClick={() => setMode('preview')} disabled={!canPreview}>Preview</button>
                   <button className={mode === 'code' ? 'on' : ''} onClick={() => setMode('code')}>Code</button>
                   <button className="copy-btn" data-code={encodeURIComponent(block.code)} onClick={(e) => { const btn = e.currentTarget; const c = decodeURIComponent(btn.dataset.code || ''); navigator.clipboard?.writeText(c).then(() => { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1200); }); }}>Copy</button>
-                  <button onClick={() => window.autobot.openArtifactWindow({ name: block.label || block.lang, language: block.lang, content: block.code })}>Open</button>
+                  <button onClick={() => window.autobot.openArtifactWindow({ name: block.label || '', language: block.lang, content: block.code })}>Open</button>
                   <button onClick={() => window.autobot.printToPdf({ defaultName: (block.label || 'artifact').replace(/[^\w.-]+/g, '_') + '.pdf', language: (block.lang || '').toLowerCase(), html: ['html', 'htm', 'svg'].includes((block.lang || '').toLowerCase()) ? block.code : undefined, content: block.code })}>PDF</button>
                 </div>
               </div>
@@ -2946,6 +2991,34 @@ function ArtifactsView({ blocks }) {
       )}
     </div>
   );
+}
+
+// Fetch frame type metadata once per distinct artifact language. Main resolves
+// the manifest against the current install (flag overrides, connected MCP
+// servers, local profile), so the badge never claims a capability that is off.
+function useArtifactTypes(langs) {
+  const [map, setMap] = useState({});
+  const seen = useRef({});
+  const key = langs.filter(Boolean).join('|');
+  useEffect(() => {
+    const api = window.autobot;
+    if (!api || !api.artifactType) return undefined;
+    const want = key.split('|').filter(Boolean).filter((l) => !seen.current[l]);
+    if (!want.length) return undefined;
+    want.forEach((l) => { seen.current[l] = 'pending'; });
+    let live = true;
+    Promise.all(want.map((l) => Promise.resolve(api.artifactType({ language: l })).then((m) => [l, m]).catch(() => [l, null])))
+      .then((pairs) => {
+        if (!live) return;
+        setMap((prev) => {
+          const next = { ...prev };
+          for (const [l, m] of pairs) { next[l] = m; seen.current[l] = m ? 'done' : 'none'; }
+          return next;
+        });
+      });
+    return () => { live = false; };
+  }, [key]);
+  return map;
 }
 
 // ---------- Memory ----------

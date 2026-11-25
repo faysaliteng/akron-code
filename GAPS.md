@@ -1472,4 +1472,75 @@ the entire screen, so every Computer Use tool is gated regardless of mutation.
 | Window state | restore/debounce/off-screen-drop/maximise covered by `test/windowstate.test.js` **18/0**; runtime round-trip verified |
 | Deep link | second launch with `helio://settings` focused the running window and routed it, no store fight |
 | Launch at login | on→off round-trip with no leftover login item |
-| Not yet proven | ⚠️ the live consent **modal** click-through (Allow → grant persists → tool proceeds) has not been captured, because every attempt hit `rate_limit_error` from the model before a tool call was emitted. Gate, tiers and panel are proven; the click-through is not |
+| Live consent E2E — deny | **Proven.** Ollama `gemma4:latest` asked to call `mcp__computer__screenshot`; modal showed "Allow Computer Use?" / "See the screen" / `computer_screenshot`; **Deny** → `grant:null`, toolcard `error` with `Blocked: permission not granted for mcp__computer__screenshot …` and no OS call |
+| Live consent E2E — allow | **Proven.** **Allow** → `grant:"access"`, modal closed, toolcard `done` with `Screenshot saved: …/shot-1795621347141.png (552683 bytes)`; `file` → PNG 2560 x 1664 RGBA. Provider restored to `cheap-mini` afterwards |
+
+---
+
+## X. ARTIFACT FRAME TYPES — `design` / `slides` as first-class manifests (2026-11-25)
+
+### X.1 The gap
+
+Desktop treats `design` and `slides` as *frame types*, not as fenced code that
+happens to render. Each carries a versioned manifest — `schemaVersion`, a
+`contract` string, a production slug, twelve/nine feature flags, capability
+verdicts resolved against the live environment, and per-type UI metadata
+(emoji favicon, tint, tab label). Helio Bot had the canvases and none of the
+manifest, so the Artifacts panel, the artifact window title and the in-chat
+preview all invented their own labels.
+
+### X.2 What was built
+
+| Piece | Where |
+|---|---|
+| Manifest registry modelled verbatim from the reverse-engineered ground truth | `electron/artifacttypes.js` — `schemaVersion 1`, `contract 0.2.47`, design `🎨` / `Palette` / `violet` `#8b7bf5` / slug `bcd2878f-…` / 12 flags, slides `📽️` / `Slides` / `yellow` `#e0b64a` / slug `3e9dc3d6-…` / 9 flags |
+| Honest capability resolution | `resolveCapabilities()` — `downloads`/`artifact`/`comments`/`db`/`assets` true; `room`/`paste` false **with a reason**; `user` true only with a local profile; `mcp` true only when a connected server exposes a declared tool (slug-normalised, so `Google Drive` ≡ `google-drive` ≡ `gdrive`) |
+| One title rule for document + window tab | `documentTitle(language, name, parsedTitle)` |
+| IPC | `autobot:artifactType` / `autobot:artifactTypes`, both shaped from `artifactTypeContext()` (settings flags + live MCP tool lists + profile) |
+| Renderer | `useArtifactTypes()` + Artifacts tab emoji/`--artifact-tint`, `Design`/`Slides` badge, `contract 0.2.47`, Drive pill, per-type tab labels |
+
+### X.3 The title bug this surfaced
+
+The artifacts list passed the *frame type* as the artifact name, so
+`artifactcanvas.canvasHtml()` built `<title>Design — Design</title>` and the
+window tab read `Design — Design`. Two fixes, both permanent:
+
+1. `documentTitle()` treats a name equal to the type title as "no name", and
+   strips a type suffix the canvas builder already appended.
+2. The Open button / in-chat preview pass only a real label (`block.label`), never
+   the type title, and `createArtifactWindow()` now titles itself from the built
+   document so the tab strip can never disagree with the document.
+
+### X.4 Google Drive — two separate things, deliberately
+
+* Manifest `capabilities.mcp` answers *"could a connected MCP server save this?"*
+  It stays `enabled: false` with `reason: "no connected server exposes the
+  declared tools"` until a server that declares `create_file`/`gdrive_upload`
+  is connected. This is a truthful probe of the environment, not a stub.
+* The in-app export path (`data-act="drive"` in the slides canvas →
+  `autobot:slidesUpload`) is a separate, local-first feature and does not flip
+  the manifest verdict.
+
+### X.5 Verification
+
+| Check | Result |
+|---|---|
+| `node test/artifacttypes.test.js` (new) | **82 assertions / EXIT 0** — pinned contract/slugs/tints/flags, honest capability verdicts (incl. `mcp.enabled === false` with reason), manifest deep-copy immunity, `documentTitle` ladder |
+| `node test/artifactcanvas.test.js` | **100 checks / EXIT 0** — +10 for the markdown title/section-naming/render rules and content-titled documents |
+| Runtime (dev `:9333`) | `artifactType({language:'design'})` → title `Design`, tint `#8b7bf5`, slug `bcd2878f-…`, contract `0.2.47`; `slides` → tint `#e0b64a`, slug `3e9dc3d6-…`, `mcp.enabled:false` + reason; `artifactType({language:'html'})` → `null` |
+| UI (dev `:9333`, CDP) | tabs `🎨Design` / `📽️Slides` with `--artifact-tint` `#8b7bf5` / `#e0b64a`; header `Design` / `Slides` + `contract 0.2.47`; `Drive not connected` on Slides only |
+| Artifact window | Open → new target titled **`Landing — Design`** (document `<title>` and `<h2>` both `Landing`), emoji favicon, `1` board; deck → **`Deck — Slides`**, `1` slide thumb |
+
+### X.6 The second title bug: the frame type was the only title source
+
+Fixing the suffix duplication exposed the real cause. `parseDesign` never read a
+markdown heading, so for a `# Landing` design the parsed title *was* the fallback
+string `Design` — indistinguishable from "no title", which is why the window read
+`Design` even after the dedupe. `parseSlides` only looked like it worked because the
+seeded deck's H1 happened to be `# Deck`, matching its fallback.
+
+Now both parsers treat a leading markdown H1 as the document name (`parseDesign`
+drops it from the first artboard so it is not rendered twice), design sections are
+named from their own `##` heading, and a prose board with no markup is rendered
+through `mdToHtml()` instead of being shown as raw markdown inside the iframe.
+

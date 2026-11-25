@@ -161,6 +161,8 @@ contextBridge.exposeInMainWorld('autobot', {
   quickSubmit: (payload) => ipcRenderer.invoke('autobot:quickSubmit', payload),
   openArtifactWindow: (payload) => ipcRenderer.invoke('autobot:openArtifactWindow', payload),
   artifactDocument: (payload) => ipcRenderer.invoke('autobot:artifactDocument', payload),
+  artifactType: (payload) => ipcRenderer.invoke('autobot:artifactType', payload),
+  artifactTypes: () => ipcRenderer.invoke('autobot:artifactTypes'),
   printToPdf: (payload) => ipcRenderer.invoke('autobot:printToPdf', payload),
 
   // ---- Canvas artifact edits (Design artboards / Slides decks) ----

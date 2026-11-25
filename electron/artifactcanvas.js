@@ -79,14 +79,33 @@ function parseDesign(content) {
   }
   if (!boards.length) {
     // Plain HTML / markdown: one artboard per `---` section (a single frame when unsplit).
-    boards = splitSections(raw).map((chunk, i) => ({ name: `Artboard ${i + 1}`, html: chunk }));
+    // A leading markdown H1 is the *document* name, not part of the first frame — without
+    // this the frame type ("Design") leaked into the title and the window tab read "Design".
+    const lines = raw.split(/\r?\n/);
+    const firstIdx = lines.findIndex((l) => l.trim());
+    const h1 = firstIdx >= 0 ? /^[ \t]*#[ \t]+(.+?)[ \t]*$/.exec(lines[firstIdx]) : null;
+    let body = raw;
+    if (!title && h1) {
+      title = h1[1].trim().slice(0, 120);
+      body = lines.slice(firstIdx + 1).join('\n');
+    }
+    boards = splitSections(body).map((chunk, i) => {
+      const h = /^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$/m.exec(chunk);
+      const named = h && !/[<>]/.test(chunk) ? h[1].trim().slice(0, 60) : '';
+      return { name: named || `Artboard ${i + 1}`, html: chunk };
+    });
   }
   const artboards = boards.map((b, i) => {
     const isObj = b && typeof b === 'object';
-    const html = isObj ? (b.html != null ? b.html : b.content != null ? b.content : b.markdown) : b;
+    const rawHtml = isObj ? (b.html != null ? b.html : b.content != null ? b.content : b.markdown) : b;
+    let html = String(rawHtml == null ? '' : rawHtml);
+    // Markdown design boards (what a model usually writes) render as a real page instead
+    // of raw text inside the iframe. Same rule the deck parser uses: prose with some
+    // letters and no markup is markdown; anything containing tags is HTML and left alone.
+    if (html && /[A-Za-z]/.test(html) && !/[<>]/.test(html)) html = mdToHtml(html);
     return {
       name: String((isObj && (b.name || b.title)) || `Artboard ${i + 1}`),
-      html: String(html == null ? '' : html),
+      html,
       width: clampSize(isObj ? b.width : null, 2400),
       height: clampSize(isObj ? b.height : null, 4000),
       notes: String((isObj && (b.notes || b.description)) || ''),
@@ -130,6 +149,10 @@ function parseSlides(content) {
     list = Array.isArray(obj.slides) ? obj.slides : Array.isArray(obj.deck) ? obj.deck : [];
   }
   if (!list.length) {
+    // The deck takes its name from the markdown H1 (usually the cover slide's heading),
+    // so a real deck titles itself instead of always reading "Deck".
+    const deckHead = /^[ \t]*#[ \t]+(.+?)[ \t]*$/m.exec(raw);
+    if (!title && deckHead) title = deckHead[1].trim().slice(0, 120);
     list = splitSections(raw).map((chunk) => {
       const head = /^\s*#{1,3}\s+(.+)$/m.exec(chunk);
       const body = head ? chunk.replace(head[0], '').trim() : chunk;

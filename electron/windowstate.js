@@ -74,16 +74,27 @@ function track(win, opts) {
     try {
       if (win.isDestroyed()) return;
       const maximized = win.isMaximized();
-      // While maximized/fullscreen getBounds() reports the maximized rect; keep
-      // the last floating geometry instead so un-maximizing later still lands
-      // where the user left it.
-      if (maximized || win.isFullScreen()) {
-        const prev = read() || {};
-        write({ ...prev, maximized: true });
-        return;
+      const fullScreen = win.isFullScreen();
+      // While maximized/fullscreen getBounds() reports the maximized rect.
+      // getNormalBounds() reports the floating rect instead, so un-maximizing
+      // later still lands where the user left it — and, crucially, the very
+      // first save (which may happen while already maximized) still records a
+      // usable size/position instead of a bounds-less file that `read()` drops.
+      let b = null;
+      if (typeof win.getNormalBounds === 'function') {
+        try { b = win.getNormalBounds(); } catch (_) { b = null; }
       }
-      const b = win.getBounds();
-      write({ width: b.width, height: b.height, x: b.x, y: b.y, maximized: false });
+      if (!b || !b.width || !b.height) {
+        // No getNormalBounds(): while zoomed, prefer the last floating rect;
+        // otherwise the live bounds are the truth.
+        const prev = read();
+        if ((maximized || fullScreen) && prev && prev.width && prev.height) {
+          write({ ...prev, maximized: true });
+          return;
+        }
+        b = win.getBounds();
+      }
+      write({ width: b.width, height: b.height, x: b.x, y: b.y, maximized: maximized || fullScreen });
     } catch (_) { /* geometry is a nicety, never fatal */ }
   };
   const schedule = () => {

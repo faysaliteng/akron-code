@@ -36,6 +36,19 @@ ok('sections auto-named', split.artboards[2].name === 'Artboard 3', split.artboa
 const bare = c.parseDesign('<p>just one</p>');
 ok('single html blob → one artboard', bare.artboards.length === 1);
 
+// Markdown designs: the leading H1 is the document name, sections are named from
+// their own headings, and prose renders through the markdown pipeline.
+const mdDesign = c.parseDesign('# Landing\n\n## Hero\nHeadline: Ship faster\n\n---\n\n## Features\n- Fast\n- Offline');
+ok('markdown H1 names the design', mdDesign.title === 'Landing', mdDesign.title);
+ok('H1 is not repeated inside the first board', !mdDesign.artboards[0].html.includes('# Landing'), mdDesign.artboards[0].html);
+ok('sections are named from their headings', mdDesign.artboards[0].name === 'Hero' && mdDesign.artboards[1].name === 'Features', mdDesign.artboards.map((b) => b.name));
+ok('markdown board renders as html', mdDesign.artboards[0].html.includes('<p>Headline: Ship faster</p>'), mdDesign.artboards[0].html);
+ok('markdown bullets render', mdDesign.artboards[1].html.includes('<li>Fast</li>'), mdDesign.artboards[1].html);
+ok('html boards keep their markup verbatim', split.artboards[0].html === '<p>one</p>', split.artboards[0].html);
+ok('no H1 → design keeps the frame-type title', c.parseDesign('## Only heading\nbody').title === 'Design');
+ok('design document title is content-derived', String(c.canvasHtml('design', '', '# Landing\n## Hero\nx')).includes('<title>Landing — Design</title>'));
+ok('deck document title is content-derived', String(c.canvasHtml('slides', '', '# Q3 results\nx')).includes('<title>Q3 results — Slides</title>'));
+
 const arr = c.parseDesign('[{ "name": "Only", "html": "<i>i</i>" }]');
 ok('bare JSON array accepted', arr.artboards.length === 1 && arr.artboards[0].name === 'Only');
 
@@ -72,6 +85,7 @@ ok('bullets become a list', deck.slides[1].html === '<ul><li>up 20%</li><li>chur
 
 const md = c.parseSlides('# One\nthe first\n\n---\n\n# Two\n- a\n- b');
 ok('markdown deck splits on ---', md.slides.length === 2, md.slides.length);
+ok('markdown deck takes its name from the H1', md.title === 'One', md.title);
 ok('heading becomes the slide title', md.slides[0].title === 'One', md.slides[0].title);
 ok('markdown body rendered', md.slides[0].html.includes('<p>the first</p>'), md.slides[0].html);
 ok('markdown bullets rendered', (md.slides[1].html.match(/<li>/g) || []).length === 2, md.slides[1].html);
