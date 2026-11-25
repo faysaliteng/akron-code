@@ -9,6 +9,24 @@ const modelCatalog = require('./model-catalog');
 const providertransport = require('./providertransport');
 const mcpSchema = require('./mcp-schema');
 
+// Opt-in JSONL tracer for live transport forensics. `AUTOBOT_TRACE` must be the
+// path of the FILE to append to (e.g. /tmp/akron/trace.jsonl); its parent
+// directory is created on demand. Kept off by default and never able to throw
+// into a run — every write is best-effort.
+let TRACE_READY = false;
+function traceLine(obj) {
+  const dest = process.env.AUTOBOT_TRACE;
+  if (!dest) return;
+  try {
+    if (!TRACE_READY) {
+      const dir = path.dirname(dest);
+      if (dir && dir !== '.') fs.mkdirSync(dir, { recursive: true });
+      TRACE_READY = true;
+    }
+    fs.appendFileSync(dest, JSON.stringify(obj) + '\n');
+  } catch (_) { /* tracing must never break a turn */ }
+}
+
 // Registry of live sub-agents (for TaskStop / ListAgents).
 const subagentControllers = new Map(); // name -> AbortController
 
@@ -425,7 +443,7 @@ function isCreditExhausted(e) {
   const msg = String((e && e.message) || e || '');
   if (!msg) return false;
   if (/\b402\b/.test(msg)) return true;
-  return /out of credit|insufficient[_ ]?(?:quota|credit|balance|funds)|credit balance|exceeded your current quota|usage balance exhausted|allowance is \d+% used|payment required|billing (?:issue|problem|required)/i.test(msg);
+  return /out of credit|insufficient[_ ]?(?:quota|credit|balance|funds)|credit balance|exceeded your current quota|usage balance exhausted|allowance is \d+% used|payment required|billing (?:issue|problem|required)|extra usage|not your plan limits/i.test(msg);
 }
 
 // True when an error is TRANSIENT — rate limit / quota / gateway blip / dropped
@@ -445,6 +463,8 @@ function isRateLimitError(e) {
 // chat. Strip markup, collapse whitespace, and say what actually happened.
 function humanizeLLMError(e) {
   const raw = String((e && e.message) || e || 'unknown error');
+  // Already human, already actionable (credential problems are worded upstream).
+  if (e && e.code === 'provider_needs_signin') return raw;
   const status = Number((e && e.status) || (/^\s*LLM\s+(\d{3})\b/.exec(raw) || [])[1] || 0);
   // Drop HTML tags + the CSS/JS inside <style>/<script>, decode the few
   // entities that matter, and fold newlines.
@@ -1098,12 +1118,16 @@ async function runAgent(opts) {
   if (mcpSurface.mode === 'deferred') {
     const servers = [...new Set(extra.map((t) => (String(t.name).split('__')[1] || '')))].filter(Boolean);
     // A tool-scoped sub-agent that never asked for MCP keeps its surface clean.
-    const allowIndex = !toolAllow || toolAllow.has('*') || toolAllow.has('mcp') || toolAllow.has('mcp__*') || toolAllow.has('mcp_find_tools');
+    const allowIndex = !toolAllow || toolAllow.has('*') || toolAllow.has('mcp') || toolAllow.has('mcp__*') || toolAllow.has('find_mcp_tools');
     if (allowIndex) {
       tools.push({
         type: 'function',
         function: {
-          name: 'mcp_find_tools',
+          // NOTE: must NOT start with `mcp_` + letter. Anthropic's subscription
+          // (OAuth) endpoint rejects such a name with a misleading
+          // "Third-party apps now draw from your extra usage…" 400 — measured:
+          // `mcp_find_tools` → 400, `find_mcp_tools`/`mcp__srv__tool` → 200.
+          name: 'find_mcp_tools',
           description:
             `Search the ${extra.length} tools published by connected MCP servers (${servers.join(', ')}). `
             + 'Their schemas are deferred to keep the prompt small. Call this with a keyword, then call the '
@@ -1596,7 +1620,47 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           if (Number.isFinite(out) && out > 0) budgetPool.addOutput(out);
         }
         addUsage(m && m.usage);
+        if (process.env.AUTOBOT_TRACE) {
+          traceLine({
+            t: new Date().toISOString(),
+            model: provider.model,
+            transport: provider.transport || null,
+            withTools: !!withTools,
+            toolsSent: withTools ? (tools || []).length : 0,
+            maxTokens: maxTokens || null,
+            finish: m && m.finish_reason,
+            contentChars: m ? String(m.content || '').length : null,
+            calls: m && m.tool_calls ? m.tool_calls.map((c) => c.function && c.function.name) : [],
+            usage: m && m.usage ? m.usage : null,
+          });
+        }
         return m;
+      }).catch((e) => {
+        if (process.env.AUTOBOT_TRACE) {
+          traceLine({
+            t: new Date().toISOString(),
+            model: provider.model,
+            transport: provider.transport || null,
+            withTools: !!withTools,
+            toolsSent: withTools ? (tools || []).length : 0,
+            maxTokens: maxTokens || null,
+            msgs: (messages || []).length,
+            // Fingerprint (not the token) so a logged failure can be matched to
+            // the credential that produced it without writing a secret to disk.
+            tokTag: (() => {
+              const tok = String(provider.accessToken || provider.apiKey || '');
+              if (!tok) return null;
+              try {
+                return require('crypto').createHash('sha256').update(tok).digest('hex').slice(0, 12);
+              } catch (_) { return 'len' + tok.length; }
+            })(),
+            apiKeyHeader: !!(provider.apiKey && !provider.accessToken),
+            oauth: !!provider.oauth,
+            status: e && e.status != null ? e.status : null,
+            error: String((e && e.message) || e).slice(0, 600),
+          });
+        }
+        throw e;
       });
     };
     // One chat round with automatic recovery for an oversized prompt. Providers
@@ -1633,8 +1697,17 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       //     answers a chat turn and 402s the moment tools are attached.
       // Either way, fall back to plain chat + the fenced text tool protocol so
       // the model can still edit files, and tell the user why in prose.
-      const toolRejected = /tool|function|400|422|unknown/i.test(String(e.message))
-        && !/max_tokens|max_completion_tokens/i.test(String(e.message));
+      const errMsg = String(e.message || '');
+      // An entitlement/billing 400 is NOT a statement about tools. Before this
+      // guard, the word "tool" anywhere in the body (or any bare 400) flipped
+      // the whole turn into text mode with no visible reason — so a real
+      // "extra usage" rejection looked like a tooling bug and the model
+      // silently lost Write/Bash. Only a schema-shaped signal may downgrade.
+      const billingish = /extra usage|plan limits|add more at|credit balance|insufficient|billing|quota/i.test(errMsg);
+      const schemaish = /input_schema|tool_use|unexpected field|unknown field|tools? (are |is )?(not supported|unsupported)|invalid tool/i.test(errMsg);
+      const statusish = /\b(400|422)\b/.test(errMsg);
+      const toolRejected = statusish && schemaish && !billingish
+        && !/max_tokens|max_completion_tokens/i.test(errMsg);
       if (toolMode && !isContextOverflow(e) && (isCreditExhausted(e) || toolRejected)) {
         const credit = isCreditExhausted(e);
         toolMode = false;
@@ -1649,6 +1722,12 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           emit({
             type: 'notice',
             text: `${humanizeLLMError(e)} — native tools are unavailable on this allowance, so I am continuing the task in text mode (files still get written). Nothing was lost.`,
+          });
+        } else {
+          // Never drop tools silently: the user must know the turn degraded.
+          emit({
+            type: 'notice',
+            text: `${humanizeLLMError(e)} — this endpoint would not accept the native tool schema, so I am continuing in text mode (files are still written). Nothing was lost.`,
           });
         }
         try {
@@ -2118,7 +2197,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       if (WRITE_TOOLS.has(name)) takeCheckpoint(name, args);
       // Route virtual mcp__* names (built-in equivalents) to runTool first;
       // only unknown mcp__* (external MCP servers) go to callMcpTool.
-      if (name === 'mcp_find_tools' && extraToolsDeferred) {
+      if (name === 'find_mcp_tools' && extraToolsDeferred) {
         const hits = mcpSchema.searchMcpTools(extra, args.query || args.q || '', args.server);
         result = hits.length
           ? `MCP tools matching ${JSON.stringify(args.query || '')} — call by exact name:\n`

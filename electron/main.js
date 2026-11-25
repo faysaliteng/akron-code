@@ -790,7 +790,22 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       });
     }
   } catch (e) {
-    return { ok: false, error: e.message, needsSignIn: e.code === 'provider_needs_signin' };
+    // The run never started, so nothing else will ever clear the renderer's
+    // streaming state. Emit the failure as a normal run event *and* return it,
+    // so a dead token surfaces as a real message instead of an endless spinner.
+    const needsSignIn = e.code === 'provider_needs_signin';
+    const owner = winFor(event);
+    if (owner && !owner.isDestroyed()) {
+      owner.webContents.send('autobot:event', {
+        runId,
+        type: 'error',
+        message: e.message,
+        needsSignIn,
+        fatal: true,
+        retryable: false,
+      });
+    }
+    return { ok: false, error: e.message, needsSignIn };
   }
   const ac = new AbortController();
   runs.set(runId, ac);
@@ -1131,8 +1146,27 @@ function oneLine(e) {
   return (s || 'unknown error').slice(0, 240);
 }
 
-ipcMain.handle('autobot:providerStatus', () => {
-  try { return { ok: true, status: providerOauth.status() }; } catch (e) { return { ok: false, error: oneLine(e) }; }
+ipcMain.handle('autobot:providerStatus', async () => {
+  try {
+    const st = providerOauth.status();
+    // A dead refresh token does not mean a dead access token. Before reporting
+    // an account as expired (which pushes the user back through sign-in), probe
+    // it once — a success stamps `verifiedAt` and clears the badge.
+    const stale = [];
+    for (const p of (st.providers || [])) {
+      for (const a of (p.accounts || [])) {
+        if (a && a.expired) stale.push(String(a.id || (a.provider + ':' + a.account)));
+      }
+    }
+    if (stale.length) {
+      await Promise.all(stale.slice(0, 4).map((id) => {
+        const cut = id.indexOf(':');
+        return providerOauth.verifyAccount(id.slice(0, cut), id.slice(cut + 1)).catch(() => false);
+      }));
+      return { ok: true, status: providerOauth.status() };
+    }
+    return { ok: true, status: st };
+  } catch (e) { return { ok: false, error: oneLine(e) }; }
 });
 
 // The live model inventory of one subscription (Claude Max / ChatGPT /

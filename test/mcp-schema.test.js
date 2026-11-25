@@ -1,6 +1,6 @@
 'use strict';
 // mcp-schema: compact verbose MCP tool schemas, defer a fat surface behind
-// `mcp_find_tools`, and keep every deferred tool discoverable + callable.
+// `find_mcp_tools`, and keep every deferred tool discoverable + callable.
 const assert = require('assert');
 const s = require('../electron/mcp-schema');
 

@@ -811,6 +811,9 @@ export default function App() {
           // Preserve anything already streamed, then show the failure.
           commitLive();
           setError(cleanErr(evt.message));
+          // A dead credential is fixed by signing in, not by retrying — open the
+          // model menu so the button that resolves it is one click away.
+          if (evt.needsSignIn) setModelMenuOpen(true);
           break;
         case 'question':
           setQuestion({ id: evt.id, type: 'question', text: evt.question, options: evt.options || [] });
@@ -1088,7 +1091,7 @@ export default function App() {
     const runId = uid();
     runIdRef.current = runId;
 
-    await window.autobot.run({
+    const started = await window.autobot.run({
       runId,
       messages: payloadMessages,
       provider,
@@ -1101,6 +1104,17 @@ export default function App() {
       // Gate for the Swarm tool: off by default, on only when the user opts in.
       swarm: swarmEnabled,
     });
+    // Backstop: the handler emits a proper `error` event, but if that delivery
+    // is ever lost the composer must not stay spinning forever.
+    if (started && started.ok === false && runActiveRef.current) {
+      runActiveRef.current = false;
+      runConvRef.current = null;
+      setStreaming(false);
+      setThinking('');
+      setLive(null);
+      setError(cleanErr(started.error || 'The provider rejected this run.'));
+      if (started.needsSignIn) setModelMenuOpen(true);
+    }
   }, [activeId, convs, provider, cwd, settings.useMemory, streaming, orchestrator, attachments, styleId, webSearch, activeProject, permissions, swarmEnabled]);
 
   const stop = useCallback(() => {
@@ -1294,12 +1308,21 @@ export default function App() {
     setSwarmInfo(null);
     const runId = uid();
     runIdRef.current = runId;
-    await window.autobot.run({
+    const started = await window.autobot.run({
       runId, messages: payloadMessages, provider,
       cwd: cwd || undefined, useMemory: settings.useMemory, orchestrator, permissions,
       convId, title: conv.title || '',
       swarm: swarmEnabled,
     });
+    if (started && started.ok === false && runActiveRef.current) {
+      runActiveRef.current = false;
+      runConvRef.current = null;
+      setStreaming(false);
+      setThinking('');
+      setLive(null);
+      setError(cleanErr(started.error || 'The provider rejected this run.'));
+      if (started.needsSignIn) setModelMenuOpen(true);
+    }
   };
 
   const copyBlock = (e) => {
@@ -5727,7 +5750,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                               const list = (own && own.models && own.models.length ? own.models : (pv.models || []));
                               return (
                                 <div key={a.id} className={'prov-acct' + (on ? ' on' : '')}>
-                                  <button className="prov-pick" title={a.expired ? 'Token expired — the next turn will refresh it' : (a.label || a.account)} onClick={() => pickOauthAccount(pv, a.account)}>
+                                  <button className="prov-pick" title={a.expired ? 'Stated expiry passed and the refresh was refused — a turn may still work; sign in again if it is rejected' : (a.label || a.account)} onClick={() => pickOauthAccount(pv, a.account)}>
                                     <span className={'model-dot ' + (a.expired ? 'out' : 'ok')} />
                                     <span className="model-opt-name">{a.label || a.account}</span>
                                     <span className="model-opt-prov">{a.plan || a.source || 'signed in'}</span>

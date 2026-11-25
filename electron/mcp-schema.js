@@ -11,10 +11,11 @@
 //      / required / items / enum). Drop prose, defaults, examples, titles,
 //      formats and patterns. The model needs *shape*, not documentation.
 //   2. defer()    — if the compacted surface still exceeds a character budget,
-//      advertise a single `mcp_find_tools` search tool instead. The model
+//      advertise a single `find_mcp_tools` search tool instead. The model
 //      searches, gets exact schemas for the matches, and calls
 //      `mcp__<server>__<tool>` directly (dispatch is by name, so a deferred
-//      tool is still callable).
+//      tool is still callable). The index tool is deliberately NOT named
+//      `mcp_*`: Anthropic's subscription endpoint 400s a `mcp_`+letter name.
 //
 // Both levers are lossless for execution: nothing is removed from the set of
 // callable tools, only from the advertised text.

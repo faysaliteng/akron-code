@@ -1,7 +1,7 @@
 // Prove the MCP tool-surface fix on the live app, end to end:
 //   1. connect the REA server (263 tools, ≈384 kB of schema)
-//   2. a turn must advertise ZERO of those schemas and one `mcp_find_tools`
-//   3. the model calls `mcp_find_tools`, gets real schemas back, and can then
+//   2. a turn must advertise ZERO of those schemas and one `find_mcp_tools`
+//   3. the model calls `find_mcp_tools`, gets real schemas back, and can then
 //      call the deferred tool by name (dispatch is by name, not by advert)
 // A local stub stands in for Anthropic so nothing is spent.
 // Usage: node build/probe-mcp-surface.cjs [port]
@@ -89,7 +89,7 @@ const toolReply = (name, input) => [
       try { b = JSON.parse(body); } catch (_) {}
       seen.push(b || { raw: body });
       // Turn 1: the model searches for a deferred tool.
-      if (seen.length === 1) return sse(res, toolReply('mcp_find_tools', { query: 'native load image' }));
+      if (seen.length === 1) return sse(res, toolReply('find_mcp_tools', { query: 'native load image' }));
       // Turn 2: it has the schema from the search result.
       if (seen.length === 2) return sse(res, toolReply('mcp__srv1__inspect_native_load_image', { target: 'none' }));
       return sse(res, textReply('mcp index works'));
@@ -140,18 +140,18 @@ const toolReply = (name, input) => [
   const b = seen[0];
   const tools = b.tools || [];
   const external = tools.filter((t) => String(t.name || '').startsWith('mcp__') && !BUILTIN.has(t.name));
-  const meta = tools.filter((t) => t.name === 'mcp_find_tools');
+  const meta = tools.filter((t) => t.name === 'find_mcp_tools');
   const sys = Array.isArray(b.system) ? b.system.map((s) => s.text || '').join('\n') : String(b.system || '');
   const all = JSON.stringify(b).length;
 
-  const searchResult = (snap.events || []).find((e) => e.startsWith('result:mcp_find_tools:')) || '';
+  const searchResult = (snap.events || []).find((e) => e.startsWith('result:find_mcp_tools:')) || '';
   const dispatchResult = (snap.events || []).find((e) => e.startsWith('result:mcp__srv1__')) || '';
 
   console.log('\n--- wire payload (turn 1) ---');
   console.log('requests         :', seen.length);
   console.log('tool count       :', tools.length);
   console.log('external mcp__   :', external.length, external.slice(0, 3).map((t) => t.name).join(', '));
-  console.log('mcp_find_tools   :', meta.length ? 'YES' : 'no');
+  console.log('find_mcp_tools   :', meta.length ? 'YES' : 'no');
   console.log('tool schema chars:', JSON.stringify(tools).length, '(was 383801)');
   console.log('system chars     :', sys.length);
   console.log('total body chars :', all, '≈', Math.round(all / 3.4), 'tok', '(was 394626 ≈ 116066 tok)');

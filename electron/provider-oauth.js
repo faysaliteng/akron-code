@@ -478,6 +478,15 @@ function addAccount(provId, opts) {
   return publicRecord(record);
 }
 
+function isExpired(r) {
+  if (!r.expiresAt || r.expiresAt > Date.now()) return false;
+  // Metadata expiry alone is not proof: the first-party CLI rotates credentials
+  // and a stored access token routinely outlives `expiresAt` (verified live
+  // 2026-11-25 — a "past expiry" keychain token still answered HTTP 200). Only
+  // report dead after a probe has had its chance to clear it.
+  return !(r.verifiedAt && Date.now() - r.verifiedAt < 10 * 60 * 1000);
+}
+
 function publicRecord(r) {
   return {
     id: r.provider + ':' + r.account,
@@ -488,7 +497,7 @@ function publicRecord(r) {
     source: r.source || '',
     scopes: r.scopes || [],
     expiresAt: r.expiresAt || 0,
-    expired: !!(r.expiresAt && r.expiresAt <= Date.now()),
+    expired: isExpired(r),
     // Never leak the token itself into the renderer or logs.
     hasToken: true,
   };
@@ -511,6 +520,48 @@ function getAccount(provId, account) {
   const db = readDb();
   const r = db.accounts.find((a) => a.provider === provId && a.account === slug(account));
   return r ? publicRecord(r) : null;
+}
+
+/**
+ * Cheap authenticated probe for an account whose refresh just failed. A dead
+ * refresh token does not imply a dead access token, so ask the API directly and
+ * record `verifiedAt` on success — that is what clears a stale `expired` badge
+ * and keeps a working credential out of a pointless re-login.
+ */
+async function verifyAccount(provId, account, opts) {
+  const o = opts || {};
+  const prov = provider(provId);
+  if (!prov) return false;
+  const acc = slug(account);
+  const t = loadTokens(provId, acc);
+  if (!t || !t.accessToken) return false;
+  const headers = { accept: 'application/json' };
+  let url = '';
+  if (provId === 'claude') {
+    url = 'https://api.anthropic.com/v1/models?limit=1';
+    headers.authorization = 'Bearer ' + t.accessToken;
+    headers['anthropic-version'] = '2023-06-01';
+    headers['anthropic-beta'] = 'oauth-2025-04-20';
+    headers['user-agent'] = 'claude-cli/2.0.0 (external, cli)';
+  } else if (provId === 'grok') {
+    url = 'https://api.x.ai/v1/models';
+    headers.authorization = 'Bearer ' + t.accessToken;
+  } else {
+    return false; // no cheap probe for this provider — don't spend a turn to find out
+  }
+  try {
+    const res = await (o.fetchImpl || fetch)(url, { headers, signal: o.signal });
+    if (!res || !res.ok) return false;
+    const db = readDb();
+    const row = db.accounts.find((a) => a.provider === provId && a.account === acc);
+    if (row) {
+      row.verifiedAt = Date.now();
+      writeDb(db);
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 function removeAccount(provId, account) {
@@ -723,7 +774,21 @@ async function ensureToken(provId, account, opts) {
     if (t.accessToken) return { accessToken: t.accessToken, expiresAt: t.expiresAt, refreshed: false, account: acc };
     throw new Error('account ' + provId + ':' + acc + ' has no usable token — sign in again');
   }
-  const r = await refreshAccount(provId, acc, o);
+  // A failed refresh is not proof the access token is dead: the first-party CLI
+  // rotates credentials under us, and a stored access token routinely outlives
+  // its stated `expiresAt` (verified live 2026-11-25: keychain token past its
+  // expiry still answered HTTP 200). Prefer attempting the real request — only a
+  // 401 from the API is an authoritative "sign in again".
+  const r = await refreshAccount(provId, acc, o).catch((e) => {
+    if (!t.accessToken) throw e;
+    return {
+      accessToken: t.accessToken,
+      expiresAt: t.expiresAt,
+      refreshed: false,
+      stale: true,
+      refreshError: (e && e.message) || String(e),
+    };
+  });
   return Object.assign({ account: acc }, r);
 }
 
@@ -1304,6 +1369,7 @@ module.exports = {
   status,
   listAccounts,
   getAccount,
+  verifyAccount,
   addAccount,
   addBearer,
   removeAccount,
