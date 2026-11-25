@@ -1545,3 +1545,49 @@ drops it from the first artboard so it is not rendered twice), design sections a
 named from their own `##` heading, and a prose board with no markup is rendered
 through `mdToHtml()` instead of being shown as raw markdown inside the iframe.
 
+
+## XI. SUBSCRIPTION PROVIDERS — what is closed, what is account state (2026-11-25)
+
+### XI.1 Claude — closed
+
+The `429 rate_limit_error {"message":"Error"}` that looked like a spent Max
+account was an identity gate: an OAuth `/v1/messages` request must lead with the
+system text `You are Claude Code, Anthropic's official CLI for Claude.` Bare
+requests are rejected in <500 ms; with the block they return 200. Fixed in
+`electron/providertransport.js` (`CC_IDENTITY`, `isAnthropicOauth`,
+identity prepend in `toAnthropicBody`), proven live at both the transport and
+UI layers (`CLAUDE-OK`, `PING195174`).
+
+Tokens lost to the app rename are recovered by `adoptLocalCredentials()` in
+`electron/provider-oauth.js` — Claude-only, `source: 'claude-code'`-only,
+single-row-only, deps injectable. Documented in `VERIFICATION.md` §26.
+
+### XI.2 Grok — closed client-side, blocked by entitlement
+
+The version gate (426) is fixed: `GROK_CLI_VERSION = '1.0.92'`,
+`GROK_PRODUCT = 'grok-shell'`, full `GrokRequestHeaders::apply()` header set
+(`conv-id`, `req-id`, `model-override`, `session-id`, `agent-id`,
+`x-grok-client-version`, `x-grok-client-identifier`, `x-xai-token-auth`).
+`GET /v1/settings` and `GET /v1/models` now return **200** and report
+`subscription_tier_display: "SuperGrok"`.
+
+Every chat completion still answers `402 Grok Build usage balance exhausted`
+because the account's weekly Grok Build pool is spent:
+`creditUsagePercent: 100`, `prepaidBalance 0`, `onDemandCap null`, resets
+**2026-12-01**. This is not a client bug and cannot be fixed in the app; it
+resets on the vendor's schedule. All probed models (`grok-4.5`,
+`grok-code-fast-1`, `grok-4-fast`) fail identically, confirming account-level.
+
+What the app does about it: 402 is surfaced as human prose built from the live
+credits endpoint rather than the vendor JSON envelope —
+*"This account is out of credit for that provider — the Grok Build allowance is
+100% used this week; it resets 2026-12-01; prepaid balance is $0 and on-demand
+top-up is off"* — with `markupLeak:false` and `hasEnvelope:false`.
+
+### XI.3 Still open
+
+| Item | State |
+|---|---|
+| Grok chat turns | **Blocked by account allowance until 2026-12-01.** Transport + identity verified; the next live turn after the reset is the acceptance test. |
+| Non-Claude tokens stored before the rename | Old secrets encrypted under `Helio Bot Safe Storage` do not decrypt under `Akron Bot Safe Storage`. Claude is handled by adoption; every other provider needs one re-sign-in. |
+| Window maximize/restore via CDP | Not drivable (`-32601`), and `osascript` lacks assistive access — unit-tested only (`test/windowstate.test.js` 18/0). |

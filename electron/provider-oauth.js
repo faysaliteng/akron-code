@@ -622,7 +622,8 @@ async function refreshAccount(provId, account, opts) {
 async function ensureToken(provId, account, opts) {
   const o = opts || {};
   const acc = slug(account || activeAccount(provId) || 'default');
-  const t = loadTokens(provId, acc);
+  let t = loadTokens(provId, acc);
+  if (!t) t = adoptLocalCredentials(provId, acc);
   if (!t) throw new Error('no stored tokens for ' + provId + ':' + acc);
   const fresh = t.accessToken && (!t.expiresAt || t.expiresAt - Date.now() > REFRESH_SKEW_MS);
   if (fresh && !o.force) {
@@ -1128,6 +1129,49 @@ function status() {
   return out;
 }
 
+/**
+ * Re-adopt an account's token from the first-party credential store.
+ *
+ * The secretstore is encrypted with an app-identity-derived keychain item, so a
+ * rename (Helio Bot → Akron Bot) makes every previously stored token
+ * undecryptable, and a keychain item can also disappear on its own. Accounts
+ * that were imported from a first-party CLI (`source: 'claude-code'`) still have
+ * a live credential one read away, so healing is preferable to telling the user
+ * to sign in again. Only adopts when exactly one account of that provider came
+ * from that CLI, so it can never swap in somebody else's login.
+ */
+function adoptLocalCredentials(provId, acc, opts) {
+  if (provId !== 'claude') return null;
+  const o = opts || {};
+  const db = o.db || readDb();
+  const row = db.accounts.find((a) => a.provider === provId && a.account === acc);
+  if (!row || row.source !== 'claude-code') return null;
+  const peers = db.accounts.filter((a) => a.provider === provId && a.source === 'claude-code');
+  if (peers.length > 1) return null;
+  const read = o.readCreds || readClaudeCodeCredentials;
+  const save = o.saveTokens || saveTokens;
+  const persist = o.writeDb || writeDb;
+  const cc = read();
+  const oauth = cc && cc.oauth;
+  if (!oauth || !oauth.accessToken) return null;
+  const tokens = {
+    accessToken: oauth.accessToken,
+    refreshToken: oauth.refreshToken || '',
+    tokenType: 'Bearer',
+    expiresAt: epochToMs(oauth.expiresAt),
+    scopes: oauth.scopes || row.scopes || [],
+    organizationUuid: cc.organizationUuid || row.organizationUuid || '',
+    accountId: '',
+  };
+  save(provId, acc, tokens);
+  row.expiresAt = tokens.expiresAt;
+  row.updatedAt = Date.now();
+  if (tokens.scopes.length) row.scopes = tokens.scopes;
+  if (!row.plan && oauth.subscriptionType) row.plan = oauth.subscriptionType;
+  persist(db);
+  return tokens;
+}
+
 /** Resolve a `provider:account` id into everything the transport needs. */
 async function resolve(id, opts) {
   const raw = String(id || '');
@@ -1178,6 +1222,7 @@ module.exports = {
     readDb, writeDb, slotKey, slug, jwtPayload, msFromEpoch, epochToMs, fingerprint,
     normalizeTokens, buildAuthorizeUrl, startLoopbackServer, readClaudeCodeCredentials,
     readCodexAuth, readGeminiCreds, readGrokConfig, callbackPage, publicRecord,
+    adoptLocalCredentials,
     postToken, identify, REFRESH_SKEW_MS,
   },
 };

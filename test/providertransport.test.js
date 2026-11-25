@@ -18,6 +18,17 @@ const ok = (name, cond, detail) => {
 };
 const eq = (name, actual, expected) => ok(name, JSON.stringify(actual) === JSON.stringify(expected), { actual, expected });
 
+/** Numeric dotted-version comparison, so the Grok gate assertion reads plainly. */
+const semverAtLeast = (a, b) => {
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x > y;
+  }
+  return true;
+};
+
 /** Start a throwaway server that streams `chunks` and records the request. */
 function server(handler) {
   return new Promise((resolve) => {
@@ -153,7 +164,36 @@ const noop = () => {};
     eq('posts to /v1/messages', req.url, '/v1/messages');
     eq('bearer auth on the wire', req.headers.authorization, 'Bearer sk-ant-oat01-z');
     eq('beta header on the wire', req.headers['anthropic-beta'], 'oauth-2025-04-20');
+    // Verified live 2026-11-25: the subscription endpoint answers
+    // 429 rate_limit_error for *every* model until the request leads with the
+    // Claude Code identity prompt. Same token, same model: 429 bare, 200 with it.
+    eq('oauth turns lead with the Claude Code identity block',
+      req.body.system && req.body.system[0], { type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude." });
     await s.close();
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\ntransport — Anthropic identity prompt ordering');
+  // -------------------------------------------------------------------------
+  {
+    const body = I.toAnthropicBody(
+      { transport: 'anthropic', model: 'm', accessToken: 'sk-ant-oat01-z', oauth: true },
+      [{ role: 'system', content: 'You are Akron Bot.' }, { role: 'user', content: 'hi' }], null, 100,
+    );
+    eq('identity block leads, caller system follows', body.system.map((p) => p.text), [
+      "You are Claude Code, Anthropic's official CLI for Claude.",
+      'You are Akron Bot.',
+    ]);
+    const again = I.toAnthropicBody(
+      { transport: 'anthropic', model: 'm', accessToken: 'sk-ant-oat01-z', oauth: true },
+      [{ role: 'system', content: "You are Claude Code, Anthropic's official CLI for Claude.\nYou are Akron Bot." }, { role: 'user', content: 'hi' }], null, 100,
+    );
+    eq('an identity block the caller already sends is not duplicated', again.system.length, 1);
+    const api = I.toAnthropicBody(
+      { transport: 'anthropic', model: 'm', apiKey: 'sk-ant-api03-k' },
+      [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi' }], null, 100,
+    );
+    eq('plain api-key turns are left untouched', api.system.map((p) => p.text), ['sys']);
   }
 
   // -------------------------------------------------------------------------
@@ -290,7 +330,18 @@ const noop = () => {};
     eq('bearer auth on the wire', req.headers.authorization, 'Bearer ok-tok');
     eq('grok client headers present',
       [req.headers['x-grok-client-identifier'], req.headers['x-xai-token-auth']],
-      ['helio-bot', 'xai-grok-cli']);
+      ['grok-shell', 'xai-grok-cli']);
+    // The proxy 426s any `x-grok-client-version` under a rolling minimum
+    // (observed: "update to version 1.0.13 or later"). Guard the gate and keep
+    // the UA's version token identical to it so both cannot drift apart.
+    const gated = req.headers['x-grok-client-version'];
+    const uaVersion = String(req.headers['user-agent']).split('/')[1].split(' ')[0];
+    eq('grok gate version clears the 1.0.13 minimum', semverAtLeast(gated, '1.0.13'), true);
+    eq('grok UA version matches the gate version', uaVersion, gated);
+    eq('grok UA names the CLI product', String(req.headers['user-agent']).startsWith('grok-shell/'), true);
+    eq('grok sends the CLI conversation/request/agent ids',
+      [!!req.headers['x-grok-conv-id'], !!req.headers['x-grok-req-id'], !!req.headers['x-grok-agent-id']],
+      [true, true, true]);
     eq('body is streamed and stateless', [req.body.stream, req.body.store], [true, false]);
     eq('body carries instructions, not a system message', typeof req.body.instructions, 'string');
     eq('body asks for encrypted reasoning', req.body.include, ['reasoning.encrypted_content']);
@@ -392,6 +443,57 @@ const noop = () => {};
     } catch (e) { err = e; }
     ok('missing Cloud Code project fails with guidance', !!(err && /Antigravity/.test(err.message)));
     await s.close();
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\ntransport — Grok credit hint (402 explanation)');
+  // -------------------------------------------------------------------------
+  {
+    // The proxy's 402 body is just "Grok Build usage balance exhausted". The
+    // account's own credits config is the only place that says *why* and when it
+    // resets, so the transport reads it once and attaches prose to the error.
+    const realFetch = global.fetch;
+    let hits = 0;
+    global.fetch = async (url, opts) => {
+      hits++;
+      eq('credit hint hits the grok.com credits path', String(url), I.GROK_CREDITS_URL);
+      eq('credit hint sends the signed-in bearer', opts.headers.authorization, 'Bearer tok-9');
+      eq('credit hint identifies as the CLI', opts.headers['x-grok-client-identifier'], 'grok-shell');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          config: {
+            creditUsagePercent: 100,
+            currentPeriod: { type: 'USAGE_PERIOD_TYPE_WEEKLY', end: '2026-12-01T14:48:12.700Z' },
+            prepaidBalance: { val: '0' },
+            onDemandCap: null,
+          },
+        }),
+      };
+    };
+    try {
+      const hint = await I.grokCreditHint({ accessToken: 'tok-9' });
+      ok('hint states the allowance is spent', /100% used this week/.test(hint), hint);
+      ok('hint names the reset date', /resets 2026-12-01/.test(hint), hint);
+      ok('hint explains the zero balance', /prepaid balance is \$0/.test(hint), hint);
+      eq('hint fetched once', hits, 1);
+      await I.grokCreditHint({ accessToken: 'tok-9' });
+      eq('hint is cached, not refetched per turn', hits, 1);
+    } finally {
+      global.fetch = realFetch;
+    }
+  }
+  {
+    const llm = require('../electron/llm');
+    const err = Object.assign(new Error('LLM 402: {"error":"Grok Build usage balance exhausted"}'), { status: 402 });
+    const plain = llm.humanizeLLMError(err);
+    ok('402 without a hint still says something human', /out of credit/i.test(plain), plain);
+    ok('402 envelope JSON never reaches the banner', !plain.includes('{"error"'), plain);
+    err.hint = 'the Grok Build allowance is 100% used this week; it resets 2026-12-01';
+    const withHint = llm.humanizeLLMError(err);
+    ok('transport hint replaces the vendor envelope', /resets 2026-12-01/.test(withHint), withHint);
+    ok('hinted copy keeps the "out of credit" lead-in', /out of credit/i.test(withHint), withHint);
   }
 
   // -------------------------------------------------------------------------

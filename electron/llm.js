@@ -407,6 +407,7 @@ function humanizeLLMError(e) {
   const friendly = {
     400: 'The provider rejected the request',
     401: 'The API key was rejected',
+    402: 'This account is out of credit for that provider',
     403: 'The provider refused access to this model',
     404: 'The provider says that model or endpoint does not exist',
     408: 'The provider timed out',
@@ -434,6 +435,10 @@ function humanizeLLMError(e) {
       if (typeof msg === 'string' && msg.trim()) body = msg.trim();
     }
   } catch (_) {}
+  // A transport that knows the real cause can hand us prose instead of the
+  // vendor's envelope (Grok 402 → allowance %, reset date, prepaid balance).
+  const hint = String((e && (e.hint || e.creditHint)) || '').trim();
+  if (hint) body = hint;
   if (body.length > 200) body = body.slice(0, 197).trimEnd() + '…';
   const head = friendly || (status ? `The provider returned HTTP ${status}` : raw.split('\n')[0].slice(0, 120));
   // Only append the scrubbed detail when it is prose, not boilerplate. Gateway

@@ -512,5 +512,79 @@ const jwt = (claims) => 'h.' + b64url(claims) + '.sig';
       I.readDb().accounts.filter((a) => a.provider === 'grok').length, before);
   }
 
+  // -------------------------------------------------------------------------
+  console.log('\nlocal credential adoption (recovering after an app rename)');
+  // -------------------------------------------------------------------------
+  {
+    // The secretstore is keyed off the app identity, so renaming the app makes
+    // every stored token undecryptable. An account originally imported from
+    // `claude` CLI still has a live credential one keychain read away; these
+    // cases pin the safety rails on that recovery path without touching the
+    // real index or the real keychain (db/save/read are all injected).
+    const row = (over) => Object.assign({
+      provider: 'claude', account: 'cc-adopt', source: 'claude-code',
+      plan: '', scopes: [], organizationUuid: '',
+    }, over);
+    const fakeDb = (rows) => ({ version: 1, accounts: rows, active: {} });
+    const creds = {
+      oauth: {
+        accessToken: 'at-live', refreshToken: 'rt-live',
+        expiresAt: 1795642583650, subscriptionType: 'max', scopes: ['user:inference'],
+      },
+    };
+
+    eq('only Claude has a first-party credential to adopt',
+      I.adoptLocalCredentials('grok', 'cc-adopt', {}), null);
+
+    {
+      const saved = [];
+      const out = I.adoptLocalCredentials('claude', 'cc-adopt', {
+        db: fakeDb([row({ account: 'other', source: 'oauth' })]),
+        readCreds: () => creds,
+        saveTokens: (p, a, t) => saved.push([p, a, t]),
+        writeDb: () => { throw new Error('must not persist when there is nothing to adopt'); },
+      });
+      eq('an account that was never imported from the CLI is not adopted', out, null);
+      eq('nothing is saved in that case', saved.length, 0);
+    }
+    {
+      // Two CLI-imported accounts: adopting would be a coin flip between logins.
+      const out = I.adoptLocalCredentials('claude', 'cc-adopt', {
+        db: fakeDb([row({}), row({ account: 'second' })]),
+        readCreds: () => creds,
+        saveTokens: () => { throw new Error('must not save when the owner is ambiguous'); },
+        writeDb: () => {},
+      });
+      eq('adoption is refused when two CLI accounts could own the credential', out, null);
+    }
+    {
+      const saved = [];
+      const db = fakeDb([row({ account: 'cc-adopt' })]);
+      const out = I.adoptLocalCredentials('claude', 'cc-adopt', {
+        db,
+        readCreds: () => creds,
+        saveTokens: (p, a, t) => saved.push([p, a, t]),
+        writeDb: () => {},
+      });
+      ok('a single CLI-imported account re-adopts the live credential', !!out);
+      eq('the access token comes from the first-party store', out && out.accessToken, 'at-live');
+      eq('the refresh token comes too (so it can still rotate)', out && out.refreshToken, 'rt-live');
+      eq('an already-millisecond expiry is left alone', out && out.expiresAt, 1795642583650);
+      eq('the token is written back to the secretstore', saved.length, 1);
+      eq('it is written under provider:account', saved[0] && saved[0].slice(0, 2), ['claude', 'cc-adopt']);
+      eq('the account row learns the expiry', db.accounts[0].expiresAt, 1795642583650);
+      eq('a blank plan is filled from the subscription type', db.accounts[0].plan, 'max');
+    }
+    {
+      const out = I.adoptLocalCredentials('claude', 'cc-adopt', {
+        db: fakeDb([row({})]),
+        readCreds: () => null,
+        saveTokens: () => { throw new Error('must not save without a credential'); },
+        writeDb: () => {},
+      });
+      eq('no credential on disk means no adoption', out, null);
+    }
+  }
+
   console.log('\n=== RESULT: ' + pass + ' passed, ' + (process.exitCode ? 'FAILURES' : '0 failed') + ' ===');
 })().catch((e) => { console.error('SUITE CRASHED', e); process.exit(1); });

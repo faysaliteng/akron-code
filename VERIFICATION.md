@@ -772,3 +772,82 @@ gooey filter, all generated from one set of geometry constants.
 | Tray | ✅ `createTray()` loads `trayTemplate.png`; macOS template naming means the menu-bar icon auto-inverts for light/dark; legacy `tray.png` assets removed |
 | Landing page | ✅ `akron-bot-landing.html` now carries the animated emerald mark and the emerald/night palette (`--emerald #10b981`, `--emerald-bright #34d399`, `--emerald-soft #a7f3d0`) |
 | Regression gate | ✅ `node test/artifacttypes.test.js` **82/82** (the `room` reason assertion follows `not part of Akron Bot`), `node test/e2e.test.js` **112/112** (`/Akron Bot/` assertions), `node scripts/parity-audit.js` **EXIT 0** (`DEFS: 141`) |
+
+## 26. Subscription providers — Claude's identity gate fixed, Grok's 402 explained (2026-11-25)
+
+Both subscription paths were returning vendor errors that looked like broken
+integrations but were really one protocol requirement and one account state.
+Both are now either fixed or explained in human prose.
+
+### Claude — the mandatory Claude Code identity block
+
+`POST /v1/messages` with a valid Max OAuth token (`sk-ant-oat…`,
+`anthropic-beta: oauth-2025-04-20`) answered
+`429 rate_limit_error {"message":"Error"}` in under 500 ms for every model.
+That is indistinguishable from a spent account, so it went misdiagnosed.
+
+| Probe | Request | Result |
+|---|---|---|
+| `build/probe-claude-gate.js` — bare | no system prompt | **429** `rate_limit_error` |
+| same, system block | system[0] = `You are Claude Code, Anthropic's official CLI for Claude.` | **200** |
+| same, block array | same text as `{type:'text', text:…}` with `cache_control` | **200** |
+| `build/probe-claude-live.js` | direct Keychain creds | `OK claude-opus-4-5 ms=1359 finish=stop text="CLAUDE-OK"`, `OK claude-sonnet-4-5 ms=912` |
+| `build/probe-claude.js` | app path (`providerOauth.resolve`) | `account=rxpromedbd-gmail-com hasToken=true`, `OK ms=954 finish=stop text="CLAUDE-OK"` |
+| `build/probe-turn2.cjs` (`:9333`) | live UI turn, fresh chat, new token | user `Reply with exactly: PING195174` → assistant `PING195174` (`Worked for 2s`), no `.errorbar` |
+
+Implementation: `CC_IDENTITY` constant + `isAnthropicOauth(provider)` in
+`electron/providertransport.js`. `toAnthropicBody` unshifts the identity block
+when the caller's leading system part does not already start with it, so plain
+API-key traffic is untouched and the identity is never duplicated.
+`anthropicAuth` now tests `isAnthropicOauth` so the `oauth` flag and the
+`sk-ant-oat…` prefix cannot disagree.
+
+### Claude — recovering tokens lost to the app rename
+
+The secret store is keyed off the Electron app identity, so renaming the app
+(`Helio Bot Safe Storage` → `Akron Bot Safe Storage`) made every stored token
+undecryptable and the account reported `no stored tokens for claude:…`.
+`adoptLocalCredentials(provId, acc, opts)` in `electron/provider-oauth.js`
+re-reads the macOS Keychain item `Claude Code-credentials` and re-seals it into
+the new store. It runs only for `claude`, only for a row whose
+`source === 'claude-code'`, and only when exactly one such row exists — it never
+picks between two logins. Deps are injectable (`db`, `readCreds`, `saveTokens`,
+`writeDb`) so the tests never touch real state. Wired into `resolve` and
+`ensureToken` when `loadTokens` returns null.
+
+### Grok — 402 is an allowance state, not a bug
+
+The 426 version rejection was a stale UA (`grok-shell/1.0.92` now; minimum
+1.0.13). After that, every model answered
+`402 {"error":"Grok Build usage balance exhausted"}`.
+
+| Probe | Evidence |
+|---|---|
+| `build/probe-grok-entitlement.js` | `GET /v1/settings` **200** and `GET /v1/models` **200** with the CLI headers; `subscription_tier_display: "SuperGrok"` — identity fully accepted |
+| `build/probe-grok-claims.js` | JWT `tier: 1` (supergrok), `team_id`, scopes include `grok-cli:access` + `api:access` |
+| `build/probe-grok-credits.js` | `GET https://grok.com/rest/grok/credits` **200**: `creditUsagePercent: 100`, `prepaidBalance {"val":"0"}`, `onDemandCap: null`, weekly period `…11-24 → …12-01`, `productUsage` `PRODUCT_CURSOR 96` / `PRODUCT_GROK_BOT 4` |
+| model sweep | `grok-4.5`, `grok-code-fast-1`, `grok-4-fast` all 402 — account-level, not model-level |
+
+Because it is an entitlement state the UI must not print the vendor envelope.
+`grokCreditHint(provider)` reads the credits endpoint (5-min cache,
+`GROK_CREDITS_TTL_MS`), builds a sentence from real numbers and attaches it as
+`err.hint` on 402; `humanizeLLMError` in `electron/llm.js` prefers `e.hint` over
+the envelope and has a friendly `402` line.
+
+Live UI proof (`build/probe-grok-turn.cjs`, `:9333`, `grok-4.5`):
+
+```
+error: "This account is out of credit for that provider — the Grok Build
+        allowance is 100% used this week; it resets 2026-12-01; prepaid
+        balance is $0 and on-demand top-up is off"
+markupLeak: false
+hasEnvelope: false
+```
+
+### Gates
+
+| Check | Result |
+|---|---|
+| `node test/provideroauth.test.js` | **193 passed / 0 failed** (new *local credential adoption* block: non-claude skip, non-CLI source skip, ambiguous two-peer refusal, positive adoption with ms-expiry passthrough + secretstore write + plan backfill, missing credential) |
+| `node test/providertransport.test.js` | **128 passed / 0 failed** (identity-block wire assertion + *identity prompt ordering*: identity leads and caller system follows, no duplicate, plain api-key untouched) |
+| `node scripts/parity-audit.js` | **EXIT 0** — `DEFS: 141`, 0 missing |

@@ -31,6 +31,8 @@
  * this machine, so they are explicitly NOT claimed as field-tested.
  */
 
+const { randomUUID } = require('node:crypto');
+
 const DEFAULT_ANTHROPIC_BASE = 'https://api.anthropic.com';
 const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const CLOUDCODE_BASE = 'https://cloudcode-pa.googleapis.com/v1internal';
@@ -101,9 +103,22 @@ function pushToolArg(acc, frag) {
 // subscription traffic needs the `oauth-2025-04-20` beta header, and `x-api-key`
 // is ignored on an OAuth token — it must be `Authorization: Bearer`.
 // ---------------------------------------------------------------------------
+// The first-party identity prompt, verbatim. Subscription OAuth traffic is
+// gated on it: without this exact system block the API answers
+// `429 rate_limit_error {"message":"Error"}` for every model, which reads like a
+// spent account but is really a "you are not Claude Code" rejection. Verified
+// live on this machine 2026-11-25 — same token, same model, 429 bare / 200 with
+// the block — so it is prepended rather than left to the caller.
+const CC_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+function isAnthropicOauth(provider) {
+  const tok = String((provider && (provider.accessToken || provider.apiKey)) || '');
+  return !!(provider && provider.oauth) || /^sk-ant-oat/.test(tok);
+}
+
 function anthropicAuth(provider) {
   const tok = String(provider.accessToken || provider.apiKey || '');
-  const oauth = !!provider.oauth || /^sk-ant-oat/.test(tok);
+  const oauth = isAnthropicOauth(provider);
   const headers = {
     'content-type': 'application/json',
     accept: 'text/event-stream',
@@ -181,6 +196,13 @@ function toAnthropicBody(provider, messages, tools, maxTokens) {
     }
   }
 
+  // OAuth/subscription turns must lead with the Claude Code identity prompt.
+  if (isAnthropicOauth(provider)) {
+    const lead = systemParts[0] && String(systemParts[0].text || '');
+    if (!lead || !lead.startsWith(CC_IDENTITY)) {
+      systemParts.unshift({ type: 'text', text: CC_IDENTITY });
+    }
+  }
   const body = {
     model: provider.model,
     max_tokens: Number(maxTokens) > 0 ? Number(maxTokens) : 32000,
@@ -681,7 +703,87 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
 // this machine.
 // ---------------------------------------------------------------------------
 const GROK_RESPONSES_URL = 'https://cli-chat-proxy.grok.com/v1/responses';
-const GROK_UA = 'grok-shell/1.0.46 (macos; aarch64)';
+// The proxy gates subscription sampling on `x-grok-client-version` and rejects
+// anything below a rolling minimum with `HTTP 426` ("Your Grok CLI version
+// (x.y.z) is outdated. Please update to version 1.0.13 or later"). The gate is
+// header-derived, not package-derived: the published crate/npm versions ahead of
+// it are `@xai-official/grok` 1.0.92 (stable) / 1.0.93 (alpha). One constant
+// feeds both the UA and the gate header so they can never disagree — a mismatch
+// is itself a fingerprint the proxy can reject.
+const GROK_CLI_VERSION = '1.0.92';
+const GROK_PRODUCT = 'grok-shell';
+const GROK_UA = GROK_PRODUCT + '/' + GROK_CLI_VERSION + ' (macos; aarch64)';
+// Subscription sampling is billed against the Grok Build credit pool, not the
+// SuperGrok plan itself, so a paying account can still answer `402 Grok Build
+// usage balance exhausted` (verified live: 100% of the weekly allowance spent).
+// That response carries no numbers, so read the account's own credit config to
+// say *why* and *when it resets* instead of showing a bare 402.
+const GROK_CREDITS_URL = 'https://grok.com/rest/grok/credits';
+const GROK_CREDITS_TTL_MS = 5 * 60 * 1000;
+let grokCreditsCache = { at: 0, text: '' };
+
+async function grokCreditHint(provider) {
+  if (Date.now() - grokCreditsCache.at < GROK_CREDITS_TTL_MS) return grokCreditsCache.text;
+  let text = '';
+  try {
+    const headers = {
+      authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
+      accept: 'application/json',
+      'user-agent': GROK_UA,
+      'x-xai-token-auth': 'xai-grok-cli',
+      'x-grok-client-identifier': GROK_PRODUCT,
+      'x-grok-client-version': GROK_CLI_VERSION,
+    };
+    const r = await fetch(GROK_CREDITS_URL, {
+      headers, signal: AbortSignal.timeout(8000),
+    });
+    if (r.ok) {
+      const j = await r.json();
+      const c = (j && j.config) || {};
+      const period = c.currentPeriod || {};
+      const used = Number(c.creditUsagePercent);
+      const cents = Number((c.prepaidBalance && c.prepaidBalance.val) || 0);
+      const bits = [];
+      if (Number.isFinite(used)) {
+        const cycle = /WEEKLY/i.test(String(period.type || '')) ? 'this week' : 'this period';
+        bits.push(`the Grok Build allowance is ${Math.round(used)}% used ${cycle}`);
+      }
+      if (period.end) bits.push(`it resets ${String(period.end).slice(0, 10)}`);
+      if (!cents && !c.onDemandCap) bits.push('prepaid balance is $0 and on-demand top-up is off');
+      text = bits.join('; ');
+    }
+  } catch (_) { /* the hint is best-effort; the 402 still surfaces */ }
+  grokCreditsCache = { at: Date.now(), text };
+  return text;
+}
+
+/**
+ * The exact header set the shipped Grok CLI sends. Exported so diagnostics can
+ * hit `/v1/settings` and `/v1/models` with the same identity as inference —
+ * a different header set there returns 426/403 for reasons unrelated to the
+ * account's entitlement.
+ */
+function grokHeaders(provider) {
+  const convId = String(provider.sessionId || provider.conversationId || randomUUID());
+  const reqId = String(provider.requestId || randomUUID());
+  const agentId = String(provider.agentId || randomUUID());
+  const headers = {
+    'content-type': 'application/json',
+    accept: 'text/event-stream',
+    authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
+    'user-agent': GROK_UA,
+    'x-xai-token-auth': 'xai-grok-cli',
+    'x-grok-client-identifier': GROK_PRODUCT,
+    'x-grok-client-version': GROK_CLI_VERSION,
+    'x-grok-model-override': String(provider.model || ''),
+    'x-grok-conv-id': convId,
+    'x-grok-req-id': reqId,
+    'x-grok-session-id': convId,
+    'x-grok-agent-id': agentId,
+  };
+  if (provider.accountId) headers['x-grok-user-id'] = String(provider.accountId);
+  return headers;
+}
 
 function grokChat(provider, messages, tools, onDelta, signal, maxTokensOverride) {
   const { instructions, input } = toCodexInput(messages);
@@ -707,19 +809,10 @@ function grokChat(provider, messages, tools, onDelta, signal, maxTokensOverride)
     ? Number(maxTokensOverride || provider.maxTokens) : 0;
   if (maxOut) body.max_output_tokens = maxOut;
 
-  const headers = {
-    'content-type': 'application/json',
-    accept: 'text/event-stream',
-    authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
-    'user-agent': GROK_UA,
-    'x-xai-token-auth': 'xai-grok-cli',
-    'x-authenticateresponse': 'authenticate-response',
-    'x-grok-client-identifier': 'helio-bot',
-    'x-grok-client-version': '1.0.0',
-    'x-grok-model-override': String(provider.model || ''),
-  };
-  if (provider.accountId) headers['x-grok-user-id'] = String(provider.accountId);
-  if (provider.sessionId) headers['x-grok-conv-id'] = String(provider.sessionId);
+  // Mirror `GrokRequestHeaders::apply()` from xai-grok-sampler: the proxy reads
+  // the conversation/request/session/agent ids, so a request without them is
+  // visibly not the CLI even when the version gate passes.
+  const headers = grokHeaders(provider);
 
   // `provider.baseURL` is the `/v1` root from the provider registry; the
   // subscription route is `<root>/responses`. If a caller already hands us a
@@ -734,6 +827,14 @@ function grokChat(provider, messages, tools, onDelta, signal, maxTokensOverride)
     body,
     onDelta,
     signal,
+  }).catch(async (err) => {
+    // A 402 here means the account's Grok Build credit pool, not the request.
+    // Enrich it once so the banner explains the situation and the reset date.
+    if (err && Number(err.status) === 402) {
+      const hint = await grokCreditHint(provider);
+      if (hint) err.hint = hint;
+    }
+    throw err;
   });
 }
 
@@ -767,5 +868,6 @@ module.exports = {
     sseEvents, toAnthropicBody, anthropicAuth, anthropicFinish,
     toCodexInput, toCodexTools, toGeminiContents, geminiFinish, responsesChat,
     CLAUDE_UA, CODEX_RESPONSES_URL, GROK_RESPONSES_URL, CLOUDCODE_BASE, DEFAULT_ANTHROPIC_BASE, cloudcodeBase,
+    grokHeaders, GROK_UA, GROK_CLI_VERSION, GROK_PRODUCT, GROK_CREDITS_URL, grokCreditHint,
   },
 };
