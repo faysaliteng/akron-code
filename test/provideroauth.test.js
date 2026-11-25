@@ -86,9 +86,18 @@ const jwt = (claims) => 'h.' + b64url(claims) + '.sig';
     eq('unknown provider is null, not a throw', po.provider('nope'), null);
   }
   {
-    // Live-verified endpoints. These exact values took a working grant to find.
-    eq('claude token endpoint is api.anthropic.com, not console',
-      po.provider('claude').tokenUrl, 'https://api.anthropic.com/v1/oauth/token');
+    // Extracted from the bundled Claude Code CLI 2.1.332 — the pre-2.x pair
+    // (claude.ai authorize + api.anthropic.com token) is dead: claude.ai now
+    // 307s to a login wall and api.anthropic.com mints no subscription token.
+    eq('claude token endpoint is platform.claude.com',
+      po.provider('claude').tokenUrl, 'https://platform.claude.com/v1/oauth/token');
+    eq('claude authorize endpoint is platform.claude.com',
+      po.provider('claude').authorizeUrl, 'https://platform.claude.com/oauth/authorize');
+    eq('claude asks for the CLI code grant', po.provider('claude').extraAuthParams, { code: 'true' });
+    eq('claude binds an ephemeral loopback port', po.provider('claude').redirectPort, 0);
+    eq('claude requests the full CLI scope set', po.provider('claude').scopes.length, 8);
+    ok('claude includes the plugins scope', po.provider('claude').scopes.includes('user:plugins'));
+    eq('claude echoes the CSRF state in the token body', po.provider('claude').echoState, true);
     eq('claude posts JSON, not a form body', po.provider('claude').tokenFormat, 'json');
     eq('google requires a form body', po.provider('antigravity').tokenFormat, 'form');
     eq('google asks for a refresh token explicitly',
@@ -288,6 +297,35 @@ const jwt = (claims) => 'h.' + b64url(claims) + '.sig';
     eq('fallback is still loopback', /^http:\/\/localhost:\d+\/cb$/.test(srv.redirectUri), true);
     srv.close();
     await blocker.close();
+  }
+  {
+    // `localhost` resolves to ::1 first on macOS. A listener that only bound
+    // 127.0.0.1 left every callback at ECONNREFUSED, which is exactly what
+    // broke sign-in. Both families must answer on the same port.
+    const srv = await I.startLoopbackServer({ path: '/cb', timeoutMs: 5000 });
+    ok('the listener covers both loopback families', srv.host === 'dual');
+    const v4 = await fetch('http://127.0.0.1:' + srv.port + '/cb/nope').catch(() => null);
+    ok('IPv4 answers', !!(v4 && v4.status === 404));
+    const v6 = await fetch('http://[::1]:' + srv.port + '/cb?code=c6&state=s6').catch(() => null);
+    ok('IPv6 answers', !!(v6 && v6.status === 200));
+    const payload = await srv.wait();
+    eq('the IPv6 callback carries the code', payload.code, 'c6');
+    srv.close();
+  }
+  {
+    // The manual path prints `code#state`; users also paste the whole URL.
+    const ps = I.parseManualCode;
+    eq('a bare code is accepted', ps('abc123', 'st'), { code: 'abc123', state: 'st' });
+    eq('code#state is split', ps('abc123#st9', 'zz'), { code: 'abc123', state: 'st9' });
+    eq('a pasted redirect URL is parsed',
+      ps('https://platform.claude.com/oauth/code/callback?code=abc&state=st7', 'zz'),
+      { code: 'abc', state: 'st7' });
+    let threw = '';
+    try { ps('https://platform.claude.com/oauth/code/callback', 'zz'); } catch (e) { threw = e.message; }
+    ok('a link with no code is refused in one human line', /no authorization code/.test(threw));
+    let empty = '';
+    try { ps('   ', 'zz'); } catch (e) { empty = e.message; }
+    ok('an empty paste is refused', /no authorization code/.test(empty));
   }
 
   // -------------------------------------------------------------------------

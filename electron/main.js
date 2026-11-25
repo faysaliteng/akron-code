@@ -1270,6 +1270,59 @@ ipcMain.handle('autobot:providerSignIn', async (event, id) => {
   }
 });
 
+// Manual sign-in: no loopback listener, the provider shows a code on its own
+// page and the user pastes it back. This is the only path that works when the
+// browser cannot reach 127.0.0.1/::1 (containers, remote sessions, a browser on
+// another machine) — and it is what the Claude CLI falls back to.
+const pendingManualSignIn = new Map();
+let manualFlowSeq = 0;
+
+ipcMain.handle('autobot:providerSignInManual', async (event, id) => {
+  const provId = String(id || '');
+  const flowId = provId + ':' + (++manualFlowSeq) + ':' + Date.now();
+  let resolveCode = null;
+  let timer = null;
+  const codePromise = new Promise((res) => { resolveCode = res; });
+  let url = '';
+  const opened = new Promise((res) => {
+    const task = providerOauth.authorize(provId, {
+      openExternal: (u) => { url = u; res(u); try { shell.openExternal(u); } catch (_) {} },
+      manual: true,
+      waitForCode: () => codePromise,
+    });
+    task.then(async (rec) => {
+      if (timer) clearTimeout(timer);
+      pendingManualSignIn.delete(flowId);
+      try { if (rec && rec.id) await fetchProviderModels(rec.id); } catch (_) {}
+      try { event.sender.send('autobot:providerManualResult', flowId, { ok: true, account: rec }); } catch (_) {}
+    }).catch((e) => {
+      if (timer) clearTimeout(timer);
+      pendingManualSignIn.delete(flowId);
+      try { event.sender.send('autobot:providerManualResult', flowId, { ok: false, error: oneLine(e) }); } catch (_) {}
+    });
+  });
+  // Do not wait forever on a code nobody pastes.
+  timer = setTimeout(() => {
+    const f = pendingManualSignIn.get(flowId);
+    if (f) { f.resolveCode(''); pendingManualSignIn.delete(flowId); }
+  }, 15 * 60 * 1000);
+  if (typeof timer.unref === 'function') timer.unref();
+  // Wait just long enough for the authorize URL to be built (openExternal fires
+  // synchronously, before the code wait starts).
+  const built = await Promise.race([opened, new Promise((res) => setTimeout(() => res(''), 4000))]);
+  pendingManualSignIn.set(flowId, { resolveCode, provId });
+  return { ok: true, flowId, url: url || built };
+});
+
+ipcMain.handle('autobot:providerSubmitCode', (event, flowId, code) => {
+  const f = pendingManualSignIn.get(String(flowId || ''));
+  if (!f) return { ok: false, error: 'that sign-in is no longer waiting — start it again' };
+  const v = String(code || '').trim();
+  if (!v) return { ok: false, error: 'paste the code the sign-in page shows' };
+  f.resolveCode(v);
+  return { ok: true };
+});
+
 ipcMain.handle('autobot:providerSignOut', (event, id, account) => {
   try {
     const raw = String(id || '');

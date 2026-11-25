@@ -792,20 +792,27 @@ async function main() {
     assert.ok(/const override = typeof textOverride === 'string' \? textOverride : undefined;/.test(src),
       'send() must type-check textOverride before calling .trim()');
   });
-  await test('tool cards render above the assistant answer (Example order)', () => {
+  await test('tool cards render in place of the assistant answer (Example order)', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8');
     const start = src.indexOf('function Message(');
     const end = src.indexOf('// Share / export dropdown', start);
     assert.ok(start > 0 && end > start, 'Message component not found');
     const body = src.slice(start, end);
-    const toolsAt = body.indexOf('{m.tools.map((t) => <ToolCard');
+    // Legacy (no segments): tool cards must precede the answer text.
+    const toolsAt = body.indexOf('ToolGroup rows={m.tools}');
     const answerAt = body.indexOf('renderMarkdown(m.content)');
     assert.ok(toolsAt > 0 && answerAt > 0, 'expected both blocks in the Message component');
     assert.ok(toolsAt < answerAt, 'tool cards must precede the answer text');
-    const liveTools = src.indexOf('{live.tools.map((t) => <ToolCard');
-    const liveAnswer = src.indexOf('renderMarkdown(live.content)');
-    assert.ok(liveTools > 0 && liveAnswer > 0);
-    assert.ok(liveTools < liveAnswer, 'streaming view must also show tools above the text');
+    // Segmented messages: tools keep their chronological slot instead of being
+    // hoisted, so a tool that ran between two text blocks stays between them.
+    const segStart = src.indexOf('function SegmentView(');
+    const seg = src.slice(segStart, start);
+    assert.ok(segStart > 0 && seg.length > 0, 'SegmentView not found');
+    assert.ok(/s\.type === 'tools'/.test(seg), 'SegmentView must handle tool segments');
+    assert.ok(/<ToolGroup rows=\{rows\}/.test(seg), 'tool segments render via ToolGroup');
+    assert.ok(/list\.map\(/.test(seg), 'segments must render in the order they happened');
+    // The streaming view uses the same component, so live tool rows behave identically.
+    assert.ok(src.indexOf('segments={live.segments} tools={live.tools}') > 0, 'streaming view must use SegmentView');
   });
 
   await test('stripToolProtocol hides text-protocol tool calls in rendered markdown', async () => {

@@ -57,18 +57,45 @@ const PROVIDERS = {
     vendor: 'Anthropic',
     kind: 'oauth',
     transport: 'anthropic',
-    authorizeUrl: 'https://claude.ai/oauth/authorize',
-    // Verified live: console.anthropic.com answers 429 rate_limit_error for the
-    // same grant that api.anthropic.com accepts, so this is the real endpoint.
-    tokenUrl: 'https://api.anthropic.com/v1/oauth/token',
+    // These four constants are extracted from the bundled Claude Code CLI
+    // (vendor/runtimes/claude-code, 2.1.332) and are the only ones that work.
+    // The previous pair — claude.ai/oauth/authorize +
+    // api.anthropic.com/v1/oauth/token — is a pre-2.x flow: claude.ai now
+    // answers the authorize URL with a login-wall redirect (`/login?...&
+    // returnTo=...`) and ERR_FAILED inside Electron, and api.anthropic.com does
+    // not mint subscription tokens.
+    authorizeUrl: 'https://platform.claude.com/oauth/authorize',
+    tokenUrl: 'https://platform.claude.com/v1/oauth/token',
+    // The page the CLI shows when its loopback listener cannot be reached and
+    // the user has to copy the code out by hand.
+    manualRedirectUrl: 'https://platform.claude.com/oauth/code/callback',
     // Verified live: this endpoint takes an application/json body, not the
     // form-encoding the OAuth RFC suggests. Posting a form body gets 400.
     tokenFormat: 'json',
+    // The CLI always appends `code=true`; without it the authorize page treats
+    // the request as a plain web app rather than the CLI/device grant.
+    extraAuthParams: { code: 'true' },
+    // The CLI echoes the anti-CSRF state in the token request body too.
+    echoState: true,
     // Public first-party client id of the Claude Code CLI. Not a secret: it is
     // shipped inside every copy of the CLI and is the documented PKCE client.
     clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
-    scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code', 'user:mcp_servers', 'user:file_upload'],
-    redirectPort: 54545,
+    // The exact scope set the CLI requests for a Claude account (`j5s()` in
+    // 2.1.332): base scopes + plugins + privacy consents.
+    scopes: [
+      'org:create_api_key',
+      'user:profile',
+      'user:inference',
+      'user:sessions:claude_code',
+      'user:mcp_servers',
+      'user:file_upload',
+      'user:plugins',
+      'user:privacy_consents:write',
+    ],
+    // The CLI binds an ephemeral loopback port and passes it in redirect_uri.
+    // The old fixed 54545 appears nowhere in the shipped binary.
+    redirectPort: 0,
+    redirectHost: 'localhost',
     redirectPath: '/callback',
     // Fallback only: `autobot:providerModels` replaces this with the account's
     // own `/v1/models` list (15 entries on the verification machine). These are
@@ -546,6 +573,16 @@ async function verifyAccount(provId, account, opts) {
   } else if (provId === 'grok') {
     url = 'https://api.x.ai/v1/models';
     headers.authorization = 'Bearer ' + t.accessToken;
+  } else if (provId === 'chatgpt') {
+    // The same cheap list call the transport uses to fill the model picker.
+    // Before this branch existed the badge could claim "signed in" from
+    // metadata alone with a dead token behind it.
+    url = 'https://chatgpt.com/backend-api/codex/models';
+    headers.authorization = 'Bearer ' + t.accessToken;
+    headers.originator = 'codex_cli_rs';
+    headers['user-agent'] = 'codex-cli/0.172.0';
+    const row = getAccount(provId, acc);
+    if (row && row.accountId) headers['chatgpt-account-id'] = row.accountId;
   } else {
     return false; // no cheap probe for this provider — don't spend a turn to find out
   }
@@ -847,24 +884,28 @@ function corsHeaders(origin) {
 
 function startLoopbackServer(opts) {
   const o = opts || {};
-  const host = o.host || '127.0.0.1';
   // The redirect *host* is what the provider's console registered and what the
-  // browser is sent to; it is not necessarily the bind address (xAI wants
-  // `127.0.0.1`, Google wants `localhost`).
+  // browser is sent to; it is not necessarily the bind address. `localhost`
+  // resolves to `::1` first on macOS and to `127.0.0.1` elsewhere, so a listener
+  // on one family alone leaves every callback from the other at ECONNREFUSED.
+  // Bind both loopback families on the same port instead of guessing.
   const redirectHost = o.redirectHost || 'localhost';
   const wantPath = o.path || '/callback';
+  const wantPort = Number(o.port) > 0 ? Number(o.port) : 0;
+  const hosts = o.host ? [o.host] : ['127.0.0.1', '::1'];
   return new Promise((resolve, reject) => {
     let settle = null;
     const done = new Promise((res) => { settle = res; });
     let timer = null;
     let closed = false;
+    const servers = [];
     const stop = () => {
       if (closed) return;
       closed = true;
       if (timer) clearTimeout(timer);
-      try { server.close(); } catch (_) {}
+      for (const s of servers) { try { s.close(); } catch (_) {} }
     };
-    const server = http.createServer((req, res) => {
+    const onRequest = (req, res) => {
       // Some first-party clients probe the loopback listener from their own
       // origin before redirecting. Answer the preflight instead of a 404.
       const origin = String((req.headers && req.headers.origin) || '');
@@ -875,7 +916,7 @@ function startLoopbackServer(opts) {
         return;
       }
       let u;
-      try { u = new URL(req.url, 'http://' + host); } catch (_) {
+      try { u = new URL(req.url, 'http://localhost'); } catch (_) {
         res.writeHead(400, Object.assign({ 'content-type': 'text/plain' }, cors));
         res.end('bad request');
         return;
@@ -898,27 +939,54 @@ function startLoopbackServer(opts) {
       res.end(callbackPage(payload));
       stop();
       settle(payload);
-    });
-    server.on('error', (err) => {
-      // Port taken: retry once on an ephemeral port (claude/google allow it).
-      if (o.port && err && err.code === 'EADDRINUSE') {
-        stop();
-        startLoopbackServer(Object.assign({}, o, { port: 0 })).then(resolve, reject);
+    };
+
+    // Bind every requested host on one shared port. The first host picks the
+    // port: a fixed port that is busy falls back to an ephemeral one (claude
+    // and google accept any loopback port), and an ephemeral port is reused by
+    // the remaining hosts.
+    const bindAll = (hostsLeft, port) => {
+      if (!hostsLeft.length) {
+        const redirectUri = 'http://' + redirectHost + ':' + port + wantPath;
+        timer = setTimeout(() => {
+          stop();
+          settle({ code: null, state: null, error: 'timeout', errorDescription: 'sign-in was not completed in time' });
+        }, o.timeoutMs || 10 * 60 * 1000);
+        if (typeof timer.unref === 'function') timer.unref();
+        resolve({ redirectUri, port, host: servers.length ? 'dual' : 'none', wait: () => done, close: stop });
         return;
       }
-      stop();
-      reject(err);
-    });
-    server.listen(o.port || 0, host, () => {
-      const port = server.address().port;
-      const redirectUri = 'http://' + redirectHost + ':' + port + wantPath;
-      timer = setTimeout(() => {
-        stop();
-        settle({ code: null, state: null, error: 'timeout', errorDescription: 'sign-in was not completed in time' });
-      }, o.timeoutMs || 10 * 60 * 1000);
-      if (typeof timer.unref === 'function') timer.unref();
-      resolve({ redirectUri, port, wait: () => done, close: stop });
-    });
+      const host = hostsLeft[0];
+      const server = http.createServer(onRequest);
+      servers.push(server);
+      let settled = false;
+      const onError = (err) => {
+        if (settled) return;
+        settled = true;
+        try { server.close(); } catch (_) {}
+        const i = servers.indexOf(server);
+        if (i >= 0) servers.splice(i, 1);
+        if (servers.length === 0) {
+          // Nothing bound yet: a busy requested port retries on an ephemeral one.
+          if (err && err.code === 'EADDRINUSE' && port !== 0) { bindAll(hosts, 0); return; }
+          stop();
+          reject(err);
+          return;
+        }
+        // The other family already owns the port; serve the one that works.
+        bindAll(hostsLeft.slice(1), servers.length ? servers[0].address().port : port);
+      };
+      server.once('error', onError);
+      server.listen({ port, host }, () => {
+        if (settled) return;
+        settled = true;
+        server.removeListener('error', onError);
+        server.on('error', () => {});
+        const bound = server.address().port;
+        bindAll(hostsLeft.slice(1), bound);
+      });
+    };
+    bindAll(hosts, wantPort);
   });
 }
 
@@ -1026,9 +1094,32 @@ function buildAuthorizeUrl(prov, params) {
 }
 
 /**
+ * Normalise a pasted manual sign-in code. The CLI's manual page prints
+ * `code#state`; users also paste the whole redirect URL. Both are accepted.
+ */
+function parseManualCode(input, fallbackState) {
+  const raw = String(input || '').trim();
+  if (!raw) throw new Error('sign-in returned no authorization code');
+  if (/^https?:\/\//i.test(raw)) {
+    let u;
+    try { u = new URL(raw); } catch (_) {
+      throw new Error("That's a web address, not the code. Paste the code the page shows.");
+    }
+    const code = u.searchParams.get('code') || '';
+    if (!code) throw new Error('that link carried no authorization code — paste the code the page shows');
+    return { code, state: u.searchParams.get('state') || fallbackState || '' };
+  }
+  // `code#state` is what the manual callback page displays.
+  const m = raw.match(/^([^#]+)#(.*)$/);
+  if (m) return { code: m[1], state: m[2] };
+  return { code: raw, state: fallbackState || '' };
+}
+
+/**
  * Run the browser sign-in flow for one provider and persist the account.
  * @param {string} provId
- * @param {{openExternal:Function, fetchImpl?:Function, timeoutMs?:number, label?:string}} opts
+ * @param {{openExternal:Function, fetchImpl?:Function, timeoutMs?:number, label?:string,
+ *          manual?:boolean, waitForCode?:Function}} opts
  */
 async function authorize(provId, opts) {
   const o = opts || {};
@@ -1040,20 +1131,42 @@ async function authorize(provId, opts) {
   const { verifier, challenge } = mcpoauth.pkce();
   const state = mcpoauth.randomState();
   const nonce = prov.authNonce ? mcpoauth.randomState() : '';
-  // Listen before we open the browser: the redirect can land instantly.
-  const loop = await startLoopbackServer({
-    path: prov.redirectPath,
-    port: prov.redirectPort,
-    redirectHost: prov.redirectHost,
-    timeoutMs: o.timeoutMs || 10 * 60 * 1000,
-  });
-  const url = buildAuthorizeUrl(prov, { redirectUri: loop.redirectUri, state, challenge, nonce });
+  // Manual mode: no loopback listener. The provider shows the code on its own
+  // page and the caller hands it back through `waitForCode`. This is the only
+  // path that works when the browser cannot reach 127.0.0.1 (containers,
+  // remote sessions, a browser on another machine).
+  const manual = !!(o.manual && prov.manualRedirectUrl && typeof o.waitForCode === 'function');
+  let loop = null;
+  let redirectUri = '';
+  if (manual) {
+    redirectUri = prov.manualRedirectUrl;
+  } else {
+    // Listen before we open the browser: the redirect can land instantly.
+    loop = await startLoopbackServer({
+      path: prov.redirectPath,
+      port: prov.redirectPort,
+      redirectHost: prov.redirectHost,
+      timeoutMs: o.timeoutMs || 10 * 60 * 1000,
+    });
+    redirectUri = loop.redirectUri;
+  }
+  const url = buildAuthorizeUrl(prov, { redirectUri, state, challenge, nonce });
   try { o.openExternal(url); } catch (_) {}
   let cb;
-  try {
-    cb = await loop.wait();
-  } finally {
-    loop.close();
+  if (manual) {
+    let pasted = '';
+    try {
+      pasted = await o.waitForCode({ url, state });
+    } finally {
+      if (loop) loop.close();
+    }
+    cb = parseManualCode(pasted, state);
+  } else {
+    try {
+      cb = await loop.wait();
+    } finally {
+      loop.close();
+    }
   }
   if (cb.error) {
     const err = new Error(cb.errorDescription || cb.error);
@@ -1061,16 +1174,20 @@ async function authorize(provId, opts) {
     throw err;
   }
   if (!cb.code) throw new Error('sign-in returned no authorization code');
-  if (cb.state !== state) throw new Error('sign-in state mismatch — the callback did not belong to this attempt');
+  if (cb.state && cb.state !== state) {
+    throw new Error('sign-in state mismatch — the callback did not belong to this attempt');
+  }
 
-  const json = await postToken(prov, {
+  const body = {
     grant_type: 'authorization_code',
     code: cb.code,
-    redirect_uri: loop.redirectUri,
+    redirect_uri: redirectUri,
     client_id: prov.clientId,
     client_secret: prov.clientSecret,
     code_verifier: verifier,
-  }, { fetchImpl: o.fetchImpl });
+  };
+  if (prov.echoState) body.state = state;
+  const json = await postToken(prov, body, { fetchImpl: o.fetchImpl });
 
   const tokens = normalizeTokens(prov, json);
   if (!tokens.accessToken) throw new Error('sign-in succeeded but no access token was returned');
@@ -1276,6 +1393,10 @@ function status() {
       accounts: listAccounts(id),
       active: activeAccount(id),
       canBrowserSignIn: prov.kind === 'oauth',
+      // A provider whose authorize page can print the code instead of calling
+      // back to localhost: the fallback when the browser cannot reach the
+      // loopback listener at all. Claude is the one that ships this page.
+      canManualCode: !!(prov.kind === 'oauth' && prov.manualRedirectUrl),
       // A provider that signs in through the browser may still accept a pasted
       // API key as a secondary route (Grok today).
       canPasteKey: prov.kind !== 'oauth' || prov.allowBearer === true,
@@ -1385,7 +1506,7 @@ module.exports = {
     readDb, writeDb, slotKey, slug, jwtPayload, msFromEpoch, epochToMs, fingerprint,
     normalizeTokens, buildAuthorizeUrl, startLoopbackServer, readClaudeCodeCredentials,
     readCodexAuth, readGeminiCreds, readGrokConfig, callbackPage, publicRecord,
-    adoptLocalCredentials,
+    adoptLocalCredentials, parseManualCode,
     postToken, identify, REFRESH_SKEW_MS,
   },
 };

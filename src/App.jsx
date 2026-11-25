@@ -4731,14 +4731,22 @@ function BrowserView({ cwd, previewUrl }) {
   return (
     <div className={'browser-panel' + (expanded ? ' expanded' : '')}>
       <div className="browser-tabs">
-        {tabs.map((t) => (
-          <div key={t.id} className={'browser-tab ' + (t.id === activeId ? 'on' : '')} onClick={() => selectTab(t.id)} title={t.url}>
-            {t.loading ? <Icon name="Spinner" size={12} className="spin" /> : <Icon name="Globe" size={12} />}
-            <span className="browser-tab-title">{t.title || 'New Tab'}</span>
-            <button className="browser-tab-close" onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}><Icon name="X" size={11} /></button>
-          </div>
-        ))}
-        <button className="browser-tab-add" onClick={() => openTab()} title="New tab"><Icon name="Add" size={14} /></button>
+        <div className="browser-tab-strip">
+          {tabs.map((t) => (
+            <div key={t.id} className={'browser-tab ' + (t.id === activeId ? 'on' : '')} onClick={() => selectTab(t.id)} title={t.url}>
+              {t.loading ? <Icon name="Spinner" size={12} className="spin" /> : <Icon name="Globe" size={12} />}
+              <span className="browser-tab-title">{t.title || 'New Tab'}</span>
+              <button className="browser-tab-close" onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}><Icon name="X" size={11} /></button>
+            </div>
+          ))}
+        </div>
+        {/* The actions live in the tab row, pinned right, so they can never be
+            squeezed out of the toolbar by a narrow pane. */}
+        <div className="browser-tabs-actions">
+          <button className="browser-act" onClick={() => openTab()} title="New tab"><Icon name="Add" size={14} /></button>
+          <button className={'browser-act' + (expanded ? ' on' : '')} onClick={() => setExpanded(!expanded)} title={expanded ? 'Restore (⌘↓)' : 'Expand (⌘↑)'}><Icon name={expanded ? 'ArrowsIn' : 'ArrowsOut'} size={14} /></button>
+          <button className={'browser-act browser-menu-btn' + (menuOpen ? ' on' : '')} onClick={() => { setMenuNote(''); setMenuOpen(!menuOpen); }} title="Browser options"><Icon name="DotsHorizontal" size={15} /></button>
+        </div>
       </div>
 
       <div className="browser-toolbar">
@@ -4753,9 +4761,6 @@ function BrowserView({ cwd, previewUrl }) {
           <input ref={omniboxRef} value={omnibox} onChange={(e) => setOmnibox(e.target.value)} placeholder="Search or enter address" spellCheck={false} />
         </form>
         <button className={'icon-btn' + (findOpen ? ' on' : '')} onClick={() => setFindOpen(!findOpen)} title="Find in page"><Icon name="Search" size={15} /></button>
-        <button className="icon-btn" onClick={openTab} title="New tab"><Icon name="Add" size={15} /></button>
-        <button className={'icon-btn' + (expanded ? ' on' : '')} onClick={() => setExpanded(!expanded)} title={expanded ? 'Restore (⌘↓)' : 'Expand (⌘↑)'}><Icon name={expanded ? 'ArrowsIn' : 'ArrowsOut'} size={15} /></button>
-        <button className={'icon-btn browser-menu-btn' + (menuOpen ? ' on' : '')} onClick={() => { setMenuNote(''); setMenuOpen(!menuOpen); }} title="Browser menu"><Icon name="DotsHorizontal" size={16} /></button>
       </div>
 
       {menuOpen && (
@@ -5101,6 +5106,9 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
   const [provNotice, setProvNotice] = useState('');
   // Bearer providers (xAI/Grok) have no browser flow: the user pastes a key.
   const [provToken, setProvToken] = useState({});
+  // Manual code sign-in: the authorize page shows the code, the user pastes it
+  // back. Used when the browser cannot reach the loopback listener.
+  const [provManual, setProvManual] = useState(null);
   // Live model inventory per provider (`autobot:providerModels`). The accounts
   // expose 5–40 models each and they change, so the picker asks the provider
   // instead of shipping a stale hardcoded list. Values carry the resolved
@@ -5186,6 +5194,58 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
       setProvBusy('');
     }
   };
+
+  // Start the paste-the-code fallback: no loopback listener, the provider page
+  // shows a code and we hand it back. This is what the Claude CLI does when it
+  // cannot get the browser to return to localhost.
+  const startManualSignIn = async (id) => {
+    setProvBusy('manual:' + id);
+    try {
+      const r = await window.autobot.providerSignInManual(id);
+      if (!r || r.ok === false) {
+        setProvNotice(String((r && r.error) || 'could not start sign-in').replace(/<[^>]*>/g, ' ').slice(0, 220));
+        return;
+      }
+      setProvNotice('');
+      setProvManual({ flowId: r.flowId, provId: id, url: r.url || '', code: '', sent: false });
+    } catch (e) {
+      setProvNotice(String((e && e.message) || 'could not start sign-in').slice(0, 220));
+    } finally {
+      setProvBusy('');
+    }
+  };
+
+  const submitManualCode = async () => {
+    const m = provManual;
+    if (!m || !String(m.code || '').trim()) return;
+    setProvBusy('manual:' + m.provId);
+    try {
+      const r = await window.autobot.providerSubmitCode(m.flowId, String(m.code).trim());
+      if (r && r.ok === false) {
+        setProvNotice(String(r.error || 'paste the code the sign-in page shows').slice(0, 220));
+        return;
+      }
+      setProvNotice('');
+      setProvManual({ ...m, code: '', sent: true });
+    } finally {
+      setProvBusy('');
+    }
+  };
+
+  // The main process reports the outcome of a manual sign-in here — success
+  // brings a new account (refresh the list), failure is one human line.
+  useEffect(() => {
+    if (!window.autobot.onProviderManualResult) return undefined;
+    return window.autobot.onProviderManualResult(async (flowId, result) => {
+      setProvManual((cur) => (cur && cur.flowId === flowId ? null : cur));
+      if (result && result.ok) {
+        setProvNotice('');
+        await loadProvOauth();
+      } else {
+        setProvNotice(String((result && result.error) || 'sign-in did not complete').replace(/<[^>]*>/g, ' ').slice(0, 220));
+      }
+    });
+  }, [loadProvOauth]);
 
   const scanOllama = useCallback(async () => {
     const bases = new Set();
@@ -5740,6 +5800,14 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                                   onClick={() => providerAction('signin', pv.id)}
                                 >{provBusy === 'signin:' + pv.id ? 'Opening browser…' : (accounts.length ? 'Add account' : 'Sign in')}</button>
                               )}
+                              {pv.canManualCode && (
+                                <button
+                                  className="prov-link prov-link-sub"
+                                  title="The sign-in page shows a code you paste back here — use this when the browser cannot reach this machine."
+                                  disabled={!!provBusy}
+                                  onClick={() => startManualSignIn(pv.id)}
+                                >{provBusy === 'manual:' + pv.id ? 'Opening…' : 'Paste code'}</button>
+                              )}
                             </div>
                             {accounts.map((a) => {
                               const on = provider.oauthProvider === a.id;
@@ -5772,8 +5840,39 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                                 </div>
                               );
                             })}
-                            {!accounts.length && pv.canBrowserSignIn && !pv.canPasteKey && (
+                            {!accounts.length && pv.canBrowserSignIn && !pv.canPasteKey && !pv.canManualCode && (
                               <div className="prov-none">Not signed in</div>
+                            )}
+                            {provManual && provManual.provId === pv.id && (
+                              <div className="prov-token prov-manual">
+                                <div className="prov-manual-hint">
+                                  {provManual.sent ? 'Code sent — checking with ' + pv.vendor + '…'
+                                    : 'Sign in in the browser, then paste the code it shows (looks like xxxx#yyyy).'}
+                                </div>
+                                <input
+                                  className="prov-token-in"
+                                  type="text"
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                  placeholder="Paste code"
+                                  value={provManual.code || ''}
+                                  disabled={!!provBusy || provManual.sent}
+                                  onChange={(e) => setProvManual((m) => (m ? { ...m, code: e.target.value } : m))}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') { e.preventDefault(); submitManualCode(); }
+                                  }}
+                                />
+                                <button
+                                  className="prov-link"
+                                  disabled={!!provBusy || provManual.sent || !String(provManual.code || '').trim()}
+                                  onClick={submitManualCode}
+                                >{provManual.sent ? 'Checking…' : 'Submit'}</button>
+                                <button
+                                  className="prov-x"
+                                  title="Cancel"
+                                  onClick={() => setProvManual(null)}
+                                ><Icon name="X" size={12} /></button>
+                              </div>
                             )}
                             {pv.canPasteKey && (
                               <div className="prov-token">

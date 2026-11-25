@@ -7,6 +7,9 @@ const port = Number(process.argv[2] || 9333);
 const MODEL = process.argv[3] || 'claude-opus-4-5';
 const ACCOUNT = process.argv[4] || 'claude:rxpromedbd-gmail-com';
 const TRANSPORT = process.argv[5] || 'anthropic';
+// Pass "" as account and a baseURL to drive an OpenAI-compatible gateway
+// (FreeLLMAPI on 127.0.0.1:3001, Ollama, LM Studio) instead of a subscription.
+const BASEURL = process.argv[6] || '';
 const BASE = `http://127.0.0.1:${port}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -73,10 +76,15 @@ const PROMPT = [
     return r && r.ok ? r.models.map(m => m.id + ' ' + (m.windowLabel||'')) : (r && r.warning) || 'no-models';
   })()`);
 
-  await ev(cdp, `localStorage.setItem('autobot:provider', JSON.stringify({
-      baseURL:'', apiKey:'', model:${JSON.stringify(MODEL)}, supportsTools:true,
-      oauthProvider:${JSON.stringify(ACCOUNT)}, transport:${JSON.stringify(TRANSPORT)}, oauth:true,
-      accessToken:'', temperature:0.7, maxTokens:4000, reasoningLevel:'auto' })); 'set'`);
+  // Gateway mode (BASEURL set): mirror the in-app preset shape exactly — a
+  // bare OpenAI-compatible provider with no oauth/oauthProvider keys.
+  const providerObj = BASEURL
+    ? { baseURL: BASEURL, apiKey: '', model: MODEL, supportsTools: true,
+        temperature: 0.7, maxTokens: 4000, reasoningLevel: 'auto' }
+    : { baseURL: '', apiKey: '', model: MODEL, supportsTools: true,
+        oauthProvider: ACCOUNT, transport: TRANSPORT, oauth: true,
+        accessToken: '', temperature: 0.7, maxTokens: 4000, reasoningLevel: 'auto' };
+  await ev(cdp, `localStorage.setItem('autobot:provider', ${JSON.stringify(JSON.stringify(providerObj))}); 'set'`);
   await cdp.send('Page.reload');
   await sleep(5000);
 

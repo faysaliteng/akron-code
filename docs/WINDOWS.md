@@ -90,8 +90,9 @@ That is a port, not a config flag.
 
 ## 4. Firewall / proxy notes
 
-- Loopback OAuth ports: **54545** (Claude), **1455** (ChatGPT), **56121** (Grok),
-  ephemeral for Google.
+- Loopback OAuth ports: **ephemeral** for Claude (the Claude Code CLI passes
+  `redirectPort: 0`; the listener takes a free port and binds `127.0.0.1` and
+  `::1` on it), **1455** (ChatGPT), **56121** (Grok), ephemeral for Google.
 - FreeLLMAPI: **3001**.
 - DevTools when launched with `--remote-debugging-port`: whatever you pass.
 

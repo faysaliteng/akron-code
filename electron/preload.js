@@ -47,6 +47,13 @@ contextBridge.exposeInMainWorld('autobot', {
   providerStatus: () => ipcRenderer.invoke('autobot:providerStatus'),
   providerModels: (id) => ipcRenderer.invoke('autobot:providerModels', id),
   providerSignIn: (id) => ipcRenderer.invoke('autobot:providerSignIn', id),
+  providerSignInManual: (id) => ipcRenderer.invoke('autobot:providerSignInManual', id),
+  providerSubmitCode: (flowId, code) => ipcRenderer.invoke('autobot:providerSubmitCode', flowId, code),
+  onProviderManualResult: (cb) => {
+    const h = (e, flowId, result) => { try { cb(flowId, result); } catch (_) {} };
+    ipcRenderer.on('autobot:providerManualResult', h);
+    return () => ipcRenderer.removeListener('autobot:providerManualResult', h);
+  },
   providerSignOut: (id, account) => ipcRenderer.invoke('autobot:providerSignOut', id, account),
   providerImport: () => ipcRenderer.invoke('autobot:providerImport'),
   providerAddBearer: (id, token, label) => ipcRenderer.invoke('autobot:providerAddBearer', id, token, label),
