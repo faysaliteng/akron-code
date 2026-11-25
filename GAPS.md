@@ -1603,8 +1603,9 @@ top-up is off"* — with `markupLeak:false` and `hasEnvelope:false`.
 
 | Item | State |
 |---|---|
-| Grok chat turns | **Blocked by account allowance until 2026-12-01.** Transport + identity verified; the next live turn after the reset is the acceptance test. |
+| Grok chat turns | **Blocked by account allowance until 2026-12-01 — now measured, not assumed.** Every request shape 402s, tool-less included, non-monotonically in `max_output_tokens` (VERIFICATION §30), so the pool is genuinely spent and the earlier "tools → 402, chat → 200" split was one lucky sample. Transport + identity verified; degrades to text mode and still writes files. |
 | Grok write / shell / browser + Computer Use | Same allowance block. `build/probe-capability.cjs` and `build/probe-computer.cjs` are ready to run against `grok-4.7` the moment the pool resets. |
+| Degrade-on-402 (prose stop) | **Verified live** (§30.2): tools 402 → text protocol → `creditmode.txt = CREDITMODE-OK` → both shapes 402 → `err: null`, prose notice, clean `done`. Regression `test/credit-degrade.test.js` 4/0. |
 | ChatGPT live turn | No account on this machine (`~/.codex/auth.json` absent, `accounts: []`). The OAuth config is vendor-validated (§27) but no completed token exists, so no turn, capability, or compaction proof. |
 | Claude live turn (2026-11-25) | `429 rate_limit_error` from `api.anthropic.com` for account `rxpromedbd-gmail-com` — reproduced with a direct `fetch` outside the app (`req_011ChQAKJgag…`), so it is the account's rate limit, not the identity gate or our headers. During this window the claude compaction path and claude Computer Use are unit-tested only; claude write/shell/browser passed earlier the same day. |
 | Claude identity gate still needs a fresh account to reconfirm | The `CC_IDENTITY` system block (`You are Claude Code, Anthropic's official CLI for Claude.`) is what turned a permanent 429 into a working turn. It is verified by code + the earlier passing turn; a new account would re-confirm it independently. |

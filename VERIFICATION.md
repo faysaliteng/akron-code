@@ -1235,3 +1235,69 @@ Rebuilt and re-run against `release/AkronBot-1.0.0-arm64.dmg`
 So the shipped DMG carries the grouped-and-capped picker **and** the
 post-`59a5c0d` output-limit prose; the “Thought (token limit reached —
 retrying with N tokens)” wording cannot appear from this build.
+
+## 30. Entitlement exhaustion is a *state*, not a request shape (2026-11-25)
+
+§26 said Grok's 402 was "tools attached → 402, chat alone → 200". That was one
+observation, not the rule. With the transport held constant and only
+`max_output_tokens` varied, the same trivial prompt produced:
+
+| `maxTokens` | request | result |
+|---|---|---|
+| 2000 | tool-less | 200 |
+| 2500 | tool-less | 200 |
+| 3500 | tool-less | **402** |
+| 4096 | tool-less | 200 |
+| 6144 | tool-less | **402** |
+| 4096 ×4 | tool-less | 402, 402, 402, 402 |
+| 4096 ×4 | tools attached | 402, 402, 402, 402 |
+
+Non-monotonic in size and later total across every shape ⇒ the 402 is the
+account's Build allowance arriving **stochastically** (the proxy admits a
+request when it thinks credit remains), not a property of the payload. So a
+degrade that assumes the tool-less route is safe is wrong, and "throw
+immediately on 402" leaves the user with a red banner for a condition that is
+neither a bug nor their fault.
+
+### 30.1 What the loop does now
+
+1. Native request 402s → drop tools, re-normalise history, inject
+   `TEXT_TOOL_PROTOCOL`, emit one prose notice, retry. (unchanged, §28)
+2. **New:** if that tool-less retry also 402s, the turn **ends in prose** —
+   one notice ("… Plain chat is unavailable as well, so I stopped this turn —
+   switch to another account or provider, or wait for the allowance to reset")
+   plus an assistant message carrying the same reason. No `error` event, no
+   `.errorbar`, no backoff ladder. Before this, the user saw the notice *and*
+   a banner repeating it, which read as a crash.
+3. `humanizeLLMError` no longer repeats the friendly prefix when the transport
+   hands back its own hint (`credits: … is off Plain chat…` was the old join).
+
+### 30.2 Live proof (`:9333`, allowance fully spent)
+
+The dev app caches `electron/llm.js` at boot — the first run after the edit
+still threw because the **main process** was stale. Restart, then:
+
+```
+{ "err": null,
+  "tools": 1, "toolNames": ["Writing"],
+  "text": "I'll create creditmode.txt with the exact contents you asked for. ✎ Writing creditmode.txt · Worked for 10s",
+  "notice": "This account is out of credit for that provider — the Grok Build
+             allowance is 100% used this week; it resets 2026-12-01; prepaid
+             balance is $0 and on-demand top-up is off. Plain chat is
+             unavailable as well, so I stopped this turn — switch to another
+             account or provider, or wait for the allowance to reset, and I
+             will resume from here." }
+~/Akron Bot/create-a-file-named-creditmode-txt-in-th-3/creditmode.txt
+  → CREDITMODE-OK
+```
+
+So on a spent allowance the turn still: degrades to the text protocol, **writes
+the file**, shows the real reason in prose, and closes cleanly.
+
+### 30.3 Regression
+
+`node test/credit-degrade.test.js` → **4 / 4** (classifier; tools→402 degrade;
+fenced `Write` lands a file after the degrade; both shapes 402 → prose stop with
+no thrown error, no `error` event, no raw "token limit" wording, closes < 10 s).
+Full suite `failing=0`; `scripts/parity-audit.js` → `DEFS: 141`,
+`subsystems incomplete: 0`.

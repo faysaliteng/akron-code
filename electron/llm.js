@@ -407,6 +407,20 @@ function isContextOverflow(e) {
   return /context[_ -]?length|maximum context|context window(?: is| size)?|prompt is too long|too many tokens|input is too long|input token count|token count exceeds|exceeds? (?:the )?(?:model'?s? )?(?:maximum|context|limit)|reduce the length|too long for (?:this )?model|request (?:is )?too large|larger than (?:the )?(?:model|context)/i.test(msg);
 }
 
+// True when the account cannot pay for *this request shape*. Distinct from a
+// rate limit (retry later) and from a context overflow (shrink the prompt): for
+// subscription agent providers the tool-enabled route is billed against a
+// different allowance than plain chat, so a Grok account can answer a chat turn
+// while its Build/agent allowance is spent. Classified so the loop can degrade
+// to the text tool protocol instead of dying mid-task.
+function isCreditExhausted(e) {
+  if (e && Number(e.status) === 402) return true;
+  const msg = String((e && e.message) || e || '');
+  if (!msg) return false;
+  if (/\b402\b/.test(msg)) return true;
+  return /out of credit|insufficient[_ ]?(?:quota|credit|balance|funds)|credit balance|exceeded your current quota|usage balance exhausted|allowance is \d+% used|payment required|billing (?:issue|problem|required)/i.test(msg);
+}
+
 // True when an error is TRANSIENT — rate limit / quota / gateway blip / dropped
 // socket — so the run should back off and retry (and possibly fail over) instead
 // of dying with a red banner mid-task.
@@ -473,6 +487,12 @@ function humanizeLLMError(e) {
   // vendor's envelope (Grok 402 → allowance %, reset date, prepaid balance).
   const hint = String((e && (e.hint || e.creditHint)) || '').trim();
   if (hint) body = hint;
+  // The hint is our own prose and may already lead with the friendly phrase
+  // ("This account is out of credit for that provider — …"), which the earlier
+  // dedupe could not see. Strip it again so the banner never repeats itself.
+  if (friendly && body.toLowerCase().startsWith(friendly.toLowerCase())) {
+    body = body.slice(friendly.length).replace(/^\s*[—–-]+\s*/, '');
+  }
   if (body.length > 200) body = body.slice(0, 197).trimEnd() + '…';
   const head = friendly || (status ? `The provider returned HTTP ${status}` : raw.split('\n')[0].slice(0, 120));
   // Only append the scrubbed detail when it is prose, not boilerplate. Gateway
@@ -531,6 +551,18 @@ async function chatWithFailover(opts) {
         // five times only stalls for ~37 s and then blames the provider. Hand it
         // back to the agent loop, which compacts or chunks the input.
         if (isContextOverflow(e)) throw e;
+        // Out of credit is per account, not per minute: no amount of waiting
+        // fixes it. Try the next account if there is one, otherwise hand it back
+        // so the agent loop can degrade to the text tool protocol.
+        if (isCreditExhausted(e)) {
+          if (n > 1 && a < n - 1) {
+            const next = (i + 1) % n;
+            opts.setIndex(next);
+            emit({ type: 'orchestrator', from: p.model || p.baseURL, to: list[next].model || list[next].baseURL, reason: humanizeLLMError(e).slice(0, 200) });
+            continue;
+          }
+          throw e;
+        }
         if (isRateLimitError(e)) {
           lastErr = e;
           rateLimited = true;
@@ -1508,8 +1540,18 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     try {
       message = await chatRound(toolMode);
     } catch (e) {
-      if (toolMode && !isContextOverflow(e) && /tool|function|400|422|unknown/i.test(String(e.message)) && !/max_tokens|max_completion_tokens/i.test(String(e.message))) {
-        // provider doesn't support tools — fall back to plain chat + text protocol
+      // Two different reasons to stop using native tool calls, both recoverable:
+      //   • the endpoint rejects the tools schema (capability mismatch), and
+      //   • the account cannot pay for the tool-enabled request shape. For
+      //     subscription agent providers the agent route is metered separately
+      //     from plain chat, so a Grok account whose Build allowance is spent
+      //     answers a chat turn and 402s the moment tools are attached.
+      // Either way, fall back to plain chat + the fenced text tool protocol so
+      // the model can still edit files, and tell the user why in prose.
+      const toolRejected = /tool|function|400|422|unknown/i.test(String(e.message))
+        && !/max_tokens|max_completion_tokens/i.test(String(e.message));
+      if (toolMode && !isContextOverflow(e) && (isCreditExhausted(e) || toolRejected)) {
+        const credit = isCreditExhausted(e);
         toolMode = false;
         if (!textToolMode) {
           textToolMode = true;
@@ -1518,7 +1560,33 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           messages = sanitizeHistory(messages, { supportsTools: false, maxChars: historyBudget });
           if (messages[0] && messages[0].role === 'system') messages[0].content += '\n\n' + TEXT_TOOL_PROTOCOL;
         }
-        message = await chatRound(false);
+        if (credit) {
+          emit({
+            type: 'notice',
+            text: `${humanizeLLMError(e)} — native tools are unavailable on this allowance, so I am continuing the task in text mode (files still get written). Nothing was lost.`,
+          });
+        }
+        try {
+          message = await chatRound(false);
+        } catch (e2) {
+          if (!isCreditExhausted(e2) || (opts.signal && opts.signal.aborted)) throw e2;
+          // The allowance is spent for plain chat too. Throwing here put a red
+          // error banner *underneath* the notice, which said the same thing
+          // twice and looked like a crash. End the turn in prose instead: the
+          // user gets one clear reason and one clear next step.
+          const reason = humanizeLLMError(e2);
+          const prose = reason.replace(/[\s.]+$/, '');
+          emit({
+            type: 'notice',
+            text: `${prose}. Plain chat is unavailable as well, so I stopped this turn — switch to another account or provider, or wait for the allowance to reset, and I will resume from here.`,
+          });
+          messages.push({
+            role: 'assistant',
+            content: `I could not run this turn. ${prose}. Nothing was changed on disk beyond what is shown above, and the conversation is intact — switch account or provider and send the same request again.`,
+          });
+          emit({ type: 'done', messages, usage: { ...usageTotals } });
+          return messages;
+        }
       } else {
         throw e;
       }
@@ -1995,4 +2063,4 @@ async function chatOnce({ provider, messages, maxTokens, signal, tools }) {
   return { content: String(content || ''), usage: (msg && msg.usage) || null, model: p.model };
 }
 
-module.exports = { runAgent, normalizeProvider, chatOnce, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, chunkText, humanizeLLMError, isRateLimitError, isContextOverflow };
+module.exports = { runAgent, normalizeProvider, chatOnce, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, chunkText, humanizeLLMError, isRateLimitError, isContextOverflow, isCreditExhausted };
