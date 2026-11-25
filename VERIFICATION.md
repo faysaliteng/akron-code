@@ -946,3 +946,22 @@ the volume when quarantine is cleared.
 | `build/probe-picker.cjs 9444` | **14 checks passed** (claude 15 models with ≥1 `1M` + ≥1 `200K`, antigravity 38 window-labelled, cache positive-only) |
 | `probe-rt-ui.cjs 9444` | **11/11** — 3 rows `installed`, `2.1.332 · latest`, `0.172.0 · latest`, `1.0.92 · latest` |
 | `runtimesUpdate()` from the packaged app | `results: []` — all three current, nothing to update |
+
+### Sign-in configs validated against the live vendors
+
+`build/probe-authurls.cjs` builds each provider's authorize URL exactly as the app
+does (throwaway PKCE challenge + state — no secret, no account touched) and asks
+the vendor. **15/15 PASS**:
+
+| Provider | Evidence |
+|---|---|
+| Claude | `GET claude.ai/oauth/authorize` **200**, no `invalid_client` / `redirect_uri_mismatch` |
+| ChatGPT | `GET auth.openai.com/oauth/authorize` **302 → `https://auth.openai.com/log-in`** — the Codex client id `app_EMoamEEZ73f0CkXaXp7hrann` and `http://localhost:1455/auth/callback` are registered; scope set `openid profile email offline_access api.connectors.read api.connectors.invoke`; `codex_cli_simplified_flow` + `id_token_add_organizations`; loopback listener binds `:1455`; no unregistered param (`access_type`, `prompt`, `include_granted_scopes` never leak in) |
+| Antigravity | `GET accounts.google.com/o/oauth2/v2/auth` **302** — Google accepts the personal client id and the loopback redirect (`access_type=offline`, `prompt=consent`, S256) |
+| Grok | `auth.x.ai/oauth2/authorize` **403** to any Node request, with **and** without query params (`server: cloudflare`) — a bot gate on the client, not on our config. Validated against `/.well-known/openid-configuration` instead: same authorize/token/userinfo endpoints, `response_types_supported: ["code"]`, `code_challenge_methods_supported: ["S256"]`, `token_endpoint_auth_methods_supported` includes `none` (public client), and every requested scope is advertised (`grok-cli:access`, `api:access`, `offline_access`, …) |
+
+This closes the ChatGPT "config matches the Codex contract but was never
+live-verified" gap at the *config* level. A completed ChatGPT turn still needs a
+real account (none on this machine: `~/.codex/auth.json` absent, `accounts: []`),
+and Grok's browser round-trip needs a real tab, which `auth.x.ai` refuses to
+serve to a non-browser.

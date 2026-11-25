@@ -1399,12 +1399,27 @@ transports, a bought subscription was unusable in the app.
 | Live Grok path (CDP) | the Grok group renders **both** `Sign in` and the paste-key input; a bogus key → `Grok rejected that key — Incorrect API key provided…` and **0** accounts stored, `rawHasMarkup: false`; a bogus bearer at `cli-chat-proxy.grok.com/v1` → 401 |
 | Gates | parity-audit EXIT 0; tool definitions unchanged at **141** |
 
-**Honesty:** only **Claude** is verified end-to-end here. Codex / Gemini / Grok
-are implemented from their published wire formats and unit-tested; the UI marks
-them `unverified` instead of claiming otherwise. Grok's browser sign-in has not
-completed a real round-trip on this machine — `auth.x.ai/oauth2/authorize`
-answers Cloudflare 403 to a Node `fetch` and needs a live tab and a real account;
-what *is* live-proven for Grok is the paste-key route and the proxy's 401.
+**Honesty:** only **Claude** and **Antigravity** are verified end-to-end with a
+live inference turn on this machine. Codex / Gemini / Grok are implemented from
+their published wire formats and unit-tested; the UI marks them `unverified`
+instead of claiming otherwise.
+
+What is proven for the rest is *config*, not a completed sign-in
+(`build/probe-authurls.cjs`, 15/15, no secrets — a throwaway PKCE challenge and
+state on each URL):
+
+| Provider | Proof |
+|---|---|
+| Claude | `GET claude.ai/oauth/authorize` **200**, no `invalid_client` / `redirect_uri_mismatch` |
+| ChatGPT | `GET auth.openai.com/oauth/authorize` **302 → `/log-in`** — the Codex client id `app_EMoamEEZ73f0CkXaXp7hrann` and `http://localhost:1455/auth/callback` are both registered; scopes, `codex_cli_simplified_flow` and `id_token_add_organizations` present; loopback listener binds `:1455` |
+| Antigravity | `GET accounts.google.com/o/oauth2/v2/auth` **302** — Google accepts the personal client id and the loopback redirect; `access_type=offline` + `prompt=consent` + S256 |
+| Grok | endpoint answers Cloudflare **403** to any Node request (with *and* without query params) — a client-fingerprint gate, not config; `/.well-known/openid-configuration` confirms `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `response_types: ["code"]`, `code_challenge_methods: ["S256"]`, `token_endpoint_auth_methods: ["client_secret_basic","client_secret_post","none"]` (public client, no secret) and every requested scope (`grok-cli:access`, `api:access`, `offline_access`, …) |
+
+Still **not** proven: a completed ChatGPT sign-in (no ChatGPT credential on this
+machine — `~/.codex/auth.json` absent, `accounts: []`), and Grok's browser
+round-trip, which needs a real tab and a real account; `auth.x.ai` refuses
+non-browser clients, so it cannot be driven from a probe. What *is* live-proven
+for Grok is the paste-key route and the proxy's 401.
 The Claude Code *refresh* token on this machine is dead — the current access
 token works and auto-refreshes from our own stored copy, but a `claude /login`
 is still needed once that copy expires without a usable refresh token.
