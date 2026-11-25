@@ -1,0 +1,17 @@
+body { margin: 0; font-family: var(--font-sans); background: var(--surface); color: var(--ink); }
+.sz-row { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: flex-start; padding: var(--space-4); }
+.sz-btn { font: inherit; font-size: 16px; min-height: var(--control); min-width: var(--target-min); padding: 0 var(--space-4); border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--surface-raised); color: var(--ink); cursor: pointer; }
+.sz-btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.sz-btn:focus-visible, .sz-input:focus-visible { outline: 2px solid transparent; outline-offset: 2px; box-shadow: var(--focus-ring, 0 0 0 3px currentColor); }
+.sz-chip { display: inline-flex; align-items: center; gap: var(--space-1); font-size: 13px; font-weight: 600; line-height: 20px; min-height: var(--target-min); padding: 0 var(--space-2); border-radius: var(--radius-full); border: 1px solid var(--border); background: var(--surface-raised); color: var(--ink); }
+.sz-chip svg, .sz-error svg { width: 16px; height: 16px; flex: none; }
+.sz-chip-success { background: var(--success); border-color: var(--success-ink); color: var(--on-success); }
+.sz-chip-warning { background: var(--warning); border-color: var(--warning-ink); color: var(--on-warning); }
+.sz-chip-danger { background: var(--danger); border-color: var(--danger-ink); color: var(--on-danger); }
+.sz-chip-info { background: var(--info); border-color: var(--info-ink); color: var(--on-info); }
+.sz-field { display: grid; gap: var(--space-1); font-size: 16px; min-width: 16em; }
+.sz-label { font-weight: 600; }
+.sz-input { font: inherit; min-height: var(--control); padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--ink); }
+.sz-field-error .sz-input { border: 2px solid var(--danger-ink); }
+.sz-hint { color: var(--ink-muted); font-size: 13px; line-height: 18px; }
+.sz-error { display: flex; gap: var(--space-1); align-items: center; color: var(--danger-ink); font-size: 13px; line-height: 18px; font-weight: 600; }

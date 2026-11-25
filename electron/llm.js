@@ -1,0 +1,1064 @@
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const { toolDefinitions, runTool } = require('./tools');
+
+// Registry of live sub-agents (for TaskStop / ListAgents).
+const subagentControllers = new Map(); // name -> AbortController
+
+// Names of tools handled locally (built-in + virtual MCP namespaces). Anything
+// else that starts with mcp__ is an external MCP server tool.
+const localToolNames = new Set(toolDefinitions.map((t) => t.name));
+
+const SYSTEM_PROMPT = `You are Helio Bot, an agentic desktop coding assistant running on the user's Mac (a local alternative to the Claude desktop app). You work inside the user's project folder and you actually create, edit, and run code. You do not just describe code — you build it.
+
+## Working style
+- Be concise. Do the work with tools; narrate only the key steps.
+- For anything multi-step, call TodoWrite first, then execute the steps one by one.
+- Never claim something is done until a tool result proves it. Verify with ls / Read / running the build.
+- Keep working until the task is genuinely complete. Do not stop after a plan, and do not stop after one partial edit.
+- If the user asks for something a tool can do, CALL THE TOOL. Never invent tool output.
+
+## Writing files — CRITICAL
+- Create or fully replace a file with the Write tool: {"path": "relative/path.ext", "content": "<COMPLETE file contents>"}
+  - One Write per file, containing the COMPLETE final contents. No fragments, no placeholders like "// rest of code", no "..." elisions.
+  - Relative paths resolve inside <project_workspace>.
+- Change an existing file with Edit: {"path": "...", "old_string": "...", "new_string": "..."}
+  - Read the file first, then copy old_string EXACTLY (including indentation) from the Read output.
+  - Use MultiEdit when you need several changes to the same file in one step.
+- NEVER create or modify files with shell heredocs (cat > f <<'EOF'), echo, tee, printf, or sed -i. Those corrupt code and are why builds fail. Shell is for RUNNING programs, installing dependencies, and git — Write/Edit is for content.
+- If Write or Edit returns an error, read the error, fix the arguments (usually a wrong path or an old_string that does not match), and retry. Never fall back to bash file-writing hacks.
+
+## Building something the user can SEE (websites, apps, UIs, diagrams)
+- When asked for a website / page / app / dashboard / component / SVG / diagram / chart, produce BOTH a real file and a live preview:
+  1. TodoWrite the plan.
+  2. Write the file(s) into the project folder.
+  3. Call Artifact {name, language, content} with the main UI file so it renders live with Code / Preview tabs.
+  4. Verify (run or preview it, read errors) and fix.
+  5. Finish by listing the file paths you created.
+- html, svg, mermaid and react/JSX render live. Keep them self-contained — inline CSS/JS, no build step — unless the user explicitly asks for a framework project (Vite/Next/etc.).
+- For data charts (bar/line/pie/scatter/area) use mcp__visualize__visualize instead of hand-writing SVG.
+
+## Verifying your work
+- After writing code, actually run it: e.g. \`node file.js\`, \`python3 file.py\`, \`npm run build\`, \`npx serve .\`.
+- Read the errors, fix the files, run again. Iterate until it works — do not report success on untested code.
+
+## When to stop
+- Verification is not the task. When the thing you built is confirmed working once, stop checking and report.
+- Never repeat a tool call whose arguments you already sent and whose result you already read. If a check passed, it passed.
+- If a tool fails twice, change approach or tell the user — do not loop on the same call.
+- Finish by writing a short summary: what you built, the file paths, how to run it, and anything unfinished. Then stop calling tools.
+
+## Other capabilities
+- Browser tools (browser_open / browser_navigate / browser_snapshot / browser_click / browser_type / browser_screenshot / browser_tabs) for web tasks the user can watch.
+- web_search / web_fetch for facts you are unsure about.
+- Shell, Read, Glob, Grep, memory and todo tools as needed.
+
+You are a coding agent first. Files, not chat, are the deliverable.`;
+
+// Prompt appended when a provider cannot do native function calling. Every model
+// (including plain-text / free endpoints) still gets full tool + browser control
+// through this fenced-block protocol, parsed by parseTextToolCalls().
+const TEXT_TOOL_PROTOCOL = `TOOL PROTOCOL (this endpoint has no native function calling):
+to use a tool, emit one or more fenced blocks exactly like:
+
+\`\`\`tool
+{"name": "<tool_name>", "arguments": {<json arguments>}}
+\`\`\`
+
+Rules:
+- One JSON object per block; valid JSON only; no comments inside the block.
+- You may emit several blocks in one reply; they run in order.
+- The system answers each call with a "TOOL RESULT <id>" message. Use those results, never invent them.
+- When you are done, reply normally without a tool block.
+- To drive the built-in browser use browser_open / browser_navigate / browser_snapshot / browser_click / browser_type / browser_screenshot / browser_tabs exactly like any other tool.`;
+
+// Extract tool calls from an assistant text reply (fenced ```tool blocks or
+// <tool_use> tags). Returns the same shape as native tool_calls.
+function parseTextToolCalls(text) {
+  if (!text || typeof text !== 'string') return [];
+  const out = [];
+  let seq = 0;
+  const push = (raw) => {
+    let o;
+    try { o = JSON.parse(raw); } catch { return; }
+    if (!o || typeof o !== 'object') return;
+    const name = o.name || o.tool || (o.function && o.function.name);
+    if (!name || typeof name !== 'string') return;
+    let args = o.arguments != null ? o.arguments
+      : o.input != null ? o.input
+      : o.parameters != null ? o.parameters
+      : o.function && o.function.arguments != null ? o.function.arguments
+      : {};
+    if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
+    if (!args || typeof args !== 'object') args = {};
+    seq++;
+    out.push({ id: 'txt_' + seq + '_' + Math.random().toString(36).slice(2, 7), type: 'function', function: { name, arguments: JSON.stringify(args) } });
+  };
+  const fence = /```[ \t]*(?:tool|tool_use|json)?[ \t]*\r?\n([\s\S]*?)```/g;
+  let m;
+  while ((m = fence.exec(text))) {
+    const body = m[1].trim();
+    if (/"(?:name|tool)"\s*:/.test(body)) push(body);
+  }
+  const tag = /<tool_use>([\s\S]*?)<\/tool_use>/g;
+  while ((m = tag.exec(text))) push(m[1].trim());
+  return out;
+}
+
+// Normalize provider config with sensible defaults.
+function normalizeProvider(p) {
+  p = p || {};
+  let baseURL = (p.baseURL || '').trim();
+  if (!baseURL) baseURL = 'http://localhost:11434/v1';
+  if (!baseURL.endsWith('/')) baseURL += '/';
+  const model = (p.model || '').trim() || 'llama3.1';
+  return {
+    baseURL,
+    apiKey: p.apiKey || '',
+    model,
+    temperature: p.temperature != null ? Number(p.temperature) : 0.7,
+    // Reasoning models (Kimi K3.1, DeepSeek V4.1, etc.) spend token budget on
+    // chain-of-thought BEFORE emitting code/tool calls. 4096 truncates them
+    // mid-thinking (finish_reason "length"), so the website/code never appears.
+    // Default higher; runAgent also retries with a bigger budget on truncation.
+    maxTokens: p.maxTokens != null ? Number(p.maxTokens) : 32000,
+    // Reasoning / thinking level: 'auto' (provider default) | 'low' | 'medium'
+    // | 'high'. Only mapped to the OpenAI-style `reasoning_effort` request param
+    // when NOT 'auto', so providers that reject it are never sent an unknown field.
+    reasoningLevel: ['low', 'medium', 'high'].includes(p.reasoningLevel) ? p.reasoningLevel : 'auto',
+    supportsTools: p.supportsTools !== false,
+  };
+}
+
+async function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride) {
+  const url = provider.baseURL + 'chat/completions';
+  const body = {
+    model: provider.model,
+    messages,
+    temperature: provider.temperature,
+    max_tokens: maxTokensOverride != null ? maxTokensOverride : provider.maxTokens,
+    stream: true,
+  };
+  if (tools && tools.length) body.tools = tools;
+  // Reasoning effort — OpenAI-style. Only send when the user picked a level; keep
+  // 'auto' out of the payload so every provider behaves as before by default.
+  if (provider.reasoningLevel && provider.reasoningLevel !== 'auto') {
+    body.reasoning_effort = provider.reasoningLevel;
+  }
+  const headers = { 'content-type': 'application/json' };
+  if (provider.apiKey) headers['authorization'] = 'Bearer ' + provider.apiKey;
+
+  const doFetch = (payload) => fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal });
+  const req = { ...body };
+  let res = await doFetch(req);
+  // Negotiate the request shape instead of failing outright. Some providers
+  // reject `reasoning_effort` (unknown field); some cap `max_tokens` below the
+  // budget we asked for. Claude Code always sends a large output budget, so when
+  // a provider says "too large" we step down rather than killing the run — a
+  // hard failure here looked to the user like the agent simply stopped.
+  for (let attempt = 0; attempt < 4 && !res.ok && (res.status === 400 || res.status === 422); attempt++) {
+    const rejected = await res.text().catch(() => '');
+    let changed = false;
+    if (req.reasoning_effort) {
+      delete req.reasoning_effort;
+      changed = true;
+    } else if (req.max_tokens && /max_tokens|max_completion_tokens|maximum|too large|exceed/i.test(rejected)) {
+      const next = Math.floor(Number(req.max_tokens) / 2);
+      if (next >= 1024) { req.max_tokens = next; changed = true; }
+    }
+    if (!changed) break;
+    res = await doFetch(req);
+  }
+  // Remember what this provider accepted, so we don't pay the failed-request
+  // round trip on every single turn of the run.
+  if (res.ok) {
+    if (!req.reasoning_effort && provider.reasoningLevel && provider.reasoningLevel !== 'auto') provider.reasoningLevel = 'auto';
+    if (req.max_tokens && req.max_tokens !== provider.maxTokens) provider.maxTokens = Number(req.max_tokens);
+  }
+  // Keep the caller's object in sync when we silently dropped a field.
+  if (!req.reasoning_effort) delete body.reasoning_effort;
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const err = new Error(`LLM ${res.status}: ${text.slice(0, 400)}`);
+    err.status = res.status;
+    // Respect Retry-After when the provider tells us how long to wait.
+    const ra = res.headers.get('retry-after');
+    if (ra) {
+      const secs = Number(ra);
+      if (Number.isFinite(secs) && secs > 0) err.retryAfterMs = Math.min(secs * 1000, 60000);
+    }
+    throw err;
+  }
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('text/event-stream')) {
+    // Non-streaming JSON response (some gateways/proxies ignore `stream:true`).
+    // Replay the text as one delta so the UI still shows the reply instead of
+    // committing an empty message at the end of the run.
+    const data = await res.json();
+    const msg = data.choices && data.choices[0] && data.choices[0].message;
+    if (msg && typeof msg.reasoning_content === 'string' && msg.reasoning_content) onDelta(msg.reasoning_content, true);
+    if (msg && typeof msg.content === 'string' && msg.content) onDelta(msg.content);
+    return Object.assign({ content: '', tool_calls: [] }, msg, {
+      finish_reason: data.choices && data.choices[0] && data.choices[0].finish_reason,
+    });
+  }
+
+  // SSE streaming
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  const message = { role: 'assistant', content: '', tool_calls: [] };
+  const toolAcc = new Map();
+
+  // A provider that opens the stream and then goes silent used to leave the run
+  // spinning forever (no error, no progress, composer locked). Watch for dead
+  // air and treat it like the transient network fault it is.
+  const STALL_MS = Number(process.env.HELIO_STREAM_STALL_MS) || 90000;
+  let stallTimer = null;
+  const readWithStallGuard = () => Promise.race([
+    reader.read(),
+    new Promise((_, reject) => {
+      stallTimer = setTimeout(() => reject(Object.assign(new Error(`LLM stream stalled: no data for ${STALL_MS / 1000}s`), { transient: true })), STALL_MS);
+    }),
+  ]).finally(() => clearTimeout(stallTimer));
+
+  while (true) {
+    const { done, value } = await readWithStallGuard()
+      .catch((e) => {
+        // Keep whatever the model already emitted; only a totally silent stall
+        // is worth retrying from scratch.
+        if (message.content || message.tool_calls.length) {
+          message.stalled = true;
+          return { done: true, value: undefined };
+        }
+        try { reader.cancel(); } catch (_) {}
+        throw e;
+      });
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') continue;
+      let json;
+      try { json = JSON.parse(payload); } catch { continue; }
+      const choice = json.choices && json.choices[0];
+      if (!choice) continue;
+      if (choice.finish_reason) message.finish_reason = choice.finish_reason;
+      const delta = choice.delta || {};
+      if (delta.content) {
+        message.content += delta.content;
+        onDelta(delta.content);
+      }
+      if (delta.reasoning_content) onDelta(delta.reasoning_content, true); // e.g. DeepSeek-style
+      if (delta.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index != null ? tc.index : toolAcc.size;
+          let acc = toolAcc.get(idx);
+          if (!acc) {
+            acc = { id: tc.id || '', type: 'function', function: { name: '', arguments: '' } };
+            toolAcc.set(idx, acc);
+            message.tool_calls.push(acc);
+          }
+          if (tc.id) acc.id = tc.id;
+          if (tc.function) {
+            if (tc.function.name) acc.function.name += tc.function.name;
+            const a = tc.function.arguments;
+            if (a != null) {
+              // Standard OpenAI streaming sends `arguments` as a JSON *string*
+              // fragment that must be concatenated. Some providers (and some
+              // gateways like TokenRouter) instead send a whole object or array.
+              // Naively doing `+=` on that yields "[object Object]" and every
+              // Write/Edit call then fails — so serialize objects properly.
+              if (typeof a === 'string') {
+                acc.function.arguments += a;
+              } else if (typeof a === 'object') {
+                acc.function.arguments = JSON.stringify(a);
+              } else {
+                acc.function.arguments += String(a);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return message;
+}
+
+// True when an error indicates a provider rate-limit / quota / limit-reached
+// condition that should trigger orchestrator failover.
+function isRateLimitError(e) {
+  if (e && e.transient) return true; // stalled streams, connection resets
+  const msg = String((e && e.message) || e || '');
+  return /429|rate.?limit|too many requests|quota|insufficient|exceeded|limit reached|billing|capacity|overloaded|throttl|ECONNRESET|ETIMEDOUT|socket hang up|fetch failed|network|stalled/i.test(msg);
+}
+
+// Abortable sleep used for rate-limit backoff.
+function sleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal && signal.aborted) return resolve();
+    const t = setTimeout(resolve, ms);
+    if (signal) signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+  });
+}
+
+// Try each provider in `list` (starting at index), advancing on rate-limit
+// errors. Emits an `orchestrator` event on each switch. Returns the first
+// successful message; throws if all providers fail.
+async function chatWithFailover(opts) {
+  const list = opts.list;
+  const onDelta = opts.onDelta || (() => {});
+  const emit = opts.emit || (() => {});
+  const tools = opts.tools;
+  const messages = opts.messages;
+  const signal = opts.signal;
+  const maxTokens = opts.maxTokens;
+  const n = list.length;
+  // Rate limits (HTTP 429 / "too many requests") are TRANSIENT. Previously a
+  // single-provider setup threw immediately and the whole run died with a red
+  // banner mid-task. Now: try every provider once per round, then back off and
+  // retry the whole set — so a burst of tool-call round-trips survives 429s.
+  const MAX_ROUNDS = 5;
+  const BACKOFF = [2000, 5000, 10000, 20000]; // wait before round 2..5
+  let lastErr = null;
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    if (signal && signal.aborted) throw new Error('aborted');
+    const start = opts.getIndex();
+    let rateLimited = false;
+    for (let a = 0; a < n; a++) {
+      const i = (start + a) % n;
+      const p = list[i];
+      try {
+        return await chatCompletion(p, messages, tools, onDelta, signal, maxTokens);
+      } catch (e) {
+        if (signal && signal.aborted) throw e;
+        if (isRateLimitError(e)) {
+          lastErr = e;
+          rateLimited = true;
+          if (n > 1 && a < n - 1) {
+            const next = (i + 1) % n;
+            opts.setIndex(next);
+            emit({ type: 'orchestrator', from: p.model || p.baseURL, to: list[next].model || list[next].baseURL, reason: String(e.message || e).slice(0, 200) });
+            continue;
+          }
+          break; // last provider this round — fall through to backoff
+        }
+        throw e;
+      }
+    }
+    if (!rateLimited) throw (lastErr || new Error('All providers failed.'));
+    if (round < MAX_ROUNDS - 1) {
+      const base = BACKOFF[round] != null ? BACKOFF[round] : 20000;
+      const wait = Math.min(Math.max(base, (lastErr && lastErr.retryAfterMs) || 0), 45000);
+      emit({ type: 'thinking', text: ` (rate limited — waiting ${Math.round(wait / 1000)}s before retrying)` });
+      await sleep(wait, signal);
+    }
+  }
+  throw lastErr || new Error('All providers failed (rate limited).');
+}
+
+// Parse tool_calls arguments (JSON string) safely. Providers differ: some
+// double-encode the arguments (a JSON string literal containing JSON), some
+// send an object, some send a whole object under a wrapper key, and some emit
+// "[object Object]" after a bad string concat. Every one of those used to
+// surface as `{ _raw: ... }`, which made Write/Edit fail and sent the model
+// thrashing into bash heredocs. Recover what we can here.
+function parseArgs(raw) {
+  if (raw == null || raw === '') return {};
+  if (typeof raw === 'object') return raw;
+  const s = String(raw).trim();
+  if (!s) return {};
+  const tryParse = (x) => { try { return JSON.parse(x); } catch { return undefined; } };
+  const normalize = (v) => {
+    // Unwrap common one-key envelopes: {"arguments": {...}} / {"input": {...}}.
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const keys = Object.keys(v);
+      if (keys.length === 1 && /^(arguments|input|parameters|args|function)$/i.test(keys[0])) {
+        const inner = v[keys[0]];
+        if (inner && typeof inner === 'object') return inner;
+        if (typeof inner === 'string') return tryParse(inner) || v;
+      }
+      if (keys.length === 1 && /^function$/i.test(keys[0]) && v.function && typeof v.function.arguments === 'string') {
+        return tryParse(v.function.arguments) || v;
+      }
+    }
+    return v;
+  };
+  let v = tryParse(s);
+  // Double-encoded: a JSON string whose decoded value is more JSON.
+  if (typeof v === 'string') {
+    const inner = tryParse(v);
+    if (inner !== undefined) v = inner;
+  }
+  // Trailing prose after the object: grab the outermost {...} and retry.
+  if (v === undefined && s.startsWith('{')) {
+    const end = s.lastIndexOf('}');
+    if (end > 0) v = tryParse(s.slice(0, end + 1));
+  }
+  // A bare "[object Object]" is unrecoverable — say so clearly.
+  if (/^\[object \w+\]$/.test(s) || (typeof v === 'string' && /^\[object \w+\]$/.test(v))) {
+    return { _raw: raw, _parse_error: 'arguments arrived as "[object Object]" (provider serialized them as an object instead of JSON text)' };
+  }
+  if (v !== undefined && v !== null && typeof v === 'object') {
+    const n = normalize(v);
+    if (n !== v) return n;
+    if (Array.isArray(n)) return { _raw: raw, _parse_error: 'arguments were a JSON array, not an object' };
+    return n;
+  }
+  // Last resort: strip one stray outer quote layer, then parse.
+  if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) {
+    const v3 = tryParse(s.replace(/^"(.*)"$/s, '$1'));
+    if (v3 !== undefined) return v3;
+  }
+  return { _raw: raw, _parse_error: 'arguments were not valid JSON' };
+}
+
+// If a coding turn ends with the code only pasted in chat (no Write/Edit and no
+// Artifact call), the user sees text and no website — the exact "it doesn't
+// build anything" complaint. Capture the largest runnable fenced block, write
+// it into the project, and emit a live-preview Artifact so the deliverable
+// always exists on disk.
+function autoCaptureArtifacts(content, cwd, emit) {
+  if (!content || typeof content !== 'string') return [];
+  const fence = /```([a-zA-Z0-9+#.-]*)[ \t]*\r?\n([\s\S]*?)```/g;
+  const blocks = [];
+  let m;
+  while ((m = fence.exec(content))) {
+    const lang = (m[1] || '').toLowerCase();
+    const body = m[2] || '';
+    const isHtml = lang === 'html' || lang === 'htm' || /<!doctype html|<html[\s>]/i.test(body);
+    const isSvg = lang === 'svg' || /^<svg[\s>]/i.test(body.trim());
+    const isJsx = /^(jsx|tsx|react)$/.test(lang);
+    const isCss = lang === 'css';
+    if ((isHtml || isSvg || isJsx || isCss) && body.trim().length > 400) {
+      blocks.push({ lang: isHtml ? 'html' : isSvg ? 'svg' : isJsx ? 'jsx' : 'css', body });
+    }
+  }
+  if (!blocks.length) return [];
+  blocks.sort((a, b) => b.body.length - a.body.length);
+  const created = [];
+  const dir = cwd || process.cwd();
+  for (const b of blocks.slice(0, 4)) {
+    const base = b.lang === 'html' ? 'index.html' : b.lang === 'svg' ? 'artifact.svg' : b.lang === 'css' ? 'styles.css' : 'App.jsx';
+    let name = base;
+    let n = 2;
+    while (fs.existsSync(path.join(dir, name))) { name = base.replace(/(\.[^.]+)$/, `-${n}$1`); n++; }
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, name), b.body, 'utf8');
+    } catch { continue; }
+    const written = path.join(dir, name);
+    emit({ type: 'artifact', name, language: b.lang, content: b.body, path: written });
+    emit({ type: 'toolResult', id: 'auto_' + name, name: 'Write', result: `Auto-saved ${name} (${b.body.length} chars) from your reply so it renders live.` });
+    created.push(name);
+  }
+  return created;
+}
+
+/**
+ * Make a conversation history portable across models.
+ *
+ * History is stored in whatever shape the *previous* model produced. When the
+ * user switches model mid-conversation (gemma4 → Kimi → DeepSeek → Nemotron →
+ * TokenRouter), the new endpoint can reject what the old one emitted:
+ *   - `role:"tool"` messages are only legal right after an assistant message that
+ *     carries a matching `tool_calls` entry (and a `tool_call_id`); text-only
+ *     endpoints reject the role outright.
+ *   - `content: null` breaks several gateways.
+ *   - providers that streamed arguments as an object left non-JSON strings behind.
+ *   - a long conversation can exceed a smaller model's context window.
+ * This normalizes all of that so any model can continue the same conversation.
+ */
+function sanitizeHistory(messages, opts = {}) {
+  const supportsTools = opts.supportsTools !== false;
+  const maxChars = opts.maxChars || 220000; // ≈ 55k tokens of history
+  const str = (c) => {
+    if (c == null) return '';
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) {
+      return c.map((p) => (p && typeof p === 'object' ? (p.text || (p.type === 'image_url' ? '[image]' : '')) : String(p))).join('\n');
+    }
+    try { return JSON.stringify(c); } catch { return String(c); }
+  };
+  const loose = (a) => {
+    if (a == null || a === '') return {};
+    if (typeof a === 'object') return a;
+    if (typeof a === 'string') { try { return JSON.parse(a); } catch { return {}; } }
+    return {};
+  };
+  const truncate = (s, n) => (s.length > n ? s.slice(0, n) + ' …[truncated]' : s);
+
+  const out = [];
+  let lastAssistantCalls = null; // ids the next tool messages must answer
+  for (const m of messages || []) {
+    if (!m || typeof m !== 'object') continue;
+    const role = m.role;
+    if (role === 'system') {
+      if (out.length === 0) out.push({ role: 'system', content: str(m.content) });
+      else out.push({ role: 'user', content: '[Context]\n' + str(m.content) });
+      continue;
+    }
+    if (role === 'tool' || role === 'function') {
+      const content = truncate(str(m.content), 8000);
+      const name = m.name || (m.function && m.function.name) || 'tool';
+      if (supportsTools && m.tool_call_id && lastAssistantCalls && lastAssistantCalls.has(m.tool_call_id)) {
+        out.push({ role: 'tool', tool_call_id: m.tool_call_id, name, content });
+        lastAssistantCalls.delete(m.tool_call_id);
+      } else {
+        // Text-only endpoint (or orphan result) → hand it over as plain context.
+        out.push({ role: 'user', content: `TOOL RESULT${name ? ' (' + name + ')' : ''}:\n${content}` });
+      }
+      continue;
+    }
+    if (role === 'assistant') {
+      let content = str(m.content);
+      const tcs = Array.isArray(m.tool_calls)
+        ? m.tool_calls.filter((tc) => {
+          const n = tc && ((tc.function && tc.function.name) || tc.name);
+          return !!n;
+        })
+        : [];
+      if (!tcs.length) { out.push({ role: 'assistant', content }); lastAssistantCalls = null; continue; }
+      if (supportsTools) {
+        let seq = 0;
+        const norm = tcs.map((tc) => {
+          const fn = tc.function || {};
+          const name = fn.name || tc.name || 'tool';
+          const args = loose(fn.arguments != null ? fn.arguments : tc.arguments);
+          seq++;
+          return {
+            id: tc.id || `call_${Date.now().toString(36)}_${seq}`,
+            type: 'function',
+            function: { name, arguments: JSON.stringify(args || {}) },
+          };
+        });
+        out.push({ role: 'assistant', content, tool_calls: norm });
+        lastAssistantCalls = new Set(norm.map((t) => t.id));
+      } else {
+        // Flatten native tool calls into the text protocol so a non-tool model
+        // can still see what happened (and reply in the same protocol).
+        const blocks = tcs.map((tc) => {
+          const fn = tc.function || {};
+          const name = fn.name || tc.name || 'tool';
+          const args = loose(fn.arguments != null ? fn.arguments : tc.arguments);
+          return '```tool\n' + JSON.stringify({ name, arguments: args }) + '\n```';
+        }).join('\n');
+        content = content ? content + '\n\n' + blocks : blocks;
+        out.push({ role: 'assistant', content });
+        lastAssistantCalls = null;
+      }
+      continue;
+    }
+    // user (or anything unknown)
+    out.push({ role: 'user', content: str(m.content) });
+    lastAssistantCalls = null;
+  }
+
+  // Keep the system prompt + the opening user turn, drop the oldest middle
+  // messages until the history fits the budget.
+  const size = () => out.reduce((n, m) => n + str(m.content).length + 64, 0);
+  let total = size();
+  if (total > maxChars) {
+    let i = 1; // never drop the system prompt
+    // keep the first real user turn for task framing
+    while (i < out.length && out[i].role !== 'user') i++;
+    let dropFrom = i + 1;
+    const dropped = [];
+    while (total > maxChars && dropFrom < out.length - 2) {
+      dropped.push(out[dropFrom]);
+      total -= str(out[dropFrom].content).length + 64;
+      out.splice(dropFrom, 1);
+      // also remove a dangling tool result whose assistant call was dropped
+      while (out[dropFrom] && out[dropFrom].role === 'tool') {
+        dropped.push(out[dropFrom]);
+        total -= str(out[dropFrom].content).length + 64;
+        out.splice(dropFrom, 1);
+      }
+    }
+    // Claude compacts instead of just amputating: give the model a digest of
+    // what left the window so it can keep working on the same task.
+    const asks = [];
+    const notes = [];
+    const toolsSeen = new Set();
+    for (const m of dropped) {
+      const flat = str(m.content).replace(/\s+/g, ' ').trim();
+      if (m.role === 'user' && flat && !/^TOOL RESULT/i.test(flat)) asks.push(flat.slice(0, 160));
+      else if (m.role === 'assistant' && flat) notes.push(flat.slice(0, 140));
+      else if (m.role === 'tool' && m.name) toolsSeen.add(m.name);
+      if (Array.isArray(m.tool_calls)) {
+        for (const tc of m.tool_calls) {
+          const n = (tc && tc.function && tc.function.name) || (tc && tc.name);
+          if (n) toolsSeen.add(n);
+        }
+      }
+    }
+    const digest = [
+      asks.length ? 'Requests: ' + [...new Set(asks)].slice(-8).map((a) => `"${a}"`).join(' · ') : '',
+      notes.length ? 'Progress: ' + notes.slice(-6).join(' · ') : '',
+      toolsSeen.size ? 'Tools used: ' + [...toolsSeen].slice(0, 24).join(', ') : '',
+    ].filter(Boolean).join('\n');
+    const note = `[Compacted ${dropped.length} earlier turns to fit this model's context window. The full transcript stays in this chat, and the project mindmap above has the current file state.${digest ? '\n' + digest : ''}\n]`;
+    out.splice(i + 1, 0, { role: 'user', content: note });
+    if (typeof opts.onCompact === 'function') {
+      try { opts.onCompact({ dropped: dropped.length, digest }); } catch (_) {}
+    }
+  }
+  return out;
+}
+
+/**
+ * Run the agent loop.
+ * @param {object} opts { provider, messages, cwd, emit, signal, maxSteps, extraTools }
+ * messages: array of {role, content} (OpenAI format).
+ * emit(evt): send events to renderer.
+ * Returns final messages array.
+ */
+async function runAgent(opts) {
+  const emit = opts.emit || (() => {});
+  // Preserve every field (tool_calls, tool_call_id, name) — flattening to
+  // role+content silently destroyed the tool transcript of the previous model,
+  // which is exactly what a model switch needs to see.
+  let messages = (opts.messages || []).map((m) => ({ ...m }));
+  // Claude's agent loop has no step budget: it keeps calling tools until the
+  // model stops asking for them. A fixed `40` (and 10/12 for sub-agents) meant
+  // long build tasks were cut off mid-work with no explanation. Default to
+  // unbounded; HARD_STEP_CAP is only a runaway guard, and when it trips the
+  // renderer is told explicitly (`limit`) instead of the run just ending.
+  const HARD_STEP_CAP = Number(opts.hardStepCap) || 1000;
+  const maxSteps = Number(opts.maxSteps) > 0 ? Number(opts.maxSteps) : HARD_STEP_CAP;
+  let currentCwd = opts.cwd || process.cwd();
+
+  // Orchestrator: build the provider failover list. When enabled, iterate over
+  // the user-selected providers; otherwise use the single active provider.
+  const orch = opts.orchestrator || null;
+  let providerList = [normalizeProvider(opts.provider)];
+  let activeIndex = 0;
+  if (orch && orch.enabled && Array.isArray(orch.providers) && orch.providers.length) {
+    providerList = orch.providers.map((p) => normalizeProvider({ baseURL: p.baseURL, apiKey: p.apiKey, model: p.model, temperature: p.temperature, maxTokens: p.maxTokens, reasoningLevel: p.reasoningLevel }));
+    activeIndex = Math.max(0, Math.min(Number(orch.activeIndex) || 0, providerList.length - 1));
+  }
+  const getIndex = () => activeIndex % providerList.length;
+  const setIndex = (i) => { activeIndex = i % providerList.length; };
+  const provider = providerList[getIndex()];
+
+  // merge built-in tools + MCP tools (if any) + custom extraTools
+  let tools = toolDefinitions.map((t) => ({ type: 'function', function: t }));
+  const extra = opts.extraTools || [];
+  for (const t of extra) {
+    tools.push({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema || { type: 'object', properties: {} } } });
+  }
+
+  // Always ensure the core system prompt is the first message. The renderer may
+  // send its own system message (style / project / web-search directives); that
+  // stays as a second system message, but the core Helio Bot guidance (tool use,
+  // browser, artifact/visualization instructions) must be present for EVERY
+  // model — Gemini/Gemma via Ollama, Kimi, DeepSeek, Nemotron, etc.
+  const corePrompt = messages.find((m) => m.role === 'system' && m.content === SYSTEM_PROMPT);
+  if (!corePrompt) {
+    messages.unshift({ role: 'system', content: SYSTEM_PROMPT });
+  } else if (messages[0] !== corePrompt) {
+    // Move the core prompt to the front if a renderer system message precedes it.
+    const i = messages.indexOf(corePrompt);
+    messages.splice(i, 1);
+    messages.unshift(corePrompt);
+  }
+
+  // Fold the renderer's extra system messages (style / project / reasoning
+  // directives) INTO the core prompt. Some gateways reject or silently ignore a
+  // second system message, which made "be a coding agent" guidance disappear on
+  // exactly the models that needed it most.
+  for (let i = messages.length - 1; i >= 1; i--) {
+    if (messages[i].role === 'system') {
+      const extra = String(messages[i].content || '').trim();
+      if (extra) messages[0].content += '\n\n' + extra;
+      messages.splice(i, 1);
+    }
+  }
+
+  // Inject the project working directory so every model (Gemma4, Kimi, DeepSeek,
+  // Nemotron, …) writes files into the SAME conversation project folder instead
+  // of an arbitrary location — Claude Desktop per-project parity.
+  if (currentCwd) {
+    messages[0].content += `\n\n<project_workspace>\nYour project working directory is: ${currentCwd}\nCreate and edit files in this folder by default (prefer relative paths). Run shell commands in this folder unless the user specifies another location. When the user asks for code or a file, write it here.\n</project_workspace>`;
+  }
+
+  // Inject the per-project mindmap so a model switch (gemma4 → Kimi → DeepSeek →
+  // Nemotron → TokenRouter) picks up the SAME project state — goal, progress,
+  // decisions, and files — without any shared provider state. Claude Desktop
+  // continuity parity: switching models mid-conversation keeps full context.
+  try {
+    const { read: readMindmap } = require('./mindmap');
+    const mm = readMindmap(currentCwd);
+    if (mm) messages[0].content += `\n\n<project_mindmap>\n${mm}\n</project_mindmap>`;
+  } catch (_) {}
+
+  // Optionally inject memory into system prompt
+  const { memoryAsText } = require('./store');
+  if (opts.useMemory !== false) {
+    const mem = memoryAsText();
+    if (mem !== '(no saved memory)') {
+      messages[0].content += `\n\n<long_term_memory>\n${mem}\n</long_term_memory>`;
+    }
+  }
+
+  let toolMode = provider.supportsTools;
+  // Text-protocol fallback lets endpoints without function calling (many free
+  // LLMs) still call every tool, including the built-in browser.
+  let textToolMode = !provider.supportsTools;
+  // Normalize the carried-over history for THIS provider so a mid-conversation
+  // model switch never 400s on the previous model's message shapes.
+  // Claude compacts the conversation when it outgrows the model window and says
+  // so. Do the same: keep the state, tell the user once, and carry on working.
+  messages = sanitizeHistory(messages, {
+    supportsTools: toolMode,
+    onCompact: ({ dropped }) => emit({
+      type: 'notice',
+      text: `Compacted ${dropped} earlier turns to fit ${provider.model}'s context window — the chat history and project files are unchanged.`,
+    }),
+  });
+  const knownToolNames = new Set(tools.map((t) => t.function.name));
+  if (textToolMode) messages[0].content += '\n\n' + TEXT_TOOL_PROTOCOL;
+
+  // Anti-thrash state. Weak tool-callers often repeat the exact same failing
+  // call (or retry a broken Write) until the step budget runs out. Track it and
+  // steer them back on course instead of silently burning tokens.
+  const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'mcp__workspace__write_file', 'mcp__workspace__edit_file', 'Artifact']);
+  let wroteSomething = false;
+  let lastPreview = null;
+  let lastSig = '';
+  let repeatCount = 0;
+  let nudges = 0;
+
+  for (let step = 0; step < maxSteps; step++) {
+    if (opts.signal && opts.signal.aborted) throw new Error('aborted');
+    let message;
+    // Count what this turn streamed so a discarded attempt (token-limit retry)
+    // can be removed from the transcript instead of showing the same paragraph
+    // twice, once truncated.
+    let turnChars = 0;
+    let turnThink = 0;
+    const doChat = (withTools, maxTokens) => {
+      turnChars = 0;
+      turnThink = 0;
+      return chatWithFailover({
+        list: providerList,
+        getIndex,
+        setIndex,
+        messages,
+        tools: withTools ? tools : undefined,
+        onDelta: (text, thinking) => {
+          if (thinking) turnThink += text.length; else turnChars += text.length;
+          emit({ type: thinking ? 'thinking' : 'delta', text });
+        },
+        emit,
+        signal: opts.signal,
+        maxTokens,
+      });
+    };
+    try {
+      message = await doChat(toolMode);
+    } catch (e) {
+      if (toolMode && /tool|function|400|422|unknown/i.test(String(e.message)) && !/max_tokens|max_completion_tokens/i.test(String(e.message))) {
+        // provider doesn't support tools — fall back to plain chat + text protocol
+        toolMode = false;
+        if (!textToolMode) {
+          textToolMode = true;
+          // Re-normalize the history (earlier steps may already contain native
+          // tool_calls / role:"tool" entries that this endpoint would reject).
+          messages = sanitizeHistory(messages, { supportsTools: false });
+          if (messages[0] && messages[0].role === 'system') messages[0].content += '\n\n' + TEXT_TOOL_PROTOCOL;
+        }
+        message = await doChat(false);
+      } else {
+        throw e;
+      }
+    }
+
+    // Reasoning models (Kimi K3.1 Pro, DeepSeek V4.1 Flash) burn the token budget
+    // on chain-of-thought BEFORE emitting the code/tool calls. When the stream is
+    // cut at the token limit (finish_reason "length") the website/code silently
+    // never appears — either no tool calls at all, or a call whose JSON arguments
+    // were sliced mid-string. Retry once with a doubled budget so the artifact
+    // actually gets created instead of handing the model an unparseable call.
+    if (message && message.finish_reason === 'length') {
+      const cutCalls = message.tool_calls || [];
+      const brokenArgs = cutCalls.some((tc) => {
+        const raw = tc.function && tc.function.arguments;
+        if (!raw || !String(raw).trim()) return false; // no-arg tools are legal
+        try { JSON.parse(String(raw)); return false; } catch { return true; }
+      });
+      if (!cutCalls.length || brokenArgs) {
+        const base = provider.maxTokens || 16384;
+        const bumped = Math.min(Math.max(base * 2, base + 4096), 65536);
+        // Tell the UI to drop the cut-off attempt before the retry streams, then
+        // show what is happening (no silent re-generation).
+        emit({ type: 'retry', chars: turnChars, thinkingChars: turnThink });
+        emit({ type: 'thinking', text: ` (token limit reached — retrying with ${bumped} tokens)` });
+        message = await doChat(toolMode, bumped);
+      }
+    }
+
+    let calls = message.tool_calls && message.tool_calls.length ? message.tool_calls : [];
+    let textCalls = false;
+    if (!calls.length && textToolMode) {
+      const parsed = parseTextToolCalls(message.content || '').filter((c) => knownToolNames.has(c.function.name));
+      if (parsed.length) { calls = parsed; textCalls = true; }
+    }
+
+    if (!calls.length) {
+      // Safety net: if this turn produced visible code but never touched a file
+      // or the Artifact tool, materialize it so the "website" actually exists.
+      let extraNote = '';
+      if (!wroteSomething) {
+        const created = autoCaptureArtifacts(message.content || '', currentCwd, emit);
+        if (created.length) extraNote = `\n\n(Saved ${created.join(', ')} to your project so it renders live.)`;
+      }
+      messages.push({ role: 'assistant', content: (message.content || '') + extraNote });
+      emit({ type: 'done', messages });
+      return messages;
+    }
+
+    // record assistant message with tool_calls (text protocol keeps plain content)
+    if (textCalls) {
+      messages.push({ role: 'assistant', content: message.content || '' });
+    } else {
+      messages.push({
+        role: 'assistant',
+        content: message.content || '',
+        tool_calls: calls.map((tc) => ({ id: tc.id, type: 'function', function: { name: tc.function.name, arguments: tc.function.arguments } })),
+      });
+    }
+
+    // Context handed to built-in tools for sub-agents, questions, plan mode, shells, MCP resources.
+    const runSubagent = async (args) => {
+      const name = args.description || args.name || 'sub-agent';
+      const ac = new AbortController();
+      const onAbort = () => ac.abort();
+      if (opts.signal) {
+        if (opts.signal.aborted) onAbort();
+        else opts.signal.addEventListener('abort', onAbort, { once: true });
+      }
+      subagentControllers.set(name, { controller: ac, status: 'running', started: Date.now() });
+      emit({ type: 'subagent', name, status: 'started' });
+      try {
+        const subMsgs = [{ role: 'user', content: args.prompt || args.description || '' }];
+        const subResult = await runAgent({
+          provider: providerList[getIndex()],
+          orchestrator: opts.orchestrator,
+          messages: subMsgs,
+          cwd: args.cwd || currentCwd,
+          emit: (evt) => emit({ ...evt, subagent: name }),
+          maxSteps: opts.subagentMaxSteps || 0,
+          useMemory: opts.useMemory,
+          callMcpTool: opts.callMcpTool,
+          askUser: opts.askUser,
+          exitPlanMode: opts.exitPlanMode,
+          mcpListResources: opts.mcpListResources,
+          mcpReadResource: opts.mcpReadResource,
+          approveTool: opts.approveTool,
+          shell: opts.shell,
+          extraTools: opts.extraTools,
+          signal: ac.signal,
+        });
+        const last = [...subResult].reverse().find((m) => m.role === 'assistant' && m.content);
+        return last ? last.content : '(sub-agent completed)';
+      } finally {
+        subagentControllers.delete(name);
+        emit({ type: 'subagent', name, status: 'done' });
+        if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
+      }
+    };
+
+    const listAgents = () => {
+      const entries = [...subagentControllers.entries()];
+      if (!entries.length) return '(no agents running)';
+      return 'RUNNING AGENTS:\n' + entries.map(([n, s]) => `- ${n} [${s.status}] (${Math.round((Date.now() - s.started) / 1000)}s)`).join('\n');
+    };
+    const stopTask = (name) => {
+      const match = [...subagentControllers.entries()].find(([n]) => n === name || n.includes(name));
+      if (!match) return `No running agent matches "${name}".`;
+      match[1].controller.abort();
+      match[1].status = 'stopped';
+      return `Stopped agent "${match[0]}".`;
+    };
+    const sendUserMessage = (text) => emit({ type: 'userMessage', text });
+    const setGoal = (goal) => emit({ type: 'goal', goal });
+    // An artifact is a FILE, not just a chat decoration: write it into the
+    // conversation's project folder so the deliverable exists on disk (and the
+    // browser pane can open it) even when the model never calls Write.
+    const ARTIFACT_DEFAULT_FILE = {
+      html: 'index.html', htm: 'index.html',
+      svg: 'artifact.svg',
+      css: 'styles.css',
+      js: 'app.js', javascript: 'app.js',
+      jsx: 'App.jsx', tsx: 'App.tsx',
+      ts: 'app.ts', typescript: 'app.ts',
+      json: 'data.json', md: 'README.md', markdown: 'README.md',
+      python: 'main.py', py: 'main.py', sh: 'script.sh', bash: 'script.sh',
+      sql: 'query.sql', yaml: 'config.yaml', yml: 'config.yml',
+    };
+    const createArtifact = (args) => {
+      const language = String(args.language || '').toLowerCase().trim();
+      const content = args.content == null ? '' : String(args.content);
+      let name = String(args.name || '').trim();
+      const ext = ARTIFACT_DEFAULT_FILE[language] || '';
+      if (!name) name = ext || 'artifact.txt';
+      else if (!/\.[a-z0-9]{1,8}$/i.test(name) && ext) name = `${name}${path.extname(ext) || '.txt'}`;
+      // Never escape the project folder.
+      name = name.replace(/\\/g, '/').replace(/^\/+/, '');
+      let filePath = null;
+      try {
+        const dir = currentCwd || process.cwd();
+        filePath = path.resolve(dir, name);
+        if (!filePath.startsWith(path.resolve(dir))) filePath = path.join(dir, path.basename(name));
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, content, 'utf8');
+      } catch (e) {
+        filePath = null;
+      }
+      emit({ type: 'artifact', name, language: language || 'text', content, path: filePath || undefined });
+      // A renderable artifact is also the deliverable preview: ask the renderer
+      // to mount the browser pane on the file so the site is visibly there.
+      if (filePath && /\.(html?|svg)$/i.test(name)) emit({ type: 'preview', url: filePath });
+      return filePath
+        ? `Artifact "${name}" written to ${filePath} (${Buffer.byteLength(content)} bytes). It is the file the browser pane opens.`
+        : `Artifact "${name}" created in chat (could not write to disk).`;
+    };
+    const requestSecret = async (name) => `No secret "${name}" found in the secrets store. Provide the value directly to continue.`;
+
+    const ctx = {
+      cwd: currentCwd,
+      setCwd: (d) => { currentCwd = d; },
+      shell: opts.shell,
+      runSubagent,
+      // Agent runner + provider for cowork orchestration / bot bridges.
+      runAgent: (subOpts) => runAgent({
+        provider: providerList[getIndex()],
+        // A sub-run that pins its own provider must NOT re-expand into the
+        // parent's orchestrator list, or the pin would be silently replaced.
+        orchestrator: subOpts && subOpts.provider ? null : opts.orchestrator,
+        cwd: subOpts.cwd || currentCwd,
+        useMemory: opts.useMemory,
+        shell: opts.shell,
+        callMcpTool: opts.callMcpTool,
+        askUser: opts.askUser,
+        exitPlanMode: opts.exitPlanMode,
+        mcpListResources: opts.mcpListResources,
+        mcpReadResource: opts.mcpReadResource,
+        approveTool: opts.approveTool,
+        extraTools: opts.extraTools,
+        ...subOpts,
+      }),
+      get provider() { return providerList[getIndex()]; },
+      askUser: opts.askUser,
+      exitPlanMode: opts.exitPlanMode,
+      mcpListResources: opts.mcpListResources,
+      mcpReadResource: opts.mcpReadResource,
+      approveTool: opts.approveTool,
+      listAgents,
+      stopTask,
+      sendUserMessage,
+      setGoal,
+      createArtifact,
+      requestSecret,
+    };
+
+    // Claude runs independent read-only calls from the same turn concurrently
+    // and shows all of the rows at once. Doing them one-by-one made a 4-file
+    // read take 4 round trips of wall time and stacked rows progressively.
+    const PARALLEL_SAFE = new Set(['Read', 'Glob', 'Grep', 'LS', 'ListDir', 'ListFiles', 'WebFetch', 'WebSearch']);
+    if (!textCalls && calls.length > 1 && calls.every((tc) => PARALLEL_SAFE.has(tc.function.name))) {
+      const batch = calls.map((tc) => ({ tc, name: tc.function.name, args: parseArgs(tc.function.arguments) }));
+      batch.forEach((p) => emit({ type: 'tool', id: p.tc.id, name: p.name, args: p.args }));
+      const results = await Promise.all(batch.map(async (p) => {
+        try {
+          const r = await runTool(p.name, p.args, ctx);
+          const content = typeof r === 'string' ? r : r.content;
+          const isErr = (typeof r === 'object' && Boolean(r.isError))
+            || /^(Error|Tool error)/i.test(String(content).trim());
+          return { content: String(content), isError: isErr };
+        } catch (e) {
+          return { content: 'Error: ' + (e && e.message ? e.message : String(e)), isError: true };
+        }
+      }));
+      batch.forEach((p, i) => {
+        emit({ type: 'toolResult', id: p.tc.id, name: p.name, result: results[i].content, isError: results[i].isError });
+        messages.push({ role: 'tool', tool_call_id: p.tc.id, name: p.name, content: results[i].content });
+      });
+      continue;
+    }
+
+    for (const tc of calls) {
+      const name = tc.function.name;
+      const args = parseArgs(tc.function.arguments);
+      emit({ type: 'tool', id: tc.id, name, args });
+
+      // Loop detection: identical tool + identical args repeated back-to-back.
+      let sig;
+      try { sig = name + '|' + JSON.stringify(args); } catch { sig = name + '|?'; }
+      if (sig === lastSig) repeatCount++; else { lastSig = sig; repeatCount = 1; }
+
+      let result;
+      let isError = false;
+      // Route virtual mcp__* names (built-in equivalents) to runTool first;
+      // only unknown mcp__* (external MCP servers) go to callMcpTool.
+      if (name.startsWith('mcp__') && !localToolNames.has(name)) {
+        result = await opts.callMcpTool ? await opts.callMcpTool(name, args) : `MCP tool ${name} unavailable`;
+      } else {
+        const r = await runTool(name, args, ctx);
+        result = typeof r === 'string' ? r : r.content;
+        isError = typeof r === 'object' && Boolean(r.isError);
+      }
+      const resultStr = String(result);
+      if (!isError && /^(Error|Tool error)/i.test(resultStr.trim())) isError = true;
+      if (WRITE_TOOLS.has(name) && !/^(Error|Tool error)/i.test(resultStr.trim())) {
+        wroteSomething = true;
+        // Surface the deliverable the moment it lands on disk: the browser pane
+        // opens on the page so "it works" is visible, not just claimed.
+        const rawPath = args.path || args.file_path || args.filePath || args.filename;
+        if (rawPath && /\.(html?|svg)$/i.test(String(rawPath))) {
+          try {
+            const abs = path.isAbsolute(String(rawPath)) ? String(rawPath) : path.resolve(currentCwd || process.cwd(), String(rawPath));
+            if (abs !== lastPreview && fs.existsSync(abs)) { lastPreview = abs; emit({ type: 'preview', url: abs }); }
+          } catch (_) {}
+        }
+      }
+
+      // Steer out of a loop instead of letting it eat the whole step budget.
+      // Two identical calls in a row already means the retry strategy is broken.
+      if (repeatCount >= 2 && nudges < 5) {
+        nudges++;
+        const hint = name === 'Bash'
+          ? 'You are repeating the exact same shell command. Do not retry it unchanged — inspect the error, then use a different approach (e.g. Write for files).'
+          : WRITE_TOOLS.has(name)
+            ? 'You are repeating the exact same file call. Check the error text: Write needs {"path","content"} with the COMPLETE file; Edit needs old_string copied exactly via Read. Do not switch to bash heredocs.'
+            : 'You are repeating the exact same tool call. Stop and change your approach.';
+        result = resultStr + `\n\n[SYSTEM NOTE: ${hint}]`;
+      }
+
+      emit({ type: 'toolResult', id: tc.id, name, result: String(result), isError });
+      if (textCalls) {
+        messages.push({ role: 'user', content: `TOOL RESULT ${tc.id} (${name}):\n${String(result)}` });
+      } else {
+        messages.push({ role: 'tool', tool_call_id: tc.id, name, content: String(result) });
+      }
+    }
+  }
+
+  // Reached only when the runaway guard trips — the model kept calling tools for
+  // 1000 turns without producing a final answer. Say so instead of ending the
+  // turn silently, and leave the partial transcript intact so "continue" works.
+  const stopNote = `(Paused after ${maxSteps} tool turns — that is the runaway safety valve, not a step limit. Say "continue" and I'll carry on from here.)`;
+  messages.push({ role: 'assistant', content: stopNote });
+  emit({ type: 'delta', text: '\n\n' + stopNote });
+  emit({ type: 'limit', steps: maxSteps });
+  emit({ type: 'done', messages, stopped: true });
+  return messages;
+}
+
+module.exports = { runAgent, normalizeProvider, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory };

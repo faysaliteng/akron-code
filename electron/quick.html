@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Quick Entry</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    body { background: #30302e; color: #f5f4f0; display: flex; flex-direction: column; overflow: hidden; -webkit-app-region: drag; }
+    .bar { display: flex; align-items: center; gap: 8px; padding: 10px 14px 6px; -webkit-app-region: drag; }
+    .bar .logo { filter: drop-shadow(0 0 6px rgba(217,119,87,.35)); }
+    .bar .label { font-size: 12px; color: #b8b5ae; font-weight: 600; }
+    .bar .hint { margin-left: auto; font-size: 11px; color: #8d8a84; }
+    textarea {
+      -webkit-app-region: no-drag;
+      flex: 1; margin: 0 14px 12px; padding: 10px 12px; resize: none; border: none; outline: none;
+      border-radius: 10px; background: #3a3936; color: #f5f4f0; font-size: 14px; line-height: 1.45;
+      font-family: inherit;
+    }
+    textarea::placeholder { color: #8d8a84; }
+    .foot { display: flex; align-items: center; gap: 8px; padding: 0 14px 12px; -webkit-app-region: no-drag; }
+    button {
+      border: none; border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600;
+      cursor: pointer; font-family: inherit;
+    }
+    button.primary { background: #d97f57; color: #1d1c1a; }
+    button.ghost { background: transparent; color: #b8b5ae; }
+    .foot .space { flex: 1; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <svg class="logo" width="14" height="14" viewBox="0 0 500 500" xmlns="http://www.w3.org/2000/svg"><polygon points="250,24 446,112 414,348 250,468 86,348 54,112" fill="#CBD5E1"/><polygon points="250,48 422,126 394,332 250,440 106,332 78,126" fill="none" stroke="#C81010" stroke-width="6"/><polygon points="164,108 336,108 372,185 360,295 320,328 180,328 140,295 128,185" fill="#1E3A8A"/><polygon points="230,76 270,76 278,176 250,192 222,176" fill="#F8FAFC"/><polygon points="240,88 260,88 264,164 250,174 236,164" fill="#C81010"/></svg>
+    <span class="label">Quick Entry</span>
+    <span class="hint">⇧↩ to send</span>
+  </div>
+  <textarea id="q" placeholder="Ask AUTOBOT…" autofocus></textarea>
+  <div class="foot">
+    <button class="primary" id="send">Send</button>
+    <button class="ghost" id="insert">Insert</button>
+    <span class="space"></span>
+    <button class="ghost" id="esc">Esc</button>
+  </div>
+  <script>
+    const ta = document.getElementById('q');
+    ta.focus();
+    function submit(mode) {
+      const text = ta.value.trim();
+      if (!text) return;
+      window.autobot.quickSubmit({ text, mode }).catch(() => {});
+    }
+    document.getElementById('send').onclick = () => submit('send');
+    document.getElementById('insert').onclick = () => submit('insert');
+    document.getElementById('esc').onclick = () => window.close();
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit('insert'); }
+      else if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); submit('send'); }
+      else if (e.key === 'Escape') { window.close(); }
+    });
+  </script>
+</body>
+</html>

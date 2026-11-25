@@ -1,0 +1,77 @@
+{
+  "name": "heliobot",
+  "productName": "Helio Bot",
+  "version": "1.0.0",
+  "description": "Helio Bot \u2014 a free-LLM desktop agent (Claude Desktop-compatible)",
+  "main": "electron/main.js",
+  "author": "Helio Bot",
+  "license": "MIT",
+  "scripts": {
+    "build": "vite build",
+    "start": "electron .",
+    "dev": "vite --host 127.0.0.1",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder --mac dmg zip"
+  },
+  "dependencies": {
+    "mermaid": "^10.9.8",
+    "ws": "^8.23.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "dompurify": "^3.1.6",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "highlight.js": "^11.9.0",
+    "marked": "^12.0.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.11"
+  },
+  "build": {
+    "appId": "com.heliobot.app",
+    "productName": "Helio Bot",
+    "copyright": "Helio Bot",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "resources/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "darkModeSupport": true,
+      "icon": "build/icon.icns",
+      "identity": null,
+      "artifactName": "HelioBot-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "title": "Helio Bot ${version}",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  },
+  "allowScripts": {
+    "electron@33.4.11": true,
+    "esbuild@0.21.5": true
+  }
+}

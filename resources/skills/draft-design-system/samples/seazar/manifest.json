@@ -1,0 +1,11 @@
+{
+  "manifestVersion": 3,
+  "assetGroups": [
+    {
+      "name": "Logos"
+    },
+    {
+      "name": "Icons"
+    }
+  ]
+}

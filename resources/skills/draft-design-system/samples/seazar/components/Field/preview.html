@@ -1,0 +1,12 @@
+<!-- @dsCard group="Forms" height=136 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Field — preview</title></head>
+<body>
+<div id="root" class="sz-row"></div>
+<script>
+  var S = window.Seazar, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null, h(S.Field, { label: 'Email for the ticket', hint: 'We send the ticket here; nothing else.', type: 'email', autoComplete: 'email', defaultValue: 'sam@example.com' }), h(S.Field, { label: 'Booking reference', error: 'Enter the 6 letters printed on the ticket.', defaultValue: '14B', autoComplete: 'off' })));
+</script>
+</body>
+</html>

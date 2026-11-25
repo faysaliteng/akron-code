@@ -1,0 +1,12 @@
+<!-- @dsCard group="Actions" height=80 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Button — preview</title></head>
+<body>
+<div id="root" class="sz-row"></div>
+<script>
+  var S = window.Seazar, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null, h(S.Button, { variant: 'primary' }, 'Buy ticket'), h(S.Button, null, 'Later sailings')));
+</script>
+</body>
+</html>

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Helio Bot — Your Desktop AI Assistant</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+
+  :root {
+    --navy-900: #050d1f;
+    --navy-800: #08152e;
+    --sun: #ffb020;
+    --sun-bright: #ffd166;
+    --ink: #eaf1ff;
+    --ink-dim: #93a6c4;
+  }
+
+  html, body { margin: 0; padding: 0; min-height: 100%; }
+
+  body {
+    background:
+      radial-gradient(900px 620px at 50% -12%, rgba(255, 176, 32, 0.16), transparent 62%),
+      radial-gradient(700px 500px at 88% 108%, rgba(64, 132, 255, 0.14), transparent 60%),
+      linear-gradient(180deg, var(--navy-800) 0%, var(--navy-900) 100%);
+    background-color: var(--navy-900);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; padding: 48px 24px; overflow-x: hidden;
+  }
+
+  .stage {
+    width: 100%; max-width: 720px; text-align: center;
+    display: flex; flex-direction: column; align-items: center;
+  }
+
+  .logo {
+    width: 132px; height: 132px; display: block; margin-bottom: 34px;
+    filter: drop-shadow(0 12px 34px rgba(255, 176, 32, 0.34));
+  }
+  .rays { transform-origin: 60px 60px; animation: spin 44s linear infinite; }
+  .core { transform-origin: 60px 60px; animation: pulse 4.2s ease-in-out infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50%      { transform: scale(1.055); opacity: 0.94; }
+  }
+  @media (prefers-reduced-motion: reduce) { .rays, .core { animation: none; } }
+
+  .eyebrow {
+    font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--sun); font-weight: 600; margin: 0 0 20px;
+    display: inline-flex; align-items: center; gap: 9px;
+  }
+  .eyebrow::before, .eyebrow::after {
+    content: ""; width: 26px; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 176, 32, 0.7));
+  }
+  .eyebrow::after { background: linear-gradient(90deg, rgba(255, 176, 32, 0.7), transparent); }
+
+  h1 {
+    margin: 0 0 20px;
+    font-size: clamp(2.35rem, 6.4vw, 3.9rem);
+    line-height: 1.06; letter-spacing: -0.032em; font-weight: 700;
+    background: linear-gradient(180deg, #ffffff 0%, #c3d3ee 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  h1 .accent {
+    background: linear-gradient(100deg, var(--sun-bright), var(--sun));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+
+  .sub {
+    margin: 0 auto 40px; max-width: 44ch;
+    font-size: clamp(1rem, 2.1vw, 1.125rem); line-height: 1.65; color: var(--ink-dim);
+  }
+
+  .cta {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    gap: 10px; padding: 16px 38px; border: 0; border-radius: 999px;
+    font-family: inherit; font-size: 1rem; font-weight: 650; letter-spacing: 0.01em;
+    color: #1a1200; cursor: pointer;
+    background: linear-gradient(180deg, var(--sun-bright), var(--sun));
+    box-shadow: 0 10px 30px -8px rgba(255, 176, 32, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+    transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
+    text-decoration: none;
+  }
+  .cta:hover {
+    transform: translateY(-2px); filter: brightness(1.05);
+    box-shadow: 0 18px 42px -10px rgba(255, 176, 32, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  }
+  .cta:active {
+    transform: translateY(0);
+    box-shadow: 0 8px 20px -8px rgba(255, 176, 32, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  }
+  .cta:focus-visible { outline: 2px solid var(--sun-bright); outline-offset: 4px; }
+  .cta svg { width: 17px; height: 17px; transition: transform 0.18s ease; }
+  .cta:hover svg { transform: translateX(3px); }
+
+  .footnote { margin: 26px 0 0; font-size: 0.8125rem; color: #61759a; letter-spacing: 0.01em; }
+
+  @media (max-width: 480px) {
+    body { padding: 40px 20px; }
+    .logo { width: 104px; height: 104px; margin-bottom: 26px; }
+    .cta { width: 100%; max-width: 320px; }
+  }
+</style>
+</head>
+<body>
+  <main class="stage">
+
+    <svg class="logo" viewBox="0 0 120 120" role="img" aria-label="Helio Bot sunburst logo">
+      <defs>
+        <linearGradient id="rayGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#ffd166" />
+          <stop offset="100%" stop-color="#ff9f1c" />
+        </linearGradient>
+        <radialGradient id="coreGrad" cx="38%" cy="32%" r="78%">
+          <stop offset="0%" stop-color="#fff6dd" />
+          <stop offset="52%" stop-color="#ffc93c" />
+          <stop offset="100%" stop-color="#f78c0b" />
+        </radialGradient>
+        <radialGradient id="haloGrad" cx="50%" cy="50%" r="50%">
+          <stop offset="55%" stop-color="rgba(255,176,32,0.30)" />
+          <stop offset="100%" stop-color="rgba(255,176,32,0)" />
+        </radialGradient>
+      </defs>
+
+      <circle cx="60" cy="60" r="58" fill="url(#haloGrad)" />
+
+      <g class="rays" fill="url(#rayGrad)">
+        <rect x="58.1" y="4" width="3.8" height="17" rx="1.9" />
+        <rect x="58.1" y="4" width="3.8" height="17" rx="1.9" transform="rotate(30 60 60)" />
+        <rect x="58.1" y="4" width="3.8" height="17" rx="1.9" transform="rotate(60 60 60)" />
+        <rect x="58.1" y="4" width="3.8" height="17" rx="1.9" transform="rotate(90 60 60)" />
+        <rect x="58.1" y="4" width="3.8" height="17" rx="1.9" transform="rotate(120 60 60)" />
+        <rect x="58.1" y="4" width="3.8" height="17" rx="1.9" transform="rotate(150 60 60)" />
+        <rect x="58.1" y="4" width="3.8" height="17" rx="1.9" transform="rotate(180 60 60)" />
+        <rect x="58.1" y="4" width="3.8" height="17" rx="1.9" transform="rotate(210 60 60)" />
+        <rect x="58.1" y="4" width="3.8" height="17" rx="1.9" transform="rotate(240 60 60)" />
+        <rect x="58.1" y="4" width="3.8" height="17" rx="1.9" transform="rotate(270 60 60)" />
+        <rect x="58.1" y="4" width="3.8" height="17" rx="1.9" transform="rotate(300 60 60)" />
+        <rect x="58.1" y="4" width="3.8" height="17" rx="1.9" transform="rotate(330 60 60)" />
+      </g>
+
+      <g class="core">
+        <circle cx="60" cy="60" r="26" fill="url(#coreGrad)" />
+        <circle cx="60" cy="60" r="26" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="1.2" />
+        <circle cx="51.5" cy="57" r="3.4" fill="#0a1730" />
+        <circle cx="68.5" cy="57" r="3.4" fill="#0a1730" />
+        <circle cx="52.6" cy="55.9" r="1.1" fill="#ffffff" opacity="0.85" />
+        <circle cx="69.6" cy="55.9" r="1.1" fill="#ffffff" opacity="0.85" />
+        <path d="M52 66.5 Q60 73 68 66.5" fill="none" stroke="#0a1730" stroke-width="2.6" stroke-linecap="round" />
+      </g>
+    </svg>
+
+    <p class="eyebrow">Desktop AI Assistant</p>
+
+    <h1>Meet <span class="accent">Helio Bot</span><br />your bright side of work.</h1>
+
+    <p class="sub">
+      A desktop assistant that reads files, runs commands, and drives your browser —
+      so the busywork burns off before lunch.
+    </p>
+
+    <a class="cta" href="#get-started">
+      Get started
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M5 12h13" />
+        <path d="M12.5 5.5 19 12l-6.5 6.5" />
+      </svg>
+    </a>
+
+    <p class="footnote">Free to try · No credit card required</p>
+
+  </main>
+</body>
+</html>

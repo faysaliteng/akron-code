@@ -1,0 +1,12 @@
+<!-- @dsCard group="Status" height=56 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Badge — preview</title></head>
+<body>
+<div id="root" class="em-row"></div>
+<script>
+  var E = window.Ember, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null, h(E.Badge, null, 'Whole bean'), h(E.Badge, { tone: 'ember' }, 'New roast'), h(E.Badge, { tone: 'leaf' }, 'In stock')));
+</script>
+</body>
+</html>

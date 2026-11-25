@@ -1,0 +1,72 @@
+<!-- @dsCard height=288 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ember</title>
+<style>
+  html, body { margin:0; height:100%; }
+  body { background:var(--surface); color:var(--ink); font-family:var(--font-sans); overflow:hidden; }
+  .cover { position:relative; height:288px; overflow:hidden; }
+  /* the composition: a 480-wide box on the right half of the 960 layout, clear of the name */
+  .art { position:absolute; top:0; left:480px; width:480px; height:288px; overflow:hidden; }
+  .art svg { display:block; width:640px; height:288px; }
+  .brand { fill:var(--ember); }
+  .tint { fill:var(--ember-soft); }
+  .deep { fill:var(--ink); }
+  .leaf { fill:var(--leaf); }
+  .blk { rx:var(--radius-md); }
+  .badge { rx:var(--radius-sm); }
+  /* a space-2-tall pill: rx = half its height = radius-sm */
+  .pill { fill:var(--ember); rx:var(--radius-sm); }
+  .pill.cut { fill:var(--ember-soft); }
+  /* name and tagline in flow, pinned by the block's bottom edge */
+  .words { position:absolute; left:var(--space-6); right:var(--space-6); bottom:var(--space-6); max-width:440px; }
+  .name { margin:0; font-size:112px; line-height:.9; font-weight:600; letter-spacing:-.02em; color:var(--ink); }
+  .tag { margin:var(--space-2) 0 0 4px; font-size:14px; line-height:20px; color:var(--ink-muted); }
+</style>
+</head>
+<body>
+<div class="cover">
+<div class="art" aria-hidden="true">
+<svg viewBox="0 0 640 288" width="640" height="288">
+<!--
+  blocks      ember 144×240 bled off the top, first in the box (the primary, largest) · ember-soft 144×184 (the tint) · ink 216 tall, bleeding off the right edge · leaf 64×24 once (it only ever means "in stock") — ≈33% of 960×288
+  arrangement one tall ember slab with satellites, bottoms on one line space-6 above the edge, space-4 gutters
+  pattern     pills, from "Soft, never round — except pills": space-2-tall pills at a space-6 pitch thinning upward over the tint, two loose on the ground, three cut into the slab in ember-soft
+  scales      sides in space-2 multiples; gutters space-4; pitch space-6; corners radius-md, badge radius-sm, pill rx radius-sm (half of space-2)
+-->
+<rect class="brand blk" x="16" y="-16" width="144" height="240" rx="8"/>
+<rect class="leaf badge" x="16" y="240" width="64" height="24" rx="4"/>
+<rect class="tint blk" x="176" y="80" width="144" height="184" rx="8"/>
+<rect class="deep blk" x="336" y="48" width="304" height="216" rx="8"/>
+<rect class="pill cut" x="32" y="192" width="32" height="8" rx="4"/>
+<rect class="pill cut" x="56" y="168" width="24" height="8" rx="4"/>
+<rect class="pill cut" x="40" y="144" width="16" height="8" rx="4"/>
+<rect class="pill" x="192" y="240" width="40" height="8" rx="4"/>
+<rect class="pill" x="248" y="240" width="24" height="8" rx="4"/>
+<rect class="pill" x="280" y="240" width="24" height="8" rx="4"/>
+<rect class="pill" x="208" y="216" width="24" height="8" rx="4"/>
+<rect class="pill" x="248" y="216" width="48" height="8" rx="4"/>
+<rect class="pill" x="192" y="192" width="16" height="8" rx="4"/>
+<rect class="pill" x="224" y="192" width="32" height="8" rx="4"/>
+<rect class="pill" x="280" y="192" width="24" height="8" rx="4"/>
+<rect class="pill" x="208" y="168" width="40" height="8" rx="4"/>
+<rect class="pill" x="264" y="168" width="24" height="8" rx="4"/>
+<rect class="pill" x="200" y="144" width="16" height="8" rx="4"/>
+<rect class="pill" x="240" y="144" width="32" height="8" rx="4"/>
+<rect class="pill" x="216" y="120" width="32" height="8" rx="4"/>
+<rect class="pill" x="272" y="120" width="16" height="8" rx="4"/>
+<rect class="pill" x="208" y="96" width="16" height="8" rx="4"/>
+<rect class="pill" x="256" y="96" width="16" height="8" rx="4"/>
+<rect class="pill" x="232" y="56" width="24" height="8" rx="4"/>
+<rect class="pill" x="216" y="32" width="16" height="8" rx="4"/>
+</svg>
+</div>
+<div class="words">
+<h1 class="name">Ember</h1>
+<p class="tag">Warm, direct, and unhurried.</p>
+</div>
+</div>
+</body>
+</html>

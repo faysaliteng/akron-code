@@ -1,0 +1,126 @@
+'use strict';
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('autobot', {
+  run: (payload) => ipcRenderer.invoke('autobot:run', payload),
+  cancel: (runId) => ipcRenderer.invoke('autobot:cancel', runId),
+  testProvider: (provider) => ipcRenderer.invoke('autobot:testProvider', provider),
+  probeProviders: (list) => ipcRenderer.invoke('autobot:probeProviders', list),
+  ollamaModels: (baseURL) => ipcRenderer.invoke('autobot:ollamaModels', baseURL),
+  ollamaServe: (action) => ipcRenderer.invoke('autobot:ollamaServe', action),
+  onEvent: (cb) => {
+    const handler = (event, payload) => cb(payload);
+    ipcRenderer.on('autobot:event', handler);
+    return () => ipcRenderer.removeListener('autobot:event', handler);
+  },
+
+  getMemory: () => ipcRenderer.invoke('autobot:getMemory'),
+  addMemory: (content) => ipcRenderer.invoke('autobot:addMemory', content),
+  clearMemory: () => ipcRenderer.invoke('autobot:clearMemory'),
+  getSkills: () => ipcRenderer.invoke('autobot:getSkills'),
+  loadSkill: (name) => ipcRenderer.invoke('autobot:loadSkill', name),
+  setSkillEnabled: (name, enabled) => ipcRenderer.invoke('autobot:setSkillEnabled', name, enabled),
+  setAllSkillsEnabled: (enabled) => ipcRenderer.invoke('autobot:setAllSkillsEnabled', enabled),
+  addSkill: (name, content) => ipcRenderer.invoke('autobot:addSkill', name, content),
+  deleteSkill: (name) => ipcRenderer.invoke('autobot:deleteSkill', name),
+  pickSkillFile: () => ipcRenderer.invoke('autobot:pickSkillFile'),
+
+  listPlugins: (opts) => ipcRenderer.invoke('autobot:listPlugins', opts),
+  pluginCategories: () => ipcRenderer.invoke('autobot:pluginCategories'),
+  searchPlugins: (query, opts) => ipcRenderer.invoke('autobot:searchPlugins', query, opts),
+  suggestPlugins: (goal, opts) => ipcRenderer.invoke('autobot:suggestPlugins', goal, opts),
+  installPlugin: (id) => ipcRenderer.invoke('autobot:installPlugin', id),
+  uninstallPlugin: (id) => ipcRenderer.invoke('autobot:uninstallPlugin', id),
+
+  listScheduledTasks: () => ipcRenderer.invoke('autobot:listScheduledTasks'),
+  createScheduledTask: (input) => ipcRenderer.invoke('autobot:createScheduledTask', input),
+  updateScheduledTask: (id, patch) => ipcRenderer.invoke('autobot:updateScheduledTask', id, patch),
+  deleteScheduledTask: (id) => ipcRenderer.invoke('autobot:deleteScheduledTask', id),
+  runScheduledTask: (id) => ipcRenderer.invoke('autobot:runScheduledTask', id),
+  getSettings: () => ipcRenderer.invoke('autobot:getSettings'),
+  setSettings: (patch) => ipcRenderer.invoke('autobot:setSettings', patch),
+  getOrchestrator: () => ipcRenderer.invoke('autobot:getOrchestrator'),
+  setOrchestrator: (patch) => ipcRenderer.invoke('autobot:setOrchestrator', patch),
+  getFeatures: () => ipcRenderer.invoke('autobot:getFeatures'),
+  setFeatures: (patch) => ipcRenderer.invoke('autobot:setFeatures', patch),
+  getDefaultCwd: (convId, title) => ipcRenderer.invoke('autobot:getDefaultCwd', convId, title),
+  getWorkspace: (convId) => ipcRenderer.invoke('autobot:getWorkspace', convId),
+  setWorkspace: (convId, dir) => ipcRenderer.invoke('autobot:setWorkspace', convId, dir),
+  pickFolder: () => ipcRenderer.invoke('autobot:pickFolder'),
+  pickFiles: () => ipcRenderer.invoke('autobot:pickFiles'),
+  saveFile: (opts) => ipcRenderer.invoke('autobot:saveFile', opts),
+  writeFile: (opts) => ipcRenderer.invoke('autobot:writeFile', opts),
+  openExternal: (url) => ipcRenderer.invoke('autobot:openExternal', url),
+  speak: (text) => ipcRenderer.invoke('autobot:speak', text),
+  stopSpeak: () => ipcRenderer.invoke('autobot:stopSpeak'),
+
+  mcpConnect: (cfg) => ipcRenderer.invoke('autobot:mcpConnect', cfg),
+  mcpListTools: (serverId) => ipcRenderer.invoke('autobot:mcpListTools', serverId),
+  mcpCallTool: (serverId, name, args) => ipcRenderer.invoke('autobot:mcpCallTool', serverId, name, args),
+  mcpDisconnect: (serverId) => ipcRenderer.invoke('autobot:mcpDisconnect', serverId),
+  mcpListResources: (serverId) => ipcRenderer.invoke('autobot:mcpListResources', serverId),
+  mcpReadResource: (serverId, uri) => ipcRenderer.invoke('autobot:mcpReadResource', serverId, uri),
+
+  answerQuestion: (id, answer) => ipcRenderer.invoke('autobot:answerQuestion', id, answer),
+  answerPermission: (id, allow) => ipcRenderer.invoke('autobot:answerPermission', id, allow),
+
+  listNotebooks: () => ipcRenderer.invoke('autobot:listNotebooks'),
+  getNotebook: (name) => ipcRenderer.invoke('autobot:getNotebook', name),
+  saveNotebook: (name, cells) => ipcRenderer.invoke('autobot:saveNotebook', name, cells),
+  deleteNotebook: (name) => ipcRenderer.invoke('autobot:deleteNotebook', name),
+
+  shellStart: (opts) => ipcRenderer.invoke('autobot:shellStart', opts),
+  shellRun: (id, command, opts) => ipcRenderer.invoke('autobot:shellRun', id, command, opts),
+  shellWrite: (id, data) => ipcRenderer.invoke('autobot:shellWrite', id, data),
+  shellRead: (id) => ipcRenderer.invoke('autobot:shellRead', id),
+  shellList: () => ipcRenderer.invoke('autobot:shellList'),
+  shellKill: (id) => ipcRenderer.invoke('autobot:shellKill', id),
+
+  gitInfo: (cwd) => ipcRenderer.invoke('autobot:gitInfo', cwd),
+  gitRun: (cwd, args) => ipcRenderer.invoke('autobot:gitRun', cwd, args),
+  diff: (oldText, newText, label) => ipcRenderer.invoke('autobot:diff', oldText, newText, label),
+
+  browserRegister: (webContentsId) => ipcRenderer.invoke('autobot:browserRegister', webContentsId),
+  browserUnregister: (webContentsId) => ipcRenderer.invoke('autobot:browserUnregister', webContentsId),
+  browserLoadURL: (url) => ipcRenderer.invoke('autobot:browserLoadURL', url),
+  resolveUrl: (url, cwd) => ipcRenderer.invoke('autobot:resolveUrl', url, cwd),
+  browserGoBack: () => ipcRenderer.invoke('autobot:browserGoBack'),
+  browserGoForward: () => ipcRenderer.invoke('autobot:browserGoForward'),
+  browserReload: () => ipcRenderer.invoke('autobot:browserReload'),
+  browserStop: () => ipcRenderer.invoke('autobot:browserStop'),
+  browserGetURL: () => ipcRenderer.invoke('autobot:browserGetURL'),
+  browserGetTitle: () => ipcRenderer.invoke('autobot:browserGetTitle'),
+  browserRead: () => ipcRenderer.invoke('autobot:browserRead'),
+  browserEval: (code, userGesture) => ipcRenderer.invoke('autobot:browserEval', code, userGesture),
+  browserClick: (selector, index) => ipcRenderer.invoke('autobot:browserClick', selector, index),
+  browserType: (selector, text) => ipcRenderer.invoke('autobot:browserType', selector, text),
+  browserPress: (key) => ipcRenderer.invoke('autobot:browserPress', key),
+  browserHover: (selector, index) => ipcRenderer.invoke('autobot:browserHover', selector, index),
+  browserSelect: (selector, value) => ipcRenderer.invoke('autobot:browserSelect', selector, value),
+  browserScroll: (direction, amount, selector) => ipcRenderer.invoke('autobot:browserScroll', direction, amount, selector),
+  browserWaitFor: (selector, timeoutMs) => ipcRenderer.invoke('autobot:browserWaitFor', selector, timeoutMs),
+  browserScreenshot: (fullPage) => ipcRenderer.invoke('autobot:browserScreenshot', fullPage),
+  browserSyncTabs: (state) => ipcRenderer.invoke('autobot:browserSyncTabs', state),
+  browserListTabs: () => ipcRenderer.invoke('autobot:browserListTabs'),
+  onBrowserEnsure: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on('autobot:browserEnsure', handler);
+    return () => ipcRenderer.removeListener('autobot:browserEnsure', handler);
+  },
+  onBrowserTabsCommand: (cb) => {
+    const handler = (event, cmd) => cb(cmd);
+    ipcRenderer.on('autobot:browserTabsCommand', handler);
+    return () => ipcRenderer.removeListener('autobot:browserTabsCommand', handler);
+  },
+
+  openAbout: () => ipcRenderer.invoke('autobot:openAbout'),
+  openQuickEntry: () => ipcRenderer.invoke('autobot:openQuickEntry'),
+  quickSubmit: (payload) => ipcRenderer.invoke('autobot:quickSubmit', payload),
+  openArtifactWindow: (payload) => ipcRenderer.invoke('autobot:openArtifactWindow', payload),
+  printToPdf: (payload) => ipcRenderer.invoke('autobot:printToPdf', payload),
+  onQuickEntry: (cb) => {
+    const handler = (event, payload) => cb(payload);
+    ipcRenderer.on('autobot:quickEntry', handler);
+    return () => ipcRenderer.removeListener('autobot:quickEntry', handler);
+  },
+});

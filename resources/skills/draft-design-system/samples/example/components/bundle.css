@@ -1,0 +1,8 @@
+.em-btn { font: inherit; font-size: 15px; height: 36px; padding: 0 var(--space-4); border-radius: var(--radius-md); border: 1px solid var(--line); background: var(--surface-raised); color: var(--ink); cursor: pointer; }
+.em-btn-primary { background: var(--ember); border-color: var(--ember); color: var(--on-ember); }
+.em-btn:focus-visible { outline: 2px solid transparent; outline-offset: 2px; box-shadow: var(--focus-ring, 0 0 0 3px currentColor); }
+.em-badge { display: inline-block; font-size: 12px; line-height: 20px; padding: 0 var(--space-2); border-radius: var(--radius-sm); background: var(--line); color: var(--ink); }
+.em-badge-ember { background: var(--ember-soft); color: var(--ember); }
+.em-badge-leaf { background: var(--leaf-soft); color: var(--leaf); }
+body { margin: 0; font-family: var(--font-sans); background: var(--surface); color: var(--ink); }
+.em-row { display: flex; gap: var(--space-3); align-items: center; padding: var(--space-4); }

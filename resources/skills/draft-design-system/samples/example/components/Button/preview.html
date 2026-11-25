@@ -1,0 +1,12 @@
+<!-- @dsCard group="Actions" height=72 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Button — preview</title></head>
+<body>
+<div id="root" class="em-row"></div>
+<script>
+  var E = window.Ember, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null, h(E.Button, { variant: 'primary' }, 'Add to basket'), h(E.Button, null, 'Details')));
+</script>
+</body>
+</html>
