@@ -435,3 +435,50 @@ through the `ChatView` call site; re-verified with a clean console and a 13 k-ch
 | `test/live/retry-ui.cjs` | ✅ PASS — cut-off turn replaced, not stacked |
 | `test/live/composer-flow.cjs` | ✅ PASS — `think>text>tool>text`, page in pane **and** on disk (`MINDMAP.md`, `index.html`) |
 | `test/live/gateway-502.cjs` | ✅ PASS — 502 retried, explained, never rendered raw |
+
+## 13. Real-model verification (no stubs)
+
+The stub harness proves the *mechanism*. Section 13 proves a **real** frontier model uses it.
+`test/live/swarm-real.cjs` writes a two-model pool to `~/.autobot/orchestrator.json` — the exact
+file the app reads — with `deepseek/deepseek-v4.1-flash-1017` at `tier: small` and
+`moonshotai/kimi-k3.1-pro` at `tier: critical`, sends one sentence through the real composer, and
+restores the pool byte-for-byte on every exit path (including crashes).
+
+Prompt sent (verbatim):
+> Use the Swarm tool to run a two-agent team on this job: create two tiny files in this project
+> folder - alpha.txt containing exactly the word ALPHA and beta.txt containing exactly the word
+> BETA. These are two independent parts, so give each part its own agent.
+
+| Check | Result |
+|---|---|
+| Composer accepted and sent | ✅ |
+| Renderer did not crash (no `Runtime.exceptionThrown`) | ✅ |
+| A real model **chose** `Swarm` unprompted-by-harness | ✅ Kimi called `Swarm` on its own |
+| Supervisor emitted a parseable plan | ✅ 2 subtasks, both `small` |
+| Per-agent models are real ids | ✅ `deepseek/deepseek-v4.1-flash-1017` |
+| Tier routing actually cheapened the work | ✅ both mechanical subtasks → **small** model, not the frontier one |
+| Supervisor reviewed on the frontier tier | ✅ `supervisor (review)` row on `moonshotai/kimi-k3.1-pro`, `CRITICAL` |
+| A real model reviewed and merged | ✅ |
+| Worker streams stayed out of the parent reply | ✅ `workerTextLeaked: false` |
+| `alpha.txt` on disk with right content | ✅ `ALPHA` |
+| `beta.txt` on disk with right content | ✅ `BETA` |
+| Files written into the conversation's project folder | ✅ `~/Helio Bot/use-the-swarm-tool-to-run-a-two-agent-te/{MINDMAP.md,alpha.txt,beta.txt}` |
+| No error bar | ✅ |
+| Wall clock | 18 s (2 real API round-trips of delegation + 2 workers + 1 review merge) |
+
+Screenshot: `screenshots/swarm-real.png`. **PASS on all 11 checks, first attempt.**
+
+## 14. Shipped artifact
+
+`npm run dist` (mac arm64, unsigned) → `release/HelioBot-1.0.0-arm64.dmg` (113,415,570 B) and
+`.zip` (109,308,688 B). Verified inside `Helio Bot.app/Contents/Resources/app.asar`:
+
+| Content | Present |
+|---|---|
+| `## Delegation — when to use a team` (system prompt) | ✅ |
+| `TIER_RANK` / `normalizeTier` (swarm module) | ✅ 12 hits |
+| Renderer `subagent` rows + `.subagent` CSS | ✅ `dist/assets/index-CPdXqdk3.js` |
+
+Note: the first `npm run dist` was started before the delegation-prompt edit, so it shipped a
+model that was never told the team existed. That stale build was discarded and the package was
+rebuilt after the edit; the asar checks above are what confirm the fix is in the artifact.

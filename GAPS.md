@@ -835,6 +835,7 @@ and heavy task or critical use frontier model, so there must be a supervisor mod
 | 5 | No supervisor concept | — | supervisor = strongest tier in the roster, always; `swarm` events `start|planned|dispatched|done` drive a supervisor badge and pre-populate queued rows so the team is visible *before* work lands |
 | 6 | Parallelism was unobservable | — | `planned` phase lists every agent + model up front; `dispatched` phase closes them out |
 | 7 | Orchestrator had no notion of strength | provider list was a flat failover list | Settings → Orchestrator has a per-provider `tier` select (small / heavy / critical), persisted through `setOrchestrator` |
+| 8 | **The model was never told it may delegate** | `SYSTEM_PROMPT` mentioned tools, files, browser and verification — not `Task`/`Swarm`. The team existed but nothing invited the model to use it, so a real model would grind through a multi-part build alone | new **"Delegation — when to use a team"** block in `SYSTEM_PROMPT`: when to stay solo, when to call `Swarm` (2+ independent parts, supervisor splits/reviews), when to call `Task` (one isolated sub-task whose chatter should stay out of context), and the `small` / `heavy` / `critical` tier contract incl. `{"model":"<id>"}` pinning |
 
 ### P.3 Design notes worth keeping
 
