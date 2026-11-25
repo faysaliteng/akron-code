@@ -288,6 +288,30 @@ Example Desktop's sidebar now maps 1:1 onto working local features — not stubs
   bundle paths) and selects the first installed model.
 - Settings → Providers has the same control (Scan / Start, model count, model chips).
 
+### Subscription accounts — Claude Max / ChatGPT Plus-Pro / Antigravity / Grok
+
+- **Use the subscription you already pay for.** `Model → Subscription accounts`
+  signs in with loopback OAuth + PKCE and then speaks the provider's *native*
+  wire format — Anthropic Messages for Claude, the `codex` Responses shape for
+  ChatGPT and Grok, Cloud Code for Antigravity. No proxy needed.
+- **Multiple accounts per provider.** Sign in more than once, name each one, and
+  pick per conversation. Picking an account stores only
+  `provider.oauthProvider = 'claude:<account>'`; the bearer is minted in the main
+  process at the start of every turn, refreshed ~120 s before it expires, and
+  never reaches the renderer.
+- **Import what's already on this Mac** — the Claude Code keychain item, Codex
+  `auth.json`, Gemini creds, Grok config. Anything that isn't there is skipped
+  rather than faked.
+- **Honest labels.** Only Claude is verified end-to-end on this machine; the
+  ChatGPT / Antigravity / Grok rows carry an `unverified` chip because their
+  adapters are built from published wire formats and unit tests, not from a live
+  account here.
+- **Dead account is a sign-in problem, not an LLM error**: one human line
+  ("ChatGPT needs to be signed in again — open the model menu and choose Sign
+  in.") and `needsSignIn: true`, never a raw OAuth code or markup.
+- Files: `electron/provider-oauth.js`, `electron/providertransport.js`; suites
+  `test/provideroauth.test.js` (160) and `test/providertransport.test.js` (93).
+
 ### Local filesystem + per-conversation project folders
 
 - **`electron/paths.js`** — `expandPath`/`resolvePath` expand `~`/`$HOME`/`~user` so every

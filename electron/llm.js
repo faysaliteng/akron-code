@@ -5,6 +5,7 @@ const { toolDefinitions, runTool } = require('./tools');
 const swarm = require('./swarm');
 const hooks = require('./hooks');
 const budgetPool = require('./budget');
+const providertransport = require('./providertransport');
 
 // Registry of live sub-agents (for TaskStop / ListAgents).
 const subagentControllers = new Map(); // name -> AbortController
@@ -163,8 +164,11 @@ function parseTextToolCalls(text) {
 function normalizeProvider(p) {
   p = p || {};
   let baseURL = (p.baseURL || '').trim();
-  if (!baseURL) baseURL = 'http://localhost:11434/v1';
-  if (!baseURL.endsWith('/')) baseURL += '/';
+  // A native transport (Anthropic Messages / Codex responses / Google Cloud
+  // Code) knows its own endpoint. Defaulting to Ollama here would POST a
+  // subscription bearer token at localhost — so leave it empty for them.
+  if (!baseURL && !p.transport) baseURL = 'http://localhost:11434/v1';
+  if (baseURL && !baseURL.endsWith('/')) baseURL += '/';
   const model = (p.model || '').trim() || 'llama3.1';
   return {
     baseURL,
@@ -181,10 +185,28 @@ function normalizeProvider(p) {
     // when NOT 'auto', so providers that reject it are never sent an unknown field.
     reasoningLevel: ['low', 'medium', 'high'].includes(p.reasoningLevel) ? p.reasoningLevel : 'auto',
     supportsTools: p.supportsTools !== false,
+    // Native provider transports (Anthropic Messages, Codex responses, Google
+    // Cloud Code). When `transport` names a real adapter, `chatCompletion`
+    // delegates instead of assuming an OpenAI-compatible `/chat/completions`
+    // gateway — a subscription endpoint is not an API gateway.
+    transport: p.transport || '',
+    oauth: !!p.oauth,
+    accessToken: p.accessToken || '',
+    account: p.account || '',
+    accountId: p.accountId || '',
+    sessionId: p.sessionId || '',
+    codexUrl: p.codexUrl || '',
+    project: p.project || '',
   };
 }
 
 async function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride) {
+  // Delegating to a wire adapter keeps one stream contract for the agent loop:
+  // the adapter returns the same {content, tool_calls, finish_reason, usage}
+  // shape the OpenAI-compatible path does, so failover and parsing are unchanged.
+  if (providertransport.needsTransport(provider)) {
+    return providertransport.chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride);
+  }
   const url = provider.baseURL + 'chat/completions';
   const body = {
     model: provider.model,
@@ -787,7 +809,16 @@ async function runAgent(opts) {
   let providerList = [normalizeProvider(opts.provider)];
   let activeIndex = 0;
   if (orch && orch.enabled && Array.isArray(orch.providers) && orch.providers.length) {
-    providerList = orch.providers.map((p) => normalizeProvider({ baseURL: p.baseURL, apiKey: p.apiKey, model: p.model, temperature: p.temperature, maxTokens: p.maxTokens, reasoningLevel: p.reasoningLevel }));
+    // Preserve native-transport fields too: an orchestrator pool may mix
+    // gateways with subscription accounts, and dropping `transport`/tokens here
+    // would silently send a subscription model down the OpenAI-compatible path.
+    providerList = orch.providers.map((p) => normalizeProvider({
+      baseURL: p.baseURL, apiKey: p.apiKey, model: p.model,
+      temperature: p.temperature, maxTokens: p.maxTokens, reasoningLevel: p.reasoningLevel,
+      transport: p.transport, oauth: p.oauth, accessToken: p.accessToken,
+      account: p.account, accountId: p.accountId, sessionId: p.sessionId,
+      codexUrl: p.codexUrl, cloudcodeUrl: p.cloudcodeUrl, project: p.project,
+    }));
     activeIndex = Math.max(0, Math.min(Number(orch.activeIndex) || 0, providerList.length - 1));
   }
   const getIndex = () => activeIndex % providerList.length;

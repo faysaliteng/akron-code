@@ -733,6 +733,42 @@ button { font-family: inherit; letter-spacing: inherit; }
 .model-check { color: var(--accent); }
 .model-menu-divider { height: 1px; background: var(--border); margin: 6px 4px; }
 
+/* Subscription accounts (Claude Max / ChatGPT / Antigravity / Grok) */
+.prov-group { padding: 2px 4px 4px; }
+.prov-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px 2px; }
+.prov-name { font-size: var(--fs-footnote); font-weight: 600; color: var(--text-100); flex: 0 0 auto; }
+.prov-unv {
+  font-family: var(--micro); font-size: 10px; text-transform: lowercase;
+  color: var(--text-400); border: 1px solid var(--border-strong);
+  border-radius: 999px; padding: 0 6px; line-height: 15px; flex: 0 0 auto;
+}
+.prov-link {
+  margin-left: auto; flex: 0 0 auto; border: none; background: none; cursor: pointer;
+  color: var(--accent-text); font-size: var(--fs-caption); font-weight: 500;
+  padding: 2px 4px; border-radius: var(--radius-sm);
+}
+.prov-link:hover { background: var(--accent-soft); }
+.prov-link:disabled { opacity: 0.55; cursor: default; }
+.prov-acct { display: flex; align-items: center; gap: 2px; border-radius: var(--radius-md); }
+.prov-acct:hover { background: var(--bg-200); }
+.prov-acct.on { background: var(--accent-soft); }
+.prov-acct .prov-pick {
+  display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0;
+  border: none; background: none; cursor: pointer; text-align: left;
+  padding: 7px 8px; color: var(--text-000); border-radius: var(--radius-md);
+}
+.prov-x {
+  flex: 0 0 auto; border: none; background: none; cursor: pointer; color: var(--text-400);
+  padding: 4px 6px; border-radius: var(--radius-sm); display: flex; align-items: center;
+}
+.prov-x:hover { color: var(--red); background: var(--bg-300); }
+.prov-none { padding: 2px 10px 6px; font-size: var(--fs-caption); color: var(--text-400); }
+.prov-notice {
+  margin: 4px 6px 2px; padding: 6px 8px; border-radius: var(--radius-sm);
+  background: rgba(254, 129, 129, 0.10); color: var(--text-100);
+  font-size: var(--fs-caption); line-height: 1.35; word-break: break-word;
+}
+
 /* Ollama: "Connect" row in the picker + model list in Settings */
 .model-opt.model-connect { color: var(--accent-text); }
 .model-opt.model-connect:hover { background: var(--accent-soft); }

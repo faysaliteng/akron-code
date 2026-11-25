@@ -4078,6 +4078,43 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
   // exist (404 → "cannot use"), and nothing else ever showed up in the picker.
   const [ollama, setOllama] = useState({});
   const [ollamaBusy, setOllamaBusy] = useState(false);
+  // Subscription accounts (Claude Max, ChatGPT, Antigravity, Grok). The
+  // renderer only ever sees non-secret metadata; tokens are minted in main.
+  const [provOauth, setProvOauth] = useState(null);
+  const [provBusy, setProvBusy] = useState('');
+  const [provNotice, setProvNotice] = useState('');
+
+  const loadProvOauth = useCallback(async () => {
+    const r = await Promise.resolve(window.autobot.providerStatus()).catch(() => null);
+    if (r && r.ok && r.status) setProvOauth(r.status);
+    return r && r.status;
+  }, []);
+
+  useEffect(() => {
+    if (modelMenuOpen) loadProvOauth();
+  }, [modelMenuOpen, loadProvOauth]);
+
+  // Sign in / import / sign out always refresh the list so the picker reflects
+  // the real account state (never an optimistic guess).
+  const providerAction = async (kind, id, account) => {
+    setProvBusy(kind + ':' + (id || ''));
+    try {
+      let r;
+      if (kind === 'signin') r = await window.autobot.providerSignIn(id);
+      else if (kind === 'signout') r = await window.autobot.providerSignOut(id, account);
+      else if (kind === 'import') r = await window.autobot.providerImport();
+      if (r && r.ok === false && r.error) {
+        // One human line, never a stack trace or raw markup.
+        setProvNotice(String(r.error).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 220));
+      } else {
+        setProvNotice('');
+      }
+      await loadProvOauth();
+      return r;
+    } finally {
+      setProvBusy('');
+    }
+  };
 
   const scanOllama = useCallback(async () => {
     const bases = new Set();
@@ -4291,14 +4328,31 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
   const pickModel = (p, model) => {
     const base = normBase(p.baseURL);
     const key = keyFor(p);
-    setProvider((v) => ({ ...v, baseURL: p.baseURL, model: model || p.model, apiKey: key, supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto' }));
+    setProvider((v) => ({ ...v, baseURL: p.baseURL, model: model || p.model, apiKey: key, supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto', oauthProvider: '', transport: '', accessToken: '', oauth: false }));
     if (key && base) setProviderKeys((m) => ({ ...(m || {}), [base]: key }));
+    setModelMenuOpen(false);
+  };
+
+  // Pick a subscription account. Only the *id* goes into provider state: main
+  // resolves it to a short-lived bearer token at the start of every turn.
+  const pickOauthAccount = (prov, account, model) => {
+    setProvider((v) => ({
+      ...v,
+      baseURL: '',
+      apiKey: '',
+      model: model || (prov.models && prov.models[0] && prov.models[0].id) || v.model,
+      supportsTools: true,
+      oauthProvider: prov.id + ':' + account,
+      transport: prov.transport,
+      oauth: true,
+      accessToken: '',
+    }));
     setModelMenuOpen(false);
   };
 
   // Unconfigured preset → preload it and jump straight to the key field.
   const configurePreset = (p) => {
-    setProvider((v) => ({ ...v, baseURL: p.baseURL, model: p.model || v.model, apiKey: keyFor(p), supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto' }));
+    setProvider((v) => ({ ...v, baseURL: p.baseURL, model: p.model || v.model, apiKey: keyFor(p), supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto', oauthProvider: '', transport: '', accessToken: '', oauth: false }));
     setModelMenuOpen(false);
     openSettings();
   };
@@ -4500,6 +4554,55 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                       <span className="model-opt-name">{ollamaBusy ? 'Connecting to Ollama…' : 'Connect Ollama (local)'}</span>
                       <span className="model-opt-prov">{ollamaBusy ? '' : 'starts the server'}</span>
                     </button>
+                  )}
+                  {provOauth && (
+                    <>
+                      <div className="model-menu-divider" />
+                      <div className="model-menu-head">Subscription accounts</div>
+                      {provOauth.providers.map((pv) => {
+                        const accounts = pv.accounts || [];
+                        // Honesty: only Claude has been verified end-to-end on
+                        // this machine; the other adapters are wire-tested only.
+                        const unverified = pv.id !== 'claude';
+                        return (
+                          <div key={pv.id} className="prov-group">
+                            <div className="prov-head">
+                              <span className="prov-name">{pv.label}</span>
+                              {unverified && <span className="prov-unv" title="Adapter implemented from the published wire format and unit-tested; no account of this kind exists on this machine to verify end-to-end.">unverified</span>}
+                              {pv.canBrowserSignIn && (
+                                <button
+                                  className="prov-link"
+                                  disabled={!!provBusy}
+                                  onClick={() => providerAction('signin', pv.id)}
+                                >{provBusy === 'signin:' + pv.id ? 'Opening browser…' : (accounts.length ? 'Add account' : 'Sign in')}</button>
+                              )}
+                            </div>
+                            {accounts.map((a) => {
+                              const on = provider.oauthProvider === a.id;
+                              return (
+                                <div key={a.id} className={'prov-acct' + (on ? ' on' : '')}>
+                                  <button className="prov-pick" title={a.expired ? 'Token expired — the next turn will refresh it' : (a.label || a.account)} onClick={() => pickOauthAccount(pv, a.account)}>
+                                    <span className={'model-dot ' + (a.expired ? 'out' : 'ok')} />
+                                    <span className="model-opt-name">{a.label || a.account}</span>
+                                    <span className="model-opt-prov">{a.plan || a.source || 'signed in'}</span>
+                                    {on && <Icon name="Check" size={13} className="model-check" />}
+                                  </button>
+                                  <button className="prov-x" title="Sign out" disabled={!!provBusy} onClick={() => providerAction('signout', pv.id, a.account)}><Icon name="X" size={12} /></button>
+                                </div>
+                              );
+                            })}
+                            {!accounts.length && (
+                              <div className="prov-none">{pv.canBrowserSignIn ? 'Not signed in' : 'Add a token in Settings'}</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                      <button className="model-opt" disabled={!!provBusy} onClick={() => providerAction('import')}>
+                        <Icon name="Plug" size={14} />
+                        <span className="model-opt-name">{provBusy === 'import:' ? 'Scanning this Mac…' : 'Import accounts from this Mac'}</span>
+                      </button>
+                      {provNotice && <div className="prov-notice">{provNotice}</div>}
+                    </>
                   )}
                   <div className="model-menu-divider" />
                   <button className="model-opt" onClick={() => { setModelMenuOpen(false); openSettings(); }}>
@@ -4783,7 +4886,9 @@ function ComplianceSection({ compliance, setCompliance }) {
 
 
 function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator, features, setFeatures, testProvider, onClose, T, account, setAccount, permissions, setPermissions, compliance, setCompliance }) {
-  const set = (k) => (e) => setProvider({ ...provider, [k]: e.target.value });
+  // Editing an endpoint/model by hand means this is no longer a signed-in
+  // subscription selection — drop the OAuth binding so the gateway path wins.
+  const set = (k) => (e) => setProvider({ ...provider, [k]: e.target.value, ...(k === 'baseURL' || k === 'apiKey' ? { oauthProvider: '', transport: '', accessToken: '', oauth: false } : {}) });
   // Persist every key against its own endpoint so switching models never reuses
   // (or loses) another provider's credential.
   const keyForEntry = (baseURL) => (providerKeys || {})[normBase(baseURL)] || PRESET_KEYS[normBase(baseURL)] || '';
@@ -4802,7 +4907,7 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
   const [ollamaBusy, setOllamaBusy] = useState(false);
   const applyOllamaModel = (name) => {
     const base = ollama.base || 'http://localhost:11434/v1';
-    setProvider((v) => ({ ...v, baseURL: base, model: name, apiKey: '', supportsTools: true }));
+    setProvider((v) => ({ ...v, baseURL: base, model: name, apiKey: '', supportsTools: true, oauthProvider: '', transport: '', accessToken: '', oauth: false }));
     setKeyForEntry(base, '');
   };
   const connectOllama = async (start) => {
@@ -4851,7 +4956,7 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
         <h3>{T('settings.provider')}</h3>
         <div className="presets">
           {PRESETS.map((p) => (
-            <button key={p.name} className={provider.baseURL === p.baseURL && provider.model === p.model ? 'on' : ''} onClick={() => { const k = p.apiKey || keyForEntry(p.baseURL); setProvider((v) => ({ ...v, baseURL: p.baseURL, model: p.model, apiKey: k, supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto' })); if (k) setKeyForEntry(p.baseURL, k); }}>{p.name}</button>
+            <button key={p.name} className={provider.baseURL === p.baseURL && provider.model === p.model ? 'on' : ''} onClick={() => { const k = p.apiKey || keyForEntry(p.baseURL); setProvider((v) => ({ ...v, baseURL: p.baseURL, model: p.model, apiKey: k, supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto', oauthProvider: '', transport: '', accessToken: '', oauth: false })); if (k) setKeyForEntry(p.baseURL, k); }}>{p.name}</button>
           ))}
         </div>
         <div className="ollama-box">

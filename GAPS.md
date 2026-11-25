@@ -1308,3 +1308,73 @@ A dead `oauth` namespace would have been invisible in a screenshot but fatal
 in use: Linear, Notion, Sentry, Atlassian and most of the registry's hosted
 servers all require it. With sign-in real, the connector catalog is a working
 surface rather than a list.
+
+---
+
+# V. SUBSCRIPTION ACCOUNTS — CLAUDE MAX / CHATGPT / ANTIGRAVITY / GROK (2026-11-25)
+
+## V.1 The gap
+
+"Use my Claude Max subscription" cannot be done by pointing an
+OpenAI-compatible provider at a proxy: the subscription token is an Anthropic
+bearer (`sk-ant-oat01-…`) and needs the Messages wire format, the
+`anthropic-beta: oauth-2025-04-20` header, `x-app: cli`, and no `temperature`.
+The same is true for a ChatGPT Plus/Pro token (Responses/`codex` shape) and a
+Google Antigravity token (Cloud Code transcoded RPC). Without native
+transports, a bought subscription was unusable in the app.
+
+## V.2 What was built
+
+- `electron/provider-oauth.js` — provider registry (real authorize/token URLs
+  and first-party public client IDs), loopback OAuth + PKCE S256, multi-account
+  index at `~/.autobot/provider-oauth.json` (`0600`, non-secret), tokens in
+  `secretstore` under `provider-oauth:<provider>:<account>`, lazy refresh with
+  rotated-token write-back, importers for what is already on this Mac, and
+  `postToken` that is resilient without being permissive.
+- `electron/providertransport.js` — `anthropic` / `codex` / `google` adapters
+  behind `needsTransport(provider)`, returning the exact shape the agent loop
+  already consumes (`{role, content, tool_calls, finish_reason, usage}` with
+  `tool_calls[].function.arguments` as a JSON **string**).
+- `electron/main.js` — `hydrateProvider()` runs at `autobot:run`,
+  `autobot:chatOnce`, `autobot:compact`, `autobot:testProvider` and
+  `runScheduledPrompt`, and hydrates every `orchestrator.providers` entry, so a
+  pool can mix gateways with subscriptions.
+- Six IPC channels (`autobot:providerStatus|SignIn|SignOut|Import|AddBearer|SetActive`)
+  plus preload bindings; the renderer never receives a token.
+- Composer UI: `Model → Subscription accounts` with per-provider rows, an
+  `unverified` chip where the adapter has not been proven on this machine, and
+  one account row per signed-in identity.
+
+## V.3 Details that only a live call reveals
+
+1. **Claude's token endpoint is `api.anthropic.com/v1/oauth/token`**, not
+   `console.anthropic.com`. The identical grant against `console` returns
+   **429**; against `api` it succeeds.
+2. **The body must be `application/json`.** Form-encoding the same fields
+   returns **400**. The refresh body is exactly
+   `{grant_type, refresh_token, client_id}` — echoing `scope` fails.
+3. **A subscription token must never fall back to Ollama.** `normalizeProvider`
+   used to default `baseURL` to `http://localhost:11434/v1` when unset; with a
+   native `transport` that would POST a bearer at a local model server. It now
+   stays `''` and the adapter supplies its own default.
+4. **Gemini reports `STOP` even when it emitted function calls**, so a pending
+   `tool_calls` always wins over `stop` when settling `finish_reason`.
+5. **Codex's input array order matters**: assistant prose must be emitted as an
+   `output_text` item *before* the `function_call` item, or indices shift.
+
+## V.4 Verification
+
+| Check | Result |
+|---|---|
+| `node test/provideroauth.test.js` (new) | **160 passed / 0 failed** |
+| `node test/providertransport.test.js` (new) | **93 passed / 0 failed** |
+| Live inference | imported token → `api.anthropic.com` → `OAUTH-OK` (15 in / 7 out) |
+| Live in the app (CDP) | account picked → turn streamed `RUN-OK` with `usage`/`done`/`complete`; bogus account → `needsSignIn:true` with one human line |
+| Gates | parity-audit EXIT 0; tool definitions unchanged at **141** |
+
+**Honesty:** only **Claude** is verified end-to-end here. Codex / Gemini / Grok
+are implemented from their published wire formats and unit-tested; the UI marks
+them `unverified` instead of claiming otherwise. The Claude Code *refresh* token
+on this machine is dead — the current access token works and auto-refreshes
+from our own stored copy, but a `claude /login` is still needed once that copy
+expires without a usable refresh token.

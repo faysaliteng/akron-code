@@ -42,6 +42,15 @@ contextBridge.exposeInMainWorld('autobot', {
   pluginAuthStatus: (id) => ipcRenderer.invoke('autobot:pluginAuthStatus', id),
   pluginSignOut: (id) => ipcRenderer.invoke('autobot:pluginSignOut', id),
 
+  // Subscription accounts (Claude Max / ChatGPT / Antigravity / Grok). Only
+  // non-secret status crosses the bridge; tokens stay in the main process.
+  providerStatus: () => ipcRenderer.invoke('autobot:providerStatus'),
+  providerSignIn: (id) => ipcRenderer.invoke('autobot:providerSignIn', id),
+  providerSignOut: (id, account) => ipcRenderer.invoke('autobot:providerSignOut', id, account),
+  providerImport: () => ipcRenderer.invoke('autobot:providerImport'),
+  providerAddBearer: (id, token, label) => ipcRenderer.invoke('autobot:providerAddBearer', id, token, label),
+  providerSetActive: (id, account) => ipcRenderer.invoke('autobot:providerSetActive', id, account),
+
   listScheduledTasks: () => ipcRenderer.invoke('autobot:listScheduledTasks'),
   createScheduledTask: (input) => ipcRenderer.invoke('autobot:createScheduledTask', input),
   updateScheduledTask: (id, patch) => ipcRenderer.invoke('autobot:updateScheduledTask', id, patch),

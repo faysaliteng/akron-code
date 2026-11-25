@@ -15,6 +15,7 @@ const git = require('./git');
 const pluginsDir = require('./plugins');
 const scheduler = require('./scheduler');
 const providerStatus = require('./providerstatus');
+const providerOauth = require('./provider-oauth');
 const workspace = require('./workspace');
 const paths = require('./paths');
 const mindmap = require('./mindmap');
@@ -566,8 +567,53 @@ function applyFeatures(features) {
   registerQuickShortcuts(!!features.quickEntry);
 }
 
+/**
+ * Turn a renderer-side provider into one the wire adapters can actually call.
+ *
+ * The renderer only ever holds `oauthProvider: 'claude:<account>'` — never a
+ * token. Resolving it here keeps the bearer token in the main process, mints a
+ * fresh one lazily before each turn, and means a long-running session survives
+ * token expiry without the user re-signing-in.
+ */
+async function hydrateProvider(provider) {
+  if (!provider || typeof provider !== 'object' || !provider.oauthProvider) return provider;
+  let r;
+  try {
+    r = await providerOauth.resolve(String(provider.oauthProvider));
+  } catch (e) {
+    // A dead refresh token is a sign-in problem, not an LLM failure. Surface one
+    // human line instead of an OAuth error code the composer can't act on.
+    const prov = providerOauth.provider(String(provider.oauthProvider).split(':')[0]);
+    const label = (prov && prov.label) || 'This provider';
+    const err = new Error(`${label} needs to be signed in again — open the model menu and choose Sign in.`);
+    err.code = 'provider_needs_signin';
+    err.human = true;
+    err.cause = e;
+    throw err;
+  }
+  return Object.assign({}, provider, {
+    // Native transport wins over any OpenAI-compatible baseURL the renderer had.
+    transport: r.transport,
+    accessToken: r.accessToken,
+    account: r.account,
+    oauth: true,
+    model: provider.model || (r.models && r.models[0] && r.models[0].id) || '',
+  });
+}
+
 ipcMain.handle('autobot:run', async (event, payload) => {
-  const { runId, messages, provider, cwd, useMemory, maxSteps, orchestrator, permissions, title, convId, swarm } = payload || {};
+  let { runId, messages, provider, cwd, useMemory, maxSteps, orchestrator, permissions, title, convId, swarm } = payload || {};
+  // Resolve subscription accounts into a live bearer token before the turn.
+  try {
+    provider = await hydrateProvider(provider);
+    if (orchestrator && Array.isArray(orchestrator.providers)) {
+      orchestrator = Object.assign({}, orchestrator, {
+        providers: await Promise.all(orchestrator.providers.map((p) => hydrateProvider(p))),
+      });
+    }
+  } catch (e) {
+    return { ok: false, error: e.message, needsSignIn: e.code === 'provider_needs_signin' };
+  }
   const ac = new AbortController();
   runs.set(runId, ac);
   const owner = winFor(event); // route streaming events back to the originating window
@@ -835,7 +881,22 @@ ipcMain.handle('autobot:ollamaServe', async (event, action) => {
 
 ipcMain.handle('autobot:testProvider', async (event, provider) => {
   try {
-    const p = normalizeProvider(provider);
+    // A subscription account is not an OpenAI-compatible gateway — test it
+    // through the same wire adapter the agent loop will use.
+    let p;
+    try {
+      p = normalizeProvider(await hydrateProvider(normalizeProvider(provider)));
+    } catch (e) {
+      return { ok: false, error: e.message, needsSignIn: e.code === 'provider_needs_signin' };
+    }
+    if (p.transport) {
+      const { chatCompletion } = require('./providertransport');
+      const msg = await chatCompletion(p, [{ role: 'user', content: 'ping' }], [], () => {}, null, 16);
+      const text = typeof msg.content === 'string'
+        ? msg.content
+        : (Array.isArray(msg.content) ? msg.content.map((x) => (x && x.text) || '').join('') : '');
+      return { ok: true, reply: String(text || '').trim().slice(0, 200), model: p.model };
+    }
     const url = p.baseURL + 'chat/completions';
     const res = await fetch(url, {
       method: 'POST',
@@ -851,12 +912,78 @@ ipcMain.handle('autobot:testProvider', async (event, provider) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Subscription provider accounts (Claude Max, ChatGPT Plus/Pro, Antigravity,
+// Grok). The renderer never sees a token: it asks for status, picks an
+// account id, and the main process does the token minting at run time.
+// ---------------------------------------------------------------------------
+function oneLine(e) {
+  const s = String((e && (e.message || e.error_description || e.error)) || e || 'unknown error')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (s || 'unknown error').slice(0, 240);
+}
+
+ipcMain.handle('autobot:providerStatus', () => {
+  try { return { ok: true, status: providerOauth.status() }; } catch (e) { return { ok: false, error: oneLine(e) }; }
+});
+
+ipcMain.handle('autobot:providerSignIn', async (event, id) => {
+  try {
+    const rec = await providerOauth.authorize(String(id || ''), { openExternal: (url) => shell.openExternal(url) });
+    return { ok: true, account: rec };
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
+ipcMain.handle('autobot:providerSignOut', (event, id, account) => {
+  try {
+    const raw = String(id || '');
+    const [provId, ...rest] = raw.split(':');
+    const acct = account || rest.join(':');
+    if (!acct) return { ok: false, error: 'which account?' };
+    return { ok: true, removed: providerOauth.removeAccount(provId, acct) };
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
+ipcMain.handle('autobot:providerImport', async () => {
+  try { return { ok: true, result: await providerOauth.importLocal() }; } catch (e) { return { ok: false, error: oneLine(e) }; }
+});
+
+ipcMain.handle('autobot:providerAddBearer', async (event, id, token, label) => {
+  try {
+    if (!token) return { ok: false, error: 'a token is required' };
+    const rec = await providerOauth.addBearer(String(id || ''), String(token), { label: label || '' });
+    return { ok: true, account: rec };
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
+ipcMain.handle('autobot:providerSetActive', (event, id, account) => {
+  try {
+    const raw = String(id || '');
+    const [provId, ...rest] = raw.split(':');
+    const acct = account || rest.join(':');
+    return { ok: true, active: providerOauth.setActive(provId, acct) };
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
 // One-shot completion — used by GUI slash commands (/compact, /btw, /recap,
 // /advisor) that need a model answer without opening a transcript turn.
 ipcMain.handle('autobot:chatOnce', async (event, payload) => {
   try {
     const { chatOnce } = require('./llm');
-    const p = (payload && payload.provider) || store.getSettings().provider || {};
+    let p = (payload && payload.provider) || store.getSettings().provider || {};
+    try { p = await hydrateProvider(p); } catch (e) {
+      return { ok: false, error: e.message, needsSignIn: e.code === 'provider_needs_signin' };
+    }
     const res = await chatOnce({
       provider: p,
       messages: (payload && payload.messages) || [],
@@ -874,8 +1001,11 @@ ipcMain.handle('autobot:chatOnce', async (event, payload) => {
 ipcMain.handle('autobot:compact', async (event, payload) => {
   try {
     const { chatOnce } = require('./llm');
-    const p = (payload && payload.provider) || store.getSettings().provider || {};
     const msgs = (payload && payload.messages) || [];
+    let p = (payload && payload.provider) || store.getSettings().provider || {};
+    try { p = await hydrateProvider(p); } catch (e) {
+      return { ok: false, error: e.message, needsSignIn: e.code === 'provider_needs_signin' };
+    }
     const text = (c) => {
       if (c == null) return '';
       if (typeof c === 'string') return c;
@@ -1691,8 +1821,11 @@ function scheduledProvider() {
 }
 
 async function runScheduledPrompt({ task }) {
-  const provider = scheduledProvider();
+  let provider = scheduledProvider();
   if (!provider || !provider.model) throw new Error('No LLM provider configured — open Settings and select a model first.');
+  // A scheduled task persists only the account id, so the bearer token is
+  // minted here at fire time (and refreshed if the subscription rotated).
+  provider = await hydrateProvider(provider);
   let out = '';
   const finalMessages = await runAgent({
     provider,

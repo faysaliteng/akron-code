@@ -624,3 +624,32 @@ connect with a standards-compliant OAuth 2.1 public client.
 | **Packaged app (DMG)** | ✅ same full loop re-proven in `release/mac-arm64/Helio Bot.app` (port 9444, `app.asar` contains `electron/mcpoauth.js`): Install → `["Remove","Sign in"]`, foot `OAuth sign-in \| registry \| needs sign-in \| Sign in` → Sign in → **connected in 1 s** (`authorized:true, connected:true, scope:"mcp.read mcp.write"`) → `["Remove","Sign out"]`, foot `… \| installed \| Sign out` → Sign out → `authorized:false`. Row 1 y=414, pill y=445, `footRight == pillRight == 590`, `footH: 54` |
 | Parity gate | ✅ `scripts/parity-audit.js` gained `mcp oauth (custom-3p)` (9 symbols) → **27 subsystem rows**, *NO ATOMIC GAPS*, EXIT 0 |
 | No new tool definitions | ✅ stays at **141** defs; the swarm gate is untouched |
+
+---
+
+## 20. Subscription accounts — Claude Max / ChatGPT / Antigravity / Grok (2026-11-25)
+
+A Claude Max subscription is **not** an OpenAI-compatible gateway: it speaks
+Anthropic's Messages wire format with a bearer `sk-ant-oat*` token, no
+`temperature`, and its own beta header. `electron/provider-oauth.js` signs in
+to each provider (loopback OAuth + PKCE), keeps **multiple accounts per
+provider**, and `electron/providertransport.js` speaks the native wire format
+so the token works where it was issued.
+
+| Check | Result |
+|---|---|
+| Providers wired | ✅ `claude` (`anthropic` transport), `chatgpt` (`codex`), `antigravity` (`google`), `grok` (`codex`) — public first-party client IDs, real authorize/token URLs |
+| Token endpoint corrections (learned live) | ✅ Claude token URL is `api.anthropic.com/v1/oauth/token` (`console.anthropic.com` **429s** the identical grant) and it requires an `application/json` body — form-encoded returns **400**. Refresh body is exactly `{grant_type, refresh_token, client_id}`, **no** `scope` echo |
+| Multi-account storage | ✅ index `~/.autobot/provider-oauth.json` (`0600`, non-secret: provider/account/label/plan/scopes/expiresAt/source); tokens in `secretstore` under `provider-oauth:<provider>:<account>` — never in the renderer, never in logs (`publicRecord` strips tokens, asserted) |
+| Refresh | ✅ lazy ~120 s before expiry (`REFRESH_SKEW_MS`); rotated refresh token written back and mirrored into the source app's store when the account was imported |
+| Encoding/limit handling | ✅ `postToken` tries the provider's `tokenFormat`, retries once with the alternate on 4xx encoding failures (not 429/401/403), backs off on 429/5xx via `retry-after` or exponential+jitter (capped 15 s), tags `err.transient` so a rate limit is never a dead account |
+| Import from this Mac | ✅ `importLocal()` → keychain `Claude Code-credentials`, Codex `auth.json`, Gemini creds, Grok config; imports what exists, **skips** what doesn't (live: exactly one account, `claude · max`, `source: claude-code`; the other three skipped) |
+| Wire adapters | ✅ `anthropicChat` (SSE text/thinking/`input_json_delta`/`tool_use`, non-streaming fallback, 401 → `err.status`, mid-stream error → `transient`); `codexChat` (`output_text` item emitted **before** `function_call`); `googleChat` (gRPC-transcoded `:loadCodeAssist` path, `STOP`-with-tools settles to `tool_calls`) |
+| Never leaks a token to the wrong host | ✅ `normalizeProvider` no longer defaults `baseURL` to `http://localhost:11434/v1` when `transport` is set, so a subscription bearer can't be POSTed at Ollama; failover pool preserves `transport`/`oauth`/`accessToken`/`account`/`accountId`/`sessionId`/`codexUrl`/`cloudcodeUrl`/`project` |
+| Dead account | ✅ `hydrateProvider` throws one human line with `err.code = 'provider_needs_signin'`; `autobot:run`, `chatOnce`, `compact`, `testProvider`, `runScheduledPrompt` all pre-hydrate and return `{ok:false, needsSignIn:true}` |
+| UI | ✅ `Model → Subscription accounts`: per-provider label, `unverified` chip on the three adapters with no local account to prove, `Sign in` / `Add account`, one row per account (`● label · plan`, `×` sign out), `Import accounts from this Mac`, one-line error strip. Picking an account stores only `provider.oauthProvider`; hand-editing `baseURL`/`apiKey` clears the binding |
+| Unit suites | ✅ `node test/provideroauth.test.js` → **160 passed, 0 failed**; `node test/providertransport.test.js` → **93 passed, 0 failed** |
+| **Live inference** | ✅ imported token against real `api.anthropic.com` → `OAUTH-OK` (usage 15 in / 7 out) |
+| **Live in the app (CDP)** | ✅ menu shows Claude (account row `Claude · max`), ChatGPT / Antigravity / Grok with `unverified`; picking the account + one turn streamed `RUN-OK` in ~2 s with `usage`, `done`, `complete`; bogus account → `{ok:false, needsSignIn:true, error:"ChatGPT needs to be signed in again — open the model menu and choose Sign in."}` |
+| Honesty | ⚠️ only **Claude** is verified end-to-end on this machine. Codex / Gemini / Grok are built from the published wire formats and unit-tested; the UI labels them `unverified` rather than claiming they were tested |
+| Gates | ✅ parity-audit EXIT 0, tool definitions unchanged at **141**, all other suites green (`artifactcanvas 90`, `mcpoauth 146`, `compliance 147`, `unfurl 99`, `extensionhost 162`, `search 9`, `e2e 141`, `hooks 49`, `sandbox 22`, `swarm 47`, `workflow 108`) |
