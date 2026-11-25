@@ -1168,3 +1168,70 @@ model string that the FreeLLMAPI gateway did not serve (`502`), so the turn neve
 ended and the mark correctly stayed `logo-live`; re-run with a served model
 (`fast`) ended the turn and the mark returned to `anim: none`. That is the
 intended semantics — a running turn keeps the mark alive while it retries.
+
+## 29. The model picker stops burying the current model (2026-11-25)
+
+The old menu rendered every available model as one flat column inside a 340 px
+box. With a live Antigravity account (38 models) plus the FreeLLMAPI router
+(1050 installed models) the scroll region measured **35 521 px** and the
+selected model was nowhere near the viewport, which is why the picker read as
+"broken" even though every model was listed.
+
+### 29.1 What changed
+
+| Old | New |
+|---|---|
+| one flat list per account | shelves keyed by the provider-reported family (`Gemini`, `Claude`, `API_PROVIDER_OPENAI_VERTEX` → "OpenAI Vertex (API)"), ranked Gemini→Claude→GPT→Grok→Codex first, sticky headers with counts |
+| insertion order | display names ordered `localeCompare(…, {numeric:true})`, so `Gemini 4 Neon (Low/Medium/High)` sit together |
+| 35 521 px of rows | one `.prov-model-scroll` per account, `max-height: 238px`, `overscroll-behavior: contain` |
+| scroll to find a model | filter box past 12 models, clear button, "No models match" prose |
+| session list flooded by the router catalog | `SessionModelList` — same shelves, but each mounts at most **30** rows with an explicit "Show all N"; a shelf whose pick sits past the cap pins that pick to the top instead of expanding 1050 rows; a filter query lifts the cap |
+| 340 px menu | `max-height: min(74vh, 620px)` with `overscroll-behavior: contain` |
+| pick invisible on open | reveal-on-mount effect centres the selected row |
+
+### 29.2 Measured against the running app (`:9333`)
+
+```
+before: menuScroll 35521  · freeLLMAPI rows 1050 · FAM groups 3 (antigravity)
+after : menuScroll  1016  · freeLLMAPI rows   30 · FAM groups 23 (session list)
+        menuH 592 · scrollBox { clientH: 238, of: "auto", maxH: "238px" }
+        fams: Ollama 2 · LM Studio 1 · FreeLLMAPI 30 · … · 23 shelves total
+```
+
+Search (session list): `q="qwen"` → **90** rows across **2** shelves
+(`FreeLLMAPI`, `ModelScope`), clear restores 1070.
+
+Cap/expand: "Show all 1050" → **1070** rows (35 266 px, deliberate) then
+"Show fewer" → **30**.
+
+Deep pick + reveal: selected `claude-sonnet-5-5` from the **last** row of the
+15-model Claude shelf (which starts scrolled to 0), closed and reopened the
+menu → the account re-expanded, `scrollTop: 158.5` of `397`, and the selected
+row satisfied `selVisible: true`. The reveal effect is keyed on `picked` and
+row count, so it re-centres on every open rather than only on first mount.
+
+Regression: `node build/probe-picker.cjs 9333` → **14 / 14**, including the
+live Antigravity catalog (not the 4-model static fallback) and the
+`/context`-visible window cache. `probe-logo`, the node test suite
+(`failing=0`) and `scripts/parity-audit.js` (`DEFS: 141`, `subsystems
+incomplete: 0`) are unchanged by the picker work.
+
+### 29.3 The same picker against the packaged DMG
+
+Rebuilt and re-run against `release/AkronBot-1.0.0-arm64.dmg`
+(sha256 `06aa4b72fdc8d146…`) mounted read-only, launched with
+`--remote-debugging-port=9444`:
+
+| Check | Packaged result |
+|---|---|
+| `probe-picker.cjs 9444` | **14 / 14** — live Antigravity catalog (38, not the 4-entry fallback), window labels on every row, `/context` cache written |
+| `probe-logo.cjs 9444 fast` | **pass** — 25 streaming samples on `logo-spin`, `coreAnim: logo-pulse`, `transformMoved: true`, idle rest `anim: none`, `idleStable: true` |
+| session menu | `menuH 592` · `menuScroll 736` (was 35 521) · 50 mounted rows · 12 top-level children |
+| shelves | `FreeLLMAPI`, `Ollama`, `LM Studio (local)`, `DeepSeek (official)`, … with counts |
+| cap | one `.prov-more` reading **“Show all 1050 · current pick pinned above”** |
+| filter | `.prov-search-in` present |
+| asar strings | `prov-more` ×2, `Show all` ×1, `regenerating with a larger budget` ×1, `logo-live` ×2, `isContextOverflow` ×8 — and **no** `token limit reached` / `retrying with` prose |
+
+So the shipped DMG carries the grouped-and-capped picker **and** the
+post-`59a5c0d` output-limit prose; the “Thought (token limit reached —
+retrying with N tokens)” wording cannot appear from this build.
