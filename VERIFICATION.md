@@ -1469,3 +1469,22 @@ matching `tool_call_id`, the budget escalates and is reused, no limit wording,
 `test/e2e.test.js` updated to the silent-retry contract → **112 / 112**. Full
 suite `failing=0`; `scripts/parity-audit.js` → `DEFS: 141`,
 `subsystems incomplete: 0`.
+
+### 32.5 The free-model route codes too (Live proof)
+
+The subscription providers are not the only code path; the app also ships the
+local FreeLLMAPI router (`http://localhost:3001/v1`, seven keyed upstreams:
+groq, gemini, cloudflare, nvidia, cohere, kilo, openrouter) as an
+OpenAI-compatible provider. `build/probe-local.cjs 9333 http://localhost:3001/v1 auto`
+selected `auto` (capability-first fallback, not a named model) and asked for the
+same three capabilities:
+
+- `Writing:toolcap.txt` → file created, `Running:cat toolcap.txt` →
+  `TOOLCAP-OK`, `Browsing:https://example.com` + `browser_snapshot` →
+  `Example Domain`, answer `WRITE=yes RUN=TOOLCAP-OK BROWSE=Example Domain`,
+  `Worked for 41s`
+- `markupLeak: false`, `error: null` — provider HTML never reached the transcript
+
+So the "any AI can code" claim holds on a non-subscription, non-vendor route as
+well, and the new probe covers plain OpenAI-compatible endpoints (no OAuth) in
+one command.
