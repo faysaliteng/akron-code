@@ -264,6 +264,77 @@ const noop = () => {};
   }
 
   // -------------------------------------------------------------------------
+  console.log('\ntransport — Anthropic 1M long-context beta');
+  // -------------------------------------------------------------------------
+  {
+    const cat = require('../electron/model-catalog');
+    cat.clearWindows();
+    const big = 'x'.repeat(700000); // ≈ 205k tokens at 3.4 chars/token
+    const s = await server((req, res) => sse(res, [
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    ]));
+    await t.chatCompletion(
+      { transport: 'anthropic', id: 'claude', model: 'claude-sonnet-4-5', accessToken: 'sk-ant-oat01-z', oauth: true, baseURL: s.base },
+      [{ role: 'user', content: big }], null, noop, undefined, 1000,
+    );
+    eq('a turn that needs 1M asks for the beta', s.seen.requests[0].headers['anthropic-beta'],
+      'oauth-2025-04-20,' + cat.LONG_CONTEXT_BETA);
+    await s.close();
+
+    const s2 = await server((req, res) => sse(res, [
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    ]));
+    await t.chatCompletion(
+      { transport: 'anthropic', id: 'claude', model: 'claude-sonnet-4-5', accessToken: 'sk-ant-oat01-z', oauth: true, baseURL: s2.base },
+      [{ role: 'user', content: 'hi' }], null, noop, undefined, 1000,
+    );
+    eq('a small turn does not pay for the long-context beta', s2.seen.requests[0].headers['anthropic-beta'], 'oauth-2025-04-20');
+    await s2.close();
+
+    const s3 = await server((req, res) => sse(res, [
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    ]));
+    await t.chatCompletion(
+      { transport: 'anthropic', id: 'claude', model: 'claude-opus-4-1', accessToken: 'sk-ant-oat01-z', oauth: true, baseURL: s3.base },
+      [{ role: 'user', content: big }], null, noop, undefined, 1000,
+    );
+    eq('an id without 1M entitlement never asks for it', s3.seen.requests[0].headers['anthropic-beta'], 'oauth-2025-04-20');
+    await s3.close();
+  }
+  {
+    // Not entitled: 400 on the beta, 200 on the plain request. The transport must
+    // retry silently and pin the real window so the next turn compacts honestly.
+    const cat = require('../electron/model-catalog');
+    cat.clearWindows();
+    let calls = 0;
+    const s = await server((req, res) => {
+      calls++;
+      if (/context-1m/.test(String(req.headers['anthropic-beta'] || ''))) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'The long context beta is not available for this account.' } }));
+        return;
+      }
+      sse(res, [
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'fell back' } },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+      ]);
+    });
+    const msg = await t.chatCompletion(
+      { transport: 'anthropic', id: 'claude', model: 'claude-sonnet-4-5', accessToken: 'sk-ant-oat01-z', oauth: true, baseURL: s.base },
+      [{ role: 'user', content: 'y'.repeat(700000) }], null, noop, undefined, 1000,
+    );
+    eq('a refused beta is retried without it', calls, 2);
+    eq('the retry returns a normal answer', msg.content, 'fell back');
+    eq('the window is demoted for the session', cat.contextWindowFor('claude-sonnet-4-5', 'claude'), 200000);
+    eq('the retry does not carry the beta', s.seen.requests[1].headers['anthropic-beta'], 'oauth-2025-04-20');
+    cat.clearWindows();
+    await s.close();
+  }
+
+  // -------------------------------------------------------------------------
   console.log('\ntransport — Codex request shape');
   // -------------------------------------------------------------------------
   {

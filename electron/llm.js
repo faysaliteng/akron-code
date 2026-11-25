@@ -1069,7 +1069,14 @@ async function runAgent(opts) {
   // definition can restrict the tool surface (`tools:` frontmatter), which is
   // Example's read-only Explore / tool-scoped agent contract.
   const toolAllow = opts.toolAllow instanceof Set ? opts.toolAllow : null;
+  // Host-local tools (e.g. the swarm board's swarm_post_message / read_board /
+  // swarm_wait). They live in the caller's memory, not in tools.js, so the
+  // executor dispatches them directly. They are always advertised unless the
+  // sub-agent definition explicitly allowlists a different surface.
+  const localTools = (opts.localTools && typeof opts.localTools === 'object') ? opts.localTools : null;
+  const isLocal = (name) => !!(localTools && typeof localTools[name] === 'function');
   const isAllowed = (name) => {
+    if (isLocal(name)) return true;
     // Swarm is an explicit user opt-in. When it is off, the tool is never
     // advertised to the model (multi-agent Task/Agent remains available).
     if (name === 'Swarm' && opts.swarm !== true) return false;
@@ -1996,6 +2003,10 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       batch.forEach((p) => emit({ type: 'tool', id: p.tc.id, name: p.name, args: p.args }));
       const results = await Promise.all(batch.map(async (p) => {
         try {
+          if (isLocal(p.name)) {
+            const out = await localTools[p.name](p.args || {});
+            return { content: typeof out === 'string' ? out : String(out), isError: false };
+          }
           if (toolAllow && !isAllowed(p.name)) return { content: `Tool "${p.name}" is not available to this sub-agent.`, isError: true };
           const pre = await beforeTool(p.name, p.args);
           if (pre.blocked) return { content: pre.planGate ? pre.reason : `Blocked by hook: ${pre.reason}`, isError: true };
@@ -2027,6 +2038,21 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
 
       let result;
       let isError = false;
+      // Host-local tools (swarm board) run in-process: no hooks, no shell, no
+      // MCP round trip. They are pure memory operations on the board object.
+      if (isLocal(name)) {
+        try {
+          const out = await localTools[name](args || {});
+          result = typeof out === 'string' ? out : String(out);
+        } catch (e) {
+          result = 'Error: ' + (e && e.message ? e.message : String(e));
+          isError = true;
+        }
+        emit({ type: 'toolResult', id: tc.id, name, result: String(result), isError });
+        if (textCalls) messages.push({ role: 'user', content: `TOOL RESULT ${tc.id} (${name}):\n${result}` });
+        else messages.push({ role: 'tool', tool_call_id: tc.id, name, content: String(result) });
+        continue;
+      }
       // A sub-agent definition's `tools:` list is a hard allowlist — a model that
       // tries a tool it was not granted gets a clear refusal, not a silent no-op.
       if (toolAllow && !isAllowed(name)) {

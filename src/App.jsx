@@ -864,6 +864,10 @@ export default function App() {
               });
               return [...byKey.values()];
             });
+          } else if (evt.phase === 'monitor') {
+            // The host re-briefed members that stalled or were addressed by name.
+            const who = [...(evt.stalled || []), ...(evt.addressed || [])].filter((v, i, a) => a.indexOf(v) === i);
+            if (who.length) setNotice(`Team monitor: re-briefing ${who.join(', ')} (${evt.stalled && evt.stalled.length ? 'no board report' : 'addressed on the board'}).`);
           } else if (evt.phase === 'done') {
             setSwarmInfo((w) => ({ ...(w || {}), phase: 'done' }));
           }
@@ -4291,49 +4295,40 @@ function ProvModelList({ list, picked, onPick }) {
   const boxRef = useRef(null);
   const selRef = useRef(null);
 
-  // Provider-reported family ("Gemini", "Claude", an API_PROVIDER_* slug) is the
-  // right shelf: Antigravity's 38 models collapse to three headers instead of
-  // 38 unlabelled rows. Within a shelf, sort by display name so the
-  // "Gemini 4 Neon (Low/Medium/High)" variants sit next to each other.
-  const groups = useMemo(() => {
+  // Grouping rule: the provider (this menu's account) is the ONLY shelf — the
+  // same convention opencode uses. Sub-shelves by model family would re-slice a
+  // single provider into Gemini/Claude/… headers, so instead every model in the
+  // account renders in one natural-sorted list and the model's serving family
+  // shows up as an inline tag only when the account mixes families.
+  const famLabel = (g) => {
+    const s = String(g || '').trim();
+    if (!s) return '';
+    const api = s.match(/^API_PROVIDER_([A-Za-z0-9_]+)$/);
+    if (api) {
+      const known = { openai: 'OpenAI', vertex: 'Vertex', anthropic: 'Anthropic', google: 'Google', azure: 'Azure' };
+      return api[1].toLowerCase().split('_').filter(Boolean)
+        .map((p) => known[p] || p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+    }
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  };
+
+  const { rows, total, mixed } = useMemo(() => {
     const query = q.trim().toLowerCase();
-    const famLabel = (g) => {
-      const s = String(g || '').trim();
-      if (!s) return 'Other';
-      const api = s.match(/^API_PROVIDER_([A-Za-z0-9_]+)$/);
-      if (api) {
-        const known = { openai: 'OpenAI', vertex: 'Vertex', anthropic: 'Anthropic', google: 'Google', azure: 'Azure' };
-        const name = api[1].toLowerCase().split('_').filter(Boolean)
-          .map((p) => known[p] || p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
-        return name + ' (API)';
-      }
-      return s.charAt(0).toUpperCase() + s.slice(1);
-    };
-    const FAM_ORDER = ['gemini', 'claude', 'gpt', 'grok', 'codex'];
-    const buckets = new Map();
+    const all = [];
+    const fams = new Set();
     for (const raw of list || []) {
       const m = typeof raw === 'string' ? { id: raw, label: raw } : (raw || {});
       const id = String(m.id || '');
       if (!id) continue;
       const label = String(m.label || id);
-      if (query && !(id.toLowerCase().includes(query) || label.toLowerCase().includes(query))) continue;
       const fam = famLabel(m.group);
-      if (!buckets.has(fam)) buckets.set(fam, []);
-      buckets.get(fam).push({ ...m, id, label });
+      if (fam) fams.add(fam);
+      if (query && !(id.toLowerCase().includes(query) || label.toLowerCase().includes(query))) continue;
+      all.push({ ...m, id, label, fam });
     }
-    const rank = (name) => {
-      const i = FAM_ORDER.findIndex((f) => name.toLowerCase().startsWith(f));
-      return i < 0 ? FAM_ORDER.length : i;
-    };
-    return Array.from(buckets.entries())
-      .sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0]))
-      .map(([fam, models]) => [
-        fam,
-        models.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' })),
-      ]);
+    all.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }));
+    return { rows: all, total: (list || []).length, mixed: fams.size > 1 };
   }, [list, q]);
-
-  const total = (list || []).length;
 
   // Bring the selected model into view once the catalog has populated.
   useEffect(() => {
@@ -4363,32 +4358,25 @@ function ProvModelList({ list, picked, onPick }) {
       )}
       <div className="prov-model-scroll" ref={boxRef}>
         {!total && <div className="prov-none">Loading models…</div>}
-        {total > 0 && !groups.length && <div className="prov-none">No models match “{q}”.</div>}
-        {groups.map(([fam, models]) => (
-          <div key={fam} className="prov-fam">
-            <div className="prov-fam-head">
-              <span className="prov-fam-name">{fam}</span>
-              <span className="prov-fam-count">{models.length}</span>
-            </div>
-            {models.map((m) => {
-              const on = picked === m.id;
-              return (
-                <button
-                  key={m.id}
-                  ref={on ? selRef : null}
-                  className={'model-opt prov-model' + (on ? ' on' : '')}
-                  title={m.id + (m.windowLabel ? ' · ' + m.windowLabel + ' context' : '')}
-                  onClick={() => onPick(m.id)}
-                >
-                  <span className="model-opt-name">{m.label}</span>
-                  {m.tag && <span className="prov-model-tag">{m.tag}</span>}
-                  {on && <Icon name="Check" size={13} className="model-check" />}
-                  <span className="model-opt-prov">{m.windowLabel || ''}</span>
-                </button>
-              );
-            })}
-          </div>
-        ))}
+        {total > 0 && !rows.length && <div className="prov-none">No models match “{q}”.</div>}
+        {rows.map((m) => {
+          const on = picked === m.id;
+          return (
+            <button
+              key={m.id}
+              ref={on ? selRef : null}
+              className={'model-opt prov-model' + (on ? ' on' : '')}
+              title={m.id + (m.windowLabel ? ' · ' + m.windowLabel + ' context' : '')}
+              onClick={() => onPick(m.id)}
+            >
+              <span className="model-opt-name">{m.label}</span>
+              {m.tag && <span className="prov-model-tag">{m.tag}</span>}
+              {mixed && m.fam && <span className="prov-model-fam">{m.fam}</span>}
+              {on && <Icon name="Check" size={13} className="model-check" />}
+              <span className="model-opt-prov">{m.windowLabel || ''}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

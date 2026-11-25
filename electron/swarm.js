@@ -236,19 +236,217 @@ for the user. Rules:
 SUBTASK RESULTS:
 {RESULTS}`;
 
-function workerPrompt(goal, task) {
+function workerPrompt(goal, task, board) {
   const owns = Array.isArray(task.owns) && task.owns.length
     ? `\nYou own these files/areas: ${task.owns.join(', ')}. Do not modify files owned by other agents.`
     : '\nOnly create/modify the files this task needs. Other agents are editing other files concurrently.';
+  const bus = board
+    ? `\nSWARM BOARD (you are @${board.me}). Your channel is "${board.channel}".
+- swarm_post_message({channel,text,to}) posts to the board. Post ONE short
+  message when you start (what you are building), and ONE when you finish
+  (what files you created + anything another worker must know).
+- read_board/swarm_read_board({since}) reads the feed, oldest first. Read it
+  once near the start so you do not duplicate another worker's work.
+- swarm_wait({since}) sleeps until a new message arrives. Use it only when you
+  are blocked on another worker; never poll it in a loop.
+- @name in a message wakes that member. Ask a specific member by name when you
+  need a decision, not the whole board.
+You are not the supervisor: do not try to manage other agents.`
+    : '';
   return `You are one worker on a multi-agent team. Other workers are working on OTHER
 parts of the same goal at the same time in the same project folder.
 YOUR SUBTASK (${task.tier} tier): ${task.title}
-${task.prompt}${owns}
+${task.prompt}${owns}${bus}
 
 OVERALL GOAL (context only — do not redo work outside your subtask):
 ${goal}
 
 Do your subtask now and finish with a short report of what you created/changed.`;
+}
+
+// Sent to a worker whose turn ended without posting anything to the board. The
+// Antigravity runtime calls this the stall monitor: rather than re-running the
+// whole subtask, it re-briefs the member with what the host observed.
+const STALL_NOTE = `Your previous turn ended without reporting on the board, so the
+supervisor cannot see your progress or hand off to you. Do not restart your work.
+Instead: (1) run swarm_read_board({since:0}) to see what the team has done,
+(2) run swarm_post_message with a short status — what you created, what is still
+missing, and anything another worker needs. If your subtask is already finished,
+say so explicitly in the post.`;
+
+// ---------- swarm board ----------
+//
+// This is the piece that turns "fan out and merge" into the swarm behaviour the
+// Antigravity runtime actually runs: a sequence-numbered message board every
+// member can post to and read, a `wait` that parks a member until something it
+// cares about is posted, @mention routing, and a stall monitor that re-briefs a
+// member whose turn ended without moving. Antigravity exposes it to its agents
+// as post_message / read_board / swarm_wait / manage_task; we expose the same
+// three primitives under a `swarm_` prefix so they cannot collide with the
+// built-in tool surface.
+//
+// Pure data structure + promise plumbing: no provider imports, so the whole
+// thing is unit-testable with a fake runAgent.
+const BOARD_LIMIT = 4000;
+
+function createBoard() {
+  const messages = [];
+  const members = new Map();
+  let seq = 0;
+  let waiters = [];
+
+  const notify = () => {
+    const due = waiters;
+    waiters = [];
+    for (const w of due) w();
+  };
+
+  const board = {
+    get seq() { return seq; },
+    messages,
+    post({ from, channel = 'general', text = '', to = null } = {}) {
+      const msg = {
+        seq: ++seq,
+        from: String(from || 'anon'),
+        channel: String(channel || 'general'),
+        text: String(text || '').slice(0, 8000),
+        to: to ? String(to).replace(/^@+/, '') : null,
+        at: Date.now(),
+      };
+      messages.push(msg);
+      if (messages.length > BOARD_LIMIT) messages.splice(0, messages.length - BOARD_LIMIT);
+      notify();
+      return msg;
+    },
+    read({ since = 0, channel = null, limit = 200 } = {}) {
+      const from = Math.max(0, Number(since) || 0);
+      let out = messages.filter((m) => m.seq > from);
+      if (channel && channel !== '*') out = out.filter((m) => m.channel === channel || m.to);
+      return out.slice(0, Math.max(1, Number(limit) || 200));
+    },
+    // Messages that concern `me`: an explicit `to`, or an @mention in the text.
+    addressedTo(me, { since = 0 } = {}) {
+      const meRe = new RegExp('@' + String(me).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+      return messages.filter((m) => m.seq > (Number(since) || 0)
+        && (m.to === me || meRe.test(m.text)));
+    },
+    setMember(name, patch = {}) {
+      const id = String(name || '');
+      if (!id) return null;
+      const cur = members.get(id) || { name: id, state: 'idle', posts: 0, lastSeq: 0 };
+      Object.assign(cur, patch, { at: Date.now() });
+      members.set(id, cur);
+      return cur;
+    },
+    member(name) { return members.get(String(name || '')) || null; },
+    status() { return Array.from(members.values()).map((m) => ({ ...m })); },
+    transcript({ limit = 120 } = {}) {
+      return messages.slice(-Math.max(1, limit)).map((m) => {
+        const to = m.to ? ` → @${m.to}` : '';
+        return `#${m.seq} ${m.from}${to} [${m.channel}]: ${m.text}`;
+      }).join('\n');
+    },
+    // Park until a message the caller cares about arrives, or the timeout hits.
+    wait({ me = null, since = 0, mentionsOnly = false, channel = null, timeoutMs = 30000, signal = null } = {}) {
+      const from = Number(since) || 0;
+      const mine = () => {
+        const fresh = board.read({ since: from, channel: mentionsOnly ? null : channel });
+        if (!mentionsOnly) return fresh.length ? fresh : null;
+        return me ? (board.addressedTo(me, { since: from }).length ? board.addressedTo(me, { since: from }) : null) : null;
+      };
+      const hit = mine();
+      if (hit) return Promise.resolve({ messages: hit, timedOut: false });
+      const budget = Math.max(10, Math.min(Number(timeoutMs) || 30000, 600000));
+      return new Promise((resolve) => {
+        let done = false;
+        const finish = (res) => {
+          if (done) return;
+          done = true;
+          const i = waiters.indexOf(check);
+          if (i >= 0) waiters.splice(i, 1);
+          clearTimeout(timer);
+          if (signal) signal.removeEventListener && signal.removeEventListener('abort', onAbort);
+          resolve(res);
+        };
+        const check = () => {
+          const got = mine();
+          if (got) finish({ messages: got, timedOut: false });
+        };
+        const onAbort = () => finish({ messages: [], timedOut: false, aborted: true });
+        const timer = setTimeout(() => finish({ messages: [], timedOut: true }), budget);
+        if (timer.unref) timer.unref();
+        if (signal) {
+          if (signal.aborted) return finish({ messages: [], timedOut: false, aborted: true });
+          signal.addEventListener && signal.addEventListener('abort', onAbort, { once: true });
+        }
+        waiters.push(check);
+      });
+    },
+  };
+  return board;
+}
+
+// Board tool surface for one member. Returned as `extraTools`-shaped entries so
+// runAgent can advertise them, plus `localTools` handlers so the executor can
+// run them without a new built-in tool name.
+function boardTools(board, me, opts = {}) {
+  const startSeq = Math.max(0, Number(opts.startAt) || 0);
+  let lastSeq = startSeq;
+  const tools = [];
+  const add = (name, description, inputSchema, run) => {
+    tools.push({ name, description, inputSchema, run });
+  };
+
+  add('swarm_post_message',
+    'Post a message to the swarm board. Every worker sees it. Use `to` (a worker name) or an @mention to address one member.',
+    { type: 'object', properties: { channel: { type: 'string', description: 'Board channel, e.g. "general" or your task channel.' }, text: { type: 'string', description: 'The message body.' }, to: { type: 'string', description: 'Optional worker name this message is for.' } }, required: ['text'] },
+    (a = {}) => {
+      const msg = board.post({ from: me, channel: a.channel || opts.channel || 'general', text: a.text, to: a.to });
+      board.setMember(me, { state: 'posted', posts: ((board.member(me) || {}).posts || 0) + 1, lastSeq: msg.seq });
+      lastSeq = Math.max(lastSeq, msg.seq);
+      return `posted #${msg.seq} (${msg.channel}${msg.to ? ' → ' + msg.to : ''})`;
+    });
+
+  add('swarm_read_board',
+    'Read the swarm board feed, oldest first. Returns messages newer than `since`. Call once near the start so you do not duplicate another worker.',
+    { type: 'object', properties: { since: { type: 'number', description: 'Return messages with seq > since (default 0).' }, channel: { type: 'string', description: 'Optional channel filter.' }, limit: { type: 'number' } } },
+    (a = {}) => {
+      const list = board.read({ since: a.since == null ? lastSeq : a.since, channel: a.channel || null, limit: a.limit || 200 });
+      if (!list.length) return 'board: no new messages';
+      const hi = list[list.length - 1].seq;
+      lastSeq = Math.max(lastSeq, hi);
+      return list.map((m) => `#${m.seq} ${m.from}${m.to ? ' → @' + m.to : ''} [${m.channel}]: ${m.text}`).join('\n')
+        + `\n(last seq ${hi} — pass since:${hi} next time)`;
+    });
+
+  add('swarm_wait',
+    'Park until a new board message arrives (or `timeout_ms` elapses). Use only when blocked on another worker; never poll it in a loop.',
+    { type: 'object', properties: { since: { type: 'number', description: 'Last seq you have seen.' }, mentions_only: { type: 'boolean', description: 'Only wake for messages addressed to you.' }, timeout_ms: { type: 'number' } } },
+    async (a = {}) => {
+      const since = a.since == null ? lastSeq : Number(a.since);
+      const res = await board.wait({
+        me,
+        since,
+        mentionsOnly: !!a.mentions_only,
+        timeoutMs: a.timeout_ms || 20000,
+        signal: opts.signal,
+      });
+      if (!res.messages.length) return res.aborted ? 'board: wait aborted' : 'board: no new messages (timeout) — continue your own work';
+      const hi = res.messages[res.messages.length - 1].seq;
+      lastSeq = Math.max(lastSeq, hi);
+      return res.messages.map((m) => `#${m.seq} ${m.from}${m.to ? ' → @' + m.to : ''} [${m.channel}]: ${m.text}`).join('\n');
+    });
+
+  add('swarm_status',
+    'List swarm members and their last known state.',
+    { type: 'object', properties: {} },
+    () => board.status().map((m) => `${m.name}: ${m.state}${m.posts ? ` (${m.posts} posts)` : ''}`).join('\n') || 'board: no members');
+
+  const byName = new Map(tools.map((t) => [t.name, t.run]));
+  return {
+    defs: tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+    localTools: Object.fromEntries(byName),
+  };
 }
 
 // ---------- runner ----------
@@ -358,37 +556,66 @@ async function swarm(goal, opts = {}) {
   });
 
   // ---- 2. Dispatch: every subtask is a distinct prompt on its own model ----
+  // One board for the whole swarm: workers post intent + hand-off notes, read
+  // each other's posts, and park in swarm_wait when blocked. The board is also
+  // the source of truth handed to the supervisor at review time.
+  const board = createBoard();
+  board.setMember('supervisor', { state: 'planning', role: 'supervisor' });
   const limit = Math.max(1, Number(opts.concurrency) || 4);
   const results = new Array(tasks.length);
   let cursor = 0;
 
-  const runOne = async (task) => {
+  // A member's board handle has to be something a *model* will type: `@api`,
+  // `@ui`, not `@t1`. Derive it from the subtask title, keep it stable across a
+  // re-brief (so mentions still reach the same member) and unique per swarm.
+  const usedNames = new Set(['supervisor']);
+  const memberNameFor = (task) => {
+    if (task.__worker) return task.__worker;
+    const base = String(task.title || task.id || 'worker')
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'worker';
+    let name = base;
+    let n = 2;
+    while (usedNames.has(name)) name = base + '-' + (n++);
+    usedNames.add(name);
+    task.__worker = name;
+    return name;
+  };
+
+  const runOne = async (task, round = 1, briefing = '') => {
     const name = task.title || task.id;
     const agentId = String(task.id);
     const p = task.provider || opts.provider;
+    const workerName = memberNameFor(task);
+    const channel = String(task.channel || task.id || 'general');
+    const bus = boardTools(board, workerName, { channel, signal: opts.signal });
+    board.setMember(workerName, { state: 'running', role: 'worker', tier: task.tier, model: p ? p.model : null });
     const t0 = Date.now();
     emit({ type: 'subagent', id: agentId, name, status: 'running', role: 'worker', tier: task.tier, model: p ? p.model : null });
     try {
       const out = await runAgent({
         provider: p,
-        messages: [{ role: 'user', content: workerPrompt(String(goal), task) }],
+        messages: [{ role: 'user', content: workerPrompt(String(goal), task, { me: workerName, channel }) + (briefing ? '\n\n' + briefing : '') }],
         maxSteps: opts.maxSteps || 0,
         cwd: opts.cwd,
         signal: opts.signal,
         useMemory: opts.useMemory,
+        extraTools: bus.defs,
+        localTools: bus.localTools,
         emit: (evt) => emit({ ...evt, subagent: name, agentId, tier: task.tier, model: p ? p.model : null }),
       });
       const last = [...(out || [])].reverse().find((m) => m.role === 'assistant' && m.content);
       const result = last ? last.content : '(worker finished with no text)';
       const ms = Date.now() - t0;
+      board.setMember(workerName, { state: 'done', lastSeen: Date.now() });
       emit({ type: 'subagent', id: agentId, name, status: 'done', role: 'worker', tier: task.tier, model: p ? p.model : null, ms });
-      return { id: agentId, title: task.title, tier: task.tier, model: p ? p.model : null,
-        baseURL: p ? p.baseURL : null, status: 'done', ms, result };
+      return { id: agentId, name: workerName, title: task.title, tier: task.tier, model: p ? p.model : null,
+        baseURL: p ? p.baseURL : null, status: 'done', ms, result, round };
     } catch (e) {
       const ms = Date.now() - t0;
+      board.setMember(workerName, { state: 'error', lastSeen: Date.now() });
       emit({ type: 'subagent', id: agentId, name, status: 'error', role: 'worker', tier: task.tier, model: p ? p.model : null, ms });
-      return { id: agentId, title: task.title, tier: task.tier, model: p ? p.model : null,
-        baseURL: p ? p.baseURL : null, status: 'error', ms, result: 'Error: ' + e.message };
+      return { id: agentId, name: workerName, title: task.title, tier: task.tier, model: p ? p.model : null,
+        baseURL: p ? p.baseURL : null, status: 'error', ms, result: 'Error: ' + e.message, round };
     }
   };
 
@@ -400,6 +627,59 @@ async function swarm(goal, opts = {}) {
   };
   await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, next));
 
+  // ---- 2b. Stall monitor + mention wake-ups ----
+  // Antigravity keeps a stall monitor that re-briefs a member whose turn ended
+  // without moving, and wakes a member that was addressed by name. Both are
+  // host-side here: one bounded extra round, only for members that need it.
+  if (opts.monitor !== false) {
+    const byName = new Map(results.filter(Boolean).map((r) => [r.name, r]));
+    // Re-briefing only makes sense once the board is actually in use. If no
+    // worker posted at all, the swarm ran as a plain fan-out; paying a second
+    // round on every worker there would double the token cost for no gain.
+    const boardInUse = board.messages.length > 0;
+    const stalled = !boardInUse ? [] : results.filter((r) => r && r.status === 'done'
+      && (!board.member(r.name) || !board.member(r.name).posts));
+    const addressed = new Map();
+    for (const m of board.messages) {
+      if (!m.to || m.from === m.to) continue;
+      if (!byName.has(m.to)) continue;
+      const cur = addressed.get(m.to) || [];
+      cur.push(m);
+      addressed.set(m.to, cur);
+    }
+    const redo = new Map();
+    for (const r of stalled) redo.set(r.name, { reason: 'stall' });
+    for (const [who, msgs] of addressed) {
+      if (redo.has(who)) continue;
+      const target = byName.get(who);
+      if (!target) continue;
+      if (target.round > 1) continue; // one wake-up per member
+      redo.set(who, { reason: 'mention', msgs });
+    }
+    if (redo.size) {
+      emit({ type: 'swarm', phase: 'monitor', stalled: stalled.map((r) => r.name), addressed: [...addressed.keys()] });
+      await Promise.all([...redo.entries()].map(async ([who, why]) => {
+        const idx = results.findIndex((r) => r && r.name === who);
+        if (idx < 0) return;
+        const task = tasks[idx];
+        const promptIntent = why.reason === 'stall'
+          ? STALL_NOTE
+          : 'A team member addressed you on the board:\n'
+            + why.msgs.map((m) => `#${m.seq} ${m.from}: ${m.text}`).join('\n')
+            + '\nAnswer them on the board and finish the part of your subtask that is still missing.';
+        // Re-brief, not restart: hand the worker its own prior report plus the
+        // board state, so round 2 continues the subtask instead of redoing it.
+        const prior = results[idx] && results[idx].result
+          ? `\n\nYOUR PREVIOUS REPORT:\n${String(results[idx].result).slice(0, 4000)}` : '';
+        const again = await runOne(task, 2, promptIntent + prior);
+        if (again.status === 'done') {
+          results[idx] = { ...again,
+            result: (results[idx] && results[idx].result ? results[idx].result + '\n\n' : '') + again.result };
+        }
+      }));
+    }
+  }
+
   const done = results.filter(Boolean);
   emit({ type: 'swarm', phase: 'dispatched', results: done.map((r) => ({ id: r.id, title: r.title, tier: r.tier, model: r.model, status: r.status, ms: r.ms })) });
 
@@ -409,6 +689,11 @@ async function swarm(goal, opts = {}) {
   if (opts.critique !== false) {
     emit({ type: 'subagent', id: 'supervisor', name: 'supervisor (review)', status: 'running', role: 'supervisor', tier: 'critical', model: supervisor.model });
     const report = done.map((r) => `### ${r.title} — ${r.tier} — ${r.model || 'model'} — ${r.status} (${r.ms}ms)\n${r.result}`).join('\n\n');
+    // The board is the swarm's shared state: what each worker claimed, what it
+    // handed off, and who asked whom for what. Give the supervisor that feed so
+    // it can catch two workers that duplicated work or agreed on different APIs.
+    const feed = board.messages.length ? board.transcript({ limit: 200 }) : '';
+    const boardBlock = feed ? `\n\nSWARM BOARD (workers' own messages, oldest first):\n${feed}\n` : '';
     const files = done.filter((r) => /\.(html?|css|js|jsx|tsx|ts|json|md|py)\b/i.test(r.result)).length
       ? '\nThe team reported creating files. Make sure the final answer names the entry file.\n' : '';
     try {
@@ -418,7 +703,7 @@ async function swarm(goal, opts = {}) {
           role: 'user',
           content: SUPERVISOR_MERGE_PROMPT
             .replace('{FILES}', files)
-            .replace('{RESULTS}', report)
+            .replace('{RESULTS}', report + boardBlock)
             .replace('{GOAL}', String(goal)) + (plan.synthesis ? `\n\nMERGE INSTRUCTION FROM THE PLAN: ${plan.synthesis}` : ''),
         }],
         maxSteps: opts.maxSteps || 0,
@@ -444,6 +729,7 @@ async function swarm(goal, opts = {}) {
     planSource: source,
     tasks,
     results: done,
+    board: board.messages.map((m) => ({ ...m })),
     answer,
     reviewError,
     ms: Date.now() - started,
@@ -455,5 +741,6 @@ async function swarm(goal, opts = {}) {
 module.exports = {
   TIER_RANK, normalizeTier, buildRoster, pickProvider, rosterSummary,
   extractJSON, normalizePlan, swarm, decompose,
+  createBoard, boardTools, STALL_NOTE,
   SUPERVISOR_PLAN_PROMPT, SUPERVISOR_MERGE_PROMPT,
 };

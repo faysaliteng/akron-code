@@ -1261,7 +1261,15 @@ async function runTool(name, args, ctx) {
       const table = out.results
         .map((r) => `- ${r.title} — ${r.tier} · ${r.model || 'model'} · ${r.status} (${r.ms}ms)`)
         .join('\n');
-      return `SWARM COMPLETE — ${out.results.length} agents, supervisor ${out.supervisor.model}, ${Math.round(out.ms / 1000)}s\n\nROSTER\n${table}\n\nFINAL ANSWER\n${out.answer}`;
+      // The board is how workers coordinated; a short tail of it is the cheapest
+      // way for the lead to see who handed off what (and who needed a re-brief).
+      const posts = Array.isArray(out.board) ? out.board : [];
+      const feed = posts.length
+        ? `\n\nBOARD (${posts.length} messages)\n` + posts.slice(-12)
+          .map((m) => `- #${m.seq} ${m.from}${m.to ? ' → @' + m.to : ''}: ${String(m.text).replace(/\s+/g, ' ').slice(0, 160)}`)
+          .join('\n')
+        : '';
+      return `SWARM COMPLETE — ${out.results.length} agents, supervisor ${out.supervisor.model}, ${Math.round(out.ms / 1000)}s\n\nROSTER\n${table}${feed}\n\nFINAL ANSWER\n${out.answer}`;
     } catch (e) {
       return 'Swarm error: ' + (e && e.message ? e.message : String(e));
     }

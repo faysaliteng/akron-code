@@ -40,17 +40,35 @@ const COMPACT_RATIO = 0.9;
 
 // Documented context windows, most specific first. A model id that matches
 // nothing falls back to 128k, which is the common floor for current models.
+// Anthropic's long-context beta (`context-1m-2025-08-07`). Anthropic documents
+// it for the Sonnet 4 family only — Opus 4/4.1 and Haiku stay at 200k. We
+// resolve those ids optimistically to 1M and let `anthropicChat` demote the
+// window for the session if the account is not entitled, so a paying account
+// never compacts at 20% of its real window.
+const LONG_CONTEXT_BETA = 'context-1m-2025-08-07';
+const LONG_CONTEXT_MODELS = [/^claude-sonnet-4(?:[.\-]|$)/i];
+const LONG_CONTEXT_WINDOW = 1000000;
+const SHORT_CONTEXT_WINDOW = 200000;
+
+/** True when this model id is served at 1M only with the beta header. */
+function supportsLongContext(model) {
+  const id = norm(model);
+  return LONG_CONTEXT_MODELS.some((re) => re.test(id));
+}
+
 const RULES = [
   // Antigravity's Gemini 4 codenames
   [/\bgemini-4-(carbon|neon|argon|hydrogen)\b/i, 1048576],
-  // Vertex-hosted Claude through Antigravity
+  // Vertex-hosted Claude through Antigravity: the live catalog reports 1M, and
+  // this rule keeps the budget right before the catalog has warmed.
   [/^claude-(opus|sonnet)-5-5/, 1000000],
   [/\bgemini-3(\.\d+)?\b/i, 1048576],
   [/\bgemini-2\.5\b/i, 1048576],
   [/\bgemini/i, 1048576],
-  // Anthropic first-party
-  [/\bclaude-(opus|sonnet|haiku)-4/i, 200000],
-  [/\bclaude|opus|sonnet|haiku/i, 200000],
+  // Anthropic first-party. Sonnet 4.x = 1M via beta (see LONG_CONTEXT_BETA).
+  [/^claude-sonnet-4(?:[.\-]|$)/i, LONG_CONTEXT_WINDOW],
+  [/\bclaude-(opus|sonnet|haiku)-4/i, SHORT_CONTEXT_WINDOW],
+  [/\bclaude|opus|sonnet|haiku/i, SHORT_CONTEXT_WINDOW],
   // OpenAI
   [/\bgpt-5\.[12](?:-codex)?(?:-max)?\b/i, 400000],
   [/\bgpt-5\b|\bgpt-5-codex\b/i, 400000],
@@ -59,7 +77,8 @@ const RULES = [
   [/\bgpt-4o\b/i, 128000],
   [/\bgpt-4\b/i, 128000],
   [/\bo[1-4](?:-mini|-pro)?\b/i, 200000],
-  // xAI
+  // xAI — the 2M window is the *fast* variants specifically; base Grok 4 is 256k.
+  [/\bgrok-[0-9.]*-?(?:code-)?fast\b/i, 2000000],
   [/\bgrok-4/i, 256000],
   [/\bgrok-3/i, 131072],
   [/\bgrok/i, 131072],
@@ -76,6 +95,12 @@ const RULES = [
 
 // Live catalogs: providerId -> Map(modelId -> { contextWindow, label, ... }).
 const live = new Map();
+
+// Session-scoped corrections: `provider::model` -> window. A provider that
+// advertises a window it will not actually serve (a beta the account is not
+// entitled to) is recorded here after the first refusal, so the session stops
+// compacting against a promise the endpoint does not keep.
+const overrides = new Map();
 
 function norm(model) {
   return String(model || '').trim();
@@ -117,6 +142,11 @@ function clear(providerId) {
 function contextWindowFor(model, providerId, explicit) {
   const id = norm(model);
   if (Number.isFinite(Number(explicit)) && Number(explicit) > 0) return Number(explicit);
+  const pid = String(providerId || '');
+  // A demoted/session-pinned window wins over both the live catalog and RULES:
+  // it exists precisely because one of those made a claim that did not hold.
+  const pinned = id ? overrides.get(pid + '::' + id) : null;
+  if (Number.isFinite(pinned) && pinned > 0) return pinned;
   if (providerId && live.has(String(providerId)) && id) {
     const table = live.get(String(providerId));
     const hit = table.get(id);
@@ -156,6 +186,44 @@ function budgetForModel(model, providerId, explicit) {
 }
 
 /**
+ * Pin the window used for one model in this session (either direction).
+ * @returns {number} the pinned window, or 0 when the input was unusable
+ */
+function setWindow(providerId, model, window) {
+  const id = norm(model);
+  const win = Number(window);
+  if (!id || !Number.isFinite(win) || win <= 0) return 0;
+  overrides.set(String(providerId || '') + '::' + id, win);
+  return win;
+}
+
+/**
+ * Shrink a window after the endpoint refused it. Never raises it: a demotion is
+ * a correction, not a preference.
+ * @returns {number} the window now in force
+ */
+function demote(providerId, model, window) {
+  const id = norm(model);
+  const win = Number(window);
+  if (!id || !Number.isFinite(win) || win <= 0) return contextWindowFor(model, providerId);
+  const cur = contextWindowFor(id, providerId);
+  if (win >= cur) return cur;
+  overrides.set(String(providerId || '') + '::' + id, win);
+  return win;
+}
+
+/** Drop session pins (all, or just one provider's). */
+function clearWindows(providerId) {
+  if (providerId === undefined) { overrides.clear(); return 0; }
+  const prefix = String(providerId || '') + '::';
+  let n = 0;
+  for (const k of [...overrides.keys()]) {
+    if (k.startsWith(prefix)) { overrides.delete(k); n++; }
+  }
+  return n;
+}
+
+/**
  * Compact human label for a window: `1M`, `200K`, `128K`.
  * Shown next to every model in the picker so the choice is informed.
  */
@@ -192,12 +260,19 @@ function snapshot() {
 module.exports = {
   CHARS_PER_TOKEN,
   RULES,
+  LONG_CONTEXT_BETA,
+  LONG_CONTEXT_WINDOW,
+  SHORT_CONTEXT_WINDOW,
+  supportsLongContext,
   register,
   clear,
   snapshot,
   contextWindowFor,
   budgetFor,
   budgetForModel,
+  setWindow,
+  demote,
+  clearWindows,
   fmtWindow,
   tokensForChars,
 };

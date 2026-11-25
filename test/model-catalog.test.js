@@ -35,10 +35,23 @@ ok('Vertex-hosted Claude 5.5 through Antigravity is 1M', () => {
   assert.strictEqual(cat.contextWindowFor('claude-opus-5-5-high'), 1000000);
 });
 
-ok('first-party Claude 4.x is 200k', () => {
-  assert.strictEqual(cat.contextWindowFor('claude-sonnet-4-5-20250929'), 200000);
+ok('first-party Claude Sonnet 4.x is 1M (beta), Opus/Haiku are 200k', () => {
+  // Sonnet 4.x resolves to the 1M window because `anthropicChat` sends
+  // `context-1m-2025-08-07` when the request needs it and demotes the window on
+  // a refusal. Opus 4.x and Haiku are documented at 200k only.
+  assert.strictEqual(cat.contextWindowFor('claude-sonnet-4-5-20250929'), 1000000);
+  assert.strictEqual(cat.contextWindowFor('claude-sonnet-4-20250514'), 1000000);
   assert.strictEqual(cat.contextWindowFor('claude-opus-4-5-20251101'), 200000);
   assert.strictEqual(cat.contextWindowFor('claude-haiku-4-5-20251001'), 200000);
+});
+
+ok('only Sonnet 4.x advertises the 1M beta', () => {
+  assert.strictEqual(cat.supportsLongContext('claude-sonnet-4-5-20250929'), true);
+  assert.strictEqual(cat.supportsLongContext('claude-sonnet-4'), true);
+  assert.strictEqual(cat.supportsLongContext('claude-opus-4-1'), false);
+  assert.strictEqual(cat.supportsLongContext('claude-sonnet-5-5'), false, 'Vertex 1M is native, no beta');
+  assert.strictEqual(cat.supportsLongContext('gpt-5.1'), false);
+  assert.strictEqual(cat.LONG_CONTEXT_BETA, 'context-1m-2025-08-07');
 });
 
 ok('GPT-5 family is 400k, GPT-4.1 is 1 047 576', () => {
@@ -47,9 +60,12 @@ ok('GPT-5 family is 400k, GPT-4.1 is 1 047 576', () => {
   assert.strictEqual(cat.contextWindowFor('gpt-4.1'), 1047576);
 });
 
-ok('Grok 4 is 256k, Grok 3 is 128k', () => {
+ok('Grok 4 is 256k, Grok 3 is 128k, the fast variants are 2M', () => {
   assert.strictEqual(cat.contextWindowFor('grok-4'), 256000);
   assert.strictEqual(cat.contextWindowFor('grok-3'), 131072);
+  assert.strictEqual(cat.contextWindowFor('grok-4-fast'), 2000000);
+  assert.strictEqual(cat.contextWindowFor('grok-4.1-fast-reasoning'), 2000000);
+  assert.strictEqual(cat.contextWindowFor('grok-code-fast-1'), 2000000);
 });
 
 ok('an unknown model floors at 128k', () => {
@@ -115,7 +131,7 @@ ok('budgetFor on a small window keeps at least MIN_USABLE_TOKENS', () => {
 });
 
 ok('a 200k window yields ~190k usable tokens and ~640k chars', () => {
-  const b = cat.budgetForModel('claude-sonnet-4-5-20250929');
+  const b = cat.budgetForModel('claude-opus-4-5-20251101');
   assert.strictEqual(b.window, 200000);
   // 10% of 200k = 20 000 output reserve
   assert.strictEqual(b.reserveOut, 20000);
@@ -126,6 +142,45 @@ ok('a 200k window yields ~190k usable tokens and ~640k chars', () => {
 ok('a 1M window gives a much bigger budget than the old fixed 220k chars', () => {
   const b = cat.budgetForModel('gemini-4-neon-high', 'antigravity');
   assert.ok(b.maxChars > 220000 * 10, 'maxChars ' + b.maxChars);
+});
+
+// ---------------------------------------------------------------------------
+// Session pins (demote after a refused beta, or an operator override)
+// ---------------------------------------------------------------------------
+ok('demote() shrinks the window for that provider+model only', () => {
+  cat.clear();
+  cat.clearWindows();
+  assert.strictEqual(cat.contextWindowFor('claude-sonnet-4-5', 'claude'), 1000000);
+  assert.strictEqual(cat.demote('claude', 'claude-sonnet-4-5', 200000), 200000);
+  assert.strictEqual(cat.contextWindowFor('claude-sonnet-4-5', 'claude'), 200000);
+  // A different provider id is unaffected.
+  assert.strictEqual(cat.contextWindowFor('claude-sonnet-4-5', 'other'), 1000000);
+});
+
+ok('demote() never raises a window, and a pin beats the live catalog', () => {
+  cat.clear();
+  cat.clearWindows();
+  cat.register('antigravity', [{ id: 'claude-sonnet-5-5-medium', contextWindow: 1000000 }]);
+  assert.strictEqual(cat.demote('antigravity', 'claude-sonnet-5-5-medium', 5000000), 1000000);
+  assert.strictEqual(cat.contextWindowFor('claude-sonnet-5-5-medium', 'antigravity'), 1000000);
+  assert.strictEqual(cat.demote('antigravity', 'claude-sonnet-5-5-medium', 200000), 200000);
+  // The catalog still says 1M, but the session pin is what the budget uses.
+  assert.strictEqual(cat.contextWindowFor('claude-sonnet-5-5-medium', 'antigravity'), 200000);
+  assert.strictEqual(cat.budgetForModel('claude-sonnet-5-5-medium', 'antigravity').window, 200000);
+  cat.clear();
+});
+
+ok('setWindow() pins in either direction; clearWindows() drops it', () => {
+  cat.clearWindows();
+  assert.strictEqual(cat.setWindow('claude', 'claude-opus-4-1', 1048576), 1048576);
+  assert.strictEqual(cat.contextWindowFor('claude-opus-4-1', 'claude'), 1048576);
+  assert.strictEqual(cat.setWindow('claude', 'claude-opus-4-1', 0), 0, 'invalid window is rejected');
+  assert.strictEqual(cat.clearWindows('claude'), 1);
+  assert.strictEqual(cat.contextWindowFor('claude-opus-4-1', 'claude'), 200000);
+  cat.setWindow('a', 'm', 900000);
+  cat.setWindow('b', 'm', 800000);
+  assert.strictEqual(cat.clearWindows(), 0, 'clearWindows() clears all and returns nothing');
+  assert.strictEqual(cat.contextWindowFor('m', 'a'), 128000);
 });
 
 // ---------------------------------------------------------------------------

@@ -40,6 +40,14 @@ const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 // (`cloudcode-pa.googleapis.com`) answers 403 for an Antigravity grant.
 const CLOUDCODE_BASE = 'https://daily-cloudcode-pa.googleapis.com/v1internal';
 
+// Context windows + auto-compact budgets. Pure data module, no imports, so this
+// does not create a cycle (and survives asar packing).
+const catalog = require('./model-catalog');
+
+// Ask for the 1M beta once the request estimate passes Anthropic's default
+// window with headroom for its tokenizer being a little finer than ours.
+const LONG_CONTEXT_MIN_TOKENS = 190000;
+
 // Mimic the first-party CLI: subscription endpoints gate on these.
 //
 // The version token is itself a fingerprint the vendor validates, so it must
@@ -326,9 +334,40 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   const base = trimBase(provider.baseURL || DEFAULT_ANTHROPIC_BASE);
   const { headers } = anthropicAuth(provider);
   const body = toAnthropicBody(provider, messages, tools, maxTokensOverride || provider.maxTokens);
-  const res = await fetch(base + '/v1/messages', {
-    method: 'POST', headers, body: JSON.stringify(body), signal,
+  const payload = JSON.stringify(body);
+  const model = String(provider.model || body.model || '');
+  // Same key derivation llm.js uses to resolve the budget, so a demotion made
+  // here is the number the next turn actually compacts against.
+  const providerId = String(provider.oauthProvider || '').split(':')[0]
+    || provider.id || provider.transport || 'anthropic';
+
+  // 1M-token beta. Sent only when the request genuinely needs more than the
+  // default 200k window and the id is one Anthropic serves at 1M. Sending it on
+  // a small turn buys nothing and can trip a stricter entitlement check; not
+  // sending it on a 300k-token turn guarantees a 400.
+  const estTokens = catalog.tokensForChars(payload.length);
+  const longBeta = catalog.supportsLongContext(model) && estTokens > LONG_CONTEXT_MIN_TOKENS;
+  const shortBeta = headers['anthropic-beta'];
+  if (longBeta) headers['anthropic-beta'] = shortBeta + ',' + catalog.LONG_CONTEXT_BETA;
+
+  const post = (hdrs) => fetch(base + '/v1/messages', {
+    method: 'POST', headers: hdrs, body: payload, signal,
   });
+
+  let res = await post(headers);
+  if (!res.ok && longBeta && res.status === 400) {
+    const rejected = await res.text().catch(() => '');
+    // Not entitled to the beta. Retrying the identical request with the header
+    // is useless, so drop it, record the real window for the session, and send
+    // once more — the agent loop then sees an honest 200k ceiling and compacts.
+    if (/context|beta|long|1m|entitle|not available/i.test(rejected)) {
+      catalog.demote(providerId, model, catalog.SHORT_CONTEXT_WINDOW);
+      const retryHeaders = { ...headers, 'anthropic-beta': shortBeta };
+      res = await post(retryHeaders);
+    } else {
+      throw httpError('anthropic', res, rejected);
+    }
+  }
   if (!res.ok) {
     const err = httpError('anthropic', res, await res.text().catch(() => ''));
     // A subscription window that is genuinely spent is not a blip: retrying five
