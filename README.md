@@ -82,9 +82,37 @@ the repo ships `electron/freellm-config.example.json` with placeholders only.
 Run it headless with `npm run freellm`. Responses carry `x-freellm-provider` and
 `x-freellm-attempts` so you can see who answered.
 
+### Subscription providers — sign in, don't paste
+
+Four subscription providers are first-class. Open the model menu (or **⌘K**) and
+pick the provider card; **Sign in** opens the vendor's own page in your default
+browser and catches the redirect on a loopback port. Nothing is sent to a server
+of ours — the token exchange goes straight from this machine to the vendor.
+
+| Provider | Transport | What you need | How it authenticates |
+|---|---|---|---|
+| **Claude** | `anthropic` | A Claude Pro/Max subscription | OAuth (PKCE) against `claude.ai`, token exchange at `api.anthropic.com/v1/oauth/token` (JSON body). If the **Claude Code CLI** is already signed in on this machine, **Import** adopts the keychain item `Claude Code-credentials` with no browser round-trip (and writes rotated tokens back, so the CLI stays signed in). |
+| **ChatGPT** | `codex` | A ChatGPT Plus/Pro plan | OAuth against `auth.openai.com`, loopback port **1455**, scopes `openid profile email offline_access api.connectors.*`. The public Codex CLI client id is used, so the vendor sees the same client as `codex login`. |
+| **Grok** | `grok` | An X Premium / SuperGrok plan | OAuth against `auth.x.ai` (`openid-configuration`), userinfo at `/oauth2/userinfo`. Inference goes through the first-party CLI proxy `cli-chat-proxy.grok.com/v1` — an OAuth token is **not** an xAI API key and `api.x.ai` rejects it. |
+| **Google Antigravity** | `google` | A personal Google account with Antigravity access | Google OAuth (installed-app client, loopback), then Cloud Code at `daily-cloudcode-pa.googleapis.com/v1internal` (`fetchAvailableModels`, `streamGenerateContent?alt=sse`). The generic Gemini-CLI host answers 403 for this grant. |
+
+Two fallbacks exist for when sign-in is not possible:
+
+- **Import** scans this machine and reads an existing credential
+  (`~/.claude/.credentials.json` or the macOS keychain item
+  `Claude Code-credentials`, `~/.codex/auth.json`, …) and stores it encrypted.
+- **Add key** stores a plain bearer token. For Grok a real `x.ai` API key is also
+  a valid path (`api.x.ai/v1`), billed as API usage instead of against the plan.
+
+Tokens are encrypted with Electron `safeStorage` in `~/.autobot/secrets.json`
+(mode `0600`) and are separate from every other credential file this project
+touches. An access token whose stated `expiresAt` has passed is still tried once
+before the app asks you to sign in again — vendors frequently serve a token past
+its advertised lifetime, and a 200 is a better oracle than a timestamp.
+
 ### Tool toggles
 
-The agent exposes the complete classic Claude Code tool surface (56 total definitions)
+The agent exposes the complete classic Claude Code tool surface (141 total definitions)
 to the model: `Bash, Edit, Write, Read, Glob, Grep, WebSearch, WebFetch, Task, Agent,
 TodoWrite, NotebookEdit, NotebookRead, AskUserQuestion, KillShell, SlashCommand, Skill,
 ExitPlanMode, MultiEdit, REPL, JavaScript, Cd, ListMcpResources, ReadMcpResource,
