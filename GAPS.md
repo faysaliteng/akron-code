@@ -1300,6 +1300,7 @@ Tokens are stored through `secretstore` under `mcp-oauth:<host><path>`.
 | Parity gate | `scripts/parity-audit.js` → **27 subsystem rows**, *NO ATOMIC GAPS*, EXIT 0 |
 | Tool count | unchanged at **141** — no new definitions, swarm gate untouched |
 | e2e / search | **112 / 0** and **9 / 0** |
+| Packaged DMG | the same Install → Sign in → Sign out loop re-proven inside `release/mac-arm64/Helio Bot.app` (`app.asar` ships `electron/mcpoauth.js`); connected in 1 s, pills flip both ways, foot layout identical |
 
 ### U.4 Why this was worth doing before the cosmetic items
 
