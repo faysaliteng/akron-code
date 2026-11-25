@@ -1134,3 +1134,37 @@ Honesty beats a green table:
 | `build/probe-picker.cjs` | **14 checks passed** |
 | `build/probe-capability.cjs` (antigravity) | **`pass: true`** |
 | `build/probe-computer.cjs` (antigravity) | **`pass: true`**, `SCREEN=1280x832` |
+
+### 28.6 The same probes, against the packaged DMG (not the dev run)
+
+The probes above were first run against `npx electron .`. Because the release is
+what ships, all four were re-run against `release/AkronBot-1.0.0-arm64.dmg`
+mounted read-only and launched from the volume (`--remote-debugging-port=9444`).
+Bundled runtimes in the mounted app: **claude-code 2.1.332 / codex 0.172.0 /
+grok 1.0.92**; `probe-*` files inside `app.asar`: **0**; the asar contains
+`warmModelCatalogs` ×3, `fetchProviderModels` ×4, `logo-live` ×2,
+`isContextOverflow` ×8 and the head/tail trim marker ×1 — i.e. the code under
+test is the code in the DMG.
+
+| Probe | Packaged result |
+|---|---|
+| `probe-compact2.cjs 9444 tab_flash_lite_preview` | **`pass: true`** — `sentChars: 30211`, one truncation-prose notice naming the real **16K** window, `gotToken: true`, `rawLimitLeak: false`, `noticeIsProse: true` |
+| `probe-logo.cjs 9444 fast` | **`pass: true`** — idle `anim: none` and stable, **24** streaming samples on `logo-spin`, `coreAnim: logo-pulse`, `transformMoved: true`, rest back to `logo` / `none` |
+| `probe-picker.cjs 9444` | **14 / 14 checks** — claude live catalog + 200K and 1M labels, antigravity live catalog (not the static fallback), no `0K`, window cache written |
+| `probe-capability.cjs 9444 gemini-3-flash` | **`pass: true`** — `Writing: toolcap.txt`, `Running: cat toolcap.txt` → `RUN=TOOLCAP-OK`, `Browsing: https://example.com` → `Example Domain`, `markupLeak: false` |
+| `probe-computer.cjs 9444 gemini-3-flash` | **`pass: true`** — exactly **1** consent prompt (`"Allow Computer Use? … computer_screen_size"`), `mcp__computer__screen_size` called, `SCREEN=1280x832` |
+
+Two packaging-only failure modes were ruled out by running these:
+
+1. **Path-dependent resources.** The DMG runs from
+   `/Volumes/Akron Bot 1.0.0/…/app.asar` (read-only). Runtime resolution, the
+   `dist/` bundle, and the probe-injected localStorage all behave identically.
+2. **Missing code.** A stale DMG would fail `probe-compact2` (no warm catalog →
+   no notice) and `probe-logo` (no `logo-live` class). Both pass, so the DMG
+   really carries this change set.
+
+First-run flakiness observed and explained: `probe-logo` initially pointed at a
+model string that the FreeLLMAPI gateway did not serve (`502`), so the turn never
+ended and the mark correctly stayed `logo-live`; re-run with a served model
+(`fast`) ended the turn and the mark returned to `anim: none`. That is the
+intended semantics — a running turn keeps the mark alive while it retries.
