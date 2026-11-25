@@ -5476,15 +5476,16 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
         </div>
       )}
 
-      <div className="composer">
-        <textarea ref={inputRef} rows={1} placeholder={T('composer.placeholder')} onKeyDown={onKey} onInput={(e) => setHasText(!!e.target.value.trim())} onPaste={onPasteFiles} />
-        <div className="composer-foot">
-          <div className="composer-actions">
-            {!hasText && !streaming && (
-              <span className="composer-hint" aria-hidden="true">Type <kbd>/</kbd> for commands</span>
-            )}
-            <button className="icon-btn attach-btn f-attach" title="Attach files" onClick={attachFiles}><Icon name="Attachment" size={17} /></button>
-
+      {/* Settings row — outside the composer box, above it (Claude-style).
+          The box itself keeps only what Claude keeps in it: the command hint,
+          attach, the context ring, the model pill and send. Every control that
+          carries a label lives up here, because a labelled control inside a
+          682 px flex footer overflows the row, and `overflow: hidden` then
+          clips it out of existence — which is exactly why the tools button was
+          unclickable at every width above 1100 px while the context ring sat
+          on top of it. Nothing can be squeezed past the border now. */}
+      <div className="composer-topbar">
+        <div className="topbar-left">
             {/* Reasoning / thinking level — deliberately labelled so it is
                 discoverable: a bare icon select was impossible to find. */}
             <div className="style-wrap f-think">
@@ -5592,7 +5593,44 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                 </div>
               )}
             </div>
+        </div>
+        <div className="topbar-right">
+            <div className="perm-pill-wrap" ref={permWrapRef}>
+              <button className={'perm-pill' + (permOpen ? ' open' : '')} onClick={() => setPermOpen(!permOpen)} title={T('perm.sessionHead')}>
+                <span className="perm-name">{T(PERM_SHORT[permissions] || 'perm.auto')}</span>
+              </button>
+              {permOpen && (
+                <div className="perm-menu">
+                  <div className="perm-menu-head">{T('perm.sessionHead')}</div>
+                  {PERM_MODES.map((m, i) => {
+                    const active = permissions === m.id;
+                    return (
+                      <button key={m.id} className={'perm-opt' + (active ? ' on' : '')} onClick={() => { setPermissions(m.id); setPermOpen(false); }}>
+                        <span className="perm-opt-body">
+                          <span className="perm-opt-title">{T(m.title)}</span>
+                          <span className="perm-opt-desc">{T(m.desc)}</span>
+                        </span>
+                        <span className="perm-opt-meta">
+                          {active && <Icon name="Check" size={14} className="model-check" />}
+                          <span className="perm-opt-num">{i + 1}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+        </div>
+      </div>
 
+      <div className="composer">
+        <textarea ref={inputRef} rows={1} placeholder={T('composer.placeholder')} onKeyDown={onKey} onInput={(e) => setHasText(!!e.target.value.trim())} onPaste={onPasteFiles} />
+        <div className="composer-foot">
+          <div className="composer-actions">
+            {!hasText && !streaming && (
+              <span className="composer-hint" aria-hidden="true">Type <kbd>/</kbd> for commands</span>
+            )}
+            <button className="icon-btn attach-btn f-attach" title="Attach files" onClick={attachFiles}><Icon name="Attachment" size={17} /></button>
           </div>
 
           <div className="composer-right">
@@ -5753,32 +5791,6 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                   <button className="model-opt" onClick={() => { setModelMenuOpen(false); openSettings(); }}>
                     <Icon name="Settings" size={14} /><span className="model-opt-name">Manage providers…</span>
                   </button>
-                </div>
-              )}
-            </div>
-
-            <div className="perm-pill-wrap" ref={permWrapRef}>
-              <button className={'perm-pill' + (permOpen ? ' open' : '')} onClick={() => setPermOpen(!permOpen)} title={T('perm.sessionHead')}>
-                <span className="perm-name">{T(PERM_SHORT[permissions] || 'perm.auto')}</span>
-              </button>
-              {permOpen && (
-                <div className="perm-menu">
-                  <div className="perm-menu-head">{T('perm.sessionHead')}</div>
-                  {PERM_MODES.map((m, i) => {
-                    const active = permissions === m.id;
-                    return (
-                      <button key={m.id} className={'perm-opt' + (active ? ' on' : '')} onClick={() => { setPermissions(m.id); setPermOpen(false); }}>
-                        <span className="perm-opt-body">
-                          <span className="perm-opt-title">{T(m.title)}</span>
-                          <span className="perm-opt-desc">{T(m.desc)}</span>
-                        </span>
-                        <span className="perm-opt-meta">
-                          {active && <Icon name="Check" size={14} className="model-check" />}
-                          <span className="perm-opt-num">{i + 1}</span>
-                        </span>
-                      </button>
-                    );
-                  })}
                 </div>
               )}
             </div>

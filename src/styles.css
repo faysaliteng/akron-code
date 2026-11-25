@@ -756,11 +756,33 @@ button { font-family: inherit; letter-spacing: inherit; }
   border-top: 1px solid var(--border); font-size: var(--fs-footnote); white-space: pre-wrap;
 }
 
-.inputbar { padding: 0 24px 20px; max-width: 760px; margin: 0 auto; width: 100%; }
+/* Opaque, with a soft fade above it. Without this, scrolled chat text shows
+   through the settings row and the composer box whenever the app paints on a
+   compositing layer (Claude's own composer area is opaque for the same
+   reason). The fade keeps the boundary from looking like a hard cut. */
+.inputbar { padding: 0 24px 20px; max-width: 760px; margin: 0 auto; width: 100%; position: relative; background: var(--bg-000); }
+.inputbar::before {
+  content: ''; position: absolute; left: 0; right: 0; top: -22px; height: 22px;
+  pointer-events: none; background: linear-gradient(to bottom, transparent, var(--bg-000));
+}
 .cwdbar { display: flex; align-items: center; gap: 8px; font-size: var(--fs-caption); color: var(--text-400); margin-bottom: 6px; padding: 0 4px; }
 .cwd { display: inline-flex; align-items: center; gap: 5px; }
 .cwd-pick { background: none; border: none; color: var(--blue); cursor: pointer; font-size: var(--fs-caption); font-family: inherit; padding: 0; }
 .cwd-pick:hover { text-decoration: underline; }
+
+/* Settings row above the composer box. Claude keeps the box itself to the
+   command hint, attach, the context ring, the model pill and send; everything
+   that needs a label sits outside it. That is also the structural fix for the
+   clipping bug: a labelled control inside a 682 px flex footer overflows the
+   row, and `overflow: hidden` then clips it out of existence entirely (the
+   tools button was invisible and unclickable at every width above 1100 px,
+   with the context ring painting over the same pixels). */
+.composer-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; flex-wrap: wrap; margin: 0 2px 6px; min-width: 0;
+}
+.topbar-left { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.topbar-right { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 
 .composer {
   border: 1px solid var(--border-strong); border-radius: var(--radius-composer);
@@ -979,17 +1001,15 @@ button { font-family: inherit; letter-spacing: inherit; }
    the measured slack is 8 px. Below that the hint is the first thing to go.
    It never ellipsises and never clips a control — the failure mode the user
    reported (send button outside the border) cannot come back. */
-.composer-hint { flex: 0 0 auto; }
-@container (min-width: 670px) {
-  .composer-actions .swarm-label { display: none; }
-  /* With the hint present the left cluster needs 417 px but only 402 px is
-     available, so the tools icon would clip. Tighter inter-control gaps buy
-     the 15 px without dropping a control or moving one. */
-  .composer-foot .composer-actions { gap: 3px; }
+.composer-hint { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+/* With the labelled controls out of the footer the row needs ~434 px, so the
+   hint fits in full from 500 px of composer up and only disappears when the
+   Environment pane squeezes the box. It still never ellipsises. */
+@container (min-width: 500px) {
   .composer-hint { padding-right: 0; }
   .composer-hint kbd { padding: 0 2px; }
 }
-@container (max-width: 669px) {
+@container (max-width: 499px) {
   .composer-hint { display: none; }
 }
 @container (max-width: 620px) {
