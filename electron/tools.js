@@ -15,6 +15,7 @@ const parity = require('./parity');
 const bg = require('./bg');
 const replSession = require('./repl');
 const { expandPath } = require('./paths');
+const sandbox = require('./sandbox');
 
 const MAX_OUTPUT = 120000; // chars
 
@@ -77,7 +78,14 @@ const executors = {
       //  which Node would treat as a single executable name and ENOENT on.)
       let out = '';
       let settled = false;
-      const child = spawn('/bin/zsh', ['-l', '-c', String(command)], { cwd: dir, timeout: t });
+      let wrapped;
+      try {
+        wrapped = sandbox.wrapShell(command, { dangerouslyDisableSandbox });
+      } catch (e) {
+        return resolve(`Error: ${e.message}`);
+      }
+      const child = spawn(wrapped.file, wrapped.args, { cwd: dir, timeout: t });
+      if (wrapped.note) out += `[${wrapped.note}]\n`;
       const finish = (fn) => {
         if (settled) return; settled = true;
         if (out === '') out = '(no output)';
@@ -97,6 +105,8 @@ const executors = {
     const target = p || _fp;
     if (!target) return 'Error: Read requires a "path" argument (alias: file_path).';
     const fp = resolvePath(target, cwd);
+    const rd = sandbox.isReadAllowed(fp);
+    if (rd !== true) return 'Error: ' + rd.reason;
     // PDFs: extract text (optionally a page window) instead of mojibake.
     if (/\.pdf$/i.test(fp) && pages) {
       const a = String(pages).split('-');
@@ -139,6 +149,8 @@ const executors = {
     }
     let fp;
     try { fp = resolvePath(target, cwd); } catch (e) { return 'Error writing file: ' + e.message; }
+    const wr = sandbox.isWriteAllowed(fp);
+    if (wr !== true) return 'Error: ' + wr.reason;
     try {
       fs.mkdirSync(path.dirname(fp), { recursive: true });
       const body = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
@@ -160,6 +172,8 @@ const executors = {
     if (!target) return 'Error: Edit requires a "path" argument (alias: file_path).';
     let fp;
     try { fp = resolvePath(target, cwd); } catch (e) { return 'Error editing file: ' + e.message; }
+    const we = sandbox.isWriteAllowed(fp);
+    if (we !== true) return 'Error: ' + we.reason;
     try {
       let raw;
       try { raw = fs.readFileSync(fp, 'utf8'); }
@@ -232,6 +246,8 @@ const executors = {
   async glob({ pattern, path: basePath, cwd }) {
     if (!pattern) return 'Error: Glob requires a "pattern".';
     const base = basePath ? resolvePath(basePath, cwd) : resolveDir(cwd);
+    const gs = sandbox.isReadAllowed(base);
+    if (gs !== true) return 'Error: ' + gs.reason;
     const results = [];
     const reStr = '^' + String(pattern)
       .split(path.sep).join('/')
@@ -261,6 +277,8 @@ const executors = {
   async grep({ pattern, path: p, cwd, glob: g, output_mode = 'content', context, type, head_limit = 250, offset = 0, multiline }) {
     if (!pattern) return 'Error: Grep requires a "pattern".';
     const target = p ? resolvePath(p, cwd) : resolveDir(cwd);
+    const gp = sandbox.isReadAllowed(target);
+    if (gp !== true) return 'Error: ' + gp.reason;
     // `path` may be a FILE (Claude accepts either). rg's cwd must be a real
     // directory, so search from the file's parent and match just that file.
     let searchCwd = target;
@@ -315,6 +333,8 @@ const executors = {
   },
 
   async web_fetch({ url }) {
+    const hostOk = sandbox.isHostAllowed(url);
+    if (hostOk !== true) return 'Error: ' + hostOk.reason;
     if (!url || !/^https?:\/\//i.test(url)) return 'Error: absolute http(s) URL required';
     try {
       const res = await fetch(url, { redirect: 'follow', headers: { 'user-agent': 'HelioBot/1.0' } });

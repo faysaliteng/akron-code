@@ -68,10 +68,19 @@ function view(job, { full = false } = {}) {
 }
 
 // ── Shell jobs ─────────────────────────────────────────────────────────────
-function startShell({ command, cwd, shell = '/bin/zsh', env } = {}) {
+function startShell({ command, cwd, shell = '/bin/zsh', env, dangerouslyDisableSandbox } = {}) {
   if (!command) throw new Error('command required');
   const job = create('shell', { command, cwd });
-  const child = spawn(shell, ['-l', '-c', String(command)], {
+  let file = shell; let args = ['-l', '-c', String(command)];
+  try {
+    const sandbox = require('./sandbox');
+    const wrapped = sandbox.wrapShell(command, { dangerouslyDisableSandbox });
+    file = wrapped.file; args = wrapped.args;
+    if (wrapped.note) append(job, `[${wrapped.note}]\n`);
+  } catch (e) {
+    append(job, `[sandbox] ${e.message}\n`);
+  }
+  const child = spawn(file, args, {
     cwd: cwd || process.cwd(),
     env: env || process.env,
     stdio: ['ignore', 'pipe', 'pipe'],

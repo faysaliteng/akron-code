@@ -293,6 +293,7 @@ const BUILTIN = [
   { name: 'config', description: 'Open settings' },
   { name: 'theme', description: 'Toggle light/dark theme' },
   // workspace
+  { name: 'search', description: 'Search conversations, files, notebooks and memory' },
   { name: 'status', description: 'Show session status' },
   { name: 'diff', description: 'Git diff of the workspace' },
   { name: 'add-dir', description: 'Change working directory' },

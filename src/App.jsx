@@ -374,7 +374,9 @@ export default function App() {
     sso: { enabled: false, idpName: '', issuer: '', clientId: '', domain: '' },
     sync: { enabled: false, lastSync: null, status: 'never', deviceCount: 1 },
   }));
-  const [panel, setPanel] = useState('chats'); // chats | memory | skills | notebooks | mcp | artifacts | terminal | projects
+  const [panel, setPanel] = useState('chats'); // chats | memory | skills | notebooks | mcp | artifacts | terminal | projects | search | plugins | scheduled
+  // Jump-to-message target set by the global search panel; cleared once scrolled.
+  const [pendingScroll, setPendingScroll] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -411,7 +413,6 @@ export default function App() {
   const reasoningLevel = provider.reasoningLevel || 'auto';
   const setReasoningLevel = (lv) => setProvider((p) => ({ ...p, reasoningLevel: lv }));
   const [styleId, setStyleId] = useState('default');
-  const [showSearch, setShowSearch] = useState(false);
   const [showPalette, setShowPalette] = useState(false); // Command Palette (⌘K)
   const [showFind, setShowFind] = useState(false);       // in-chat Find (⌘F)
   const [findQuery, setFindQuery] = useState('');
@@ -542,7 +543,12 @@ export default function App() {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       if (e.key === 'k' || e.key === 'K') { e.preventDefault(); setShowPalette((v) => !v); }
-      else if (e.key === 'f' || e.key === 'F') { e.preventDefault(); setShowFind((v) => !v); }
+      else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        // Shift+F is the cross-conversation search panel; plain F is in-chat find.
+        if (e.shiftKey) setPanel((p) => (p === 'search' ? 'chats' : 'search'));
+        else setShowFind((v) => !v);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -787,8 +793,22 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // A pending jump-to-message (from global search) wins over auto-scroll.
+    if (pendingScroll) return;
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, live, thinking]);
+  }, [messages, live, thinking, pendingScroll]);
+
+  // Global search → jump: scroll the matched message into view and flash it.
+  useEffect(() => {
+    if (!pendingScroll) return;
+    const el = document.getElementById('msg-' + pendingScroll);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.classList.add('msg-flash');
+    const t = setTimeout(() => el.classList.remove('msg-flash'), 1600);
+    setPendingScroll(null);
+    return () => clearTimeout(t);
+  }, [pendingScroll, activeId]);
 
   // Which conversation the in-flight run belongs to (survives chat switching).
   const runConvRef = useRef(null);
@@ -1671,8 +1691,23 @@ export default function App() {
       case 'pr-comments':
         note('`/pr-comments` — pull request comments are reviewed in the Artifacts / GitHub panel. Connect a repo with `/init` and view PRs there.');
         break;
-      case 'sandbox':
-        note('`/sandbox` — sandboxing is governed by the permission pill (Auto / Manual / Accept edits / Plan / Bypass). See `/permissions`.');
+      case 'sandbox': {
+        let d = null;
+        try { d = await window.autobot.getSandbox(); } catch (_) {}
+        if (!d) { note('Sandbox policy unavailable.'); break; }
+        const fsb = d.filesystem || {};
+        const net = d.network || {};
+        const list = (a) => (Array.isArray(a) && a.length ? a.join(', ') : '—');
+        note(
+          `**Sandbox**: ${d.enabled ? 'enabled' : 'disabled'}${d.managed ? ' · managed by administrator' : ''}\n\n` +
+          `Filesystem\n- deny read: ${list(fsb.denyRead)}\n- deny write: ${list(fsb.denyWrite)}\n- allow read: ${list(fsb.allowRead)}\n\n` +
+          `Network\n- allowed domains: ${list(net.allowedDomains)}\n- denied domains: ${list(net.deniedDomains)}\n\n` +
+          `Shell backend: ${d.backend || 'none'}`
+        );
+        break;
+      }
+      case 'search':
+        setPanel((p) => (p === 'search' ? 'chats' : 'search'));
         break;
       case 'alias':
         note('`/alias` — command aliases are configured in Settings → Commands. Project commands live in `.claude/commands/*.md`.');
@@ -1914,7 +1949,7 @@ export default function App() {
           <div className="sidebar-head">
             <div className="wordmark"><Logo size={18} /><span className="brand">Helio Bot</span></div>
             <div className="sidebar-actions">
-              <button className="icon-btn" title={T('sidebar.search')} onClick={() => setShowSearch(true)}><Icon name="Search" size={17} /></button>
+              <button className="icon-btn" title={T('sidebar.search')} onClick={() => setPanel((p) => (p === 'search' ? 'chats' : 'search'))}><Icon name="Search" size={17} /></button>
               <button className="icon-btn" title={sidebarCollapsed ? T('sidebar.expand') : T('sidebar.collapse')} onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
                 <Icon name={sidebarCollapsed ? 'SidebarOpen' : 'SidebarClose'} size={17} />
               </button>
@@ -1938,6 +1973,7 @@ export default function App() {
 
             <div className="section-label">{T('sidebar.tools')}</div>
             <nav className="sidenav">
+              <button className={panel === 'search' ? 'on' : ''} onClick={() => setPanel('search')}><Icon name="Search" size={15} /><span className="label">Search</span><span className="kbd-hint">⌘⇧F</span></button>
               <button className={panel === 'artifacts' ? 'on' : ''} onClick={() => setPanel('artifacts')}><Icon name="Artifacts" size={15} /><span className="label">{T('sidebar.artifacts')}</span><span className="count">{artifacts.length}</span></button>
               <button className={panel === 'memory' ? 'on' : ''} onClick={() => setPanel('memory')}><Icon name="Memory" size={15} /><span className="label">{T('sidebar.memory')}</span><span className="count">{memory.length}</span></button>
               <button className={panel === 'skills' ? 'on' : ''} onClick={() => setPanel('skills')}><Icon name="Lightbulb" size={15} /><span className="label">{T('sidebar.skills')}</span><span className="count">{skills.filter((s) => s.enabled !== false).length}</span></button>
@@ -1966,6 +2002,7 @@ export default function App() {
           <div className="main-split">
             <div className="main-content">
               {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={subAgents} swarmInfo={swarmInfo} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} />}
+              {panel === 'search' && <SearchView convs={convs} cwd={cwd} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
               {panel === 'skills' && <SkillsView skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills} />}
@@ -2019,15 +2056,12 @@ export default function App() {
         <PermissionModal permission={permission} answer={answerPermission} />
       )}
 
-      {showSearch && (
-        <SearchModal convs={convs} onOpen={(id) => { setShowSearch(false); selectConv(id); }} onClose={() => setShowSearch(false)} />
-      )}
 
       {showPalette && (
         <CommandPalette
           onClose={() => setShowPalette(false)}
           onNewChat={newChat}
-          onSearch={() => { setShowPalette(false); setShowSearch(true); }}
+          onSearch={() => { setShowPalette(false); setPanel('search'); }}
           onToggleBrowser={() => { setShowPalette(false); toggleSessionPane('browser'); }}
           onToggleCode={() => { setShowPalette(false); setPanel('code'); }}
           onSettings={() => { setShowPalette(false); setShowSettings(true); }}
@@ -2344,7 +2378,7 @@ function Message({ m, convId, idx, copyMessage, editMessage, deleteMessage, retr
   const images = (m.attachments || []).filter((a) => a.isImage && a.dataUrl);
   const otherAtts = (m.attachments || []).filter((a) => !(a.isImage && a.dataUrl));
   return (
-    <div className={'msg ' + m.role}>
+    <div className={'msg ' + m.role} id={'msg-' + m.id} data-msg-id={m.id}>
       <div className={m.role === 'user' ? 'avatar avatar-user' : 'avatar avatar-assistant'}>{m.role === 'user' ? <Icon name="User" size={16} /> : <Logo size={20} />}</div>
       <div className="body">
         {images.length > 0 && (
@@ -2548,6 +2582,86 @@ function __go(){
 if (window.React && window.ReactDOM && window.Babel) { __go(); }
 else { document.getElementById('root').textContent = 'Could not load React/Babel from CDN. Preview requires network access.'; }
 <\/script></body></html>`;
+}
+
+// ── Global search (Cmd/Ctrl+Shift+F) — Desktop transcript-search parity ──────
+// Searches the conversation history in-memory (instant, no IPC) plus the
+// project folder / notebooks / memory through the main process (ripgrep).
+function searchConversations(convs, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return [];
+  const out = [];
+  for (const c of convs || []) {
+    const title = (c.title || '').toLowerCase();
+    if (title.includes(q)) out.push({ kind: 'conv', convId: c.id, msgId: null, title: c.title || 'Untitled', text: c.title || '', ts: c.ts || 0 });
+    for (const m of c.messages || []) {
+      const text = String(m.content || '');
+      const idx = text.toLowerCase().indexOf(q);
+      if (idx >= 0) {
+        const from = Math.max(0, idx - 70);
+        out.push({ kind: 'conv', convId: c.id, msgId: m.id, role: m.role, title: c.title || 'Untitled', text: (from > 0 ? '…' : '') + text.slice(from, idx + 120).replace(/\s+/g, ' '), ts: m.ts || c.ts || 0 });
+      }
+    }
+  }
+  return out.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+}
+
+function SearchView({ convs, cwd, onOpenConv }) {
+  const [q, setQ] = useState('');
+  const [convHits, setConvHits] = useState([]);
+  const [diskHits, setDiskHits] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+  useEffect(() => { inputRef.current && inputRef.current.focus(); }, []);
+  useEffect(() => {
+    setConvHits(searchConversations(convs, q));
+    if (!q.trim()) { setDiskHits([]); return; }
+    let alive = true;
+    setBusy(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await window.autobot.searchAll({ query: q.trim(), cwd: cwd || '', limit: 60 });
+        if (alive) setDiskHits((res && res.hits) || []);
+      } catch (_) { if (alive) setDiskHits([]); }
+      if (alive) setBusy(false);
+    }, 220);
+    return () => { alive = false; clearTimeout(t); };
+  }, [q, convs, cwd]);
+  const total = convHits.length + diskHits.length;
+  return (
+    <div className="searchview">
+      <div className="search-bar">
+        <Icon name="Search" size={16} />
+        <input ref={inputRef} className="search-input" placeholder="Search conversations, files, notebooks, memory…" value={q} onChange={(e) => setQ(e.target.value)} />
+        {busy && <span className="search-busy">searching…</span>}
+        <span className="search-count">{q.trim() ? total + ' result' + (total === 1 ? '' : 's') : ''}</span>
+      </div>
+      {!q.trim() && <div className="search-empty">Type to search. Conversations are searched in memory; files, notebooks and memory on disk.</div>}
+      {q.trim() > '' && convHits.length > 0 && (
+        <section className="search-group">
+          <h4>Conversations</h4>
+          {convHits.map((h, i) => (
+            <button key={'c' + i} className="search-hit" onClick={() => onOpenConv(h.convId, h.msgId)}>
+              <span className="search-hit-title">{h.title}</span>
+              <span className="search-hit-sub">{h.role ? (h.role === 'user' ? 'you' : 'assistant') + ' · ' : ''}{h.text}</span>
+            </button>
+          ))}
+        </section>
+      )}
+      {q.trim() > '' && diskHits.length > 0 && (
+        <section className="search-group">
+          <h4>Project files, notebooks &amp; memory</h4>
+          {diskHits.map((h, i) => (
+            <div key={'d' + i} className="search-hit search-hit-static">
+              <span className="search-hit-title">{h.kind === 'file' ? (h.rel || h.file) + ':' + h.line : h.kind === 'notebook' ? 'Notebook · ' + h.title : 'Memory'}</span>
+              <span className="search-hit-sub">{h.text}</span>
+            </div>
+          ))}
+        </section>
+      )}
+      {q.trim() && !busy && total === 0 && <div className="search-empty">No matches for “{q.trim()}”.</div>}
+    </div>
+  );
 }
 
 function ArtifactsView({ blocks }) {
@@ -4398,62 +4512,6 @@ function PermissionModal({ permission, answer }) {
 }
 
 // ---------- Search (Claude parity: fuzzy search across conversations + messages) ----------
-function SearchModal({ convs, onOpen, onClose }) {
-  const [q, setQ] = useState('');
-  const inputRef = useRef(null);
-  useEffect(() => { inputRef.current?.focus(); }, []);
-
-  const query = q.trim().toLowerCase();
-  const results = useMemo(() => {
-    if (!query) return [];
-    const out = [];
-    for (const c of convs) {
-      if (c.title && c.title.toLowerCase().includes(query)) {
-        out.push({ conv: c, snippet: c.title, match: 'title' });
-        continue;
-      }
-      for (const m of c.messages || []) {
-        const body = (m.content || '').toLowerCase();
-        const idx = body.indexOf(query);
-        if (idx !== -1) {
-          const start = Math.max(0, idx - 30);
-          const snippet = (m.content || '').slice(start, start + 120);
-          out.push({ conv: c, snippet, match: m.role });
-          break;
-        }
-      }
-    }
-    return out.slice(0, 30);
-  }, [query, convs]);
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal search-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="search-box">
-          <Icon name="Search" size={16} />
-          <input ref={inputRef} placeholder="Search conversations…" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }} />
-          {q && <button className="icon-btn" onClick={() => setQ('')}><Icon name="X" size={14} /></button>}
-        </div>
-        <div className="search-results">
-          {!query && <p className="muted">Type to search your conversations and messages.</p>}
-          {query && results.length === 0 && <p className="muted">No matches for "{q}".</p>}
-          {results.map((r, i) => (
-            <button key={i} className="search-hit" onClick={() => onOpen(r.conv.id)}>
-              <Icon name="Chat" size={14} />
-              <div className="search-hit-body">
-                <div className="search-hit-title">{r.conv.title || 'Untitled'}</div>
-                <div className="search-hit-snippet">{r.snippet}</div>
-              </div>
-              <span className="search-hit-kind">{r.match}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------- Command Palette (⌘K) — Claude parity ----------
 function CommandPalette({ onClose, onNewChat, onSearch, onToggleBrowser, onToggleCode, onSettings, onQuickEntry, onAbout, onExport, onToggleSidebar, onToggleTheme }) {
   const [q, setQ] = useState('');
   const inputRef = useRef(null);

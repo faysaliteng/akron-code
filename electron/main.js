@@ -748,6 +748,31 @@ ipcMain.handle('autobot:deleteScheduledTask', (e, id) => scheduler.remove(id));
 ipcMain.handle('autobot:runScheduledTask', (e, id) => scheduler.runNow(id));
 
 ipcMain.handle('autobot:getSettings', () => store.getSettings());
+// ── Sandbox / network policy (Desktop `sandbox.*` + `network.*` parity) ──
+const sandbox = require('./sandbox');
+const secretstore = require('./secretstore');
+const search = require('./search');
+ipcMain.handle('autobot:getSandbox', () => sandbox.describe());
+ipcMain.handle('autobot:setSandbox', (e, patch) => {
+  const cur = store.getSettings() || {};
+  store.setSettings({ sandbox: { ...(cur.sandbox || {}), ...((patch && patch.sandbox) || {}) }, network: { ...(cur.network || {}), ...((patch && patch.network) || {}) } });
+  return sandbox.describe();
+});
+ipcMain.handle('autobot:sandboxCheck', (e, { kind, value } = {}) => {
+  if (kind === 'read') return sandbox.isReadAllowed(value);
+  if (kind === 'write') return sandbox.isWriteAllowed(value);
+  if (kind === 'host') return sandbox.isHostAllowed(value);
+  return { allowed: true };
+});
+// ── Secret store (OS keychain) ──
+ipcMain.handle('autobot:secretSet', (e, { name, value } = {}) => secretstore.set(String(name), String(value)));
+ipcMain.handle('autobot:secretGet', (e, name) => secretstore.get(String(name)));
+ipcMain.handle('autobot:secretDelete', (e, name) => secretstore.del(String(name)));
+ipcMain.handle('autobot:secretList', () => secretstore.list());
+ipcMain.handle('autobot:secretStatus', () => secretstore.status());
+// ── Transcript / workspace search ──
+ipcMain.handle('autobot:searchAll', (e, payload) => search.searchAll(payload || {}));
+ipcMain.handle('autobot:searchFiles', (e, payload) => search.searchFiles(payload || {}));
 ipcMain.handle('autobot:setSettings', (e, patch) => store.setSettings(patch));
 
 // ── Claude-parity config surface (commands / agents / memory / permissions / rewind) ──
