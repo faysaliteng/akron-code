@@ -69,6 +69,22 @@ function escapeHtml(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// A failed provider call can hand us a gateway page ("LLM 502: <html><head>…")
+// or a Cloudflare interstitial. The main process already scrubs it, but the
+// banner is a text surface — never render markup fragments the user can't read.
+function cleanErr(s) {
+  return String(s == null ? '' : s)
+    .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 400);
+}
+
 function fmtSize(bytes) {
   if (bytes == null || isNaN(bytes)) return '';
   if (bytes < 1024) return bytes + ' B';
@@ -550,7 +566,7 @@ export default function App() {
         case 'error':
           // Preserve anything already streamed, then show the failure.
           commitLive();
-          setError(evt.message);
+          setError(cleanErr(evt.message));
           break;
         case 'question':
           setQuestion({ id: evt.id, type: 'question', text: evt.question, options: evt.options || [] });

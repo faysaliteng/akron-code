@@ -4,7 +4,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { spawn } = require('child_process');
-const { runAgent, normalizeProvider } = require('./llm');
+const { runAgent, normalizeProvider, humanizeLLMError } = require('./llm');
 const store = require('./store');
 const { MCPClient } = require('./mcp');
 const { ShellManager } = require('./shell');
@@ -446,8 +446,10 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       try { mindmap.updateFromRun(runCwd, { title, messages, lastExchange: '(previous turn was stopped mid-stream by the user)' }); } catch (_) {}
       return { ok: false, cancelled: true };
     }
-    send({ type: 'error', message: e.message || String(e) });
-    return { ok: false, error: e.message };
+    // Never surface a raw gateway page ("LLM 502: <html>…") in the chat.
+    const message = humanizeLLMError(e);
+    send({ type: 'error', message });
+    return { ok: false, error: message };
   } finally {
     runs.delete(runId);
   }

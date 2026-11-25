@@ -765,7 +765,7 @@ not build a website".
 | Explicit `hardStepCap` trip | ✅ visible pause note + `limit` event, no silent stop |
 | Token-limit retry live | ✅ `retry-ui.cjs` stub cuts stream at `length` → `before: ["text:48"]` → `after: []`; transcript keeps one clean answer + the "retrying with 16384 tokens" note |
 | Composer regression | ✅ `composer-flow.cjs` — live activity → ordered transcript (`think>text>tool>text`) → page in pane + on disk |
-| Headless suite | ✅ **109 passed, 0 failed** (111 tool definitions) |
+| Headless suite | ✅ **111 passed, 0 failed** (111 tool definitions) |
 | Real reasoning model end-to-end | ✅ DeepSeek V4.1 Flash: `Worked for 5m 47s`, 138 samples, ~100 ordered blocks, 6 tool rows, deliverable `~/Helio Bot/build-me-a-live-football-score-website-11/index.html` + `css/`, `js/`, `README.md`, `MINDMAP.md`; no error banner, no `hung` flag |
 | Build | ✅ `npm run build` clean |
 
@@ -774,3 +774,34 @@ not build a website".
 "remote-debugging-port=9333"`, then `npx electron . --remote-debugging-port=9333`). A stale
 `dist/assets/index-*.js` will make a renderer fix look broken; grep the built entry asset for
 the new symbol before believing a FAIL.
+
+## O. A GATEWAY ERROR PAGE WAS PRINTED INTO THE CHAT — RESOLVED (2026-11-25)
+
+A finished real-model run (DeepSeek V4.1 Flash, `real-model.cjs`, deliverable in the pane,
+`Worked for 7m 30s`) still carried a red banner reading:
+
+```
+LLM 502: <html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center><hr><center>nginx</center></body></html>
+```
+
+The run recovered on its own a moment later, so the banner was pure noise: (a) an HTML page
+pasted verbatim into a chat, (b) a *transient* condition reported as a fatal one. Two bugs:
+
+| # | Gap | Where | Fix |
+|---|---|---|---|
+| 1 | Only `429`/quota was treated as transient — `502/503/504` and Cloudflare `520-527` killed the run | `isRateLimitError` | `RETRY_STATUS` set (`408,409,425,429,500,502,503,504,520-527,529`) checked against `err.status` **and** against an `LLM NNN:` prefix in the message; prose keywords (`bad gateway`, `gateway time-out`, `service unavailable`, `upstream error`, `ECONNREFUSED`, `EPIPE`, `EAI_AGAIN`, …) added |
+| 2 | The provider's error body was surfaced raw | `main.js` IPC error path, `App.jsx` banner | `humanizeLLMError()` (llm.js) strips `<script>/<style>`, tags and entities, folds whitespace, maps the status to a plain sentence, and appends the body only when it is real prose (gateway boilerplate is detected by residue, not by a fixed string); `cleanErr()` in the renderer is the second line of defence |
+| 3 | The wait line said "rate limited" for every status | `chatWithFailover` | `provider error 502 — waiting 2s before retrying` (status-aware), newline-separated so repeated back-offs read as a list |
+
+The run now survives a gateway blip instead of dying mid-task, and no markup can reach the
+transcript (main-process scrub + renderer scrub + an assertion in the headless suite).
+
+### O1 — Verification
+
+| Check | Result |
+|---|---|
+| Headless: 502 retried, never shown raw | ✅ `a 502 gateway page is retried, and never shown raw` — mock serves nginx HTML twice then a normal stream; asserts `calls ≥ 2`, the final answer, a `thinking` event matching `/provider error 502/`, no `error` event, and **no `<html`/`<title`/`<body` anywhere in the event stream** |
+| Headless: humanizer | ✅ `an unrecoverable provider error is humanized, not pasted raw` — `LLM 502: <html>…nginx</html>` → `The provider's gateway returned 502 Bad Gateway` (no angle brackets, no `nginx`); `LLM 401: {"error":{"message":"invalid api key"}}` → `The API key was rejected — …` |
+| Live CDP (`test/live/gateway-502.cjs`, stub on :8903) | ✅ 3 attempts, banner empty, transcript blocks `["think:provider error 502 — waiting 2s before retrying / … 5s …", "text:Back online — the gateway blip was retried and this answer is intact."]`, `document.body.innerText` free of `<html|<head|<title|<body|nginx`, screenshot `screenshots/gateway-502.png` |
+| Regressions | ✅ `retry-ui.cjs` PASS, `composer-flow.cjs` PASS (`think>text>tool>text`, page in pane + on disk), `e2e.test.js` **111 passed, 0 failed** |
+| Real reasoning model after the fix | ✅ `real-model.cjs deepseek` exit 0 — `deepseek-v4.1-flash-1017`, *Worked for 8m 33s*, 204 live samples, 139 ordered blocks (text → think → tool → text), 7 files on disk in `~/Helio Bot/build-me-a-live-football-score-website-15/`, page live in the pane at `http://localhost:8899/index.html`, `errorBanner`/`lastNotice` empty, `hung:false`, no markup anywhere |

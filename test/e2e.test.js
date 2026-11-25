@@ -32,7 +32,14 @@ function startMock(plan) {
       const idx = Math.min(calls - 1, plan.length - 1);
       const step = plan[idx] || { content: '(empty)' };
       const parsed = JSON.parse(body || '{}');
-      if (step.status === 429 || step.status === 500) {
+      if (step.status) {
+        // `html:true` mimics a real nginx/CDN error page — the thing that used
+        // to land in the transcript as "LLM 502: <html><head>…".
+        if (step.html) {
+          res.writeHead(step.status, { 'content-type': 'text/html' });
+          res.end(String(step.message || '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center><hr><center>nginx</center></body></html>'));
+          return;
+        }
         res.writeHead(step.status, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: { message: step.message || 'rate limit exceeded' } }));
         return;
@@ -324,6 +331,53 @@ async function main() {
       delete process.env.HELIO_STREAM_STALL_MS;
       mock.server.close();
     }
+  });
+
+  await test('a 502 gateway page is retried, and never shown raw', async () => {
+    // A CDN answers with an HTML error page when the upstream model blips. That
+    // used to kill the run and print "LLM 502: <html><head><title>502 Bad
+    // Gateway</title>…nginx…" straight into the chat.
+    process.env.HELIO_BACKOFF_MS = '10';
+    const mock = await startMock([
+      { status: 502, html: true },
+      { content: 'survived the gateway blip' },
+    ]);
+    try {
+      const events = [];
+      const msgs = await runAgent({
+        provider: { baseURL: `http://127.0.0.1:${mock.port}/v1`, apiKey: '', model: 'test', temperature: 0, maxTokens: 200 },
+        messages: [{ role: 'user', content: 'say hi' }],
+        cwd: process.cwd(),
+        emit: (evt) => events.push(evt),
+        useMemory: false,
+      });
+      assert.ok(mock.calls() >= 2, 'the gateway error was retried');
+      assert.match(msgs[msgs.length - 1].content, /survived the gateway blip/);
+      assert.ok(
+        events.some((e) => e.type === 'thinking' && /provider error 502/.test(String(e.text))),
+        'the wait is described by status, not as a rate limit',
+      );
+      assert.ok(!events.some((e) => e.type === 'error'), 'a 502 is transient, not a red error');
+      const seen = JSON.stringify(events);
+      assert.ok(!/<html|<head|<title|<body/i.test(seen), 'no markup reaches the transcript');
+    } finally {
+      delete process.env.HELIO_BACKOFF_MS;
+      mock.server.close();
+    }
+  });
+
+  await test('an unrecoverable provider error is humanized, not pasted raw', () => {
+    const { humanizeLLMError } = require('../electron/llm.js');
+    const raw = new Error('LLM 502: <html>\n<head><title>502 Bad Gateway</title></head>\n<body><center><h1>502 Bad Gateway</h1></center><hr><center>nginx</center></body>\n</html>');
+    raw.status = 502;
+    const out = humanizeLLMError(raw);
+    assert.ok(!/[<>]/.test(out), 'no angle brackets survive');
+    assert.match(out, /502/);
+    assert.match(out, /gateway/i);
+    assert.ok(!/nginx\s*$/i.test(out), 'boilerplate is dropped');
+    const auth = new Error('LLM 401: {"error":{"message":"invalid api key"}}');
+    auth.status = 401;
+    assert.match(humanizeLLMError(auth), /key/i);
   });
 
   await test('a turn truncated mid tool-call JSON is retried, never executed broken', async () => {

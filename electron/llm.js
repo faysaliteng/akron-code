@@ -290,12 +290,71 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   return message;
 }
 
-// True when an error indicates a provider rate-limit / quota / limit-reached
-// condition that should trigger orchestrator failover.
+// HTTP statuses worth retrying. Rate limits, client timeouts, and the entire 5xx
+// family — CDNs and gateways answer 502/503/504 (and Cloudflare's 520-527) with
+// an HTML page when the upstream model blips, and that page used to land in the
+// transcript verbatim as "LLM 502: <html><head><title>502 Bad Gateway".
+// 4xx stays fatal: retrying a rejected request just burns the user's time.
+const RETRY_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 529]);
+
+// True when an error is TRANSIENT — rate limit / quota / gateway blip / dropped
+// socket — so the run should back off and retry (and possibly fail over) instead
+// of dying with a red banner mid-task.
 function isRateLimitError(e) {
   if (e && e.transient) return true; // stalled streams, connection resets
+  if (e && RETRY_STATUS.has(Number(e.status))) return true;
   const msg = String((e && e.message) || e || '');
-  return /429|rate.?limit|too many requests|quota|insufficient|exceeded|limit reached|billing|capacity|overloaded|throttl|ECONNRESET|ETIMEDOUT|socket hang up|fetch failed|network|stalled/i.test(msg);
+  const code = /^\s*LLM\s+(\d{3})\b/.exec(msg);
+  if (code && RETRY_STATUS.has(Number(code[1]))) return true;
+  return /429|rate.?limit|too many requests|quota|insufficient|exceeded|limit reached|billing|capacity|overloaded|throttl|bad gateway|gateway time-?out|service unavailable|upstream (error|unavailable|connect)|temporarily unavailable|try again later|application error|ECONNRESET|ECONNREFUSED|EPIPE|EAI_AGAIN|ETIMEDOUT|socket hang up|fetch failed|network|stalled/i.test(msg);
+}
+
+// Provider errors carry whatever the gateway felt like sending: nginx HTML,
+// Cloudflare JS-wrapped JSON, a bare stack trace. None of that belongs in the
+// chat. Strip markup, collapse whitespace, and say what actually happened.
+function humanizeLLMError(e) {
+  const raw = String((e && e.message) || e || 'unknown error');
+  const status = Number((e && e.status) || (/^\s*LLM\s+(\d{3})\b/.exec(raw) || [])[1] || 0);
+  // Drop HTML tags + the CSS/JS inside <style>/<script>, decode the few
+  // entities that matter, and fold newlines.
+  let body = raw
+    .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/^\s*LLM\s+\d{3}\s*:?\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (body.length > 200) body = body.slice(0, 197).trimEnd() + '…';
+  const friendly = {
+    400: 'The provider rejected the request',
+    401: 'The API key was rejected',
+    403: 'The provider refused access to this model',
+    404: 'The provider says that model or endpoint does not exist',
+    408: 'The provider timed out',
+    413: 'The request was too large for this provider',
+    422: 'The provider could not process the request',
+    429: 'The provider is rate limiting this key',
+    500: 'The provider hit an internal error',
+    502: 'The provider’s gateway returned 502 Bad Gateway',
+    503: 'The provider is temporarily unavailable (503)',
+    504: 'The provider’s gateway timed out (504)',
+    529: 'The provider is overloaded (529)',
+  }[status];
+  const head = friendly || (status ? `The provider returned HTTP ${status}` : raw.split('\n')[0].slice(0, 120));
+  // Only append the scrubbed detail when it is prose, not boilerplate. Gateway
+  // pages are the status phrase repeated a few times with the server name, so
+  // strip those tokens and see whether anything of substance is left.
+  const residue = body
+    .replace(/\b(?:50[0-9]|52[0-9])\b/g, ' ')
+    .replace(/bad gateway|gateway time-?out|service (?:temporarily )?unavailable|temporarily unavailable|internal server error|application error|overloaded|upstream (?:error|unavailable)|nginx|cloudflare|the page you are looking for|could not be found|error|ok|undefined/gi, ' ')
+    .replace(/[^A-Za-z0-9]+/g, ' ')
+    .trim();
+  const noisy = residue.length < 4 || body === head;
+  return noisy ? head : `${head} — ${body}`;
 }
 
 // Abortable sleep used for rate-limit backoff.
@@ -326,6 +385,7 @@ async function chatWithFailover(opts) {
   const MAX_ROUNDS = 5;
   const BACKOFF = [2000, 5000, 10000, 20000]; // wait before round 2..5
   let lastErr = null;
+  let waits = 0; // so repeated back-offs read as a list, not one glued run-on
   for (let round = 0; round < MAX_ROUNDS; round++) {
     if (signal && signal.aborted) throw new Error('aborted');
     const start = opts.getIndex();
@@ -343,7 +403,7 @@ async function chatWithFailover(opts) {
           if (n > 1 && a < n - 1) {
             const next = (i + 1) % n;
             opts.setIndex(next);
-            emit({ type: 'orchestrator', from: p.model || p.baseURL, to: list[next].model || list[next].baseURL, reason: String(e.message || e).slice(0, 200) });
+            emit({ type: 'orchestrator', from: p.model || p.baseURL, to: list[next].model || list[next].baseURL, reason: humanizeLLMError(e).slice(0, 200) });
             continue;
           }
           break; // last provider this round — fall through to backoff
@@ -353,13 +413,21 @@ async function chatWithFailover(opts) {
     }
     if (!rateLimited) throw (lastErr || new Error('All providers failed.'));
     if (round < MAX_ROUNDS - 1) {
-      const base = BACKOFF[round] != null ? BACKOFF[round] : 20000;
+      // HELIO_BACKOFF_MS pins the delay (tests + impatient operators) without
+      // changing the production ladder.
+      const envDelay = Number(process.env.HELIO_BACKOFF_MS);
+      const base = Number.isFinite(envDelay) ? envDelay : (BACKOFF[round] != null ? BACKOFF[round] : 20000);
       const wait = Math.min(Math.max(base, (lastErr && lastErr.retryAfterMs) || 0), 45000);
-      emit({ type: 'thinking', text: ` (rate limited — waiting ${Math.round(wait / 1000)}s before retrying)` });
+      const code = Number((lastErr && lastErr.status) || (/^\s*LLM\s+(\d{3})\b/.exec(String((lastErr && lastErr.message) || '')) || [])[1] || 0);
+      const why = code && code !== 429 ? `provider error ${code}` : 'rate limited';
+      const line = `${why} — waiting ${Math.round(wait / 1000)}s before retrying`;
+      emit({ type: 'thinking', text: (waits++ === 0 ? '' : '\n') + line });
       await sleep(wait, signal);
     }
   }
-  throw lastErr || new Error('All providers failed (rate limited).');
+  const gaveUp = new Error(`${humanizeLLMError(lastErr)} (gave up after ${MAX_ROUNDS} attempts)`);
+  gaveUp.status = lastErr && lastErr.status;
+  throw gaveUp;
 }
 
 // Parse tool_calls arguments (JSON string) safely. Providers differ: some
@@ -1061,4 +1129,4 @@ async function runAgent(opts) {
   return messages;
 }
 
-module.exports = { runAgent, normalizeProvider, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory };
+module.exports = { runAgent, normalizeProvider, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, humanizeLLMError, isRateLimitError };

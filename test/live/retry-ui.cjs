@@ -130,8 +130,7 @@ async function evaluate(ws, expression) {
   fs.mkdirSync(path.dirname(shotPath), { recursive: true });
   fs.writeFileSync(shotPath, Buffer.from(shot, 'base64'));
 
-  const dbg = JSON.parse(await evaluate(ws, 'JSON.stringify(window.__helioRetry || null)') || 'null');
-  const report = { streams, composer: sent, workedFor, retry: dbg, final, screenshot: shotPath };
+  const report = { streams, composer: sent, workedFor, final, screenshot: shotPath };
   console.log(JSON.stringify(report, null, 2));
   ws.close();
   server.close();

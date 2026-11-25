@@ -339,4 +339,25 @@ Reasoning models (Kimi K3.1 Pro, DeepSeek V4.1 Flash) spend the budget on
 | Live CDP proof (`test/live/retry-ui.cjs`, stub SSE cut at `length`) | ✅ capture `before: ["text:48"]` → `after: []`; transcript `blocks` = `["think:Thought (token limit reached — retrying with 16384 tokens)", "text:Final answer: …"]` — **one** clean answer, no `Draft: this sentence was cut off…` residue |
 | Truncation is visible, not silent | ✅ the thinking line names the retry and the new budget; no red error banner |
 | Harness lesson recorded | ✅ a stale `dist/assets` bundle silently defeats renderer fixes; a changed `electron/` file needs a full app restart (main process is not hot-reloaded) |
-| Headless suite | ✅ **109 passed, 0 failed** (111 tool definitions) |
+| Headless suite | ✅ **111 passed, 0 failed** (111 tool definitions) |
+
+### A provider gateway error is retried, never pasted into the chat (2026-11-25)
+
+Every live run from a provider behind a CDN can hit a 502/503/504 at any moment — the
+gateway answers with an nginx or Cloudflare **HTML page**, not JSON. Helio Bot used to die
+there and show the page verbatim:
+
+```
+LLM 502: <html><head><title>502 Bad Gateway</title></head><body>…nginx…
+```
+
+| Check | Result |
+|---|---|
+| Transient classifier | ✅ `RETRY_STATUS` = `408,409,425,429,500,502,503,504,520-527,529`, matched on `err.status` **and** on the `LLM NNN:` prefix in the message, plus prose keys (`bad gateway`, `upstream error`, `ECONNREFUSED`, `EPIPE`, `EAI_AGAIN`, `service unavailable`, …) — 4xx stays fatal |
+| Message is humanized | ✅ `humanizeLLMError()` strips `<script>/<style>`, tags and entities, folds whitespace, maps the status to a sentence, and only appends the body when it is prose (gateway boilerplate detected by residual content) |
+| No path leaks markup | ✅ scrubbed twice: main-process IPC (`main.js` `autobot:run` catch) and renderer (`cleanErr()` before `setError`) |
+| The wait line is status-aware | ✅ `provider error 502 — waiting 2s before retrying` (newline-separated for repeated back-offs) instead of always "rate limited" |
+| Live CDP (`test/live/gateway-502.cjs`, stub on :8903) | ✅ 3 attempts → answered; `.errorbar` empty; blocks `["think:provider error 502 — waiting 2s… / … 5s …", "text:Back online — the gateway blip was retried and this answer is intact."]`; `document.body.innerText` free of `<html|<head|<title|<body|nginx`; `screenshots/gateway-502.png` |
+| Headless suite | ✅ **111 passed, 0 failed** (two new tests: the retry and the humanizer) |
+| Real model, end to end, after the fix | ✅ `real-model.cjs deepseek` exit 0 — `Worked for 8m 33s`, 204 samples, 139 ordered blocks, 7 files on disk, page live in the pane, `errorBanner` empty, no markup |
+| Regressions | ✅ `retry-ui.cjs` PASS · `composer-flow.cjs` PASS · `npm run build` clean |
