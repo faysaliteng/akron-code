@@ -313,3 +313,30 @@ holds the conversation — everything is keyed by `convId` on the client:
   from the prompt itself — no shared provider memory required. Verified end-to-end
   (`test/live/hb-mindmap-inject.cjs` → PASS; 4 regression tests in `test/e2e.test.js`).
 
+
+### Organization compliance — the `taint:*` capability panel (2026-11-25)
+
+Settings → **Compliance** reproduces the Desktop organization-capability gate
+locally. The profile is a file on this machine (`~/.autobot/compliance.json`);
+nothing is fetched from an account backend, and no data leaves the device.
+
+- **Capability catalogue** — 15 `taint:*` capabilities plus the three retention
+  flags (`zero_retention_lock`, `retain_restricted_pii`,
+  `no_anthropic_human_review_enabled`), each with an authored label, an effect
+  list and its raw code chip. `taint:limit-to-service-terms-<term>` is handled
+  as a prefix row and shown as the term it limits.
+- **Nine derived verdicts** — Retention (`allowed` / `marked` / `unknown`),
+  HIPAA (`regulated` / `not_regulated` / `not_known`), CMEK (`blocked` /
+  `not applicable`), Cloud & model moves, MCP tool toggles, Session deletion,
+  Product feedback, Deployment, Chat. The headline badge is one authored
+  sentence explaining the most severe consequence.
+- **What it actually gates** — `/delete` awaits the deletion gate and prints
+  *"This session can't be deleted while the workspace is marked
+  HIPAA-regulated."* instead of removing the conversation; `/feedback` turns
+  off under FERPA or the explicit disable flag; allowed deletions append a row
+  to `~/.autobot/compliance-audit.jsonl` (rotated at 512 KB, newest-first
+  reads). HIPAA takes precedence over ZDR.
+- **No new tools** — the capability set is a settings surface, not a tool, so
+  the tool count stays at 141 and the swarm frontier gate is unchanged.
+- Tests: `node test/compliance.test.js` → **147 passed, 0 failed**;
+  live CDP verified the HIPAA / ZDR / CMEK profiles end to end.

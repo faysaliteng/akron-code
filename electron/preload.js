@@ -155,6 +155,13 @@ contextBridge.exposeInMainWorld('autobot', {
   unfurl: (url) => ipcRenderer.invoke('autobot:unfurl', url),
   unfurlMany: (urls) => ipcRenderer.invoke('autobot:unfurlMany', urls),
 
+  // ---- Organization compliance (Desktop `taint:*` parity) ----
+  complianceGet: () => ipcRenderer.invoke('autobot:complianceGet'),
+  complianceSet: (patch) => ipcRenderer.invoke('autobot:complianceSet', patch),
+  complianceReset: () => ipcRenderer.invoke('autobot:complianceReset'),
+  complianceDeleteCheck: (meta) => ipcRenderer.invoke('autobot:complianceDeleteCheck', meta),
+  complianceAudit: (limit) => ipcRenderer.invoke('autobot:complianceAudit', limit),
+
   // ---- Hosted Chrome extensions (Desktop `extension-host` parity) ----
   extensionList: () => ipcRenderer.invoke('autobot:extensionList'),
   extensionScan: () => ipcRenderer.invoke('autobot:extensionScan'),

@@ -481,6 +481,11 @@ export default function App() {
   const [error, setError] = useState('');
   const [question, setQuestion] = useState(null); // { id, type, text, options }
 
+  // Organization compliance profile (`taint:*` capability namespace). The main
+  // process owns the file; the renderer keeps the evaluated snapshot so every
+  // gate resolves synchronously while the UI renders.
+  const [compliance, setCompliance] = useState(null); // { profile, state, catalog }
+
   const [memory, setMemory] = useState([]);
   const [skills, setSkills] = useState([]);
   const [mcpServers, setMcpServers] = useState([]);
@@ -566,6 +571,7 @@ export default function App() {
     window.autobot.listNotebooks().then(setNotebooks);
     window.autobot.getOrchestrator().then(setOrchestrator);
     window.autobot.getFeatures().then(setFeatures);
+    if (window.autobot.complianceGet) window.autobot.complianceGet().then(setCompliance).catch(() => {});
   }, []);
 
   // When the active conversation changes, switch the working folder to its
@@ -871,6 +877,12 @@ export default function App() {
         case 'limit':
           setNotice(`Paused after ${evt.steps} tool turns — the runaway safety valve, not a step limit. Say "continue" to carry on.`);
           break;
+        case 'compliance':
+          // Settings changed in another window (or via IPC) — re-render gates.
+          if (evt.state) {
+            setCompliance((prev) => ({ ...(prev || { profile: null, catalog: [] }), state: evt.state }));
+          }
+          break;
         default:
           break;
       }
@@ -1123,7 +1135,21 @@ export default function App() {
   // committed to its own conversation and `liveForActive` keeps it off-screen.
   const newChat = () => { if (!streamingRef.current) setLive(null); setActiveId(null); setError(''); setPanel('chats'); inputRef.current?.focus(); };
   const selectConv = (id) => { setActiveId(id); setPanel('chats'); };
-  const deleteConv = (id) => {
+  const deleteConv = async (id) => {
+    // Compliance gate first — under an HIPAA / ZDR profile Desktop refuses the
+    // delete outright, and under a marked-retention profile it writes an audit
+    // record first. Ask the main process before touching local state.
+    if (window.autobot && window.autobot.complianceDeleteCheck) {
+      const conv = convsRef.current.find((c) => c.id === id);
+      let gate = null;
+      try {
+        gate = await window.autobot.complianceDeleteCheck({ id, title: conv ? conv.title : '' });
+      } catch (_) { gate = null; }
+      if (gate && gate.allowed === false) {
+        setError(gate.line || 'This session can’t be deleted under your organization’s configuration.');
+        return;
+      }
+    }
     setConvs((cs) => cs.filter((c) => c.id !== id));
     if (activeId === id) setActiveId(null);
   };
@@ -1804,9 +1830,15 @@ export default function App() {
       case 'bug':
         note('Found a bug? File it with `/feedback` or the akronlogic.com support link. Include `/debug` output.');
         break;
-      case 'feedback':
+      case 'feedback': {
+        const fb = compliance && compliance.state ? compliance.state.feedback : null;
+        if (fb && fb.allowed === false) {
+          note((compliance.state && compliance.state.feedbackLine) || 'Product feedback is turned off by your organization’s policy.');
+          break;
+        }
         note('Feedback goes to akronlogic.com. Include `/debug` and `/version` output so it is actionable.');
         break;
+      }
       case 'init-verifiers':
         note('`/init-verifiers` — add test/verification steps to `CLAUDE.md`. Use `/init` first, then describe how to verify changes.');
         break;
@@ -2134,7 +2166,7 @@ export default function App() {
       </div>
 
       {showSettings && (
-        <SettingsModal provider={provider} setProvider={setProvider} providerKeys={providerKeys} setProviderKeys={setProviderKeys} settings={settings} setSettings={setSettings} orchestrator={orchestrator} setOrchestrator={setOrchestrator} features={features} setFeatures={setFeatures} testProvider={testProvider} onClose={() => setShowSettings(false)} T={T} account={account} setAccount={setAccount} permissions={permissions} setPermissions={setPermissions} />
+        <SettingsModal provider={provider} setProvider={setProvider} providerKeys={providerKeys} setProviderKeys={setProviderKeys} settings={settings} setSettings={setSettings} orchestrator={orchestrator} setOrchestrator={setOrchestrator} features={features} setFeatures={setFeatures} testProvider={testProvider} onClose={() => setShowSettings(false)} T={T} account={account} setAccount={setAccount} permissions={permissions} setPermissions={setPermissions} compliance={compliance} setCompliance={setCompliance} />
       )}
 
       {question && (
@@ -4511,7 +4543,145 @@ function AccountSection({ account, setAccount, T }) {
   );
 }
 
-function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator, features, setFeatures, testProvider, onClose, T, account, setAccount, permissions, setPermissions }) {
+// ---------- Organization compliance (`taint:*` capabilities) ----------
+// Desktop reads `memberships[].organization.capabilities` from the account API
+// and derives every gate from it. Helio Bot has no account backend, so the
+// profile is declared here and the main process evaluates the exact same
+// arithmetic (`electron/compliance.js`). Toggles map 1:1 onto capability strings.
+function ComplianceSection({ compliance, setCompliance }) {
+  const [busy, setBusy] = useState(false);
+  const [auditCount, setAuditCount] = useState(null);
+  const profile = (compliance && compliance.profile) || { capabilities: [], dataRetention: 'default' };
+  const state = (compliance && compliance.state) || null;
+  const catalog = (compliance && compliance.catalog) || [];
+
+  useEffect(() => {
+    if (!window.autobot || !window.autobot.complianceAudit) return;
+    window.autobot.complianceAudit(500).then((rows) => setAuditCount((rows || []).length)).catch(() => {});
+  }, [compliance]);
+
+  const save = async (patch) => {
+    if (!window.autobot || !window.autobot.complianceSet) return;
+    setBusy(true);
+    try {
+      const snap = await window.autobot.complianceSet(patch);
+      setCompliance(snap);
+    } catch (_) {} finally { setBusy(false); }
+  };
+
+  const reset = async () => {
+    if (!window.autobot || !window.autobot.complianceReset) return;
+    setBusy(true);
+    try {
+      const snap = await window.autobot.complianceReset();
+      setCompliance(snap);
+    } catch (_) {} finally { setBusy(false); }
+  };
+
+  const caps = profile.capabilities || [];
+  const toggle = (id) => {
+    if (id.endsWith('*')) return; // prefix row is documentation only
+    const next = caps.includes(id) ? caps.filter((c) => c !== id) : [...caps, id];
+    save({ capabilities: next });
+  };
+
+  const tone = state ? state.tone : 'unknown';
+  const toneLabel = { ok: 'Allowed', warn: 'Marked', blocked: 'Blocked', unknown: 'Unknown' }[tone] || 'Unknown';
+
+  const rows = catalog.filter((r) => !r.prefix);
+  const taintRows = rows.filter((r) => String(r.id).startsWith('taint:'));
+  const relatedRows = rows.filter((r) => !String(r.id).startsWith('taint:'));
+
+  const derived = state
+    ? [
+        ['Retention', state.retention],
+        ['HIPAA', state.hipaa],
+        ['CMEK', state.cmek === null ? 'not applicable' : state.cmek ? 'blocked' : 'available'],
+        ['Cloud & model moves', state.cloudMove && state.cloudMove.verdict ? state.cloudMove.verdict + (state.cloudMove.why ? ' · ' + state.cloudMove.why : '') : 'unverified'],
+        ['MCP tool toggles', state.toolSwitch && state.toolSwitch.allowed ? 'local only' : 'local only · blocked from sync'],
+        ['Session deletion', state.deletion && state.deletion.allowed ? (state.audit ? 'allowed · audited' : 'allowed') : 'refused'],
+        ['Product feedback', state.feedback && state.feedback.allowed ? 'allowed' : 'off'],
+        ['Deployment', state.deployment + (state.deploymentPending ? ' · pending' : '')],
+        ['Chat', state.chat ? (state.chat.allowed ? (state.chat.planAllowed ? 'allowed · paid plan' : 'allowed') : 'refused') : 'unknown'],
+      ]
+    : [];
+
+  return (
+    <>
+      <h3><Icon name="WarningShield" size={14} /> Compliance</h3>
+      <p className="muted">
+        Organization data-classification for this device. Capabilities gate session deletion, cloud moves,
+        MCP tool sync and product feedback exactly as the desktop app does. Nothing leaves this machine.
+      </p>
+
+      <div className="row">
+        <label>Organization
+          <input
+            value={profile.organization || ''}
+            placeholder="Local profile (no account backend)"
+            onChange={(e) => save({ organization: e.target.value })}
+            disabled={busy}
+          />
+        </label>
+        <label>Data retention
+          <select value={profile.dataRetention || 'default'} onChange={(e) => save({ dataRetention: e.target.value })} disabled={busy}>
+            <option value="default">default (no agreement)</option>
+            <option value="none">none (zero retention)</option>
+            <option value="limited">limited</option>
+          </select>
+        </label>
+      </div>
+
+      <div className={'compliance-badge tone-' + tone}>
+        <b>{toneLabel}</b>
+        <span>{state ? state.headline : 'Loading compliance state…'}</span>
+      </div>
+
+      {derived.length > 0 && (
+        <div className="compliance-grid">
+          {derived.map(([k, v]) => (
+            <div key={k} className="compliance-cell"><span>{k}</span><b>{v}</b></div>
+          ))}
+        </div>
+      )}
+
+      <h4 className="compliance-sub">Organization capabilities</h4>
+      {taintRows.map((r) => (
+        <label className="check" key={r.id} title={r.summary}>
+          <input type="checkbox" checked={caps.includes(r.id)} onChange={() => toggle(r.id)} disabled={busy} />
+          {r.label}
+          <code className="compliance-code">{r.id}</code>
+        </label>
+      ))}
+
+      <h4 className="compliance-sub">Retention flags</h4>
+      {relatedRows.map((r) => (
+        <label className="check" key={r.id} title={r.summary}>
+          <input type="checkbox" checked={caps.includes(r.id)} onChange={() => toggle(r.id)} disabled={busy} />
+          {r.label}
+          <code className="compliance-code">{r.id}</code>
+        </label>
+      ))}
+
+      <div className="row compliance-actions">
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={profile.visibilityStatus === 'pending'}
+            onChange={(e) => save({ visibilityStatus: e.target.checked ? 'pending' : null })}
+            disabled={busy}
+          />
+          Deployment visibility pending
+        </label>
+        <span className="muted">Deletion audit records: {auditCount === null ? '—' : auditCount}</span>
+        <button onClick={reset} disabled={busy}>Reset profile</button>
+      </div>
+    </>
+  );
+}
+
+
+function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator, features, setFeatures, testProvider, onClose, T, account, setAccount, permissions, setPermissions, compliance, setCompliance }) {
   const set = (k) => (e) => setProvider({ ...provider, [k]: e.target.value });
   // Persist every key against its own endpoint so switching models never reuses
   // (or loses) another provider's credential.
@@ -4713,6 +4883,8 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
             </select>
           </label>
         </div>
+
+        <ComplianceSection compliance={compliance} setCompliance={setCompliance} />
 
         <AccountSection account={account} setAccount={setAccount} T={T} />
 

@@ -553,3 +553,38 @@ same, with the fetch moved out of the renderer entirely.
 | Live CDP (dev app on 9333) | ✅ `window.autobot.unfurl('https://github.com/anthropics/claude-code')` → `ok:true`, title, description, `opengraph.githubassets.com` image; `http://169.254.169.254/latest/meta-data/` → *"That host points at a private address and is not previewed."* |
 | Live UI | ✅ injected transcript renders **3 cards** (GitHub with image, `example.com` with icon fallback, correct hrefs/site/title/description); dismiss → **3 → 2**, counter stable |
 | Regression gates | ✅ e2e **112 passed / 0 failed**; `parity-audit.js` → *NO ATOMIC GAPS* (141 defs), EXIT 0 |
+
+---
+
+## 18. Organization compliance — the `taint:*` capability namespace (2026-11-25)
+
+The 12 `taint:*` IPC channels in the Desktop bundle are **not** data-flow
+provenance (as §PARITY-GAPS originally assumed). Reading
+`index.chunk-zlLu4KiP.js` shows they are the *organization capability
+strings* returned by claude.ai's account API in
+`memberships[].organization.capabilities`. Desktop uses them to gate chat,
+cloud/model moves, MCP tool sync, session deletion, product feedback, CMEK
+and deployment shape. Helio Bot reproduces the same arithmetic locally on a
+profile the user owns; nothing is fetched from Anthropic.
+
+| Check | Result |
+|---|---|
+| Capability predicates | ✅ `isTaint` (prefix only), `isCapability` (prefix **or** the three retention flags), `isTermsLimited` (`taint:limit-to-service-terms-*` — never matches `service_terms`) |
+| Normalization | ✅ non-strings/blank dropped, trimmed, deduped, per-item 250-char and list 200-item caps |
+| Retention tri-state | ✅ no caps → `unknown`; any of `taint:hipaa_regulated` / `taint:claude_code_zdr` / `zero_retention_lock` / `taint:internal_limited_retention` / `taint:legal_ops` → `marked`; `null` retention → `unknown`; `default` → `allowed`; anything else → `marked` |
+| HIPAA tri-state | ✅ `taint:hipaa_regulated` → `regulated`; clean caps + `default` retention → `not_regulated`; anything else (other taint mark, non-default retention, `/hipaa|fedramp/i` substring, missing retention) → `not_known`; a terms-prefix capability never demotes `not_regulated` |
+| CMEK | ✅ `taint:cmek` → `true`; not eligible and not forced → `null`; `isWorkbenchCmekBlocked:true` → `true`; `false` + `cmek_eligible` → `false`; otherwise `null` |
+| Cloud-move policy | ✅ `taint:claude_code_zdr` → `{blocked, zero_retention}`; `taint:ant_hipi` / `taint:cmek` / `taint:internal_limited_retention` → `{blocked, cloud_disabled}`; extra blockers present → `cloud_disabled`; empty caps → `unverified`; else `allowed` |
+| Chat gating | ✅ requires a `chat` capability, refuses `raven` / `api`, refuses any non-safe capability — except `taint:ferpa_regulated`, `taint:disable_product_feedback` and terms-limited caps; `chatPlanAllowed` additionally requires `claude_pro` / `claude_max` |
+| Deployment overlay | ✅ `hybrid` beats `aws`/`gcp`; `pending` only for cloud-managed + `visibilityStatus === 'pending'`; `desktopRequired` only for hybrid unless `desktopDeploymentRequired === false` |
+| Session length | ✅ unset or `-1` → `never_set`, non-number → `unread`, else the number |
+| Deletion gate | ✅ refused with `refused_under_hipaa_configuration` / `refused_under_claude_code_zdr` (HIPAA wins); `refused_too_many_organizations` honoured; otherwise allowed, with `audit:true` when retention is non-default or any non-terms mark is active |
+| Product feedback / site framing | ✅ feedback off under `taint:ferpa_regulated` or `taint:disable_product_feedback`; framing withheld on the same three cloud-move blockers |
+| `evaluate()` | ✅ one snapshot: `tone` ∈ `ok|warn|blocked|unknown`, authored `headline`, `hipaa`, `retention`, `cmek`, `cloudMove`, `chat`, `toolSwitch`, `sessionDeletion`, `feedback`, `framing`, `deployment`, `markedCount`, `audit` |
+| Persistence | ✅ `~/.autobot/compliance.json`; append-only ledger `~/.autobot/compliance-audit.jsonl` (rotates to `.1` past 512 KB), `readAudit` newest-first, capped at 500 |
+| Testability | ✅ `setDataDir(dir)` / `AUTOBOT_COMPLIANCE_DIR` redirect all four files, so the suite never touches `~/.autobot` |
+| Unit suite | ✅ `node test/compliance.test.js` → **147 passed, 0 failed** |
+| Live CDP (dev app on 9333) | ✅ baseline → `tone:unknown`; HIPAA profile → `tone:blocked`, `headline` = *"This session can't be deleted while the workspace is marked HIPAA-regulated."*, `hipaa:regulated`, `chat.allowed:false`, `complianceDeleteCheck()` → `{allowed:false, reason:'refused_under_hipaa_configuration'}`; ZDR profile → `cloudMove{blocked,zero_retention}`, `framing{allowed:false}`, cloud headline; CMEK profile → `complianceDeleteCheck({id})` → `{allowed:true, audit:true}` and `complianceAudit()` grows 0 → 1 |
+| Live UI | ✅ Settings → **Compliance**: `BLOCKED` badge (tone-blocked), 9 derived cells (Retention `marked`, HIPAA `regulated`, CMEK `not applicable`, Cloud & model moves `allowed`, MCP `local only · blocked from sync`, Session deletion `refused`, Product feedback `allowed`, Deployment `standard`, Chat `refused`), 15 capability code chips, 31 toggles, Reset |
+| No new tool definitions | ✅ stays at **141** defs; the swarm gate is untouched |
+| Regression gates | ✅ e2e **112 passed / 0 failed**; `parity-audit.js` → *NO ATOMIC GAPS* (141 defs, 26 subsystem rows incl. compliance), EXIT 0 |

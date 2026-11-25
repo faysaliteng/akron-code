@@ -21,6 +21,7 @@ const mindmap = require('./mindmap');
 const artifactcanvas = require('./artifactcanvas');
 const extensionhost = require('./extensionhost');
 const unfurlMod = require('./unfurl');
+const compliance = require('./compliance');
 
 const windows = new Set(); // all open BrowserWindows (multi-window parity)
 // BrowserWindow.id -> extension id, for the hosting windows created by
@@ -1287,6 +1288,34 @@ ipcMain.handle('autobot:artifactDocument', async (e, payload) => artifactDocumen
 // and only sanitized metadata goes back.
 ipcMain.handle('autobot:unfurl', async (e, url) => unfurlMod.unfurl(url));
 ipcMain.handle('autobot:unfurlMany', async (e, urls) => unfurlMod.unfurlMany(urls, { limit: 6 }));
+
+// ---- Organization compliance (Desktop `taint:*` capability namespace) ----
+// The profile lives on this machine (`~/.autobot/compliance.json`); every gate is
+// derived with Desktop's own arithmetic so the UI can say exactly what is blocked.
+ipcMain.handle('autobot:complianceGet', () => compliance.snapshot());
+ipcMain.handle('autobot:complianceSet', (e, patch) => {
+  compliance.setProfile(patch || {});
+  const snap = compliance.snapshot();
+  broadcast({ type: 'compliance', state: snap.state });
+  return snap;
+});
+ipcMain.handle('autobot:complianceReset', () => {
+  compliance.resetProfile();
+  const snap = compliance.snapshot();
+  broadcast({ type: 'compliance', state: snap.state });
+  return snap;
+});
+// Gate a destructive action before the renderer drops the conversation. The
+// renderer calls this first and only deletes when `allowed` comes back true, so
+// an HIPAA / ZDR profile can never lose a session by a stray click.
+ipcMain.handle('autobot:complianceDeleteCheck', (e, meta) => {
+  const state = compliance.evaluate(compliance.getProfile());
+  const decision = state.deletion || { allowed: true };
+  if (!decision.allowed) return { allowed: false, reason: decision.reason, line: state.deletionLine || '' };
+  const row = compliance.recordDeletion(meta || {});
+  return { allowed: true, audit: !!state.audit, row };
+});
+ipcMain.handle('autobot:complianceAudit', (e, limit) => compliance.readAudit(limit));
 
 // ---- Hosted Chrome extensions (Desktop `extension-host` parity) ----
 // The 11 channel handlers, plus the app-facing helpers the Plugins/Extensions

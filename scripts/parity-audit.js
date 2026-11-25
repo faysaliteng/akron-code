@@ -176,6 +176,10 @@ const SUBSYSTEMS = [
   ['permission rules', 'electron/permissions.js', ['loadPermissions', 'decide', 'ruleMatches', 'matchBash', 'matchGlob']],
   ['custom commands', 'electron/commands.js', ['discover', 'resolve', 'expand', 'listForUi', 'BUILTIN']],
   ['checkpoints / rewind', 'electron/checkpoints.js', ['snapshotFile', 'listCheckpoints', 'restore', 'removeCheckpoint']],
+  ['compliance (taint caps)', 'electron/compliance.js', ['evaluate', 'snapshot', 'setProfile', 'recordDeletion', 'readAudit', 'sessionDeletion', 'cloudMovePolicy', 'deploymentMode']],
+  ['link unfurl', 'electron/unfurl.js', ['unfurl', 'looksUnfurlable', 'cacheFile']],
+  ['artifact canvas', 'electron/artifactcanvas.js', ['canvasHtml', 'parseDesign', 'parseSlides']],
+  ['extension host', 'electron/extensionhost.js', ['CHANNELS', 'canonicalChannel', 'NAMESPACES']],
 ];
 
 const subRows = [];

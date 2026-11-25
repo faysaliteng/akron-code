@@ -1311,3 +1311,73 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
   border-radius: 6px;
 }
 .link-card:hover .link-card-x { opacity: 1; }
+
+/* ---------- Compliance (organization `taint:*` capability) panel ---------- */
+.compliance-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  margin: 10px 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border, rgba(255,255,255,.09));
+  background: var(--bg-100);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.compliance-badge b {
+  flex: none;
+  font-size: 11px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-000);
+}
+.compliance-badge span { opacity: .82; }
+.compliance-badge.tone-ok b { color: #6ea86a; }
+.compliance-badge.tone-warn b { color: var(--accent); }
+.compliance-badge.tone-blocked b { color: var(--danger, #c2503c); }
+.compliance-badge.tone-unknown b { color: inherit; opacity: .6; }
+.compliance-badge.tone-warn { border-color: rgba(217,119,87,.35); }
+.compliance-badge.tone-blocked { border-color: rgba(194,80,60,.4); }
+
+.compliance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 6px;
+  margin: 0 0 12px;
+}
+.compliance-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--bg-100);
+  font-size: 12px;
+}
+.compliance-cell span { opacity: .55; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+.compliance-cell b { font-weight: 600; }
+.compliance-sub {
+  margin: 14px 0 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  opacity: .55;
+}
+.compliance-code {
+  margin-left: 8px;
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-000);
+  opacity: .55;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+.compliance-actions {
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}

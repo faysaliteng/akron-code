@@ -1189,3 +1189,60 @@ commands (artifacts of string scraping) and are deliberately **not** implemented
 | `test/live/slash-commands-live.cjs` (new, CDP :9333) | **PASS — 58/58.** Real keystrokes into the composer: 1 negative control (unknown command still fails), 41 command behaviours asserted on the rendered transcript, `/voice` toggles the live session, `/chrome` + `/remote-env` flip persisted features, `/effort high` moves the composer label, `/rename` rewrites the conversation title, 8 skill commands resolve to real prompt bodies through the IPC bridge, picker lists all 8, zero console errors |
 | Panel-unmount fix found by the live suite | Commands that switch the main panel (`/daemon`, `/workflows`, `/memory`, `/notebooks`, `/terminal`) unmount the transcript, so the test re-selects the conversation before reading. `/memory` previously opened the panel but printed nothing — it now also reports the merged `CLAUDE.md` hierarchy (file, scope, bytes, combined size) so the command reports its subject |
 | `/diff` verified against a real repo | The live suite creates a throwaway git repo **inside the conversation's own working folder**, commits a file, modifies it, then asserts `/diff` prints `Git diff` plus that filename, and removes the fixture afterwards |
+
+---
+
+## T. ORGANIZATION COMPLIANCE — THE `taint:*` NAMESPACE IS NOT TAINT TRACKING (2026-11-25)
+
+Earlier passes recorded `taint` (12 channels) as the last open IPC gap and
+guessed it was data-flow provenance for prompt-injection defence. That guess
+was wrong. In `index.chunk-zlLu4KiP.js` the 12 channels resolve to a map over
+`memberships[].organization.capabilities` — the **organization compliance
+strings** claude.ai returns with an account. The bundle's human-facing strings
+are only the `refused_under_*` codes, so the copy in Helio Bot is authored, not
+copied.
+
+### T.1 What each channel maps to
+
+| channel group | meaning in Desktop | Helio Bot |
+|---|---|---|
+| `taint:hipaa_regulated` | workspace is HIPAA-regulated: sessions cannot be deleted, MCP tools cannot sync | `sessionDeletion` refused, `mcpToolSwitch` local-only, deletion refusal line |
+| `taint:claude_code_zdr` | zero data retention for Code: no cloud/model move, no site framing | `cloudMovePolicy` → `zero_retention`, `siteFraming` off |
+| `taint:ant_hipi` / `taint:cmek` / `taint:internal_limited_retention` | cloud processing disabled | `cloudMovePolicy` → `cloud_disabled` |
+| `taint:ferpa_regulated` / `taint:disable_product_feedback` | product feedback off, chat still allowed | `productFeedback` off, chat allowed |
+| `taint:legal_ops` | marks the org | retention `marked` |
+| `taint:aws_managed` / `taint:gcp_managed` / `taint:hybrid_3p` | deployment shape | `deploymentMode`, `deploymentPending`, `desktopRequired` |
+| `zero_retention_lock` / `retain_restricted_pii` / `no_anthropic_human_review_enabled` | retention flags (capabilities, not `taint:`) | `isCapability`, retention `marked` |
+| `taint:limit-to-service-terms-<term>` | terms-limited org — exempt from every mark | `isTermsLimited` short-circuits the marks |
+
+### T.2 Implementation
+
+- `electron/compliance.js` — pure Node, no Electron, no network. Exports the
+  whole arithmetic (`retentionVerdict`, `hipaaVerdict`, `cmekBlocked`,
+  `cloudMovePolicy`, `chatAllowed`, `chatPlanAllowed`, `deploymentMode`,
+  `deploymentPending`, `desktopRequired`, `sessionLength`,
+  `deletionAuditRequired`, `mcpToolSwitch`, `sessionDeletion`,
+  `productFeedback`, `siteFraming`, `evaluate`, `snapshot`) plus profile and
+  ledger persistence.
+- `main.js` — 5 IPC handlers (`complianceGet/Set/Reset/DeleteCheck/Audit`),
+  each broadcasting `{type:'compliance', state}` so every open window stays in
+  sync.
+- `preload.js` — the five helpers on `window.autobot`.
+- `App.jsx` — `ComplianceSection` in Settings (org name, retention select, tone
+  badge, 9 derived cells, 15 capability toggles with their `taint:*` code chips,
+  pending-visibility toggle, audit count, Reset); `deleteConv` now awaits
+  `complianceDeleteCheck()` and prints the authored refusal line instead of
+  deleting; `/feedback` is gated on `state.feedback`.
+- State lives in `~/.autobot/compliance.json`; deletions append to
+  `~/.autobot/compliance-audit.jsonl` (512 KB rotate, newest-first reads).
+
+### T.3 Verification
+
+| Check | Result |
+|---|---|
+| `node test/compliance.test.js` (new) | **147 passed / 0 failed** — every capability id, prefix exemption, retention tri-state, HIPAA tri-state, CMEK null/false/true, all five cloud-move branches, chat/plan gating, deployment/pending/desktop, session length, audit predicate, every gate, `evaluate()` tone+headline, catalogue + `describeCapability`, profile round-trip on a temp dir, ledger order/limit/rotation |
+| Live CDP :9333 | HIPAA → `blocked` + refusal line + `chat.allowed:false`; ZDR → `cloudMove{blocked,zero_retention}` + framing off; CMEK → allowed delete with `audit:true` and ledger 0 → 1 |
+| Live UI | Settings → Compliance renders badge, 9 cells, 15 code chips, 31 toggles, Reset |
+| Tool count | unchanged at **141** |
+| e2e | **112 passed / 0 failed** |
+| `parity-audit.js` | *NO ATOMIC GAPS*, EXIT 0 (now 26 subsystem rows — compliance, unfurl, artifact canvas, extension host added to the gate) |
