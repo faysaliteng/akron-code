@@ -41,7 +41,30 @@ const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const CLOUDCODE_BASE = 'https://daily-cloudcode-pa.googleapis.com/v1internal';
 
 // Mimic the first-party CLI: subscription endpoints gate on these.
-const CLAUDE_UA = 'claude-cli/2.1.154 (external, cli)';
+//
+// The version token is itself a fingerprint the vendor validates, so it must
+// track the CLI we actually ship. Verified live: `claude-fable-5-2` answers
+// 400 "Claude Code 2.1.154 does not support this model; version 2.1.290 or
+// newer is required" until the UA claims a new enough build, on exactly the
+// same token that had worked for older models. The defaults below are a floor;
+// main.js injects the resolved runtime version at boot (and after every
+// install), so a self-update immediately unblocks newer models.
+const DEFAULT_CLIENT_VERSIONS = { claude: '2.1.332', codex: '0.172.0', grok: '1.0.92' };
+const clientVersions = { ...DEFAULT_CLIENT_VERSIONS };
+
+/** Adopt the versions of the CLIs on disk; unknown/garbage values are ignored. */
+function setClientVersions(v) {
+  if (v && typeof v === 'object') {
+    for (const k of Object.keys(clientVersions)) {
+      const m = String(v[k] || '').match(/(\d+\.\d+\.\d+)/);
+      if (m) clientVersions[k] = m[1];
+    }
+  }
+  return { ...clientVersions };
+}
+
+const claudeUa = () => 'claude-cli/' + clientVersions.claude + ' (external, cli)';
+const codexUa = () => 'codex-cli/' + clientVersions.codex;
 const CODEX_ORIGINATOR = 'codex_cli_rs';
 
 // Antigravity's license gate is a user-agent prefix check. Verified live: every
@@ -137,7 +160,7 @@ function anthropicAuth(provider) {
   if (oauth) {
     headers.authorization = 'Bearer ' + tok;
     headers['anthropic-beta'] = 'oauth-2025-04-20';
-    headers['user-agent'] = CLAUDE_UA;
+    headers['user-agent'] = claudeUa();
     headers['x-app'] = 'cli';
   } else {
     headers['x-api-key'] = tok;
@@ -766,9 +789,8 @@ const GROK_RESPONSES_URL = 'https://cli-chat-proxy.grok.com/v1/responses';
 // it are `@xai-official/grok` 1.0.92 (stable) / 1.0.93 (alpha). One constant
 // feeds both the UA and the gate header so they can never disagree — a mismatch
 // is itself a fingerprint the proxy can reject.
-const GROK_CLI_VERSION = '1.0.92';
 const GROK_PRODUCT = 'grok-shell';
-const GROK_UA = GROK_PRODUCT + '/' + GROK_CLI_VERSION + ' (macos; aarch64)';
+const grokUa = () => GROK_PRODUCT + '/' + clientVersions.grok + ' (macos; aarch64)';
 // Subscription sampling is billed against the Grok Build credit pool, not the
 // SuperGrok plan itself, so a paying account can still answer `402 Grok Build
 // usage balance exhausted` (verified live: 100% of the weekly allowance spent).
@@ -785,10 +807,10 @@ async function grokCreditHint(provider) {
     const headers = {
       authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
       accept: 'application/json',
-      'user-agent': GROK_UA,
+      'user-agent': grokUa(),
       'x-xai-token-auth': 'xai-grok-cli',
       'x-grok-client-identifier': GROK_PRODUCT,
-      'x-grok-client-version': GROK_CLI_VERSION,
+      'x-grok-client-version': clientVersions.grok,
     };
     const r = await fetch(GROK_CREDITS_URL, {
       headers, signal: AbortSignal.timeout(8000),
@@ -827,10 +849,10 @@ function grokHeaders(provider) {
     'content-type': 'application/json',
     accept: 'text/event-stream',
     authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
-    'user-agent': GROK_UA,
+    'user-agent': grokUa(),
     'x-xai-token-auth': 'xai-grok-cli',
     'x-grok-client-identifier': GROK_PRODUCT,
-    'x-grok-client-version': GROK_CLI_VERSION,
+    'x-grok-client-version': clientVersions.grok,
     'x-grok-model-override': String(provider.model || ''),
     'x-grok-conv-id': convId,
     'x-grok-req-id': reqId,
@@ -965,7 +987,7 @@ async function listModels(provider, signal) {
       accept: 'application/json',
       authorization: 'Bearer ' + token,
       originator: CODEX_ORIGINATOR,
-      'user-agent': 'codex-cli/0.135.0',
+      'user-agent': codexUa(),
     };
     if (provider.accountId) headers['chatgpt-account-id'] = String(provider.accountId);
     const res = await fetch(base + '/models', { headers, signal });
@@ -1014,13 +1036,15 @@ module.exports = {
   chatCompletion,
   needsTransport,
   listModels,
+  setClientVersions,
   adapters: ADAPTERS,
   // exported for tests
   _internal: {
     sseEvents, toAnthropicBody, anthropicAuth, anthropicFinish,
     toCodexInput, toCodexTools, toGeminiContents, geminiFinish, responsesChat,
     googleModels, googleModelList, ANTIGRAVITY_UA,
-    CLAUDE_UA, CODEX_RESPONSES_URL, GROK_RESPONSES_URL, CLOUDCODE_BASE, DEFAULT_ANTHROPIC_BASE, cloudcodeBase,
-    grokHeaders, GROK_UA, GROK_CLI_VERSION, GROK_PRODUCT, GROK_CREDITS_URL, grokCreditHint,
+    claudeUa, codexUa, grokUa, clientVersions, setClientVersions, DEFAULT_CLIENT_VERSIONS,
+    CODEX_RESPONSES_URL, GROK_RESPONSES_URL, CLOUDCODE_BASE, DEFAULT_ANTHROPIC_BASE, cloudcodeBase,
+    grokHeaders, GROK_PRODUCT, GROK_CREDITS_URL, grokCreditHint,
   },
 };

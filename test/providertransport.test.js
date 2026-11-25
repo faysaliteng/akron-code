@@ -117,7 +117,23 @@ const noop = () => {};
     const oauth = I.anthropicAuth({ accessToken: 'sk-ant-oat01-abc', oauth: true });
     eq('oauth sends Bearer, never x-api-key', [!!oauth.headers.authorization, 'x-api-key' in oauth.headers], [true, false]);
     eq('oauth sends the oauth beta header', oauth.headers['anthropic-beta'], 'oauth-2025-04-20');
-    eq('oauth impersonates the CLI', oauth.headers['user-agent'], 'claude-cli/2.1.154 (external, cli)');
+    eq('oauth impersonates the CLI', oauth.headers['user-agent'], 'claude-cli/' + I.clientVersions.claude + ' (external, cli)');
+    // The version token inside the fingerprint is what vendors gate on, so it
+    // must track the CLI we ship rather than a frozen literal.
+    {
+      const before = { ...I.clientVersions };
+      I.setClientVersions({ claude: '2.1.332 (Claude Code)' });
+      eq('adopting a runtime version updates the claude UA',
+        I.anthropicAuth({ accessToken: 'sk-ant-oat01-abc', oauth: true }).headers['user-agent'],
+        'claude-cli/2.1.332 (external, cli)');
+      I.setClientVersions({ claude: 'garbage' });
+      eq('an unparseable version is ignored', I.clientVersions.claude, '2.1.332');
+      I.setClientVersions(before);
+      eq('versions restore', I.clientVersions.claude, before.claude);
+    }
+    ok('a default claude version clears the 2.1.290 model gate', semverAtLeast(I.DEFAULT_CLIENT_VERSIONS.claude, '2.1.290'));
+    ok('a default codex version is present', /^\d+\.\d+\.\d+$/.test(I.DEFAULT_CLIENT_VERSIONS.codex));
+    ok('a default grok version clears the 1.0.13 gate', semverAtLeast(I.DEFAULT_CLIENT_VERSIONS.grok, '1.0.13'));
     eq('oauth sets x-app: cli', oauth.headers['x-app'], 'cli');
     ok('anthropic-version always present', oauth.headers['anthropic-version'] === '2023-06-01');
     // An sk-ant-oat token is detected as OAuth even if the flag is missing.

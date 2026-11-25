@@ -1280,10 +1280,36 @@ async function runtimePathPrefix() {
   } catch (_) { return ''; }
 }
 
+/**
+ * Tell the transport layer which CLI builds are actually on disk.
+ *
+ * Vendors fingerprint the CLI version inside `user-agent` /
+ * `x-grok-client-version`, and they reject models with a message like
+ * "Claude Code 2.1.154 does not support this model; version 2.1.290 or newer
+ * is required". Hardcoding the string means the app ages out of new models even
+ * though it ships a current CLI, so the resolved runtime version is the source
+ * of truth and is refreshed after every install.
+ */
+async function syncClientVersions() {
+  try {
+    const rows = await getRuntimes().list();
+    const v = {};
+    for (const r of rows || []) {
+      if (r && r.id && r.version) v[r.id] = r.version;
+    }
+    const applied = providertransport.setClientVersions(v);
+    return applied;
+  } catch (e) {
+    console.error('client version sync skipped:', oneLine(e));
+    return null;
+  }
+}
+
 async function startRuntimes() {
   try {
     const rt = getRuntimes();
     const prefix = await runtimePathPrefix();
+    await syncClientVersions();
     if (prefix) {
       const cur = String(process.env.PATH || '');
       const have = new Set(cur.split(path.delimiter));
@@ -1308,6 +1334,7 @@ async function startRuntimes() {
                 const add = p.split(path.delimiter).filter((d) => d && !have.has(d));
                 if (add.length) process.env.PATH = add.join(path.delimiter) + path.delimiter + cur;
               }).catch(() => {});
+              syncClientVersions();
             }
           })
           .catch((e) => console.error('runtime auto-update skipped:', oneLine(e)));
@@ -1342,6 +1369,7 @@ ipcMain.handle('autobot:runtimesUpdate', async (event, id, force) => {
       const add = p.split(path.delimiter).filter((d) => d && !have.has(d));
       if (add.length) process.env.PATH = add.join(path.delimiter) + path.delimiter + cur;
     }
+    await syncClientVersions();
     return out;
   } catch (e) {
     return { ok: false, error: oneLine(e), runtimes: await getRuntimes().list().catch(() => []) };

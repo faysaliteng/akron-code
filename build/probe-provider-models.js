@@ -23,7 +23,7 @@ async function claudeModels(token) {
       authorization: 'Bearer ' + token,
       'anthropic-version': '2023-06-01',
       'anthropic-beta': 'oauth-2025-04-20',
-      'user-agent': T._internal.CLAUDE_UA,
+      'user-agent': T._internal.claudeUa(),
       'x-app': 'cli',
     },
   });
