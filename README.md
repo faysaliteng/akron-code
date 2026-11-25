@@ -140,6 +140,51 @@ autobot/
 Runtime data lives in `~/.autobot/` (`memory.json`, `settings.json`, `skills/`,
 `orchestrator.json`, `features.json`).
 
+### Bundled CLI runtimes
+
+The DMG ships the three subscription CLIs it drives, so a fresh install works
+offline-with-respect-to-downloads (nothing to `npm i -g`):
+
+| runtime | upstream | check |
+|---|---|---|
+| `claude-code` | npm `@anthropic-ai/claude-code-<platform>` (`dist.integrity` sha512) | `claude --version` |
+| `codex` | npm `@openai/codex` | `codex --version` |
+| `grok` | pointer `https://x.ai/cli/stable` → `https://x.ai/cli/grok-<ver>-<platform>` (no upstream checksum) | `grok --version` |
+
+They live in `vendor/runtimes/<id>/` at build time and are copied to
+`Contents/Resources/runtimes/` by `extraResources`. At run time
+`electron/runtimes.js` resolves `userData/runtimes/<id>/current` → bundled →
+`PATH`, downloads over HTTPS with a host allowlist, sha512-verifies when the
+vendor publishes one, `--version`-smoke-tests the staged binary, then atomically
+swaps the `current` symlink (keeping the previous two versions for `rollback()`).
+A deferred `updateAll()` ~20 s after boot refreshes anything the vendor moved.
+
+```bash
+npm run vendor:runtimes:check   # what is vendored today
+npm run vendor:runtimes:sync    # --download --stale: refresh only if upstream moved
+npm run dist                    # predist runs the same sync, then builds dmg+zip
+```
+
+`--stale` exists because a vendored tree is otherwise trusted forever. A stale
+CLI is not a cosmetic problem: Anthropic gates **per-model** on the CLI version
+in the `user-agent`, so an old bundled binary makes the newest models answer
+`400 "Claude Code 2.1.154 does not support this model; version 2.1.290 or newer
+is required"`. For that reason `electron/providertransport.js` never hardcodes
+the fingerprint — `setClientVersions()` is refreshed from `runtimes.list()` at
+boot, after the deferred update, and after every `autobot:runtimesUpdate`.
+
+Use `--dry-run` to see the vendoring decision without downloading anything:
+
+```text
+$ node scripts/vendor-runtimes.js --download --stale --id grok --dry-run
+  grok         0.2.2 → 1.0.92  (upstream is newer) [dry-run]
+
+dry-run: nothing was downloaded.
+```
+
+An offline or failed metadata lookup keeps the existing copy and never fails a
+build (`predist` falls back to plain local vendoring).
+
 ### Skill library export / import
 
 `python3 scripts/export-skills.py` writes every installed skill (bundled +

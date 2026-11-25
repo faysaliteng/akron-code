@@ -852,3 +852,97 @@ hasEnvelope: false
 | `node test/providertransport.test.js` | **128 passed / 0 failed** (identity-block wire assertion + *identity prompt ordering*: identity leads and caller system follows, no duplicate, plain api-key untouched) |
 | `node scripts/parity-audit.js` | **EXIT 0** — `DEFS: 141`, 0 missing |
 | Packaged build (`release/mac-arm64`, `:9444`) | `npm run dist` EXIT 0 → `AkronBot-1.0.0-arm64.dmg` 115 040 322 B + `.zip` 110 229 465 B. From `app.asar`: `CC_IDENTITY`, `grokCreditHint`, `adoptLocalCredentials` all present, `10b981` present, **0** `d97757`, and **0** `probe-*` files shipped. Live packaged turn: `PING106372` → `PING106372` (`Worked for 3s`, no error bar); Grok `.errorbar` = the allowance/reset prose above, no markup |
+
+---
+
+## 27. CLI fingerprint gate + a release that cannot ship an aged-out CLI (2026-11-25)
+
+### The gate
+
+The newest Claude models rejected the bundled CLI even though the bundled CLI was
+*newer* than the version the vendor demanded:
+
+```
+400 "Claude Code 2.1.154 does not support this model; version 2.1.290 or newer is required"
+```
+
+Anthropic gates **per model** on the client version carried inside
+`user-agent`; `providertransport` had that version as a literal. Older models
+accepted the literal, `claude-sonnet-5.5` did not.
+
+Fix: the fingerprint tracks the runtime that is actually shipped.
+
+| Symbol | Role |
+|---|---|
+| `DEFAULT_CLIENT_VERSIONS` | build-time defaults `claude 2.1.332 / codex 0.172.0 / grok 1.0.92` |
+| `setClientVersions(v)` | adopt versions reported by `runtimes.list()`; unparseable values are ignored |
+| `claudeUa()` / `codexUa()` / `grokUa()` | build the header at request time instead of a frozen literal |
+
+`electron/main.js: syncClientVersions()` is called at `startRuntimes()`, after the
+deferred `updateAll()`, and after every `autobot:runtimesUpdate` — so a self-updated
+CLI immediately reports its new version upstream.
+
+### The release cannot ship a stale CLI
+
+`scripts/vendor-runtimes.js` trusted `vendor/runtimes/<id>/` forever, which is how
+the gate above would reach a user. Added:
+
+| Flag | Behaviour |
+|---|---|
+| `--stale` (download mode) | ask upstream for the newest version; re-vendor only if upstream is newer; an offline/failed lookup keeps the current copy and never fails the build |
+| `--dry-run` | report the keep/vendor decision and download nothing |
+| `cmpVersion()` | semver-ish ordering (`1.2.10 > 1.2.9`, prerelease below release) |
+
+`predist` is now `node scripts/vendor-runtimes.js --download --stale || npm run vendor:runtimes`.
+
+Live proof, both directions:
+
+```
+$ npm run vendor:runtimes:sync
+  claude-code  2.1.332 — current (upstream 2.1.332)
+  codex        0.172.0 — current (upstream 0.172.0)
+  grok         1.0.92 — current (upstream 1.0.92)
+
+$ VERSION=0.2.2 node scripts/vendor-runtimes.js --download --stale --id grok --dry-run
+  grok         0.2.2 → 1.0.92  (upstream is newer) [dry-run]
+dry-run: nothing was downloaded.
+```
+
+### Gate
+
+| Check | Result |
+|---|---|
+| `node test/providertransport.test.js` | **158 passed / 0 failed** (+6: version adoption, unparseable value rejected, default clears the gate) |
+| `node test/provideroauth.test.js` | **197 passed / 0 failed** |
+| `node test/model-catalog.test.js` | **17 assertion groups passed** |
+| `node test/compliance.test.js` | **147 passed / 0 failed** |
+| `node test/freellm.test.js` | **37 passed / 0 failed** |
+| `node test/runtimes.test.js` | **23 assertion groups passed** |
+| `node test/parity-modules.test.js` | **OK** |
+| `node scripts/parity-audit.js` | **EXIT 0** — `DEFS: 141`, `subsystems incomplete: 0`, NO ATOMIC GAPS |
+
+### Shipped artifact (rebuilt after the fix)
+
+| Artifact | Size | sha256 |
+|---|---|---|
+| `release/AkronBot-1.0.0-arm64.dmg` | 581 913 641 B | `5b7c14aa…7e03952` |
+| `release/AkronBot-1.0.0-arm64.zip` | 616 967 582 B | `10d1e17d…6eb1a05` |
+
+Mounted read-only (`hdiutil attach -nobrowse -readonly` → `/Volumes/Akron Bot 1.0.0`):
+`Akron Bot.app` 1.5 GB, `Applications` symlink present, bundled runtimes
+`claude-code 2.1.332 / codex 0.172.0 / grok 1.0.92`, and the mounted `app.asar`
+contains `syncClientVersions` (×4), `setClientVersions` (×4) and **0** `probe-*`
+files. The ad-hoc signature is not notarized (`spctl` reports *code has no
+resources but signature indicates they must be present*); the app launches from
+the volume when quarantine is cleared.
+
+### Live turns from the mounted DMG (`:9444`)
+
+| Probe | Result |
+|---|---|
+| `probe-turn.cjs 9444 claude 'sonnet 5\.5' DMG 15` | **13/13 PASS** — 15 live models, `Claude Sonnet 5.5 1M`, reply carried `DMG524908`, no error bar, no markup |
+| `probe-turn.cjs 9444 antigravity 'gemini-4-hydrogen' AGDMG 20` | **13/13 PASS** — 38 live models, `Gemini 4 Hydrogen (High)` window `1M`, reply carried `AGDMG208294` |
+| `probe-turn.cjs 9444 grok 'grok 4\.7$' GROKDMG 4` | 9/13 — 4 live models, `Grok 4.7 256K`; the reply is blocked by the account's weekly allowance (`100% used, resets 2026-12-01`) and the UI prints that prose, not the vendor envelope |
+| `build/probe-picker.cjs 9444` | **14 checks passed** (claude 15 models with ≥1 `1M` + ≥1 `200K`, antigravity 38 window-labelled, cache positive-only) |
+| `probe-rt-ui.cjs 9444` | **11/11** — 3 rows `installed`, `2.1.332 · latest`, `0.172.0 · latest`, `1.0.92 · latest` |
+| `runtimesUpdate()` from the packaged app | `results: []` — all three current, nothing to update |
