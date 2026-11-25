@@ -2079,6 +2079,97 @@ ipcMain.handle('autobot:browserScreenshot', (e, fullPage) => browser.screenshot(
 ipcMain.handle('autobot:browserSyncTabs', (e, state) => browser.syncTabs(state));
 ipcMain.handle('autobot:browserListTabs', () => browser.listTabs());
 
+// ---- Built-in browser ··· menu (Claude-app parity) ----
+// Each item here maps to something that actually happens. "Open in Brave" checks
+// that Brave is installed first — if it is not, the renderer is told so and shows
+// "Open in default browser" instead of failing silently.
+ipcMain.handle('autobot:browserOpenExternal', async (e, url, profile) => {
+  if (!url) return { ok: false, error: 'No URL' };
+  const brave = path.join('/Applications', 'Brave Browser.app');
+  if (profile === 'brave') {
+    if (!fs.existsSync(brave)) return { ok: false, error: 'Brave Browser is not installed', fallback: 'default' };
+    const { spawn } = require('child_process');
+    try { spawn('/usr/bin/open', ['-b', 'com.brave.Browser', url], { detached: true, stdio: 'ignore' }).unref(); return { ok: true, app: 'Brave Browser' }; }
+    catch (err) { return { ok: false, error: String(err && err.message || err), fallback: 'default' }; }
+  }
+  try { await shell.openExternal(url); return { ok: true, app: 'default browser' }; }
+  catch (err) { return { ok: false, error: String(err && err.message || err) }; }
+});
+
+ipcMain.handle('autobot:browserSaveScreenshot', async (e, suggestedName) => {
+  const shot = await browser.screenshot(false);
+  if (!shot || !shot.ok) return shot || { ok: false, error: 'Could not capture the page' };
+  const win = BrowserWindow.getFocusedWindow() || windows[0];
+  const res = await dialog.showSaveDialog(win, {
+    title: 'Save screenshot',
+    defaultPath: path.join(app.getPath('desktop'), (suggestedName || 'screenshot') + '.png'),
+    filters: [{ name: 'PNG image', extensions: ['png'] }],
+  });
+  if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+  try { fs.copyFileSync(shot.path, res.filePath); return { ok: true, path: res.filePath }; }
+  catch (err) { return { ok: false, error: String(err && err.message || err) }; }
+});
+
+ipcMain.handle('autobot:browserOpenFile', async () => {
+  const win = BrowserWindow.getFocusedWindow() || windows[0];
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Open HTML file',
+    properties: ['openFile'],
+    filters: [{ name: 'Web page', extensions: ['html', 'htm', 'xhtml', 'svg'] }, { name: 'All files', extensions: ['*'] }],
+  });
+  if (res.canceled || !res.filePaths || !res.filePaths[0]) return { ok: false, canceled: true };
+  const file = res.filePaths[0];
+  return { ok: true, url: 'file://' + file, path: file };
+});
+
+// Netscape cookies.txt → Chromium cookie store for the browser partition.
+ipcMain.handle('autobot:browserImportCookies', async (e, partition) => {
+  const win = BrowserWindow.getFocusedWindow() || windows[0];
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Import cookies (Netscape cookies.txt)',
+    properties: ['openFile'],
+    filters: [{ name: 'Cookies file', extensions: ['txt'] }, { name: 'All files', extensions: ['*'] }],
+  });
+  if (res.canceled || !res.filePaths || !res.filePaths[0]) return { ok: false, canceled: true };
+  let text;
+  try { text = fs.readFileSync(res.filePaths[0], 'utf8'); } catch (err) { return { ok: false, error: String(err && err.message || err) }; }
+  const ses = session.fromPartition(partition || 'persist:autobot');
+  let added = 0, failed = 0;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line || line.startsWith('#')) continue;
+    const f = line.split('\t');
+    if (f.length < 7) continue;
+    const [domain, flag, cpath, secure, expires, name, value] = f;
+    const url = (secure === 'TRUE' ? 'https://' : 'http://') + String(domain).replace(/^\./, '') + (cpath || '/');
+    try {
+      await ses.cookies.set({
+        url, name, value,
+        domain: domain.startsWith('.') ? domain : undefined,
+        path: cpath || '/',
+        secure: secure === 'TRUE',
+        httpOnly: String(flag).toUpperCase().includes('HTTPONLY'),
+        expirationDate: Number(expires) > 0 ? Number(expires) : undefined,
+      });
+      added += 1;
+    } catch (_) { failed += 1; }
+  }
+  return { ok: true, added, failed, file: res.filePaths[0] };
+});
+
+ipcMain.handle('autobot:browserClearData', async (e, partition) => {
+  const ses = session.fromPartition(partition || 'persist:autobot');
+  try {
+    await ses.clearStorageData();
+    await ses.clearCache().catch(() => {});
+    return { ok: true };
+  } catch (err) { return { ok: false, error: String(err && err.message || err) }; }
+});
+
+// Dev-server detection for the browser pane ("Dev server found … [Run]").
+const devserver = require('./devserver');
+ipcMain.handle('autobot:devServerDetect', (e, cwd) => devserver.detect(cwd));
+ipcMain.handle('autobot:devServerStart', (e, cwd) => devserver.start(cwd));
+
 // ---- Secondary-window / chrome IPC (Claude Desktop parity surfaces) ----
 ipcMain.handle('autobot:openAbout', () => { createAboutWindow(); return { ok: true }; });
 ipcMain.handle('autobot:openQuickEntry', () => { createQuickWindow(); return { ok: true }; });

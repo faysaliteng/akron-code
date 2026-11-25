@@ -160,6 +160,13 @@ contextBridge.exposeInMainWorld('autobot', {
   browserScreenshot: (fullPage) => ipcRenderer.invoke('autobot:browserScreenshot', fullPage),
   browserSyncTabs: (state) => ipcRenderer.invoke('autobot:browserSyncTabs', state),
   browserListTabs: () => ipcRenderer.invoke('autobot:browserListTabs'),
+  browserOpenExternal: (url, profile) => ipcRenderer.invoke('autobot:browserOpenExternal', url, profile),
+  browserSaveScreenshot: (name) => ipcRenderer.invoke('autobot:browserSaveScreenshot', name),
+  browserOpenFile: () => ipcRenderer.invoke('autobot:browserOpenFile'),
+  browserImportCookies: (partition) => ipcRenderer.invoke('autobot:browserImportCookies', partition),
+  browserClearData: (partition) => ipcRenderer.invoke('autobot:browserClearData', partition),
+  devServerDetect: (cwd) => ipcRenderer.invoke('autobot:devServerDetect', cwd),
+  devServerStart: (cwd) => ipcRenderer.invoke('autobot:devServerStart', cwd),
   onBrowserEnsure: (cb) => {
     const handler = () => cb();
     ipcRenderer.on('autobot:browserEnsure', handler);

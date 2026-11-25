@@ -1526,13 +1526,18 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
   // Accumulate prompt/completion tokens across every step of this turn (and any
   // sub-agent share, since sub-runs report their own totals upward) and stream
   // a `usage` event so the renderer can show live spend.
-  const usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0, model: provider.model };
+  // `prompt_tokens`/`completion_tokens` are summed across every step so `/cost`
+  // can price the whole turn. `context_tokens` is the *last* call's prompt size —
+  // that is what the window meter must show, because summed prompt tokens exceed
+  // the context window on any multi-step turn (a 3-step turn bills ~3× the
+  // prompt). Rendering the sum as "context used" produced "168,145 of 128,000".
+  const usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0, context_tokens: 0, model: provider.model };
   const addUsage = (u) => {
     if (!u || typeof u !== 'object') return;
     const pin = Number(u.prompt_tokens != null ? u.prompt_tokens : u.input_tokens);
     const pout = Number(u.completion_tokens != null ? u.completion_tokens : u.output_tokens);
     const ptotal = Number(u.total_tokens);
-    if (Number.isFinite(pin) && pin > 0) usageTotals.prompt_tokens += pin;
+    if (Number.isFinite(pin) && pin > 0) { usageTotals.prompt_tokens += pin; usageTotals.context_tokens = pin; }
     if (Number.isFinite(pout) && pout > 0) usageTotals.completion_tokens += pout;
     usageTotals.total_tokens += (Number.isFinite(ptotal) && ptotal > 0
       ? ptotal

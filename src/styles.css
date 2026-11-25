@@ -365,6 +365,55 @@ button { font-family: inherit; letter-spacing: inherit; }
   border-bottom: 1px solid var(--border);
 }
 .conv-toolbar-title { font-weight: 600; font-size: var(--fs-sm); color: var(--text-000); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-toolbar-right { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.conv-env-btn { color: var(--text-400); }
+.conv-env-btn:hover { color: var(--text-000); background: var(--bg-300); }
+.conv-env-btn.active { color: var(--text-000); background: var(--bg-300); }
+
+/* ── Environment pane (···) ─────────────────────────────────────────────── */
+.envpanel { flex: 1; overflow-y: auto; padding: 14px 14px 20px; display: flex; flex-direction: column; gap: 18px; }
+.env-sec { display: flex; flex-direction: column; gap: 8px; }
+.env-sec-last { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border); }
+.env-sec-title { font-size: var(--fs-caption); text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-400); font-weight: 600; }
+.env-card { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-100); }
+.env-ico { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: var(--radius-md); background: var(--bg-300); color: var(--text-200); flex: 0 0 auto; }
+.env-card-main { min-width: 0; flex: 1; }
+.env-card-title { font-size: var(--fs-sm); color: var(--text-000); font-weight: 600; }
+.env-card-sub { font-size: var(--fs-caption); color: var(--text-400); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.env-summary { padding: 0 2px; }
+.env-action {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-100); color: var(--text-200); font-size: var(--fs-caption); cursor: pointer;
+}
+.env-action:hover { background: var(--bg-300); color: var(--text-000); border-color: var(--border-strong); }
+.env-row { display: flex; gap: 8px; }
+.env-row .env-action { flex: 1; }
+.env-toggle { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-100); cursor: pointer; text-align: left; }
+.env-toggle:hover { background: var(--bg-200); }
+.env-toggle-track { position: relative; width: 30px; height: 17px; border-radius: 999px; background: var(--bg-400, #3a3a3a); flex: 0 0 auto; transition: background 0.15s ease; }
+.env-toggle.on .env-toggle-track { background: var(--accent); }
+.env-toggle-knob { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: #fff; transition: transform 0.15s ease; }
+.env-toggle.on .env-toggle-knob { transform: translateX(13px); }
+.env-toggle-label { font-size: var(--fs-caption); color: var(--text-300); }
+.env-meter { height: 5px; border-radius: 999px; background: var(--bg-300); overflow: hidden; }
+.env-meter-fill { display: block; height: 100%; background: var(--accent); transition: width 0.25s ease; }
+.env-meter-fill.warm { background: #d9a441; }
+.env-meter-fill.hot { background: #e5534b; }
+.env-conn { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: var(--radius-md); background: var(--bg-100); border: 1px solid var(--border); }
+.env-conn-dot { width: 6px; height: 6px; border-radius: 50%; background: #3fb950; flex: 0 0 auto; }
+.env-conn.idle .env-conn-dot { background: #d9a441; }
+.env-conn-name { flex: 1; min-width: 0; font-size: var(--fs-caption); color: var(--text-200); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.env-conn-meta { font-size: 0.85em; color: var(--text-400); font-variant-numeric: tabular-nums; }
+.env-empty { font-size: var(--fs-caption); color: var(--text-400); line-height: 1.5; }
+
+/* Context ring */
+.ctx-meter { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+.ctx-track { stroke: var(--bg-400, #3a3a3a); }
+.ctx-arc { stroke: var(--accent); stroke-linecap: round; transition: stroke-dasharray 0.3s ease; }
+.ctx-meter.warm .ctx-arc { stroke: #d9a441; }
+.ctx-meter.hot .ctx-arc { stroke: #e5534b; }
+.ctx-pct { position: absolute; font-size: 0.72em; font-weight: 600; color: var(--text-200); font-variant-numeric: tabular-nums; }
 .export-wrap { position: relative; }
 .export-menu {
   position: absolute; top: 32px; right: 0; min-width: 240px; z-index: 60;
@@ -522,6 +571,51 @@ button { font-family: inherit; letter-spacing: inherit; }
 .tool-args { color: var(--text-400); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 0.9em; }
 .caret { color: var(--text-400); }
 .tool-result { margin: 0; padding: 12px 14px; background: var(--bg-300); color: var(--text-200); overflow-x: auto; font-size: var(--fs-caption); max-height: 320px; overflow-y: auto; border-top: 1px solid var(--border); }
+
+/* ── Grouped tool summary (Example's "Ran 6 commands … +2 −2") ───────────── */
+.toolgroup { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-100); overflow: hidden; }
+.toolgroup-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 12px; background: none; border: 0; cursor: pointer; text-align: left;
+  font-size: var(--fs-footnote); color: var(--text-300);
+}
+.toolgroup-head:hover { background: var(--bg-200); }
+.toolgroup.running .toolgroup-ico { color: var(--accent); }
+.toolgroup-ico { display: inline-flex; color: var(--text-400); flex: 0 0 auto; }
+.toolgroup-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-200); }
+.toolgroup.open .toolgroup-text { color: var(--text-100); }
+.toolgroup-count {
+  font-variant-numeric: tabular-nums; font-size: 0.86em; color: var(--text-400);
+  border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; line-height: 1.5;
+}
+.toolgroup-blocked {
+  font-size: 0.86em; color: var(--danger, #c2503c);
+  background: color-mix(in srgb, var(--danger, #c2503c) 12%, transparent);
+  border-radius: 999px; padding: 0 7px; line-height: 1.6; white-space: nowrap;
+}
+.toolgroup-rows { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-top: 1px solid var(--border); background: var(--bg-050, var(--bg-000)); }
+.delta-chips { display: inline-flex; gap: 5px; font-family: var(--mono); font-size: 0.85em; flex: 0 0 auto; }
+.delta-add { color: #3fb950; }
+.delta-del { color: #f85149; }
+.toolcard.blocked { border-color: color-mix(in srgb, var(--danger, #c2503c) 45%, var(--border)); }
+
+/* Tool detail: a change you can read, not a JSON blob */
+.tool-detail { border-top: 1px solid var(--border); max-height: 420px; overflow: auto; }
+.td-diff { font-family: var(--mono); font-size: var(--fs-caption); line-height: 1.5; background: var(--bg-300); }
+.td-file { padding: 6px 12px; color: var(--text-400); border-bottom: 1px solid var(--border); background: var(--bg-200); position: sticky; top: 0; }
+.td-line { display: flex; gap: 8px; padding: 0 12px; white-space: pre-wrap; word-break: break-word; }
+.td-line.add { background: color-mix(in srgb, #3fb950 10%, transparent); color: var(--text-100); }
+.td-line.del { background: color-mix(in srgb, #f85149 10%, transparent); color: var(--text-300); }
+.td-sign { flex: 0 0 10px; color: var(--text-400); user-select: none; }
+.td-line.add .td-sign { color: #3fb950; }
+.td-line.del .td-sign { color: #f85149; }
+.td-code { flex: 1; min-width: 0; }
+.td-more { padding: 6px 12px; color: var(--text-400); font-style: italic; }
+.td-cmd { display: flex; gap: 8px; padding: 10px 14px; background: var(--bg-300); font-family: var(--mono); font-size: var(--fs-caption); color: var(--text-100); white-space: pre-wrap; word-break: break-word; }
+.td-prompt { color: var(--accent-text); flex: 0 0 auto; }
+.td-kv { display: grid; grid-template-columns: minmax(70px, max-content) 1fr; gap: 4px 14px; margin: 0; padding: 10px 14px; background: var(--bg-300); font-size: var(--fs-caption); }
+.td-kv dt { color: var(--text-400); font-family: var(--mono); }
+.td-kv dd { margin: 0; color: var(--text-200); font-family: var(--mono); overflow-wrap: anywhere; }
 /* Agent todo list — Example shows this as a live checklist, not a step counter. */
 .todolist { padding: 8px 14px 11px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 5px; }
 .todo { display: flex; align-items: flex-start; gap: 8px; font-size: var(--fs-caption); color: var(--text-200); line-height: 1.45; }
@@ -672,6 +766,10 @@ button { font-family: inherit; letter-spacing: inherit; }
   border: 1px solid var(--border-strong); border-radius: var(--radius-composer);
   background: var(--bg-100); padding: 12px 14px 10px;
   transition: border-color .15s ease, box-shadow .15s ease;
+  /* The footer carries more controls than Claude's (thinking, swarm, context,
+     window chip). Container queries let those labels collapse as the composer
+     narrows instead of pushing the send button outside the border. */
+  container-type: inline-size;
 }
 .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft); }
 .composer textarea {
@@ -680,8 +778,15 @@ button { font-family: inherit; letter-spacing: inherit; }
 }
 .composer textarea::placeholder { color: var(--text-400); }
 
-.composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
-.composer-right { display: flex; align-items: center; gap: 6px; margin-left: auto; min-width: 0; }
+.composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; min-width: 0; flex-wrap: nowrap; }
+.composer-actions { min-width: 0; flex: 0 1 auto; flex-wrap: nowrap; overflow: hidden; }
+.composer-actions > * { flex: 0 0 auto; }
+.composer-hint { font-size: var(--fs-caption); color: var(--text-400); white-space: nowrap; padding-right: 2px; }
+.composer-hint kbd { font-family: var(--mono); font-size: 0.92em; padding: 0 4px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text-300); }
+.ctx-btn { display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; cursor: pointer; padding: 2px; border-radius: 999px; }
+.ctx-btn:hover { background: var(--bg-300); }
+.ctx-btn .ctx-pct { font-size: 8px; }
+.composer-right { display: flex; align-items: center; gap: 6px; margin-left: auto; min-width: 0; flex: 0 0 auto; }
 .model-pill-wrap { position: relative; flex: 0 1 auto; min-width: 0; max-width: 100%; }
 .model-pill {
   display: inline-flex; align-items: center; gap: 6px;
@@ -859,6 +964,60 @@ button { font-family: inherit; letter-spacing: inherit; }
   text-transform: none; max-width: none;
 }
 /* Context-window chip next to the model name in the composer pill. */
+.model-pill { min-width: 0; }
+.model-pill .model-name { min-width: 0; max-width: 132px; }
+/* Progressive collapse of composer controls. The composer is its own inline
+   query container and tops out at 712 px, so these thresholds are absolute
+   composer widths: 682 px content at a wide window, ~362 px with the
+   Environment pane open. Order of sacrifice: hint, then labels, then the
+   permission/window/context chips. Attach, Thinking, Swarm state, the model
+   pill and send are always present; below 380 px the row wraps instead of
+   overflowing. */
+/* The empty-composer hint is a Claude-app element, so it renders whenever it
+   fits in full. At the composer's 682 px content box it fits only if the Swarm
+   text label yields (the pill keeps its icon, its On/Off chip and its tooltip);
+   the measured slack is 8 px. Below that the hint is the first thing to go.
+   It never ellipsises and never clips a control — the failure mode the user
+   reported (send button outside the border) cannot come back. */
+.composer-hint { flex: 0 0 auto; }
+@container (min-width: 670px) {
+  .composer-actions .swarm-label { display: none; }
+  /* With the hint present the left cluster needs 417 px but only 402 px is
+     available, so the tools icon would clip. Tighter inter-control gaps buy
+     the 15 px without dropping a control or moving one. */
+  .composer-foot .composer-actions { gap: 3px; }
+  .composer-hint { padding-right: 0; }
+  .composer-hint kbd { padding: 0 2px; }
+}
+@container (max-width: 669px) {
+  .composer-hint { display: none; }
+}
+@container (max-width: 620px) {
+  .reason-label { display: none; }
+}
+@container (max-width: 560px) {
+  .swarm-label { display: none; }
+}
+@container (max-width: 520px) {
+  .model-pill .model-win { display: none; }
+}
+@container (max-width: 480px) {
+  .composer-right .perm-pill-wrap { display: none; }
+}
+@container (max-width: 440px) {
+  .ctx-btn { display: none; }
+}
+@container (max-width: 400px) {
+  .swarm-pill { display: none; }
+}
+/* Last resort: two lines instead of one overflowing one. Never reorders, so
+   the control order is identical to the Claude app at every width. */
+@container (max-width: 460px) {
+  .composer-foot { flex-wrap: wrap; row-gap: 6px; }
+  .composer-actions { flex: 1 1 100%; }
+  .composer-right { flex: 1 1 100%; justify-content: flex-end; margin-left: 0; }
+}
+/* Context-window chip next to the model name in the composer pill. */
 .model-pill .model-win {
   font-family: var(--micro); font-size: 10px; color: var(--text-400);
   border: 1px solid var(--border-strong); border-radius: 999px;
@@ -923,6 +1082,30 @@ button { font-family: inherit; letter-spacing: inherit; }
 .ollama-model.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
 
 .composer-actions { display: flex; align-items: center; gap: 6px; }
+/* One overflow button for the secondary answer tools (Claude's `+` menu). */
+.tools-wrap { position: relative; flex: 0 0 auto; }
+.tools-menu {
+  position: absolute; bottom: 40px; left: 0; z-index: 60;
+  min-width: 236px; max-width: 288px; max-height: min(62vh, 460px); overflow-y: auto;
+  background: var(--bg-100); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg); box-shadow: 0 12px 32px rgba(0,0,0,0.35); padding: 4px;
+}
+.tools-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  border: none; background: none; cursor: pointer;
+  padding: 7px 8px; border-radius: var(--radius-md);
+  color: var(--text-100); font-family: inherit; font-size: var(--fs-caption); text-align: left;
+}
+.tools-row:hover { background: var(--bg-200); color: var(--text-000); }
+.tools-row svg { flex: 0 0 auto; color: var(--text-300); }
+.tools-row-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tools-state {
+  flex: 0 0 auto; font-family: var(--micro); font-size: 10px; letter-spacing: 0.03em;
+  text-transform: uppercase; color: var(--text-400);
+  border: 1px solid var(--border-200); border-radius: 999px; padding: 0 6px; line-height: 15px;
+}
+.tools-state.on { color: var(--accent-text); background: var(--accent-soft); border-color: transparent; }
+
 .attach-btn { width: 32px; height: 32px; }
 .send {
   display: inline-flex; align-items: center; justify-content: center;
@@ -1228,7 +1411,7 @@ button { font-family: inherit; letter-spacing: inherit; }
 /* ============================================================
    Built-in Browser (Claude Desktop Browser-pane parity)
    ============================================================ */
-.browser-panel { max-width: none; padding: 0; display: flex; flex-direction: column; overflow: hidden; flex: 1; min-height: 0; height: 100%; }
+.browser-panel { position: relative; max-width: none; padding: 0; display: flex; flex-direction: column; overflow: hidden; flex: 1; min-height: 0; height: 100%; }
 .spin { animation: spin 1s linear infinite; }
 
 /* Session pane (Example parity: coexisting, resizable, collapsible) */
@@ -1284,6 +1467,62 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
 
 .browser-stage { flex: 1; position: relative; background: var(--bg-000); min-height: 0; }
 .browser-webview { width: 100%; height: 100%; border: none; }
+
+/* ---------- Built-in browser: ··· menu, expand, dev-server card ---------- */
+.browser-menu-btn { margin-left: 2px; }
+.browser-menu {
+  position: absolute; right: 10px; top: 84px; z-index: 40;
+  min-width: 268px; padding: 6px;
+  background: var(--bg-100); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-lg, 0 12px 32px rgba(0,0,0,.28));
+  display: flex; flex-direction: column; gap: 1px;
+}
+.bm-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 7px 9px; border: 0; border-radius: var(--radius-md);
+  background: none; color: var(--text-100); font-family: inherit;
+  font-size: var(--fs-footnote); text-align: left; cursor: pointer;
+}
+.bm-item:hover { background: var(--bg-300); color: var(--text-000); }
+.bm-item > svg { color: var(--text-400); flex: 0 0 auto; }
+.bm-item:hover > svg { color: var(--text-200); }
+.bm-item.danger, .bm-item.danger > svg { color: #d9534f; }
+.bm-label { flex: 1; white-space: nowrap; }
+.bm-value { font-size: var(--fs-caption); color: var(--text-400); }
+.bm-sep { height: 1px; margin: 5px 6px; background: var(--border); }
+.bm-note { padding: 7px 9px 3px; font-size: var(--fs-caption); color: var(--text-400); border-top: 1px solid var(--border); margin-top: 4px; }
+
+/* ⌘↑ expand: the pane covers the window instead of the chat column. */
+.browser-panel.expanded {
+  position: fixed; inset: 0; z-index: 200;
+  background: var(--bg-100); border: none; border-radius: 0;
+}
+
+/* Dev server found … [Run] */
+.devfound {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; flex: 0 0 auto;
+  background: var(--bg-200); border-bottom: 1px solid var(--border);
+}
+.devfound-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--text-400); flex: 0 0 auto; }
+.devfound.running .devfound-dot { background: #3fb950; box-shadow: 0 0 0 3px rgba(63,185,80,.16); }
+.devfound-text { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; font-size: var(--fs-caption); color: var(--text-200); }
+.devfound-text b { font-weight: 600; white-space: nowrap; }
+.devfound-sub { color: var(--text-400); font-family: var(--mono); font-size: var(--fs-caption); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.devfound-btn {
+  border: 1px solid var(--border-strong); background: var(--bg-100);
+  color: var(--text-000); border-radius: var(--radius-md); padding: 4px 12px;
+  font-family: inherit; font-size: var(--fs-caption); cursor: pointer;
+}
+.devfound-btn:hover:not(:disabled) { background: var(--bg-300); border-color: var(--accent); }
+.devfound-btn:disabled { opacity: .5; cursor: default; }
+
+/* Viewport → Responsive: constrain the page to a phone-width column. */
+.browser-stage.responsive { display: flex; justify-content: center; background: var(--bg-200); }
+.browser-stage.responsive .browser-webview {
+  width: 390px; max-width: 100%; height: 100%;
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
 
 /* ---------- Custom skills: author / upload ---------- */
 .form-error { color: #d9534f; font-size: var(--fs-footnote); margin: 6px 0; }

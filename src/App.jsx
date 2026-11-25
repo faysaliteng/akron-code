@@ -289,6 +289,8 @@ const fmtTokens = (n) => {
   if (v >= 1e3) return (v / 1e3).toFixed(1) + 'k';
   return String(v);
 };
+// Grouped exact count — used where the real number matters (context meter).
+const fmtInt = (n) => Math.round(Number(n) || 0).toLocaleString('en-US');
 const estimateCost = (model, prompt, completion) => {
   const p = priceFor(model);
   return ((Number(prompt) || 0) / 1e6) * p.in + ((Number(completion) || 0) / 1e6) * p.out;
@@ -324,6 +326,20 @@ const contextWindowFor = (model) => {
   if (/grok/i.test(m)) return 131072;
   if (/sonnet|opus|haiku|anthropic/i.test(m)) return 200000;
   return 128000;
+};
+// Two different numbers live in a usage record: `prompt_tokens` is the *sum*
+// across every model call in a turn (that is what `/cost` prices), while
+// `context_tokens` is the prompt size of the last call — the only figure that
+// can be compared against a context window. Older records have no
+// `context_tokens`, so fall back to prompt_tokens/max(calls,1) rather than
+// claiming the window is full three times over.
+const usedTokens = (u) => {
+  if (!u) return 0;
+  const ctx = Number(u.context_tokens);
+  if (Number.isFinite(ctx) && ctx > 0) return ctx;
+  const p = Number(u.prompt_tokens) || 0;
+  const calls = Number(u.calls) || 0;
+  return calls > 1 ? Math.round(p / calls) : p;
 };
 const msgText = (m) => {
   const c = m && m.content;
@@ -464,6 +480,13 @@ export default function App() {
   const T = useCallback((k) => _t(settings.locale, k), [settings.locale]);
   const [orchestrator, setOrchestrator] = useState(() => ({ enabled: false, providers: [], activeIndex: -1 }));
   const [features, setFeatures] = useState(() => ({ computerUse: true, chrome: false, bridges: false, quickEntry: true, computerUseTeach: false, buddy: false, remoteControl: false, extensions: false, developerMode: false, trustedFolders: false, chromeHost: '127.0.0.1', chromePort: 9222 }));
+  // Single write path for feature toggles: state + main-process mirror. The
+  // Environment pane and Settings both call this; before it existed the pane
+  // threw `ReferenceError: saveFeat is not defined` and blanked the window.
+  const saveFeat = useCallback((next) => {
+    setFeatures(next);
+    try { window.autobot.setFeatures(next); } catch (_) { /* main may be older */ }
+  }, []);
   const [account, setAccount] = useState(() => loadJSON('autobot:account', {
     signedIn: false,
     authMethod: null, // null | 'anthropic' | 'sso'
@@ -1583,7 +1606,10 @@ export default function App() {
         if (!lastUsage) { note('No token usage recorded yet for this session. Run a message first.'); break; }
         const u = lastUsage;
         const cost = estimateCost(u.model || model, u.prompt_tokens, u.completion_tokens);
-        note('**Usage** (last run)\n- Model: `' + (u.model || model) + '`\n- Prompt: ' + fmtTokens(u.prompt_tokens) + ' tokens\n- Completion: ' + fmtTokens(u.completion_tokens) + ' tokens\n- Total: ' + fmtTokens(u.total_tokens) + ' tokens across ' + (u.calls || 1) + ' call(s)\n- Est. cost: ' + fmtCost(cost));
+        const ctxUsed = usedTokens(u);
+        const ctxWin = contextWindowFor(u.model || model);
+        const ctxPct = ctxWin > 0 ? Math.round((ctxUsed / ctxWin) * 100) : 0;
+        note('**Usage** (last run)\n- Model: `' + (u.model || model) + '`\n- Prompt: ' + fmtTokens(u.prompt_tokens) + ' tokens (sum across ' + (u.calls || 1) + ' call(s))\n- Completion: ' + fmtTokens(u.completion_tokens) + ' tokens\n- Total: ' + fmtTokens(u.total_tokens) + ' tokens across ' + (u.calls || 1) + ' call(s)\n- Context now: ' + fmtTokens(ctxUsed) + ' / ' + fmtTokens(ctxWin) + ' (' + ctxPct + '% of window)\n- Est. cost: ' + fmtCost(cost));
         break;
       }
       case 'cost': {
@@ -2186,7 +2212,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={subAgents} swarmInfo={swarmInfo} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} />}
+              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={subAgents} swarmInfo={swarmInfo} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
@@ -2203,6 +2229,17 @@ export default function App() {
             {sessionPane.type === 'browser' && (
               <SessionPane icon="Globe" title={T('sidebar.browser')} width={sessionPane.width} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
                 <BrowserView cwd={cwd} previewUrl={previewUrl} />
+              </SessionPane>
+            )}
+            {sessionPane.type === 'env' && (
+              <SessionPane icon="DotsHorizontal" title="Environment" width={sessionPane.width} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
+                <EnvPanel
+                  cwd={cwd} setCwd={setCwd} provider={provider} lastUsage={lastUsage}
+                  mcpServers={mcpServers} features={features} saveFeat={saveFeat}
+                  runSlashCommand={runSlashCommand}
+                  onOpenConnectors={() => setPanel('mcp')}
+                  T={T}
+                />
               </SessionPane>
             )}
           </div>
@@ -2224,6 +2261,7 @@ export default function App() {
             voiceMode={voiceMode} startVoiceMode={startVoiceMode} stopVoiceMode={stopVoiceMode}
             sessionPane={sessionPane} toggleSessionPane={toggleSessionPane}
             permissions={permissions} setPermissions={setPermissions}
+            lastUsage={lastUsage}
             T={T}
           />
         </main>
@@ -2538,8 +2576,139 @@ h1{font-size:22px;margin:0 0 4px} .meta{color:#888;font-size:12px;margin-bottom:
 </style></head><body><h1>${title}</h1><div class="meta">Exported from Akron Bot — ${ts}</div>${body}</body></html>`;
 }
 
+// ---------- Environment panel (the ··· pane) ----------
+// Example's right-hand pane answers three questions in one place: which machine
+// and folder the agent is working in, how much of the context window is spent,
+// and which connectors are attached. It is a view over state that already
+// exists — nothing here invents a number.
+function ContextMeter({ used, win, size = 44 }) {
+  const pct = win > 0 ? Math.max(0, Math.min(100, (used / win) * 100)) : 0;
+  const r = (size - 6) / 2;
+  const c = 2 * Math.PI * r;
+  const dash = (pct / 100) * c;
+  const tone = pct >= 90 ? 'hot' : pct >= 70 ? 'warm' : 'cool';
+  return (
+    <span className={'ctx-meter ' + tone} title={fmtInt(used) + ' of ' + fmtInt(win) + ' tokens used'}>
+      <svg width={size} height={size} viewBox={'0 0 ' + size + ' ' + size}>
+        <circle className="ctx-track" cx={size / 2} cy={size / 2} r={r} strokeWidth="3" fill="none" />
+        <circle
+          className="ctx-arc" cx={size / 2} cy={size / 2} r={r} strokeWidth="3" fill="none"
+          strokeDasharray={dash + ' ' + c} strokeDashoffset="0"
+          transform={'rotate(-90 ' + size / 2 + ' ' + size / 2 + ')'}
+        />
+      </svg>
+      <span className="ctx-pct">{Math.round(pct)}%</span>
+    </span>
+  );
+}
+
+function EnvPanel({ cwd, setCwd, provider, lastUsage, mcpServers, features, saveFeat, runSlashCommand, onOpenConnectors, T }) {
+  const model = (provider && provider.model) || '';
+  // The meter measures the turn that just ran, so prefer the model recorded
+  // in the usage event over whatever is selected now.
+  const win = contextWindowFor((lastUsage && lastUsage.model) || model);
+  const used = usedTokens(lastUsage);
+  const pct = win > 0 ? Math.round((used / win) * 100) : 0;
+  const connected = mcpServers || [];
+  const toolCount = connected.reduce((n, s) => n + ((s.tools && s.tools.length) || 0), 0);
+  // A server that answered but exposed no tools is the honest "needs
+  // reconnecting" signal — we never show a fabricated pending count.
+  const idle = connected.filter((s) => !s.tools || s.tools.length === 0);
+  const folderName = String(cwd || '').replace(/\/+$/, '').split('/').filter(Boolean).pop() || '~';
+  const chooseFolder = async () => {
+    const d = await window.autobot.pickFolder();
+    if (!d) return;
+    setCwd(d);
+    try {
+      const id = loadJSON('autobot:activeId', null);
+      if (id) window.autobot.setWorkspace(id, d).catch(() => {});
+    } catch (_) { /* workspace sync is best-effort */ }
+  };
+  return (
+    <div className="envpanel">
+      <section className="env-sec">
+        <div className="env-sec-title">This computer</div>
+        <div className="env-card">
+          <span className="env-ico"><Icon name="Laptop" size={16} /></span>
+          <div className="env-card-main">
+            <div className="env-card-title">This computer</div>
+            <div className="env-card-sub" title={cwd || '~'}>{folderName}{cwd ? ' · ' + cwd : ''}</div>
+          </div>
+        </div>
+        <button type="button" className="env-action" onClick={chooseFolder}>
+          <Icon name="Folder" size={14} /> Choose folder…
+        </button>
+      </section>
+
+      <section className="env-sec">
+        <div className="env-sec-title">Remote Control</div>
+        <button
+          type="button"
+          className={'env-toggle' + (features && features.remoteControl ? ' on' : '')}
+          onClick={() => saveFeat({ ...features, remoteControl: !(features && features.remoteControl) })}
+          aria-pressed={!!(features && features.remoteControl)}
+        >
+          <span className="env-toggle-track"><span className="env-toggle-knob" /></span>
+          <span className="env-toggle-label">
+            {features && features.remoteControl ? 'On — this machine can be driven remotely' : 'Off — local control only'}
+          </span>
+        </button>
+      </section>
+
+      <section className="env-sec">
+        <div className="env-sec-title">Context</div>
+        <div className="env-card">
+          <ContextMeter used={used} win={win} size={46} />
+          <div className="env-card-main">
+            <div className="env-card-title">{pct}% used</div>
+            <div className="env-card-sub">{fmtInt(used)} / {fmtInt(win)} tokens · {model ? model.split('/').pop() : 'no model'}</div>
+          </div>
+        </div>
+        <div className="env-meter"><span className={'env-meter-fill' + (pct >= 90 ? ' hot' : pct >= 70 ? ' warm' : '')} style={{ width: Math.max(1, Math.min(100, pct)) + '%' }} /></div>
+        <div className="env-row">
+          <button type="button" className="env-action" onClick={() => runSlashCommand('compact')}>
+            <Icon name="Frame" size={14} /> Compact now
+          </button>
+          <button type="button" className="env-action" onClick={() => runSlashCommand('context')}>
+            <Icon name="Activity" size={14} /> What is loaded
+          </button>
+        </div>
+      </section>
+
+      <section className="env-sec">
+        <div className="env-sec-title">Connectors</div>
+        {connected.length === 0 && (
+          <div className="env-empty">No connectors attached. Add an MCP server to give the agent more tools.</div>
+        )}
+        {connected.length > 0 && (
+          <div className="env-card-sub env-summary">
+            {connected.length} connected · {toolCount} tools{idle.length ? ' · ' + idle.length + ' need attention' : ''}
+          </div>
+        )}
+        {connected.map((s) => (
+          <div key={s.serverId} className={'env-conn' + (s.tools && s.tools.length ? '' : ' idle')}>
+            <span className="env-conn-dot" />
+            <span className="env-conn-name" title={s.url || s.name}>{s.name}</span>
+            <span className="env-conn-meta">{(s.tools && s.tools.length) || 0}</span>
+          </div>
+        ))}
+        <button type="button" className="env-action" onClick={onOpenConnectors}>
+          <Icon name="Connectors" size={14} /> Manage connectors
+        </button>
+      </section>
+
+      <section className="env-sec env-sec-last">
+        <div className="env-sec-title">Session</div>
+        <div className="env-card-sub env-summary">
+          {provider ? (provider.label || provider.id || 'provider') : 'no provider'} · tools {provider && provider.supportsTools === false ? 'via text protocol' : 'native'}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 // ---------- Chat view ----------
-function ChatView({ messages, live, thinking, subAgents, swarmInfo, planMode, copyBlock, applyBlock, bottomRef, convId, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt }) {
+function ChatView({ messages, live, thinking, subAgents, swarmInfo, planMode, copyBlock, applyBlock, bottomRef, convId, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen }) {
   return (
     <div className="chat" onClick={(e) => { copyBlock(e); applyBlock(e); }}>
       {planMode && planMode.active && (
@@ -2550,7 +2719,17 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, planMode, co
       {conv && (
         <div className="conv-toolbar">
           <div className="conv-toolbar-title">{conv.title || 'Untitled'}</div>
-          <ExportMenu conv={conv} exportConv={exportConv} T={T} />
+          <div className="conv-toolbar-right">
+            <ExportMenu conv={conv} exportConv={exportConv} T={T} />
+            <button
+              type="button"
+              className={'icon-btn conv-env-btn' + (envOpen ? ' active' : '')}
+              title={envOpen ? 'Hide environment' : 'Environment — folder, context, connectors'}
+              onClick={(e) => { e.stopPropagation(); if (onToggleEnv) onToggleEnv(); }}
+            >
+              <Icon name="DotsHorizontal" size={15} />
+            </button>
+          </div>
         </div>
       )}
       {messages.length === 0 && !live && (
@@ -2597,7 +2776,7 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, planMode, co
             <>
               {live.tools.length > 0 && (
                 <div className="tools">
-                  {live.tools.map((t) => <ToolCard key={t.id} t={t} />)}
+                  <ToolGroup rows={live.tools} streaming />
                 </div>
               )}
               {live.content ? <div className="md streaming" dangerouslySetInnerHTML={{ __html: renderMarkdown(live.content) + '<span class="cursor">▍</span>' }} /> : null}
@@ -2646,7 +2825,7 @@ function SegmentView({ segments, tools, streaming }) {
     if (s.type === 'tools') {
       const rows = (s.ids || []).map((id) => (tools || []).find((t) => t.id === id)).filter(Boolean);
       if (!rows.length) return null;
-      return <div className="tools" key={'seg-t-' + i}>{rows.map((t) => <ToolCard key={t.id} t={t} />)}</div>;
+      return <div className="tools" key={'seg-t-' + i}><ToolGroup rows={rows} streaming={streaming} /></div>;
     }
     const txt = s.text || '';
     if (!txt.trim()) return null;
@@ -2691,7 +2870,7 @@ function Message({ m, convId, idx, copyMessage, editMessage, deleteMessage, retr
           <>
             {m.tools && m.tools.length > 0 && (
               <div className="tools">
-                {m.tools.map((t) => <ToolCard key={t.id} t={t} />)}
+                <ToolGroup rows={m.tools} />
               </div>
             )}
             <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
@@ -2751,19 +2930,201 @@ function TodoList({ todos }) {
   );
 }
 
+// ── Change accounting ──────────────────────────────────────────────────────
+// Example summarises a run inline — "Ran 6 commands, read and edited
+// opencode.json, 1 blocked +2 −2" — instead of dumping a column of tool JSON.
+// The counters are derived from the args the model actually sent, so they can
+// never drift from what hit disk.
+const BLOCKED_RE = /denied at permission|prompt blocked|blocked by hook|not available to this sub-agent|blocked by pretooluse|needs approval|permission denied|user rejected/i;
+
+function countLines(s) {
+  const t = String(s == null ? '' : s);
+  if (!t) return 0;
+  return t.split('\n').length;
+}
+
+// Per-row line delta. Write replaces the whole file, so every line it emits is
+// new. Edit/MultiEdit carry the exact span they replaced — that is what the
+// counter measures.
+function toolDelta(t) {
+  const a = (t && t.args) || {};
+  const name = String((t && t.name) || '');
+  if (name === 'Write' && a.content != null) return { added: countLines(a.content), removed: 0 };
+  if (name === 'Edit' || name === 'MultiEdit' || name === 'StrReplace') {
+    if (Array.isArray(a.edits)) {
+      let added = 0;
+      let removed = 0;
+      for (const e of a.edits) {
+        removed += countLines(e && (e.old_string ?? e.old_str));
+        added += countLines(e && (e.new_string ?? e.new_str));
+      }
+      return { added, removed };
+    }
+    return { removed: countLines(a.old_string ?? a.old_str), added: countLines(a.new_string ?? a.new_str) };
+  }
+  return { added: 0, removed: 0 };
+}
+
+function isBlockedRow(t) {
+  if (!t || t.status !== 'error') return false;
+  return BLOCKED_RE.test(String(t.result || ''));
+}
+
+// Bucket a tool call into the vocabulary the summary line speaks.
+function groupKind(name) {
+  switch (String(name || '')) {
+    case 'Bash': return 'command';
+    case 'Read': case 'ReadFile': case 'LS': case 'ListDir': case 'ListFiles': return 'file';
+    case 'Write': return 'write';
+    case 'Edit': case 'MultiEdit': case 'StrReplace': return 'edit';
+    case 'Glob': case 'Grep': case 'Search': return 'search';
+    case 'WebFetch': case 'WebSearch': case 'browser_open': case 'browser_navigate': return 'page';
+    case 'TodoWrite': case 'exitPlanMode': return 'plan';
+    case 'Task': return 'agent';
+    default: return 'other';
+  }
+}
+
+function describeGroup(rows) {
+  const counts = new Map();
+  const files = [];
+  let added = 0;
+  let removed = 0;
+  let blocked = 0;
+  for (const t of rows) {
+    const kind = groupKind(t.name);
+    counts.set(kind, (counts.get(kind) || 0) + 1);
+    const d = toolDelta(t);
+    added += d.added;
+    removed += d.removed;
+    if (isBlockedRow(t)) blocked += 1;
+    if (kind === 'file' || kind === 'write' || kind === 'edit') {
+      const p = (t.args && (t.args.path || t.args.file_path)) || '';
+      const name = String(p).replace(/\\/g, '/').split('/').filter(Boolean).pop();
+      if (name && !files.includes(name)) files.push(name);
+    }
+  }
+  const parts = [];
+  const n = (k) => counts.get(k) || 0;
+  if (n('command')) parts.push('Ran ' + n('command') + (n('command') === 1 ? ' command' : ' commands'));
+  if (n('file')) parts.push('read ' + n('file') + (n('file') === 1 ? ' file' : ' files'));
+  if (n('write')) parts.push('wrote ' + n('write') + (n('write') === 1 ? ' file' : ' files'));
+  if (n('edit')) parts.push('edited ' + n('edit') + (n('edit') === 1 ? ' file' : ' files'));
+  if (n('search')) parts.push('searched ' + n('search') + '×');
+  if (n('page')) parts.push('fetched ' + n('page') + (n('page') === 1 ? ' page' : ' pages'));
+  if (n('agent')) parts.push('ran ' + n('agent') + (n('agent') === 1 ? ' agent' : ' agents'));
+  if (n('plan')) parts.push('updated the plan');
+  if (n('other')) parts.push(n('other') + (n('other') === 1 ? ' other tool' : ' other tools'));
+  let text = parts.join(', ');
+  // Name at most two touched files: the point is orientation, not an inventory.
+  if (files.length) {
+    const shown = files.slice(0, 2).join(', ');
+    text += (text ? ' · ' : '') + shown + (files.length > 2 ? ' +' + (files.length - 2) : '');
+  }
+  if (!text) text = rows.length + (rows.length === 1 ? ' tool call' : ' tool calls');
+  return { text, added, removed, blocked };
+}
+
+function DeltaChips({ added, removed }) {
+  if (!added && !removed) return null;
+  return (
+    <span className="delta-chips" title={added + ' line(s) added, ' + removed + ' line(s) removed'}>
+      <span className="delta-add">+{added}</span>
+      <span className="delta-del">−{removed}</span>
+    </span>
+  );
+}
+
+const clipText = (s, n) => {
+  const t = String(s == null ? '' : s);
+  return t.length > n ? t.slice(0, n) + '\n… ' + (t.length - n) + ' more characters' : t;
+};
+
+// An Edit rendered as the change it makes (− old / + new) rather than the JSON
+// blob that encodes it. This is the difference between "the agent is working"
+// and "I can see what it did".
+function DiffBlock({ oldText, newText, file }) {
+  const MAX = 260;
+  const del = oldText ? String(oldText).split('\n') : [];
+  const add = newText ? String(newText).split('\n') : [];
+  return (
+    <div className="td-diff">
+      {file ? <div className="td-file">{shortPath(file)}</div> : null}
+      {del.slice(0, MAX).map((l, i) => (
+        <div key={'d' + i} className="td-line del"><span className="td-sign">−</span><span className="td-code">{l || ' '}</span></div>
+      ))}
+      {add.slice(0, MAX).map((l, i) => (
+        <div key={'a' + i} className="td-line add"><span className="td-sign">+</span><span className="td-code">{l || ' '}</span></div>
+      ))}
+      {(del.length > MAX || add.length > MAX) ? <div className="td-more">truncated for display — full text is in the file</div> : null}
+    </div>
+  );
+}
+
+function ToolDetail({ t }) {
+  const a = t.args || {};
+  const name = String(t.name || '');
+  const out = t.result != null ? String(t.result) : '';
+  const body = [];
+  if (name === 'Edit' || name === 'MultiEdit' || name === 'StrReplace') {
+    const edits = Array.isArray(a.edits)
+      ? a.edits
+      : [{ old_string: a.old_string ?? a.old_str, new_string: a.new_string ?? a.new_str }];
+    edits.forEach((e, i) => {
+      body.push(
+        <DiffBlock
+          key={'e' + i}
+          file={a.path || a.file_path}
+          oldText={(e && (e.old_string ?? e.old_str)) ?? ''}
+          newText={(e && (e.new_string ?? e.new_str)) ?? ''}
+        />
+      );
+    });
+  } else if (name === 'Write') {
+    body.push(<DiffBlock key="w" file={a.path || a.file_path} oldText="" newText={a.content ?? ''} />);
+  } else if (name === 'Bash') {
+    body.push(
+      <div key="c" className="td-cmd"><span className="td-prompt">$</span><span className="td-cmd-text">{clipText(a.command || a.cmd || '', 1200)}</span></div>
+    );
+  } else {
+    const kv = Object.entries(a).filter(([, v]) => v != null && v !== '' && typeof v !== 'object');
+    if (kv.length) {
+      body.push(
+        <dl key="kv" className="td-kv">
+          {kv.slice(0, 12).map(([k, v]) => (
+            <React.Fragment key={k}>
+              <dt>{k}</dt>
+              <dd>{clipText(v, 400)}</dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      );
+    }
+  }
+  return (
+    <div className="tool-detail">
+      {body}
+      {out ? <pre className="tool-result">{clipText(out, 6000)}</pre> : null}
+    </div>
+  );
+}
+
 function ToolCard({ t }) {
   const todos = t.name === 'TodoWrite' && t.args && Array.isArray(t.args.todos) ? t.args.todos : null;
   const [open, setOpen] = useState(Boolean(todos && todos.length));
   const d = describeTool(t.name, t.args);
-  let argStr = '';
-  try { argStr = JSON.stringify(t.args || {}); } catch {}
+  const delta = toolDelta(t);
+  const blocked = isBlockedRow(t);
   const status = t.status === 'error' ? 'error' : t.status === 'running' ? 'running' : 'done';
+  let title = '';
+  try { title = JSON.stringify(t.args || {}).slice(0, 400); } catch { title = ''; }
   return (
-    <div className={'toolcard ' + status}>
+    <div className={'toolcard ' + status + (blocked ? ' blocked' : '')}>
       <div className="toolcard-head" onClick={() => setOpen(!open)}>
         <span className="tool-ico"><Icon name={d.icon} size={14} /></span>
         <span className="tool-name">{d.verb}</span>
-        {d.target ? <span className="tool-args" title={argStr}>{d.target}</span> : <span className="tool-args" />}
+        {d.target ? <span className="tool-args" title={title}>{d.target}</span> : <span className="tool-args" />}
+        <DeltaChips added={delta.added} removed={delta.removed} />
         <span className="tool-state">
           {status === 'running' && <Icon name="Spinner" size={13} className="spin" />}
           {status === 'error' && <Icon name="Warning" size={13} />}
@@ -2772,8 +3133,36 @@ function ToolCard({ t }) {
         <span className="caret"><Icon name={open ? 'CaretUp' : 'CaretRight'} size={11} /></span>
       </div>
       {open && todos && todos.length > 0 && <TodoList todos={todos} />}
-      {open && !(todos && todos.length) && (t.result != null || argStr) && (
-        <pre className="tool-result">{t.result != null ? String(t.result).slice(0, 4000) : argStr}</pre>
+      {open && !(todos && todos.length) && <ToolDetail t={t} />}
+    </div>
+  );
+}
+
+// A run's tool calls collapse into one row you can open. Keeping every row
+// expanded turned a 20-step run into a wall of cards and buried the answer.
+function ToolGroup({ rows, streaming }) {
+  const live = rows.some((t) => t.status === 'running');
+  const [open, setOpen] = useState(false);
+  const info = describeGroup(rows);
+  const onlyOne = rows.length === 1;
+  // A single call is its own row — no summary header needed.
+  if (onlyOne) return <ToolCard t={rows[0]} />;
+  return (
+    <div className={'toolgroup' + (live ? ' running' : '') + (open ? ' open' : '')}>
+      <button type="button" className="toolgroup-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <span className="toolgroup-ico">
+          {live ? <Icon name="Spinner" size={13} className="spin" /> : <Icon name="Wrench" size={13} />}
+        </span>
+        <span className="toolgroup-text">{info.text}</span>
+        <DeltaChips added={info.added} removed={info.removed} />
+        {info.blocked > 0 ? <span className="toolgroup-blocked">{info.blocked} blocked</span> : null}
+        <span className="toolgroup-count">{rows.length}</span>
+        <span className="caret"><Icon name={open ? 'CaretUp' : 'CaretRight'} size={11} /></span>
+      </button>
+      {open && (
+        <div className="toolgroup-rows">
+          {rows.map((t) => <ToolCard key={t.id} t={t} />)}
+        </div>
       )}
     </div>
   );
@@ -4044,10 +4433,50 @@ function BrowserView({ cwd, previewUrl }) {
   const [findOpen, setFindOpen] = useState(false);
   const [findText, setFindText] = useState('');
   const [findRes, setFindRes] = useState(null); // {active, total}
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);   // ⌘↑ / ⌘↓
+  const [responsive, setResponsive] = useState(false);
+  const [cookiesShared, setCookiesShared] = useState(true);
+  const [dev, setDev] = useState(null);             // {hasScript, script, running, port, framework}
+  const [devBusy, setDevBusy] = useState(false);
+  const [menuNote, setMenuNote] = useState('');
   const webviews = useRef({});
   const omniboxRef = useRef(null);
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
+
+  // Cookies either ride the app's own partition (`persist:autobot`, shared with any
+  // sign-in the user already did) or an isolated one. Switching remounts the
+  // webviews, which is the only honest way to change a partition at runtime.
+  const partition = cookiesShared ? 'persist:autobot' : 'persist:autobot-isolated';
+
+  // Which dev server, if any, this project can start. Nothing is invented: the card
+  // only renders when package.json has a dev-ish script (or a port is already live).
+  useEffect(() => {
+    if (!cwd || !window.autobot || !window.autobot.devServerDetect) return undefined;
+    let cancelled = false;
+    window.autobot.devServerDetect(cwd)
+      .then((r) => { if (!cancelled && r && r.ok) setDev(r); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [cwd]);
+
+  // ⌘↑ expands the pane to the whole window, ⌘↓ (or Esc) puts it back.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key === 'ArrowUp') { e.preventDefault(); setExpanded(true); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); setExpanded(false); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  useEffect(() => {
+    if (!expanded) return undefined;
+    const onEsc = (e) => { if (e.key === 'Escape') setExpanded(false); };
+    window.addEventListener('keydown', onEsc);
+    return () => window.removeEventListener('keydown', onEsc);
+  }, [expanded]);
 
   const active = tabs.find((t) => t.id === activeId);
   const patchTab = (id, patch) => setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
@@ -4195,8 +4624,89 @@ function BrowserView({ cwd, previewUrl }) {
     try { window.autobot.browserUnregister(); } catch {}
   }, []);
 
+  // ---- ··· menu actions -------------------------------------------------
+  // Every handler returns a short, honest status string for the menu footer.
+  const currentUrl = () => {
+    const wv = webviews.current[activeId];
+    try { const u = wv && wv.getURL(); if (u) return u; } catch {}
+    return (active && active.url) || omnibox || '';
+  };
+  const note = (msg) => { setMenuNote(msg); };
+  const openExternal = async (profile) => {
+    const url = currentUrl();
+    if (!url) return note('Nothing to open yet');
+    const r = await window.autobot.browserOpenExternal(url, profile);
+    if (r && r.ok) { note('Opened in ' + r.app); setMenuOpen(false); return; }
+    if (r && r.fallback === 'default') {
+      const r2 = await window.autobot.browserOpenExternal(url, 'default');
+      if (r2 && r2.ok) { note('Brave not installed — opened in ' + r2.app); setMenuOpen(false); return; }
+    }
+    note((r && r.error) || 'Could not open the page');
+  };
+  const copyLink = async () => {
+    const url = currentUrl();
+    if (!url) return note('Nothing to copy yet');
+    try { await navigator.clipboard.writeText(url); note('Link copied'); }
+    catch { note('Clipboard unavailable'); }
+  };
+  const saveShot = async () => {
+    const name = String((active && active.title) || 'screenshot').replace(/[^\w.-]+/g, '-').slice(0, 60);
+    const r = await window.autobot.browserSaveScreenshot(name);
+    if (r && r.ok) { note('Saved to ' + r.path); setMenuOpen(false); }
+    else if (!(r && r.canceled)) note((r && r.error) || 'Screenshot failed');
+  };
+  const openHtml = async () => {
+    const r = await window.autobot.browserOpenFile();
+    if (r && r.ok) { openTab(r.url); setMenuOpen(false); note('Opened ' + r.path); }
+  };
+  const toggleResponsive = () => {
+    setResponsive((v) => { note('Viewport: ' + (!v ? 'Responsive (390px)' : 'Fill pane')); return !v; });
+  };
+  const toggleCookies = () => {
+    setCookiesShared((v) => {
+      note('Cookies: ' + (!v ? 'Shared with app sign-ins' : 'Isolated browser jar'));
+      return !v;
+    });
+  };
+  const importCookies = async () => {
+    const r = await window.autobot.browserImportCookies(partition);
+    if (r && r.ok) { note('Imported ' + r.added + ' cookies' + (r.failed ? ' (' + r.failed + ' skipped)' : '')); reload(); }
+    else if (!(r && r.canceled)) note((r && r.error) || 'Import failed');
+  };
+  const clearData = async () => {
+    const r = await window.autobot.browserClearData(partition);
+    if (r && r.ok) { note('Cookies, cache and storage cleared'); reload(); }
+    else note((r && r.error) || 'Could not clear data');
+  };
+  const openDevTools = () => {
+    const wv = webviews.current[activeId];
+    try { if (wv) { wv.openDevTools(); setMenuOpen(false); note('Developer tools opened'); } }
+    catch { note('Developer tools unavailable'); }
+  };
+  const runDevServer = async () => {
+    if (!cwd) return;
+    setDevBusy(true);
+    note('Starting ' + ((dev && dev.script) || 'dev server') + '…');
+    try {
+      const r = await window.autobot.devServerStart(cwd);
+      if (r && r.ok && r.url) {
+        openTab(r.url);
+        setDev((d) => ({ ...(d || {}), running: true, port: r.port, url: r.url }));
+        note('Dev server up on :' + r.port);
+      } else if (r && r.ok && r.pending) {
+        setDev((d) => ({ ...(d || {}), running: true }));
+        note('Started — waiting for the port to answer');
+      } else {
+        note((r && r.error) || 'Could not start the dev server');
+      }
+    } finally {
+      setDevBusy(false);
+      setMenuOpen(false);
+    }
+  };
+
   return (
-    <div className="browser-panel">
+    <div className={'browser-panel' + (expanded ? ' expanded' : '')}>
       <div className="browser-tabs">
         {tabs.map((t) => (
           <div key={t.id} className={'browser-tab ' + (t.id === activeId ? 'on' : '')} onClick={() => selectTab(t.id)} title={t.url}>
@@ -4221,7 +4731,27 @@ function BrowserView({ cwd, previewUrl }) {
         </form>
         <button className={'icon-btn' + (findOpen ? ' on' : '')} onClick={() => setFindOpen(!findOpen)} title="Find in page"><Icon name="Search" size={15} /></button>
         <button className="icon-btn" onClick={openTab} title="New tab"><Icon name="Add" size={15} /></button>
+        <button className={'icon-btn' + (expanded ? ' on' : '')} onClick={() => setExpanded(!expanded)} title={expanded ? 'Restore (⌘↓)' : 'Expand (⌘↑)'}><Icon name={expanded ? 'ArrowsIn' : 'ArrowsOut'} size={15} /></button>
+        <button className={'icon-btn browser-menu-btn' + (menuOpen ? ' on' : '')} onClick={() => { setMenuNote(''); setMenuOpen(!menuOpen); }} title="Browser menu"><Icon name="DotsHorizontal" size={16} /></button>
       </div>
+
+      {menuOpen && (
+        <div className="browser-menu" role="menu">
+          <button className="bm-item" role="menuitem" onClick={() => openExternal('brave')}><Icon name="ArrowUpRight" size={14} /><span className="bm-label">Open in Brave Browser</span></button>
+          <button className="bm-item" role="menuitem" onClick={() => openExternal('default')}><Icon name="Globe" size={14} /><span className="bm-label">Open in default browser</span></button>
+          <button className="bm-item" role="menuitem" onClick={copyLink}><Icon name="Copy" size={14} /><span className="bm-label">Copy link</span></button>
+          <button className="bm-item" role="menuitem" onClick={saveShot}><Icon name="Camera" size={14} /><span className="bm-label">Save screenshot</span></button>
+          <button className="bm-item" role="menuitem" onClick={openHtml}><Icon name="Code" size={14} /><span className="bm-label">Open HTML file…</span></button>
+          <div className="bm-sep" />
+          <button className="bm-item" role="menuitem" onClick={toggleResponsive}><Icon name="Frame" size={14} /><span className="bm-label">Viewport</span><span className="bm-value">{responsive ? 'Responsive' : 'Fill'}</span></button>
+          <button className="bm-item" role="menuitem" onClick={openDevTools}><Icon name="Wrench" size={14} /><span className="bm-label">More settings · Developer tools</span></button>
+          <div className="bm-sep" />
+          <button className="bm-item" role="menuitem" onClick={importCookies}><Icon name="Download" size={14} /><span className="bm-label">Import cookies…</span></button>
+          <button className="bm-item" role="menuitem" onClick={toggleCookies}><Icon name={cookiesShared ? 'Share' : 'Lock'} size={14} /><span className="bm-label">Keep cookies</span><span className="bm-value">{cookiesShared ? 'Shared' : 'Isolated'}</span></button>
+          <button className="bm-item danger" role="menuitem" onClick={clearData}><Icon name="Broom" size={14} /><span className="bm-label">Clear browsing data</span></button>
+          {menuNote && <div className="bm-note">{menuNote}</div>}
+        </div>
+      )}
 
       {findOpen && (
         <div className="browser-find">
@@ -4231,15 +4761,34 @@ function BrowserView({ cwd, previewUrl }) {
         </div>
       )}
 
-      <div className="browser-stage">
+      {dev && (dev.hasScript || dev.running) && (
+        <div className={'devfound' + (dev.running ? ' running' : '')}>
+          <span className="devfound-dot" />
+          <span className="devfound-text">
+            <b>Dev server {dev.running ? 'running' : 'found'}</b>
+            <span className="devfound-sub">
+              {dev.script ? dev.script + ' · ' : ''}{dev.framework}{dev.port ? ' :' + dev.port : ''}
+            </span>
+          </span>
+          {dev.running && dev.url ? (
+            <button className="devfound-btn" onClick={() => openTab(dev.url)}>Open</button>
+          ) : (
+            <button className="devfound-btn" disabled={devBusy || !dev.hasScript} onClick={runDevServer}>
+              {devBusy ? 'Starting…' : 'Run'}
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className={'browser-stage' + (responsive ? ' responsive' : '')}>
         {tabs.map((t) => (
           <webview
-            key={t.id}
+            key={t.id + ':' + partition}
             ref={bindWebview(t.id)}
             className="browser-webview"
             style={{ display: t.id === activeId ? 'flex' : 'none' }}
             src={t.launch || t.url}
-            partition="persist:autobot"
+            partition={partition}
           />
         ))}
       </div>
@@ -4505,9 +5054,9 @@ const PERM_MODES = [
 ];
 const PERM_SHORT = { auto: 'perm.auto', ask: 'perm.manual', acceptEdits: 'perm.acceptEdits', plan: 'perm.plan', bypass: 'perm.bypass' };
 
-function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, sendQueuedNow, T }) {
-  const [styleOpen, setStyleOpen] = useState(false);
+function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, sendQueuedNow, lastUsage, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [permOpen, setPermOpen] = useState(false);
   // Tracks whether the composer holds text so that, while a reply is streaming,
@@ -4534,6 +5083,12 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
   // instead of shipping a stale hardcoded list. Values carry the resolved
   // context window used for the per-model label and the auto-compact budget.
   const [provModels, setProvModels] = useState({});
+
+  // Context ring in the composer: measure the window of the model that served
+  // the last turn. `provider.model` is right on a fresh chat, but switching
+  // models (or sitting on a gateway alias like `auto`) would otherwise rescale
+  // an existing conversation against the wrong window.
+  const ctxWindow = contextWindowFor((lastUsage && lastUsage.model) || provider.model);
 
   const loadProvOauth = useCallback(async () => {
     const r = await Promise.resolve(window.autobot.providerStatus()).catch(() => null);
@@ -4925,30 +5480,14 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
         <textarea ref={inputRef} rows={1} placeholder={T('composer.placeholder')} onKeyDown={onKey} onInput={(e) => setHasText(!!e.target.value.trim())} onPaste={onPasteFiles} />
         <div className="composer-foot">
           <div className="composer-actions">
-            <button className="icon-btn attach-btn" title="Attach files" onClick={attachFiles}><Icon name="Attachment" size={17} /></button>
-
-            {/* Style selector */}
-            <div className="style-wrap">
-              <button className={'icon-btn' + (styleId !== 'default' ? ' active' : '')} title={'Style: ' + activeStyle.name} onClick={() => setStyleOpen(!styleOpen)}>
-                <Icon name="Styles" size={17} />
-              </button>
-              {styleOpen && (
-                <div className="style-menu">
-                  <div className="model-menu-head">Style</div>
-                  {STYLES.map((s) => (
-                    <button key={s.id} className={'model-opt' + (styleId === s.id ? ' on' : '')} onClick={() => { setStyleId(s.id); setStyleOpen(false); }}>
-                      <span className="model-opt-name">{s.name}</span>
-                      {s.hint && <span className="model-opt-prov">{s.hint}</span>}
-                      {styleId === s.id && <Icon name="Check" size={13} className="model-check" />}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            {!hasText && !streaming && (
+              <span className="composer-hint" aria-hidden="true">Type <kbd>/</kbd> for commands</span>
+            )}
+            <button className="icon-btn attach-btn f-attach" title="Attach files" onClick={attachFiles}><Icon name="Attachment" size={17} /></button>
 
             {/* Reasoning / thinking level — deliberately labelled so it is
                 discoverable: a bare icon select was impossible to find. */}
-            <div className="style-wrap">
+            <div className="style-wrap f-think">
               <button
                 type="button"
                 className={'reason-pick' + (reasoningLevel !== 'auto' ? ' active' : '')}
@@ -5002,28 +5541,69 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
               <span className="swarm-state">{swarmEnabled ? 'On' : 'Off'}</span>
             </button>
 
-            {/* Web search toggle */}
-            <button className={'icon-btn' + (webSearch ? ' active' : '')} title={webSearch ? 'Web search: on' : 'Web search: off'} onClick={() => setWebSearch(!webSearch)}>
-              <Icon name="Globe" size={17} />
-            </button>
+            {/* Secondary answer tools live behind one button, exactly like the
+                `+` menu in the Claude app. Nine inline controls could not fit a
+                712 px composer and spilled past the border; a popover keeps
+                every one of them reachable at any width without moving the
+                primary row (attach · thinking · swarm  |  context · model · send). */}
+            <div className="tools-wrap">
+              <button
+                type="button"
+                className={'icon-btn tools-btn' + ((webSearch || (sessionPane && sessionPane.type === 'browser') || dictating || voiceMode || styleId !== 'default') ? ' active' : '')}
+                title="Answer tools — style, web search, browser, dictation, voice"
+                aria-haspopup="menu"
+                aria-expanded={toolsOpen}
+                onClick={() => setToolsOpen(!toolsOpen)}
+              >
+                <Icon name="Sliders" size={17} />
+              </button>
+              {toolsOpen && (
+                <div className="tools-menu" role="menu">
+                  <div className="model-menu-head">Answer tools</div>
+                  <button type="button" role="menuitemcheckbox" aria-checked={!!webSearch} className="tools-row" onClick={() => setWebSearch(!webSearch)}>
+                    <Icon name="Globe" size={15} />
+                    <span className="tools-row-label">Web search</span>
+                    <span className={'tools-state' + (webSearch ? ' on' : '')}>{webSearch ? 'On' : 'Off'}</span>
+                  </button>
+                  <button type="button" role="menuitem" className="tools-row" onClick={() => { toggleSessionPane('browser'); setToolsOpen(false); }}>
+                    <Icon name="Window" size={15} />
+                    <span className="tools-row-label">Browser</span>
+                    <span className={'tools-state' + (sessionPane && sessionPane.type === 'browser' ? ' on' : '')}>{sessionPane && sessionPane.type === 'browser' ? 'Open' : 'Closed'}</span>
+                  </button>
+                  <button type="button" role="menuitemcheckbox" aria-checked={!!dictating} className="tools-row" onClick={() => toggleDictation(inputRef, setDictating)}>
+                    <Icon name="Microphone" size={15} />
+                    <span className="tools-row-label">Dictate</span>
+                    <span className={'tools-state' + (dictating ? ' on' : '')}>{dictating ? 'Listening' : 'Off'}</span>
+                  </button>
+                  <button type="button" role="menuitemcheckbox" aria-checked={!!voiceMode} className="tools-row" onClick={() => (voiceMode ? stopVoiceMode() : startVoiceMode())}>
+                    <Icon name="Voice" size={15} />
+                    <span className="tools-row-label">Voice mode</span>
+                    <span className={'tools-state' + (voiceMode ? ' on' : '')}>{voiceMode ? 'On' : 'Off'}</span>
+                  </button>
+                  <div className="model-menu-divider" />
+                  <div className="model-menu-head">Style</div>
+                  {STYLES.map((st) => (
+                    <button key={st.id} type="button" role="menuitemradio" aria-checked={styleId === st.id} className={'model-opt' + (styleId === st.id ? ' on' : '')} onClick={() => { setStyleId(st.id); setToolsOpen(false); }}>
+                      <span className="model-opt-name">{st.name}</span>
+                      {st.hint && <span className="model-opt-prov">{st.hint}</span>}
+                      {styleId === st.id && <Icon name="Check" size={13} className="model-check" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
-            {/* Built-in browser toggle — opens/closes the browser session pane */}
-            <button className={'icon-btn' + (sessionPane && sessionPane.type === 'browser' ? ' active' : '')} title={sessionPane && sessionPane.type === 'browser' ? T('composer.browserClose') : T('composer.browser')} onClick={() => toggleSessionPane('browser')}>
-              <Icon name="Window" size={17} />
-            </button>
-
-            {/* Voice dictation */}
-            <button className={'icon-btn' + (dictating ? ' active' : '')} title={dictating ? 'Listening…' : 'Dictate'} onClick={() => toggleDictation(inputRef, setDictating)}>
-              <Icon name="Microphone" size={17} />
-            </button>
-
-            {/* Voice Mode — full-duplex conversational loop */}
-            <button className={'icon-btn' + (voiceMode ? ' active voice-on' : '')} title={voiceMode ? T('composer.voice') : T('composer.voice')} onClick={() => (voiceMode ? stopVoiceMode() : startVoiceMode())}>
-              <Icon name="Voice" size={17} />
-            </button>
           </div>
 
           <div className="composer-right">
+            <button
+              type="button"
+              className="ctx-btn"
+              title={'Context: ' + fmtInt(usedTokens(lastUsage)) + ' of ' + fmtInt(ctxWindow) + ' tokens used — open Environment'}
+              onClick={() => toggleSessionPane('env')}
+            >
+              <ContextMeter used={usedTokens(lastUsage)} win={ctxWindow} size={26} />
+            </button>
             <div className="model-pill-wrap">
               <button className={'model-pill' + (modelMenuOpen ? ' open' : '')} onClick={() => setModelMenuOpen(!modelMenuOpen)} title="Change model">
                 <Icon name="Agent" size={14} className="model-ico" />
