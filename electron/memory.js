@@ -1,13 +1,13 @@
 'use strict';
 // Project memory — Example's CLAUDE.md hierarchy.
 //
-// Example Code loads, in order, and concatenates:
+// Claude Code loads, in order, and concatenates:
 //   ~/.claude/CLAUDE.md                  (global user memory)
 //   <ancestor dirs>/CLAUDE.md            (root → cwd, project memory)
 //   <cwd>/CLAUDE.md
 //   <cwd>/CLAUDE.local.md                (private, gitignored)
 //
-// plus any `@path/to/file` imports (transitively, depth ≤ 5). Helio Bot reads
+// plus any `@path/to/file` imports (transitively, depth ≤ 5). Akron Bot reads
 // the same files so an existing project's instructions apply unchanged, and it
 // also accepts ~/.autobot/CLAUDE.md as a Helio-only global layer.
 

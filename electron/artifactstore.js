@@ -1,5 +1,5 @@
 'use strict';
-// Helio Bot — persisted edits for interactive Design / Slides canvas artifacts.
+// Akron Bot — persisted edits for interactive Design / Slides canvas artifacts.
 //
 // A canvas artifact is generated once by the model and then edited by hand
 // (rename artboards, reorder slides, drop comment pins, retype a slide body).

@@ -1,5 +1,5 @@
 'use strict';
-// Helio Bot — Plugins & Connectors directory (desktop-app parity).
+// Akron Bot — Plugins & Connectors directory (desktop-app parity).
 //
 // Two layers:
 //   1. connector-catalog.js — curated offline directory (connectors + plugins).

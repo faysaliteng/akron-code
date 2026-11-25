@@ -11,7 +11,7 @@ const path = require('path');
 const WebSocket = require('ws');
 
 const PORT = Number(process.env.STUB_PORT || 8899);
-const DIR = '/Users/saimon/Helio Bot/live-preview-test';
+const DIR = '/Users/saimon/Akron Bot/live-preview-test';
 const PAGE_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><title>Live Scores</title>
 <style>body{font-family:system-ui;background:#0b1020;color:#e8eefc;padding:40px}
@@ -94,8 +94,8 @@ async function evaluate(ws, expression) {
       let s = ''; res.on('data', (d) => (s += d)); res.on('end', () => resolve(s));
     }).on('error', reject);
   }));
-  const page = targets.find((t) => t.type === 'page' && /Helio Bot|index\.html/.test(t.title + t.url));
-  if (!page) throw new Error('Helio Bot page target not found');
+  const page = targets.find((t) => t.type === 'page' && /Akron Bot|index\.html/.test(t.title + t.url));
+  if (!page) throw new Error('Akron Bot page target not found');
 
   const ws = new WebSocket(page.webSocketDebuggerUrl, { perMessageDeflate: false });
   await new Promise((r, j) => { ws.on('open', r); ws.on('error', j); });

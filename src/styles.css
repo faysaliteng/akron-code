@@ -1,7 +1,7 @@
 /* ============================================================
-   AUTOBOT — Example Desktop design system (CDS) parity
+   AUTOBOT — Claude Desktop design system (CDS) parity
    Extracted 1:1 from Claude.app v6.28899.6 renderer bundle.
-   Warm stone/cream neutrals, coral brand #d97757, AnthropicSans.
+   Warm stone/cream neutrals, emerald brand #10b981, AnthropicSans.
    ============================================================ */
 
 @font-face {
@@ -68,11 +68,11 @@
   --border: rgba(222, 220, 209, 0.12);
   --border-strong: rgba(222, 220, 209, 0.2);
 
-  /* brand — Example coral */
-  --accent: #d97757;
-  --accent-strong: #c6613f;
-  --accent-soft: rgba(217, 119, 87, 0.14);
-  --accent-text: #f2b8a4;
+  /* brand — Akron emerald */
+  --accent: #10b981;
+  --accent-strong: #059669;
+  --accent-soft: rgba(16, 185, 129, 0.16);
+  --accent-text: #a7f3d0;
 
   /* semantic */
   --green: #65bb30;
@@ -115,10 +115,10 @@
   --text-400: #73726c;
   --border: rgba(31, 30, 29, 0.1);
   --border-strong: rgba(31, 30, 29, 0.18);
-  --accent: #c6613f;
-  --accent-strong: #b0542f;
-  --accent-soft: rgba(198, 97, 63, 0.1);
-  --accent-text: #8a3d22;
+  --accent: #047857;
+  --accent-strong: #036b4e;
+  --accent-soft: rgba(4, 120, 87, 0.12);
+  --accent-text: #065f46;
   --green: #2f7613;
   --green-strong: #005c08;
   --red: #b53333;
@@ -172,7 +172,7 @@ button { font-family: inherit; letter-spacing: inherit; }
   letter-spacing: -0.01em;
 }
 .titlebar .sub { font-size: var(--fs-caption); }
-.titlebar .logo { display: block; filter: drop-shadow(0 0 6px rgba(217,119,87,.35)); }
+.titlebar .logo { display: block; filter: drop-shadow(0 0 6px rgba(16,185,129,.35)); }
 
 .layout { flex: 1; display: flex; min-height: 0; }
 
@@ -381,7 +381,7 @@ button { font-family: inherit; letter-spacing: inherit; }
 .export-hint { margin-left: auto; font-size: 11px; color: var(--text-400); }
 
 .welcome { text-align: center; margin-top: 14vh; color: var(--text-000); }
-.welcome .logo { display: inline-block; margin-bottom: 16px; filter: drop-shadow(0 0 18px rgba(217,119,87,.4)); }
+.welcome .logo { display: inline-block; margin-bottom: 16px; filter: drop-shadow(0 0 18px rgba(16,185,129,.4)); }
 .welcome h1 {
   font-family: var(--serif); font-size: 34px; font-weight: 600;
   color: var(--text-000); margin: 0 0 10px; letter-spacing: -0.02em;
@@ -1078,7 +1078,7 @@ button { font-family: inherit; letter-spacing: inherit; }
 .term-input input { flex: 1; border: none; outline: none; background: none; color: var(--text-000); font-family: var(--mono); font-size: var(--fs-footnote); }
 
 /* ============================================================
-   Example Code (repo-aware) mode — B8
+   Claude Code (repo-aware) mode — B8
    ============================================================ */
 .code-panel { max-width: 860px; }
 .code-head-actions { display: flex; gap: 8px; }
@@ -1124,7 +1124,7 @@ button { font-family: inherit; letter-spacing: inherit; }
 
 
 /* ============================================================
-   Built-in Browser (Example Desktop Browser-pane parity)
+   Built-in Browser (Claude Desktop Browser-pane parity)
    ============================================================ */
 .browser-panel { max-width: none; padding: 0; display: flex; flex-direction: column; overflow: hidden; flex: 1; min-height: 0; height: 100%; }
 .spin { animation: spin 1s linear infinite; }
@@ -1406,10 +1406,10 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
 }
 .compliance-badge span { opacity: .82; }
 .compliance-badge.tone-ok b { color: #6ea86a; }
-.compliance-badge.tone-warn b { color: var(--accent); }
+.compliance-badge.tone-warn b { color: #b45309; }
 .compliance-badge.tone-blocked b { color: var(--danger, #c2503c); }
 .compliance-badge.tone-unknown b { color: inherit; opacity: .6; }
-.compliance-badge.tone-warn { border-color: rgba(217,119,87,.35); }
+.compliance-badge.tone-warn { border-color: rgba(245,158,11,.35); }
 .compliance-badge.tone-blocked { border-color: rgba(194,80,60,.4); }
 
 .compliance-grid {

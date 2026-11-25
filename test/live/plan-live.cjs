@@ -82,7 +82,7 @@ const ok = (name, cond, detail) => {
 
   const messages = await runAgent({
     messages: [
-      { role: 'system', content: 'You are Helio Bot.' },
+      { role: 'system', content: 'You are Akron Bot.' },
       { role: 'user', content: 'Add a hello-world to src/app.js.' },
     ],
     provider: {

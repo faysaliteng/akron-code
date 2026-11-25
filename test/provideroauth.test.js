@@ -217,7 +217,7 @@ const jwt = (claims) => 'h.' + b64url(claims) + '.sig';
   {
     const good = I.callbackPage({ code: 'c', state: 's' });
     ok('success page says signed in', /Signed in/.test(good));
-    ok('success page tells the user to go back to the app', /Helio Bot/.test(good));
+    ok('success page tells the user to go back to the app', /Akron Bot/.test(good));
     const bad = I.callbackPage({ error: 'access_denied', errorDescription: 'user said no' });
     ok('error page carries the reason', /user said no/.test(bad));
     ok('error page is not the success page', !/Signed in/.test(bad));

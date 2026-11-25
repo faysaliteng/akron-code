@@ -1,4 +1,4 @@
-// Helio Bot — connector / plugin logo resolution.
+// Akron Bot — connector / plugin logo resolution.
 //
 // The directory shows ~960 rows and each card needs recognisable art, the way
 // the desktop app's connector browser does. No logo CDN ships with the app, so

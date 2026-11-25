@@ -1,5 +1,5 @@
 'use strict';
-// Helio Bot — curated connector + plugin directory (offline half).
+// Akron Bot — curated connector + plugin directory (offline half).
 //
 // Mirrors the shape of the desktop app's connector browser: every row carries
 // the name a user recognises, a category, the auth kind, a one-line

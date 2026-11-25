@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Helio Bot — MCP OAuth 2.1 sign-in for hosted connectors.
+ * Akron Bot — MCP OAuth 2.1 sign-in for hosted connectors.
  *
  * Implements the flow the Desktop app runs for OAuth-gated MCP servers:
  *
@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const CALLBACK_PATH = '/callback';
 const REDIRECT_HOST = '127.0.0.1';
 const DEFAULT_TIMEOUT = 5 * 60 * 1000;
-const CLIENT_NAME = 'Helio Bot';
+const CLIENT_NAME = 'Akron Bot';
 const REFRESH_SKEW = 60 * 1000;
 
 // ---------------------------------------------------------------------------
@@ -315,17 +315,17 @@ async function refresh(p) {
 // ---------------------------------------------------------------------------
 function resultPage(payload) {
   const bad = !!payload.error;
-  const title = bad ? 'Sign-in did not complete' : 'Signed in to Helio Bot';
+  const title = bad ? 'Sign-in did not complete' : 'Signed in to Akron Bot';
   const line = bad
     ? stripMarkup(payload.errorDescription || payload.error || 'The provider returned an error.')
-    : 'You can close this window and return to Helio Bot.';
-  const color = bad ? '#c0392b' : '#D97757';
+    : 'You can close this window and return to Akron Bot.';
+  const color = bad ? '#c0392b' : '#047857';
   return '<!doctype html><html><head><meta charset="utf-8"><title>' + title + '</title>' +
-    '<style>html,body{height:100%;margin:0;background:#F6F3EC;color:#1f1d1a;' +
+    '<style>html,body{height:100%;margin:0;background:#F5FAF8;color:#12211c;' +
     'font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:flex;' +
     'align-items:center;justify-content:center}main{max-width:420px;padding:36px;text-align:center}' +
     '.dot{width:44px;height:44px;border-radius:50%;background:' + color + ';margin:0 auto 18px}' +
-    'h1{font-size:18px;margin:0 0 8px}p{margin:0;color:#5d574e}</style></head><body><main>' +
+    'h1{font-size:18px;margin:0 0 8px;color:#0b3d2e}p{margin:0;color:#4f6b60}</style></head><body><main>' +
     '<div class="dot"></div><h1>' + title + '</h1><p>' + line + '</p></main></body></html>';
 }
 

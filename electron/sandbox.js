@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Sandbox & network policy engine — Example Desktop parity.
+ * Sandbox & network policy engine — Claude Desktop parity.
  *
  * Desktop 7.x ships an enterprise-managed filesystem/network/credential policy
  * (`sandbox.*`, `network.*` in managed-settings). We honour the same key names

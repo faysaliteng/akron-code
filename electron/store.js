@@ -83,7 +83,7 @@ function setSettings(patch) {
 }
 
 // ---- Skills ----
-// The 7 Example Desktop bundled skills (manifest from Claude.app v6.28899.6).
+// The 7 Claude Desktop bundled skills (manifest from Claude.app v6.28899.6).
 const BUNDLED_SKILLS = [
   { name: 'docx', description: 'Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx) or Word templates (.dotx). Triggers include: any mention of Microsoft Word Documents, such as "Word doc", ".docx", ".dotx", "microsoft doc". Also use when extracting or reorganizing content from .docx/.dotx files, inserting/replacing images, find-and-replace, tracked changes/comments, or converting content into a polished Word document. Do NOT use for PDFs, spreadsheets, Google Docs, or unrelated coding.' },
   { name: 'pdf', description: 'Use this skill whenever the user wants to do anything with PDF files: reading or extracting text/tables, combining/merging, splitting, rotating pages, adding watermarks, creating PDFs, filling forms, encrypting/decrypting, extracting images, and OCR on scanned PDFs.' },
@@ -153,7 +153,7 @@ function discoverSkills() {
   const list = [];
   const seen = new Set();
 
-  // 1. Bundled Helio Bot / Desktop skills (always present).
+  // 1. Bundled Akron Bot / Desktop skills (always present).
   for (const s of BUNDLED_SKILLS) {
     seen.add(s.name);
     list.push({
@@ -166,7 +166,7 @@ function discoverSkills() {
 
   // 2. Claude Code skills (~/.claude/skills/*/SKILL.md).
   addDirSkills(list, seen, CLAUDE_SKILLS_DIR, 'claude');
-  // Example Code "synced" skills (~/.claude/skills/synced/<uuid>/*/SKILL.md).
+  // Claude Code "synced" skills (~/.claude/skills/synced/<uuid>/*/SKILL.md).
   const synced = path.join(CLAUDE_SKILLS_DIR, 'synced');
   if (fs.existsSync(synced)) {
     let subs = [];
@@ -354,12 +354,12 @@ function setOrchestrator(patch) {
 // ---- Feature toggles (computer use / chrome / bridges / developer / buddy) ----
 function getFeatures() {
   return readJSON(FEATURES_FILE, {
-    computerUse: true,         // Computer Use (screen + mouse + keyboard) — ON by default, Example Desktop parity
+    computerUse: true,         // Computer Use (screen + mouse + keyboard) — ON by default, Claude Desktop parity
     chrome: false,
     bridges: false,
     chromeHost: '127.0.0.1',
     chromePort: 9222,
-    // Example Desktop parity extras (local equivalents of the REA-mapped surfaces):
+    // Claude Desktop parity extras (local equivalents of the REA-mapped surfaces):
     extensions: false,        // Extensions / "Settings › Developer" worker host
     developerMode: false,     // developer-only toggles (local-exec consent, debug overlays)
     buddy: false,             // Buddy / Hardware Buddy device control

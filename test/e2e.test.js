@@ -1,5 +1,5 @@
 'use strict';
-// Helio Bot headless end-to-end test. No Electron needed — exercises the exact
+// Akron Bot headless end-to-end test. No Electron needed — exercises the exact
 // modules the app uses (tools.js, llm.js, store.js, shell.js) against a mock
 // OpenAI-compatible streaming server so the full agent loop + tool-calling +
 // orchestrator failover can be verified deterministically.
@@ -76,13 +76,13 @@ function startMock(plan) {
 }
 
 async function main() {
-  console.log('\n=== HELIO BOT E2E TEST ===\n');
+  console.log('\n=== AKRON BOT E2E TEST ===\n');
 
   // ---- 1. tool executors (direct) ----
   console.log('Tool executors:');
   await test('Bash echo', async () => {
-    const r = await runTool('Bash', { command: 'echo hello-heliobot' }, {});
-    assert.strictEqual(String(r.content).trim(), 'hello-heliobot');
+    const r = await runTool('Bash', { command: 'echo hello-akronbot' }, {});
+    assert.strictEqual(String(r.content).trim(), 'hello-akronbot');
   });
   await test('Read/Write round-trip', async () => {
     const os = require('os'), path = require('path');
@@ -1450,7 +1450,7 @@ async function main() {
     server.close();
     const sys = sent.messages.filter((m) => m.role === 'system');
     assert.strictEqual(sys.length, 1, 'exactly one system message is sent');
-    assert.match(sys[0].content, /Helio Bot/, 'core identity survives');
+    assert.match(sys[0].content, /Akron Bot/, 'core identity survives');
     assert.match(sys[0].content, /be brief/, 'renderer directives survive');
     assert.match(sys[0].content, /Write tool/, 'coding protocol survives');
   });

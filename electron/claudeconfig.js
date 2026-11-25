@@ -1,7 +1,7 @@
 'use strict';
 // Example-compatible configuration surface.
 //
-// Helio Bot reads the SAME files Example Code reads, so a project that already
+// Akron Bot reads the SAME files Claude Code reads, so a project that already
 // has .claude/agents, .claude/commands, CLAUDE.md, .mcp.json or settings.json
 // behaves identically here instead of needing to be migrated.
 //

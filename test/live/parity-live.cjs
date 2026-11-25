@@ -20,7 +20,7 @@ async function test(name, fn) {
 }
 
 (async () => {
-  console.log('=== HELIO BOT PARITY CONFIG LIVE TEST ===\n');
+  console.log('=== AKRON BOT PARITY CONFIG LIVE TEST ===\n');
 
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'helio-parity-'));
   const claudeDir = path.join(proj, '.claude');

@@ -1,17 +1,19 @@
 {
-  "name": "heliobot",
-  "productName": "Helio Bot",
+  "name": "akronbot",
+  "productName": "Akron Bot",
   "version": "1.0.0",
-  "description": "Helio Bot \u2014 a free-LLM desktop agent (Example Desktop-compatible)",
+  "description": "Akron Bot — a free-LLM desktop agent built by AkronLogic",
   "main": "electron/main.js",
-  "author": "Helio Bot",
+  "author": "AkronLogic",
   "license": "MIT",
   "scripts": {
     "build": "vite build",
     "start": "electron .",
     "dev": "vite --host 127.0.0.1",
     "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder --mac dmg zip"
+    "dist": "npm run build && electron-builder --mac dmg zip",
+    "freellm": "node scripts/freellm-server.js",
+    "icons": "electron build/render_icon.cjs"
   },
   "dependencies": {
     "mermaid": "^10.9.8",
@@ -29,9 +31,9 @@
     "vite": "^5.4.11"
   },
   "build": {
-    "appId": "com.heliobot.app",
-    "productName": "Helio Bot",
-    "copyright": "Helio Bot",
+    "appId": "com.akronbot.app",
+    "productName": "Akron Bot",
+    "copyright": "AkronLogic",
     "asar": true,
     "files": [
       "dist/**/*",
@@ -52,10 +54,10 @@
       "darkModeSupport": true,
       "icon": "build/icon.icns",
       "identity": null,
-      "artifactName": "HelioBot-${version}-${arch}.${ext}"
+      "artifactName": "AkronBot-${version}-${arch}.${ext}"
     },
     "dmg": {
-      "title": "Helio Bot ${version}",
+      "title": "Akron Bot ${version}",
       "contents": [
         {
           "x": 130,

@@ -146,6 +146,6 @@ generated; else `{"name"}` + its `tile`/`order`; usage notes: `assets/<Group>/RE
 "CI · acme/web@8dc01b2"), `at` (required, ISO-8601), `note` (optional,
 one line ≤280) and ≤16 extra scalar keys (`[A-Za-z0-9_.-]`≤40, ≤500 chars).
 make.ts writes it every build (`--by`, default ‹git user›; `--via`,
-default "Example Code"; `--note`; `--set k=v`); the page on Save
+default "Claude Code"; `--note`; `--set k=v`); the page on Save
 (viewer's name, via "page", note). A `via` starting "CI" = a
 pipeline's write: the page shows a "may be overwritten" banner.

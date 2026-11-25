@@ -1,5 +1,5 @@
 'use strict';
-// Helio Bot — frame artifact type manifests.
+// Akron Bot — frame artifact type manifests.
 //
 // Desktop ships a manifest per frame artifact type (schemaVersion 1, contract
 // 0.2.47) that declares the title, description, favicon/icon/tint, the
@@ -100,7 +100,7 @@ const TYPES = {
 const TINTS = {
   violet: { color: '#8b7bf5', ink: '#efeaff' },
   yellow: { color: '#e0b64a', ink: '#2a2313' },
-  clay: { color: '#D97757', ink: '#241109' },
+  emerald: { color: '#10b981', ink: '#06211a' },
   green: { color: '#4f9a6a', ink: '#eaf7ef' },
 };
 
@@ -110,7 +110,7 @@ const CAPABILITY_SURFACES = {
   downloads: { implemented: true, note: 'Export HTML / MD, Save .html per artboard, Print to PDF' },
   artifact: { implemented: true, note: 'Opens in its own window, embeds in chat and in the Artifacts panel' },
   comments: { implemented: true, note: 'Composer-only pins with custom x/y anchors, persisted per artifact' },
-  room: { implemented: false, note: 'collaboration rooms are not part of Helio Bot' },
+  room: { implemented: false, note: 'collaboration rooms are not part of Akron Bot' },
   db: { implemented: true, note: 'Edits persist locally under ~/.autobot/artifact-edits.json (local owner is admin)' },
   assets: { implemented: true, note: 'Artboard/slide HTML renders in a sandboxed iframe' },
   user: { implemented: true, note: 'local account profile (name + initials) is exposed to the frame' },
@@ -225,7 +225,7 @@ function manifest(language, ctx) {
   if (!key) return null;
   const t = TYPES[key];
   const resolved = resolveCapabilities(key, ctx);
-  const tint = TINTS[t.tint] || TINTS.clay;
+  const tint = TINTS[t.tint] || TINTS.emerald;
   return {
     schemaVersion: t.schemaVersion,
     key: t.key,

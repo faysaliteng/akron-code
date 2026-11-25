@@ -1,7 +1,7 @@
 'use strict';
-// Helio Bot — Design + Slides canvas artifact types.
+// Akron Bot — Design + Slides canvas artifact types.
 //
-// Two branded frame types that Example Desktop ships (a canvas of live
+// Two branded frame types that Claude Desktop ships (a canvas of live
 // artboards and a navigable deck). Both are pure HTML documents built here so
 // the artifact window, the in-chat preview and print-to-PDF all render the same
 // surface. No third-party code, no network.
@@ -184,7 +184,7 @@ function parseSlides(content) {
 
 // ------------------------------------------------------------- documents ---
 const BASE_CSS = `
-:root{--bg:#1e1f1c;--panel:#26271f;--ink:#e8e6df;--muted:#a6a49a;--line:#3a3b33;--accent:#D97757}
+:root{--bg:#1e1f1c;--panel:#26271f;--ink:#e8e6df;--muted:#a6a49a;--line:#3a3b33;--accent:#10b981}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
   font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}
@@ -342,7 +342,7 @@ figcaption{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:1
 .frame{position:relative}
 .pins{position:absolute;inset:0;pointer-events:none}
 .canvas.commenting .pins{pointer-events:auto;cursor:crosshair;
-  background:repeating-linear-gradient(45deg,rgba(217,119,87,.06) 0 8px,transparent 8px 16px)}
+  background:repeating-linear-gradient(45deg,rgba(16,185,129,.06) 0 8px,transparent 8px 16px)}
 .pin{position:absolute;transform:translate(-50%,-50%);pointer-events:auto;cursor:pointer;
   display:flex;align-items:center;gap:5px;max-width:180px}
 .pin::before{content:'';width:12px;height:12px;border-radius:50%;background:var(--accent);
@@ -437,7 +437,7 @@ header button{padding:4px 9px;font-size:12px}
 .sbody code{background:#ece8dd;border-radius:4px;padding:1px 5px;font-size:.92em}
 .snotes{margin-top:22px;border-top:1px dashed #cfc9ba;padding-top:12px;color:#6b6a62;font-size:13px;outline:none}
 .nopnotes .snotes{display:none}
-[contenteditable="true"]:focus{box-shadow:0 0 0 2px rgba(217,119,87,.5);border-radius:5px}
+[contenteditable="true"]:focus{box-shadow:0 0 0 2px rgba(16,185,129,.5);border-radius:5px}
 [contenteditable="true"]:empty:before{content:'Type here…';color:#b3ae9f}
 #bar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid var(--line);background:var(--panel)}
 #prog{flex:1;height:4px;background:#33342c;border-radius:3px;overflow:hidden}

@@ -8,7 +8,7 @@
 // tools.js can control the same browser, (b) main-process handlers can query
 // it, and (c) any model can drive the pane even when it has never been opened
 // (ensureGuest asks the renderer to mount the pane and waits for registration).
-// It mirrors the capability surface of Example Desktop's browser relay locally.
+// It mirrors the capability surface of Claude Desktop's browser relay locally.
 const { webContents } = require('electron');
 const path = require('path');
 const os = require('os');
@@ -70,7 +70,7 @@ async function ensureGuest(timeoutMs = 5000) {
 // Turn a local path (absolute, ~-relative, relative-to-cwd) into a file:// URL,
 // and — critically — resolve a DIRECTORY to the page inside it. Opening a folder
 // in a webview shows a blank/blocked listing, which made a generated website
-// look like it "was never made". Example Desktop always lands on the entry page.
+// look like it "was never made". Claude Desktop always lands on the entry page.
 function localFileUrl(input, cwd) {
   const raw = String(input || '').trim();
   if (!raw) return null;
@@ -410,7 +410,7 @@ async function screenshot(fullPage) {
           await new Promise((r) => setTimeout(r, 250));
           const img = await g.capturePage();
           await g.disableDeviceEmulation().catch(() => {});
-          const file = path.join(os.tmpdir(), 'heliobot-shot-' + Date.now() + '.png');
+          const file = path.join(os.tmpdir(), 'akronbot-shot-' + Date.now() + '.png');
           fs.writeFileSync(file, img.toPNG());
           const sz = img.getSize();
           return { ok: true, path: file, width: sz.width, height: sz.height };
@@ -418,7 +418,7 @@ async function screenshot(fullPage) {
       } catch (e) { /* fall through to viewport capture */ }
     }
     const img = await g.capturePage();
-    const file = path.join(os.tmpdir(), 'heliobot-shot-' + Date.now() + '.png');
+    const file = path.join(os.tmpdir(), 'akronbot-shot-' + Date.now() + '.png');
     fs.writeFileSync(file, img.toPNG());
     const sz = img.getSize();
     return { ok: true, path: file, width: sz.width, height: sz.height };

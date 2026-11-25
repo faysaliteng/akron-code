@@ -5,7 +5,7 @@
 // that claude.ai's account API returns per membership
 // (`account.memberships[].organization.capabilities`), and Desktop turns each one
 // into a concrete policy gate: MCP tool-switch sync, cloud/model moves, session
-// deletion, product feedback, deployment overlay. Helio Bot has no account
+// deletion, product feedback, deployment overlay. Akron Bot has no account
 // backend, so the profile is declared locally (Settings → Compliance) and every
 // gate below is derived with the same arithmetic Desktop uses.
 //
@@ -329,7 +329,7 @@ function deletionAuditRequired(profile) {
 // Gates — one function per Desktop enforcement point
 // ---------------------------------------------------------------------------
 // Desktop blocks PATCHing the enabled-MCP-tools set to the account under HIPAA.
-// Helio Bot keeps that set on disk, so the gate is expressed as "local only".
+// Akron Bot keeps that set on disk, so the gate is expressed as "local only".
 function mcpToolSwitch(profile) {
   const caps = normalizeCapabilities(profile && profile.capabilities);
   if (caps.includes('taint:hipaa_regulated')) {

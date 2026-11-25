@@ -58,7 +58,7 @@ let savedPool = null;   // restored on any exit path, including crashes
   const list = JSON.parse(await new Promise((resolve, reject) => {
     http.get('http://127.0.0.1:9333/json/list', (res) => { let s = ''; res.on('data', (d) => (s += d)); res.on('end', () => resolve(s)); }).on('error', reject);
   }));
-  const page = list.find((t) => t.type === 'page' && /Helio Bot|index\.html/.test(t.title + t.url));
+  const page = list.find((t) => t.type === 'page' && /Akron Bot|index\.html/.test(t.title + t.url));
   if (!page) throw new Error('no page target: ' + JSON.stringify(list.map((t) => t.type + ':' + t.title)));
   const ws = new WebSocket(page.webSocketDebuggerUrl, { perMessageDeflate: false });
   await new Promise((r, j) => { ws.on('open', r); ws.on('error', j); });

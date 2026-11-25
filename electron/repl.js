@@ -1,5 +1,5 @@
 'use strict';
-// Helio Bot — persistent REPL sessions (Example Code `REPLInput` parity).
+// Akron Bot — persistent REPL sessions (Claude Code `REPLInput` parity).
 //
 // One vm context per session id (defaults to the project cwd, so each project
 // folder gets its own REPL the way Example's does). State survives across calls:

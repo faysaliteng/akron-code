@@ -1,7 +1,7 @@
-// ---------- Helio Bot localization ----------
-// Example Desktop ships 1575 localized UI strings; Helio Bot's local equivalent is a
+// ---------- Akron Bot localization ----------
+// Claude Desktop ships 1575 localized UI strings; Akron Bot's local equivalent is a
 // keyed dictionary over the app chrome with a persisted locale and a Settings switcher.
-// Strings are Helio Bot's own (not copied from Example's proprietary i18n bundle).
+// Strings are Akron Bot's own (not copied from Example's proprietary i18n bundle).
 
 export const LOCALES = [
   { code: 'en',    label: 'English',        dir: 'ltr' },
@@ -35,7 +35,7 @@ const STRINGS = {
     'sidebar.code': 'Code',
     'sidebar.browser': 'Browser',
     'sidebar.settings': 'Settings',
-    'composer.placeholder': 'Message Helio Bot…',
+    'composer.placeholder': 'Message Akron Bot…',
     'composer.send': 'Send message',
     'composer.voice': 'Voice mode',
     'composer.browser': 'Open browser',
@@ -112,7 +112,7 @@ const STRINGS = {
     'code.permissions.planHint': 'Block all mutations — the agent reads and proposes a plan for approval first.',
     'code.permissions.hint': 'Controls which actions the agent may take without approval. Auto = no prompts; Ask = prompt before every edit/bash; Accept edits = auto-approve file edits but confirm shell; Plan = read-only until you approve its plan.',
 
-    // Permissions dropdown — Example Desktop parity (title + description + shortcut number)
+    // Permissions dropdown — Claude Desktop parity (title + description + shortcut number)
     'perm.sessionHead': 'Permissions · this session',
     'perm.auto': 'Auto',
     'perm.autoDesc': 'Example decides when to ask for approval',
@@ -148,7 +148,7 @@ const STRINGS = {
     'sidebar.code': 'কোড',
     'sidebar.browser': 'ব্রাউজার',
     'sidebar.settings': 'সেটিংস',
-    'composer.placeholder': 'Helio Bot-কে লিখুন…',
+    'composer.placeholder': 'Akron Bot-কে লিখুন…',
     'composer.send': 'বার্তা পাঠান',
     'composer.voice': 'ভয়েস মোড',
     'composer.browser': 'ব্রাউজার খুলুন',
@@ -256,7 +256,7 @@ const STRINGS = {
     'sidebar.code': 'Código',
     'sidebar.browser': 'Navegador',
     'sidebar.settings': 'Ajustes',
-    'composer.placeholder': 'Mensaje a Helio Bot…',
+    'composer.placeholder': 'Mensaje a Akron Bot…',
     'composer.send': 'Enviar mensaje',
     'composer.voice': 'Modo de voz',
     'composer.browser': 'Abrir navegador',
@@ -300,7 +300,7 @@ const STRINGS = {
     'sidebar.code': 'Code',
     'sidebar.browser': 'Navigateur',
     'sidebar.settings': 'Paramètres',
-    'composer.placeholder': 'Message à Helio Bot…',
+    'composer.placeholder': 'Message à Akron Bot…',
     'composer.send': 'Envoyer',
     'composer.voice': 'Mode vocal',
     'composer.browser': 'Ouvrir le navigateur',
@@ -344,7 +344,7 @@ const STRINGS = {
     'sidebar.code': 'Code',
     'sidebar.browser': 'Browser',
     'sidebar.settings': 'Einstellungen',
-    'composer.placeholder': 'Nachricht an Helio Bot…',
+    'composer.placeholder': 'Nachricht an Akron Bot…',
     'composer.send': 'Nachricht senden',
     'composer.voice': 'Sprachmodus',
     'composer.browser': 'Browser öffnen',
@@ -388,7 +388,7 @@ const STRINGS = {
     'sidebar.code': 'कोड',
     'sidebar.browser': 'ब्राउज़र',
     'sidebar.settings': 'सेटिंग्स',
-    'composer.placeholder': 'Helio Bot को संदेश…',
+    'composer.placeholder': 'Akron Bot को संदेश…',
     'composer.send': 'संदेश भेजें',
     'composer.voice': 'वॉयस मोड',
     'composer.browser': 'ब्राउज़र खोलें',
@@ -432,7 +432,7 @@ const STRINGS = {
     'sidebar.code': '代码',
     'sidebar.browser': '浏览器',
     'sidebar.settings': '设置',
-    'composer.placeholder': '给 Helio Bot 发消息…',
+    'composer.placeholder': '给 Akron Bot 发消息…',
     'composer.send': '发送消息',
     'composer.voice': '语音模式',
     'composer.browser': '打开浏览器',
@@ -476,7 +476,7 @@ const STRINGS = {
     'sidebar.code': 'الكود',
     'sidebar.browser': 'المتصفح',
     'sidebar.settings': 'الإعدادات',
-    'composer.placeholder': 'أرسل رسالة إلى Helio Bot…',
+    'composer.placeholder': 'أرسل رسالة إلى Akron Bot…',
     'composer.send': 'إرسال رسالة',
     'composer.voice': 'وضع الصوت',
     'composer.browser': 'فتح المتصفح',

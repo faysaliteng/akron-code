@@ -76,7 +76,7 @@ ok('artifact enabled', rc.capabilities.artifact.enabled === true);
 ok('comments enabled', rc.capabilities.comments.enabled === true);
 ok('assets enabled', rc.capabilities.assets.enabled === true);
 ok('db enabled', rc.capabilities.db.enabled === true);
-ok('room not implemented', rc.capabilities.room.enabled === false && /not part of Helio/.test(rc.capabilities.room.reason));
+ok('room not implemented', rc.capabilities.room.enabled === false && /not part of Akron/.test(rc.capabilities.room.reason));
 ok('paste not implemented', rc.capabilities.paste.enabled === false);
 ok('user needs a profile', rc.capabilities.user.enabled === false);
 

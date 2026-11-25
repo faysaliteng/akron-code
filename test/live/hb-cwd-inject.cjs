@@ -20,7 +20,7 @@ const server = http.createServer((req, res) => {
 (async () => {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
-  const cwd = '/Users/saimon/Helio Bot/test-project';
+  const cwd = '/Users/saimon/Akron Bot/test-project';
   await runAgent({
     provider: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: '', model: 'test', supportsTools: true },
     messages: [{ role: 'user', content: 'write a file' }],

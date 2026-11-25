@@ -116,7 +116,7 @@ function anthropicAuth(provider) {
     headers['x-app'] = 'cli';
   } else {
     headers['x-api-key'] = tok;
-    headers['user-agent'] = 'helio-bot/1.0';
+    headers['user-agent'] = 'akron-bot/1.0';
   }
   return { headers, oauth };
 }
@@ -479,7 +479,7 @@ async function codexChat(provider, messages, tools, onDelta, signal, maxTokensOv
     authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
     originator: CODEX_ORIGINATOR,
     'openai-beta': 'responses=experimental',
-    'user-agent': 'helio-bot/1.0 (codex-transport)',
+    'user-agent': 'akron-bot/1.0 (codex-transport)',
   };
   if (provider.accountId) headers['chatgpt-account-id'] = String(provider.accountId);
   if (provider.sessionId) headers.session_id = String(provider.sessionId);
@@ -558,7 +558,7 @@ async function googleProject(provider, signal) {
     headers: {
       'content-type': 'application/json',
       authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
-      'user-agent': 'helio-bot/1.0 (google-transport)',
+      'user-agent': 'akron-bot/1.0 (google-transport)',
     },
     body: JSON.stringify({ metadata: { pluginType: 'GEMINI_CLI', pluginVersion: '2.1.154' } }),
     signal,
@@ -598,14 +598,14 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
       }),
     }];
   }
-  const body = { model: provider.model, project, request, userAgent: 'helio-bot' };
+  const body = { model: provider.model, project, request, userAgent: 'akron-bot' };
   const res = await fetch(cloudcodeBase(provider) + ':streamGenerateContent?alt=sse', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       accept: 'text/event-stream',
       authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
-      'user-agent': 'helio-bot/1.0 (google-transport)',
+      'user-agent': 'akron-bot/1.0 (google-transport)',
       'x-goog-api-client': 'gl-node/22.0.0',
     },
     body: JSON.stringify(body),

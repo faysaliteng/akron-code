@@ -1,5 +1,5 @@
 'use strict';
-// Token budget pool — Example Code's `budget` workflow global.
+// Token budget pool — Claude Code's `budget` workflow global.
 //
 // Example exposes `budget: { total, spent(), remaining() }` to workflow scripts and
 // backs it with a per-turn output-token pool that is SHARED by the main agent loop

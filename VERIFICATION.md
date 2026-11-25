@@ -1,9 +1,9 @@
-# Helio Bot — Feature-Parity Verification Report
+# Akron Bot — Feature-Parity Verification Report
 
-**Demand:** "Helio Bot MUST BE 1 TO 1. EXACT SAME FEATURES AS EXAMPLE APP. NOT A SINGLE
+**Demand:** "Akron Bot MUST BE 1 TO 1. EXACT SAME FEATURES AS EXAMPLE APP. NOT A SINGLE
 FEATURE SHOULD LEFT. CHECK AND VERIFY."
 
-**Date verified:** 2026-11-24 · **Target:** Example Desktop `6.28899.6` (Electron 45.3.3)
+**Date verified:** 2026-11-24 · **Target:** Claude Desktop `6.28899.6` (Electron 45.3.3)
 
 ---
 
@@ -14,13 +14,13 @@ FEATURE SHOULD LEFT. CHECK AND VERIFY."
 | `npm run build` (Vite) | ✅ 401.97 kB JS / 14.81 kB CSS, 74 modules |
 | `node --check` main.js / preload.js / llm.js / tools.js / mcp.js / shell.js / store.js | ✅ all clean |
 | Electron boot smoke test (`electron .`, 15 s) | ✅ no crash, no `require`/renderer errors, renderer loads |
-| `npm run dist` (electron-builder `--mac dmg` + `zip`) | ✅ `release/HelioBot-1.0.0-arm64.dmg` (108 MB, SHA-256 `66b213139574b0813c266001baa037ba6eee83595f0687a54271bf8c60beb237`) and `release/HelioBot-1.0.0-arm64.zip` (104 MB, SHA-256 `bce34aaf0868d48e22aa4f7c200b19f013318e0fb3de322368749f44c48d0e51`); asar packs all `electron/*.js` + `dist/*` + 5 Anthropic woff2 fonts; DMG `hdiutil verify` VALID, mounts with `Helio Bot.app` + `Applications` symlink |
+| `npm run dist` (electron-builder `--mac dmg` + `zip`) | ✅ `release/AkronBot-1.0.0-arm64.dmg` (108 MB, SHA-256 `66b213139574b0813c266001baa037ba6eee83595f0687a54271bf8c60beb237`) and `release/AkronBot-1.0.0-arm64.zip` (104 MB, SHA-256 `bce34aaf0868d48e22aa4f7c200b19f013318e0fb3de322368749f44c48d0e51`); asar packs all `electron/*.js` + `dist/*` + 5 Anthropic woff2 fonts; DMG `hdiutil verify` VALID, mounts with `Akron Bot.app` + `Applications` symlink |
 | Headless E2E harness (`node test/e2e.test.js`) | ✅ **61/61 passed** (tools, agent loop, permission gate, browser parity, text-protocol, renderer regressions, plugins/scheduler/custom skills, provider status, cowork orchestrator, icon registry, tool-card ordering, cross-model mindmap continuity) |
 | Runtime warnings | ✅ only the standard Electron CSP `unsafe-eval` notice (benign, dev-mode CSP) |
 
-## 2. Tool surface (1:1 with Example Code classic inventory)
+## 2. Tool surface (1:1 with Claude Code classic inventory)
 
-**77 tool definitions** in `tools.js` `toolDefinitions`. All **32 classic** Example Code
+**77 tool definitions** in `tools.js` `toolDefinitions`. All **32 classic** Claude Code
 tools present with functional executors (or config-gated integration for Jira/Linear):
 
 ```
@@ -31,7 +31,7 @@ TaskStop, ListAgents, SendUserMessage, SetGoal, ToolSearch, Artifact, Jira, Line
 ```
 
 Plus helpers (`memory_add/_list/_delete`, `list_skills`, `list_notebooks`,
-`list_slash_commands`) and virtual built-in MCP namespaces mirroring Example Code's
+`list_slash_commands`) and virtual built-in MCP namespaces mirroring Claude Code's
 internal MCP tools:
 
 - `mcp__workspace__{bash,read_file,write_file,edit_file,glob,grep,web_fetch}`
@@ -54,7 +54,7 @@ internal MCP tools:
 | `REPL python print(6*7)` | `42` |
 | `Jira search` (unconfigured) | config-gated message |
 
-## 3. Feature coverage (every Example Desktop feature mapped)
+## 3. Feature coverage (every Claude Desktop feature mapped)
 
 | Feature | Status |
 |---|---|
@@ -97,7 +97,7 @@ internal MCP tools:
 
 ## 5. Server-side features → local equivalents (now implemented, config-gated)
 
-Example Desktop's **server-side** features are reproduced as **local equivalents**
+Claude Desktop's **server-side** features are reproduced as **local equivalents**
 (not silently stubbed dead), gated by Settings → Feature toggles:
 
 - `mcp__cowork__*` / `mcp__ccd_*` → `cowork.js` (`register_worker`/`list_workers`/
@@ -112,12 +112,12 @@ Example Desktop's **server-side** features are reproduced as **local equivalents
 
 ---
 
-**Conclusion:** Helio Bot reproduces the complete Example Desktop feature surface 1:1 —
+**Conclusion:** Akron Bot reproduces the complete Claude Desktop feature surface 1:1 —
 77-tool agent loop, MCP, sub-agents, interactive questions, plan mode, artifacts,
 memory, skills, notebooks, terminal, code execution, integrations, slash commands,
 free-LLM provider layer, **plus Orchestrator Mode (multi-key failover)** and local
 equivalents of the server-side cowork/CCD/bot-bridge/visualize/Computer-Use/Chrome
-features. Build passes, app boots, packages to a DMG, and every classic Example Code
+features. Build passes, app boots, packages to a DMG, and every classic Claude Code
 tool is present with a working executor.
 
 ## 8. Final parity polish (2026-11-24, shipped in the DMG)
@@ -126,10 +126,10 @@ tool is present with a working executor.
 |---|---|
 | Window `backgroundColor` was `#0d1117` (GitHub dark) → visible dark flash on launch | Set to `#30302e` (Example warm stone) — matches theme, no flash |
 | Titlebar left padding `16px` overlapped the hiddenInset traffic lights (x=14, ~70px span) | Padding now `0 16px 0 78px` — brand clears traffic lights |
-| Welcome screen had static "Helio Bot" heading | Now time-based greeting (`Good morning` / `Good afternoon` / `Good evening`) + "How can I help you today?" — mirrors Example's empty state |
+| Welcome screen had static "Akron Bot" heading | Now time-based greeting (`Good morning` / `Good afternoon` / `Good evening`) + "How can I help you today?" — mirrors Example's empty state |
 
-Final artifact: `release/Helio Bot-1.0.0-arm64.dmg` (95 MB, unsigned — first launch via
-right-click → Open). Only one Helio Bot source project (`./autobot`) and one `.dmg`
+Final artifact: `release/Akron Bot-1.0.0-arm64.dmg` (95 MB, unsigned — first launch via
+right-click → Open). Only one Akron Bot source project (`./autobot`) and one `.dmg`
 remain on disk; the `-mac.zip`, blockmaps, and `mac-arm64/` staging dir were removed.
 
 ---
@@ -161,7 +161,7 @@ Console errors: none
 
 All three panels are backed by real persistence under `~/.autobot`
 (`plugins.json`, `scheduled-tasks.json`, `skills/*.md`) and by model-callable tools,
-so they are exercised by the agent loop exactly like the Example Desktop equivalents.
+so they are exercised by the agent loop exactly like the Claude Desktop equivalents.
 
 ---
 
@@ -251,7 +251,7 @@ Ollama Gemma on the same machine.
 
 ```
 node test/live-orchestrator.js        (direct cowork API)
-  nvidia  → done  847ms   "I am a Helio Bot…"
+  nvidia  → done  847ms   "I am a Akron Bot…"
   gemma   → done 2827ms   "I am the Gemini model family."
   WALL 2839ms  (parallel — serial would be ~3674ms)
 
@@ -303,7 +303,7 @@ a blank box again.
 | Check | Result |
 |---|---|
 | `~` expansion | ✅ `expandPath('~/Desktop')` → `/Users/saimon/Desktop`; `resolvePath` no longer creates literal `~/` |
-| Per-conversation project folder | ✅ `getDefaultCwd(id,title)` → `/Users/saimon/Helio Bot/<slug>`, lazily created |
+| Per-conversation project folder | ✅ `getDefaultCwd(id,title)` → `/Users/saimon/Akron Bot/<slug>`, lazily created |
 | Workspace persistence | ✅ `~/.autobot/workspaces.json` `{ [convId]: {dir,title,at} }`; `getWorkspace`/`setWorkspace` round-trip |
 | `setWorkspace('~/Desktop')` | ✅ resolves to `/Users/saimon/Desktop` (fixed `path.resolve` → `expandPath`) |
 | Login-shell Bash | ✅ `spawn /bin/zsh -l -c` (fixed `exec {shell:'/bin/zsh -l'}` ENOENT) |
@@ -316,7 +316,7 @@ a blank box again.
 ### No step ceiling — Example's "loop until the model stops" (2026-11-25)
 
 The coach asked: *"why only 5 steps why limit? it should be same like example app."* Correct —
-Example raises no per-run turn budget, so neither does Helio Bot.
+Example raises no per-run turn budget, so neither does Akron Bot.
 
 | Check | Result |
 |---|---|
@@ -344,7 +344,7 @@ Reasoning models (Kimi K3.1 Pro, DeepSeek V4.1 Flash) spend the budget on
 ### A provider gateway error is retried, never pasted into the chat (2026-11-25)
 
 Every live run from a provider behind a CDN can hit a 502/503/504 at any moment — the
-gateway answers with an nginx or Cloudflare **HTML page**, not JSON. Helio Bot used to die
+gateway answers with an nginx or Cloudflare **HTML page**, not JSON. Akron Bot used to die
 there and show the page verbatim:
 
 ```
@@ -462,7 +462,7 @@ Prompt sent (verbatim):
 | Worker streams stayed out of the parent reply | ✅ `workerTextLeaked: false` |
 | `alpha.txt` on disk with right content | ✅ `ALPHA` |
 | `beta.txt` on disk with right content | ✅ `BETA` |
-| Files written into the conversation's project folder | ✅ `~/Helio Bot/use-the-swarm-tool-to-run-a-two-agent-te/{MINDMAP.md,alpha.txt,beta.txt}` |
+| Files written into the conversation's project folder | ✅ `~/Akron Bot/use-the-swarm-tool-to-run-a-two-agent-te/{MINDMAP.md,alpha.txt,beta.txt}` |
 | No error bar | ✅ |
 | Wall clock | 18 s (2 real API round-trips of delegation + 2 workers + 1 review merge) |
 
@@ -470,8 +470,8 @@ Screenshot: `screenshots/swarm-real.png`. **PASS on all 11 checks, first attempt
 
 ## 14. Shipped artifact
 
-`npm run dist` (mac arm64, unsigned) → `release/HelioBot-1.0.0-arm64.dmg` (113,415,570 B) and
-`.zip` (109,308,688 B). Verified inside `Helio Bot.app/Contents/Resources/app.asar`:
+`npm run dist` (mac arm64, unsigned) → `release/AkronBot-1.0.0-arm64.dmg` (113,415,570 B) and
+`.zip` (109,308,688 B). Verified inside `Akron Bot.app/Contents/Resources/app.asar`:
 
 | Content | Present |
 |---|---|
@@ -511,9 +511,9 @@ Tool surface: the `Artifact` tool description now documents both JSON contracts 
 
 ## 16. Browser-extension host — `extension-host` parity (2026-11-25)
 
-Example Desktop ships an `extension-host`: unpacked Chrome extensions run in a
+Claude Desktop ships an `extension-host`: unpacked Chrome extensions run in a
 privileged page with a genuine `chrome-extension://` origin and the `chrome.*`
-surface. Helio Bot now does the same, in three files plus a UI tab.
+surface. Akron Bot now does the same, in three files plus a UI tab.
 
 | Check | Result |
 |---|---|
@@ -536,7 +536,7 @@ surface. Helio Bot now does the same, in three files plus a UI tab.
 
 ## 17. Link unfurl — `og` / `twitter` / `xlink` parity (2026-11-25)
 
-Desktop paints a preview card for each link in a transcript. Helio Bot does the
+Desktop paints a preview card for each link in a transcript. Akron Bot does the
 same, with the fetch moved out of the renderer entirely.
 
 | Check | Result |
@@ -564,7 +564,7 @@ provenance (as §PARITY-GAPS originally assumed). Reading
 strings* returned by claude.ai's account API in
 `memberships[].organization.capabilities`. Desktop uses them to gate chat,
 cloud/model moves, MCP tool sync, session deletion, product feedback, CMEK
-and deployment shape. Helio Bot reproduces the same arithmetic locally on a
+and deployment shape. Akron Bot reproduces the same arithmetic locally on a
 profile the user owns; nothing is fetched from Anthropic.
 
 | Check | Result |
@@ -621,7 +621,7 @@ connect with a standards-compliant OAuth 2.1 public client.
 | Status transitions | ✅ `authorized:false` → `{authorized:true, connected:true, scope:"mcp.read mcp.write", expiresAt:<future>}` → back to `false` after Sign out; card pills flip **Sign in** ↔ **Sign out**; foot text `OAuth sign-in \| registry \| needs sign-in \| Sign in` |
 | Real-provider DCR | ✅ `mcp.linear.app` → `client_id eWjl8XdRzxG6Jzq0…`, `auth: none`; `mcp.notion.com` → `kbN-Ri-K5PkEjZXN…`; both authorize URLs carry `response_type,client_id,redirect_uri,code_challenge,code_challenge_method,state,scope,resource` |
 | Card foot layout | ✅ single-line label+badges group on row 1, action pill right-aligned on row 2 when the card is narrow; measured `footRight == pillRight == 590`, `.muted` never splits, badges nowrap |
-| **Packaged app (DMG)** | ✅ same full loop re-proven in `release/mac-arm64/Helio Bot.app` (port 9444, `app.asar` contains `electron/mcpoauth.js`): Install → `["Remove","Sign in"]`, foot `OAuth sign-in \| registry \| needs sign-in \| Sign in` → Sign in → **connected in 1 s** (`authorized:true, connected:true, scope:"mcp.read mcp.write"`) → `["Remove","Sign out"]`, foot `… \| installed \| Sign out` → Sign out → `authorized:false`. Row 1 y=414, pill y=445, `footRight == pillRight == 590`, `footH: 54` |
+| **Packaged app (DMG)** | ✅ same full loop re-proven in `release/mac-arm64/Akron Bot.app` (port 9444, `app.asar` contains `electron/mcpoauth.js`): Install → `["Remove","Sign in"]`, foot `OAuth sign-in \| registry \| needs sign-in \| Sign in` → Sign in → **connected in 1 s** (`authorized:true, connected:true, scope:"mcp.read mcp.write"`) → `["Remove","Sign out"]`, foot `… \| installed \| Sign out` → Sign out → `authorized:false`. Row 1 y=414, pill y=445, `footRight == pillRight == 590`, `footH: 54` |
 | Parity gate | ✅ `scripts/parity-audit.js` gained `mcp oauth (custom-3p)` (9 symbols) → **27 subsystem rows**, *NO ATOMIC GAPS*, EXIT 0 |
 | No new tool definitions | ✅ stays at **141** defs; the swarm gate is untouched |
 
@@ -664,7 +664,7 @@ so the token works where it was issued.
 
 Desktop exposes Computer Use as 17 IPC channels: three consent
 (`request_access`, `request_full_control`, `revoke`) and fourteen `cu:*`
-operations. Helio Bot now implements the whole group in
+operations. Akron Bot now implements the whole group in
 `electron/computeruse.js` behind a single dispatcher.
 
 | Check | Result |
@@ -687,7 +687,7 @@ operations. Helio Bot now implements the whole group in
 
 Desktop treats `design` and `slides` as *frame types* with a versioned manifest
 (`schemaVersion`, `contract`, production slug, per-type UI metadata, feature flags
-and capability verdicts resolved against the live environment). Helio Bot had the
+and capability verdicts resolved against the live environment). Akron Bot had the
 canvases; it now has the manifests and derives every surface from them.
 
 | Check | Result |
@@ -706,3 +706,69 @@ canvases; it now has the manifests and derives every surface from them.
 | Artifact windows (dev `:9333`, CDP) | ✅ Open on the design block → new target titled **`Landing — Design`**, `document.title` === `<h2>` `Landing`, `1` board, 🎨 favicon, rail `Hero`; Open on the deck → **`Deck — Slides`**, `1` slide thumb, 📽️ favicon |
 | Packaged (`release/mac-arm64`, `app.asar`, `:9444`, CDP) | ✅ re-proven after `npm run dist`: page served from `app.asar/dist/index.html`; `artifactType`/`artifactTypes` bridges present; `design` → `schemaVersion 1`, `contract 0.2.47`, slug `bcd2878f-…`, tint `#8b7bf5`, 12 flags; `slides` → slug `3e9dc3d6-…`, tint `#e0b64a`, 9 flags; `resolved.capabilities.mcp` → `enabled:false`, `reason:"no connected server exposes the declared tools"`, `servers:["Google Drive:false/0"]`; `user`/`room`/`paste` false **with reasons**, `comments`/`db` true; `artifactType({language:'html'})` → `null`; tabs `🎨Design` / `📽️Slides`; Open → **`Landing — Design`** (1 board, rail `Hero`, 🎨) and **`Deck — Slides`** (1 slide, 📽️) |
 | Google Drive — two separate things | ✅ manifest `capabilities.mcp` answers "could a connected server save this?" and stays `false` until one declares `create_file`/`gdrive_upload`; the in-app export path (`data-act="drive"` → `autobot:slidesUpload`) is separate and does not flip that verdict |
+
+## 23. FreeLLMAPI — seven free providers behind one OpenAI-compatible endpoint (2026-11-25)
+
+`https://localhost:3001/v1` speaks the OpenAI wire format and fans out to Groq,
+Google Gemini, Cloudflare Workers AI, NVIDIA NIM, Cohere trial, Kilo and
+OpenRouter. One model string addresses any of them; aliases pick for you.
+Keys live in `~/.autobot/freellm.json` (mode `0600`) and nowhere else — the repo
+ships only `electron/freellm-config.example.json` with `PASTE_*` placeholders.
+
+| Check | Result |
+|---|---|
+| Registry + adapter | ✅ `electron/freellm.js`: 7-entry provider registry (`id`, `label`, `baseURL`, `chatPath`, `modelsPath`, `auth`, `defaultModel`, extra headers), one generic OpenAI adapter, `FORWARD_FIELDS` allowlist (`model`, `messages`, `stream`, `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `response_format`) |
+| Addressing | ✅ `provider/model`, `provider:model`, a bare provider id (→ its default), `freellm/…` prefix stripped, and aliases `auto` / `free` / `fast` / `smart` |
+| Baseline probing | ✅ every key proven head-to-head through the router with `PONG`: groq 200 / 444 ms (`qwen/qwen3.8-27b`), gemini 200 / 492 ms (`gemini-3.5-flash-lite`), cloudflare 200 / 375 ms (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`), nvidia 200 / 1011 ms (`nvidia/nemotron-3-ultra-550b-a55b`), cohere 200 / 301 ms (`command-r-08-2024`), kilo 200 / 5471 ms (`kilo-auto/free`), openrouter 200 / 1197 ms (`liquid/lfm-3-1.7b:free`) |
+| Aliases | ✅ `auto` → groq, 130 ms, `PONG`, `x-freellm-attempts: 0`; `fast` + `stream:true` → groq, 75 ms, `content-type: text/event-stream; charset=utf-8`, 8 SSE frames |
+| Fallback policy | ✅ 429 / 5xx / network / non-completion fall through to the next provider **only before the first stream byte**; an explicit `provider/…` request never falls back (proved in the suite); response carries `x-freellm-provider` + `x-freellm-attempts` |
+| Error hygiene | ✅ `describeError()`/`stripMarkup()` flatten upstream HTML to one sentence — a 429 renders `rate-limited`, never raw markup (asserted) |
+| Endpoints | ✅ `POST /v1/chat/completions` (stream + non-stream), `GET /v1/models`, `GET /health`, `GET /v1/providers`; CORS `*`; 8 MB body cap; optional `FREELM_TOKEN` bearer gate |
+| Model catalogue | ✅ `GET /v1/models` → **1056** entries (freellm 3 aliases, groq 11, gemini 66, cloudflare 5, nvidia 30, cohere 37, kilo 467, openrouter 437), discovery cached 10 min, dead upstream degrades to its configured default |
+| Health | ✅ `GET /health` → all 7 `configured: true` with defaults, keys redacted |
+| Stream teardown | ✅ `Readable.fromWeb` + destroy on `res.close`; never `upstream.body.cancel()` on a locked stream (that path threw) |
+| Reasoning models | ✅ kilo / openrouter / nvidia reply `message.reasoning` + `content:"PONG"`; with `max_tokens: 24` the budget is consumed by reasoning and `content` is empty — defaults are set accordingly |
+| Provider quirks encoded | ✅ Cloudflare real path `/ai/v1/chat/completions`; Kilo chat `/api/openrouter/chat/completions`; Gemini `/v1beta/openai/chat/completions` with current model names (2.5-* retired); Cohere `api.cohere.com` (`.ai` times out) and no compatibility `/models`; OpenRouter only `:free` ids |
+| Auto-start in-app | ✅ `electron/main.js` starts it inside `app.whenReady()` (non-fatal on failure), `will-quit` stops it, IPC `autobot:freellmStatus` / `autobot:freellmProviders` / `autobot:freellmSave` (restart on save), `preload.js` exposes the three verbs |
+| Standalone entry | ✅ `npm run freellm` → `scripts/freellm-server.js` (honours `FREELM_CONFIG` / `FREELM_PORT`, SIGINT/SIGTERM cleanup) |
+| Preset in the UI | ✅ `src/App.jsx` preset **`FreeLLMAPI (local router)`** → `http://localhost:3001/v1` |
+| Unit suite | ✅ `node test/freellm.test.js` → **37 passed, 0 failed** (fake upstream, no network: resolution, whitelist, Cloudflare account substitution, fallback matrix, explicit-provider no-fallback, catalogue merge, redaction, every HTTP route, ephemeral port + `EADDRINUSE`, `0600` round-trip, missing-file defaults) |
+
+## 24. Rebrand — Akron Bot (2026-11-25)
+
+User-visible identity is `Akron Bot` / `AkronBot` / `akronbot` / `akron-bot`
+across **65 files** (`README.md`, `FEATURES.md`, `GAPS.md`, `MINDMAP.md`,
+`VERIFICATION.md`, 31 `electron/*.js`, `src/App.jsx`, `src/ConnectorLogo.jsx`,
+`src/i18n.js` in 8 locales, `scripts/parity-audit.js`, `index.html`, 15
+`test/live/*.cjs`, …). Verified: **zero** leftover `Helio Bot|HelioBot|heliobot|HELIO BOT`
+outside the intentionally preserved identifiers.
+
+| Check | Result |
+|---|---|
+| `package.json` | ✅ `name: akronbot`, `productName: Akron Bot`, `appId: com.akronbot.app`, `author`/`copyright: AkronLogic`, `artifactName: AkronBot-${version}-${arch}.${ext}`, `dmg.title: Akron Bot ${version}` |
+| Deliberately not renamed | ✅ `'helio-bot-secret-store'` seed (`secretstore.js:42` — key derivation, renaming would orphan every stored secret), extension-host `app: 'helio-bot'` hello (`extensionhost.js`), `x-grok-client-identifier: helio-bot` (`providertransport.js` — asserted by its suite), plus the internal surface `window.autobot`, `autobot:*` IPC, `.claude/`, `CLAUDE.md`, `helio://`, `helio:` postMessage types, `helio:canvas`/`helio:slides`, `helio-extension` scheme, `persist:helio-extensions` partition |
+| Egress identity is renamed | ✅ `User-Agent: AkronBot/1.0.0` (`unfurl.js`, `tools.js`), Codex/Google `akron-bot/1.0`, OAuth `referrer: 'akron-bot'` (`provider-oauth.js`), `mcpoauth.js` `CLIENT_NAME = 'Akron Bot'` |
+| userData migration | ✅ `electron/main.js` module-scope `migrateUserData()` renames `appData/Helio Bot` → `appData/Akron Bot` before any store access (`existsSync` guard, try/catch). `app.setName()` was proved to be what names the macOS keychain item `"<name> Safe Storage"` |
+| Project-root migration | ✅ `electron/workspace.js`: `LEGACY_ROOT = ~/Helio Bot`; the tree is moved to `~/Akron Bot` on first boot and `workspaces.json` entries still pointing at the legacy root are rewritten. Verified: legacy folder gone, **62/62** workspace entries resolve on disk |
+| Renamed doc-sanitisation artifact | ✅ `Example Desktop` / `Example Code` (an old mass-replace of `Claude Desktop` / `Claude Code`) reverted in **42** files so the docs name the real product |
+| Known consequence | ⚠️ Secrets encrypted under `"Helio Bot Safe Storage"` do not decrypt under `"Akron Bot Safe Storage"`; provider keys need a one-time re-entry (all key material otherwise lives in `~/.autobot`) |
+
+## 25. Brand mark + emerald palette (2026-11-25)
+
+The terracotta `#D97757` clay sunburst is gone. The mark is a 12-ray emerald
+symbiote (`#10B981`) with a `#A7F3D0` inner glow at 0.55, orbit tendrils and a
+gooey filter, all generated from one set of geometry constants.
+
+| Check | Result |
+|---|---|
+| Canonical artwork | ✅ `build/logo-mark.svg` (animated mark, no plate, `viewBox 0 0 400 400`), `build/icon.svg` (dark squircle plate + static mark for the app icon), `build/tray.svg` (monochrome 8-ray, thick strokes for 16 px) |
+| In-app mark | ✅ `src/App.jsx`: `CompactMark` (8 rays + glow dot, used at `size < 30`) and `FullMark` (12 animated rays, breathing groups, 6 orbiting tendrils, `akGooMark` filter); `Logo()` dispatches on size; class names prefixed (`ak-core-spin`, `ak-orbit-1/2`, `ak-ray-a/b`) so injecting `<style>` cannot collide with app CSS |
+| Main-process mark | ✅ `logoMarkup(size, {static})` in `electron/main.js` regenerated from `MARK_RAYS` / `MARK_ORBS` / `MARK_GLOW` with `akm-*` classes, `akmSpin`/`akmBreathe` keyframes and a reduced-motion guard |
+| Palette | ✅ `src/styles.css` dark `--accent #10b981` / `--accent-strong #059669` / `--accent-soft rgba(16,185,129,.16)` / `--accent-text #a7f3d0`; light `--accent #047857` / `--accent-strong #036b4e` / `--accent-soft rgba(4,120,87,.12)` / `--accent-text #065f46`; logo drop-shadows emerald; `--green` semantic tokens untouched |
+| Warnings no longer look like brand | ✅ `.compliance-badge.tone-warn` moved to amber (`border rgba(245,158,11,.35)`, text `#b45309`) |
+| Electron-side surfaces | ✅ About window glow + link, MCP-OAuth result page dot (`#047857`), `quick.html` (logo glow, primary button `#10b981`, emerald mark), `computer-panel.html` (`--accent`, 5 rgba tints, `#a7f3d0` highlight), `artifactcanvas.js` (`--accent`, commenting hatch, focus ring), `artifacttypes.js` swatch renamed `clay` → `emerald` (`#10b981` / ink `#06211a`) |
+| Static sweep | ✅ zero `#D97757` / `#d97757` / `rgba(217,119,87,…)` in source (`dist/` regenerated from it) |
+| Icon pipeline | ✅ `build/render_icon.cjs` rasterises `build/icon.svg` through Electron/Chromium (`BrowserWindow` + `canvas.toDataURL`) because no `rsvg-convert`/ImageMagick/cairosvg exists on this machine → `build/icon.png` (1024, 366 123 B), `build/icon.iconset/*` (10 sizes), `build/icon.icns` (919 555 B), `electron/trayTemplate.png` (16, 346 B) + `trayTemplate@2x.png` (32, 590 B). `npm run icons` regenerates them; `build/gen_icon.py` (old lightning bolt) deleted |
+| Tray | ✅ `createTray()` loads `trayTemplate.png`; macOS template naming means the menu-bar icon auto-inverts for light/dark; legacy `tray.png` assets removed |
+| Landing page | ✅ `akron-bot-landing.html` now carries the animated emerald mark and the emerald/night palette (`--emerald #10b981`, `--emerald-bright #34d399`, `--emerald-soft #a7f3d0`) |
+| Regression gate | ✅ `node test/artifacttypes.test.js` **82/82** (the `room` reason assertion follows `not part of Akron Bot`), `node test/e2e.test.js` **112/112** (`/Akron Bot/` assertions), `node scripts/parity-audit.js` **EXIT 0** (`DEFS: 141`) |

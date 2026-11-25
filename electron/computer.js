@@ -1,6 +1,6 @@
 'use strict';
 // Computer Use — full macOS screen capture + mouse/keyboard/app control.
-// Example Desktop parity: screenshot, click, double-click, right-click, drag,
+// Claude Desktop parity: screenshot, click, double-click, right-click, drag,
 // scroll, type, key chords, open/activate apps, list windows, clipboard.
 //
 // Input is synthesized two ways and the best available is picked at runtime:
@@ -40,7 +40,7 @@ async function osascript(script) {
   if (err) {
     const msg = (stderr || err.message || '').trim();
     if (/assistive access|not allowed/i.test(msg)) {
-      throw new Error('Accessibility permission missing: open System Settings › Privacy & Security › Accessibility and enable Helio Bot.');
+      throw new Error('Accessibility permission missing: open System Settings › Privacy & Security › Accessibility and enable Akron Bot.');
     }
     throw new Error(msg || 'osascript failed');
   }

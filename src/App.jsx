@@ -31,7 +31,7 @@ function Icon({ name, size = 16, className = '', title, style }) {
 }
 
 // ---------- markdown ----------
-// Parse a code fence info string into { lang, file }. Supports Example Code's
+// Parse a code fence info string into { lang, file }. Supports Claude Code's
 // ` ```lang path/to/file.ext ` and ` ```lang:file.ext ` conventions so the
 // "Apply to file" button knows where to write the block.
 function parseCodeInfo(infostring) {
@@ -101,7 +101,7 @@ function renderMarkdown(md) {
   return DOMPurify.sanitize(html);
 }
 
-// ---------- Link unfurl (Example Desktop og / twitter / xlink parity) ----------
+// ---------- Link unfurl (Claude Desktop og / twitter / xlink parity) ----------
 // Bare URLs in a message become preview cards. The fetch happens in the main
 // process behind an SSRF guard (electron/unfurl.js) — the renderer only ever
 // receives sanitised metadata, never page HTML.
@@ -239,7 +239,7 @@ const PRESETS = [
 // Status classification lives in ./providerstatus-ui.mjs (unit-tested).
 const PRESET_KEYS = PRESETS.reduce((acc, p) => { if (p.apiKey && p.baseURL) acc[normBase(p.baseURL)] = p.apiKey; return acc; }, {});
 
-// ---------- Styles (Example Desktop parity: preset writing styles) ----------
+// ---------- Styles (Claude Desktop parity: preset writing styles) ----------
 const STYLES = [
   { id: 'default', name: 'Default', hint: '', prompt: '' },
   { id: 'concise', name: 'Concise', hint: 'Keep it short', prompt: 'Be concise and direct. Prefer short answers, bullet points, and skip preamble.' },
@@ -392,7 +392,7 @@ function loadJSON(key, fallback) {
 }
 function saveJSON(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
 
-// ---------- voice dictation (Web Speech API; matches Example Desktop dictate) ----------
+// ---------- voice dictation (Web Speech API; matches Claude Desktop dictate) ----------
 let _rec = null;
 function toggleDictation(inputRef, setDictating) {
   const SR = (window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -521,7 +521,7 @@ export default function App() {
   const [sessionPane, setSessionPane] = useState({ type: null, width: 460 }); // type: null | 'browser' | 'files' | 'terminal' | 'diff'
   const [previewUrl, setPreviewUrl] = useState(null); // file the browser pane should show (generated site)
   const [voiceMode, setVoiceMode] = useState(false); // full-duplex conversational voice session
-  const [permissions, setPermissions] = useState(() => loadJSON('autobot:permissions', 'auto')); // 'auto' | 'ask' (B8 Example Code mode)
+  const [permissions, setPermissions] = useState(() => loadJSON('autobot:permissions', 'auto')); // 'auto' | 'ask' (B8 Claude Code mode)
   const [permission, setPermission] = useState(null); // pending permission prompt { id, tool, args, summary }
   const [cuConsent, setCuConsent] = useState(null); // pending Computer Use consent { id, tier, tool, sensitive }
   const [planMode, setPlanMode] = useState(null); // active plan-mode banner { active, file }
@@ -581,7 +581,7 @@ export default function App() {
   }, []);
 
   // When the active conversation changes, switch the working folder to its
-  // project workspace (or create one) — Example Desktop per-project parity.
+  // project workspace (or create one) — Claude Desktop per-project parity.
   useEffect(() => {
     if (!activeId) return;
     window.autobot.getWorkspace(activeId).then((d) => {
@@ -1274,7 +1274,7 @@ export default function App() {
     });
   };
 
-  // "Apply to file" (Example Code parity): write a code block into the project
+  // "Apply to file" (Claude Code parity): write a code block into the project
   // folder the block's fence names, resolving relative to the active workspace.
   const applyBlock = async (e) => {
     const btn = e.target.closest('.apply-btn');
@@ -1385,14 +1385,14 @@ export default function App() {
 
   // ---- Slash commands ----
   // Built-ins are client-side; everything else is resolved against the SAME
-  // command files Example Code reads (`.claude/commands/*.md`, bundled, user).
-  // Every command Example Code 2.1.x ships is either implemented here, mapped to
+  // command files Claude Code reads (`.claude/commands/*.md`, bundled, user).
+  // Every command Claude Code 2.1.x ships is either implemented here, mapped to
   // its GUI surface, or documented as GUI-EQ / N-A — never silently "unknown".
   const runSlashCommand = async (raw) => {
     const body = String(raw || '').replace(/^\//, '');
     const [head, ...rest] = body.trim().split(/\s+/);
     const rawCmd = (head || '').toLowerCase();
-    // Example Code 2.1.x aliases → canonical command (matches the real registry's
+    // Claude Code 2.1.x aliases → canonical command (matches the real registry's
     // aliases[] fields exactly; undocumented ones are noted inline).
     const ALIAS = {
       q: 'quit', exit: 'quit', bye: 'quit',
@@ -1629,7 +1629,7 @@ export default function App() {
       case 'version': {
         let v = null;
         try { v = await window.autobot.getVersion(); } catch (_) {}
-        note(v ? ('**Version**\n- Helio Bot `' + v.app + '`\n- Electron `' + v.electron + '` · Chrome `' + v.chrome + '` · Node `' + v.node + '`\n- Platform: ' + v.platform + '/' + v.arch) : 'Version info unavailable.');
+        note(v ? ('**Version**\n- Akron Bot `' + v.app + '`\n- Electron `' + v.electron + '` · Chrome `' + v.chrome + '` · Node `' + v.node + '`\n- Platform: ' + v.platform + '/' + v.arch) : 'Version info unavailable.');
         break;
       }
       case 'debug': {
@@ -1835,7 +1835,7 @@ export default function App() {
       }
       // ---------- GUI-EQ / informational ----------
       case 'statusline':
-        note('`/statusline` — Helio Bot renders status in the composer (provider, model, thinking level, context). Use `/status` for a text dump.');
+        note('`/statusline` — Akron Bot renders status in the composer (provider, model, thinking level, context). Use `/status` for a text dump.');
         break;
       case 'login':
         setShowSettings(true);
@@ -1847,7 +1847,7 @@ export default function App() {
         break;
       }
       case 'quit':
-        note('`/quit` — Helio Bot is a GUI app, so there is no terminal to exit. Close the window (⌘W) to quit, or use the app menu.');
+        note('`/quit` — Akron Bot is a GUI app, so there is no terminal to exit. Close the window (⌘W) to quit, or use the app menu.');
         break;
       case 'pr-comments':
         note('`/pr-comments` — pull request comments are reviewed in the Artifacts / GitHub panel. Connect a repo with `/init` and view PRs there.');
@@ -1891,7 +1891,7 @@ export default function App() {
       case 'init-verifiers':
         note('`/init-verifiers` — add test/verification steps to `CLAUDE.md`. Use `/init` first, then describe how to verify changes.');
         break;
-      // ---------- remaining Example Code 2.1.x commands implemented in the GUI ----------
+      // ---------- remaining Claude Code 2.1.x commands implemented in the GUI ----------
       case 'rename': {
         if (!argText) { note('Usage: `/rename <new title>` (alias: `/name`).'); break; }
         setConvs((cs) => cs.map((c) => (c.id === activeId ? { ...c, title: argText } : c)));
@@ -1920,7 +1920,7 @@ export default function App() {
         break;
       }
       case 'background': {
-        note('Helio Bot runs every task in-app, so there is no terminal to background. Use `/tasks` to see background shells, sub-agents, and monitors.');
+        note('Akron Bot runs every task in-app, so there is no terminal to background. Use `/tasks` to see background shells, sub-agents, and monitors.');
         break;
       }
       case 'stop': {
@@ -1954,7 +1954,7 @@ export default function App() {
       }
       case 'daemon': {
         setPanel('scheduled');
-        note('**Background services** — Helio Bot keeps scheduled tasks, background shells, sub-agents, and monitors inside the app (no separate daemon). Opened **Scheduled**; `/tasks` lists live work.');
+        note('**Background services** — Akron Bot keeps scheduled tasks, background shells, sub-agents, and monitors inside the app (no separate daemon). Opened **Scheduled**; `/tasks` lists live work.');
         break;
       }
       case 'session': {
@@ -1967,7 +1967,7 @@ export default function App() {
         const next = { ...features, remoteControl: on };
         setFeatures(next);
         window.autobot.setFeatures(next);
-        note('Remote control is now **' + (on ? 'ON' : 'OFF') + '** (Settings → Features). Helio Bot has no cloud workspace, so remote sessions run against this machine.');
+        note('Remote control is now **' + (on ? 'ON' : 'OFF') + '** (Settings → Features). Akron Bot has no cloud workspace, so remote sessions run against this machine.');
         break;
       }
       case 'setup-bedrock': {
@@ -1983,7 +1983,7 @@ export default function App() {
         break;
       }
       case 'ide': {
-        note('Helio Bot **is** the IDE surface — the chat pane, file previews, artifacts, and the browser pane live in one window. Use `/add-dir` to widen the working folder.');
+        note('Akron Bot **is** the IDE surface — the chat pane, file previews, artifacts, and the browser pane live in one window. Use `/add-dir` to widen the working folder.');
         break;
       }
       case 'desktop': {
@@ -1991,7 +1991,7 @@ export default function App() {
         break;
       }
       case 'tui': {
-        note('Helio Bot renders a full GUI, so the terminal renderer setting does not apply. Use **Settings → Appearance** for density.');
+        note('Akron Bot renders a full GUI, so the terminal renderer setting does not apply. Use **Settings → Appearance** for density.');
         break;
       }
       case 'keybindings': {
@@ -2003,12 +2003,12 @@ export default function App() {
         break;
       }
       case 'wellbeing': {
-        note('Break reminders are handled by the OS. Helio Bot keeps long runs visible with elapsed time and a live activity row instead of nudging you.');
+        note('Break reminders are handled by the OS. Akron Bot keeps long runs visible with elapsed time and a live activity row instead of nudging you.');
         break;
       }
       case 'privacy-settings': {
         setShowSettings(true);
-        note('Opened **Settings**. Helio Bot sends data only to the provider you configure — there is no telemetry endpoint and no account requirement.');
+        note('Opened **Settings**. Akron Bot sends data only to the provider you configure — there is no telemetry endpoint and no account requirement.');
         break;
       }
       case 'rate-limit-options': {
@@ -2019,13 +2019,13 @@ export default function App() {
       case 'release-notes': {
         let v = '';
         try { v = (await window.autobot.getVersion()) || ''; } catch (_) {}
-        note('**Helio Bot** ' + (v ? 'v' + v : '') + ' — no changelog feed is bundled; release notes ship with each build at akronlogic.com.');
+        note('**Akron Bot** ' + (v ? 'v' + v : '') + ' — no changelog feed is bundled; release notes ship with each build at akronlogic.com.');
         break;
       }
       case 'update':
       case 'upgrade':
       case 'install': {
-        note('Helio Bot updates by installing a new build (DMG/ZIP) — `/version` shows the current one. Provider plans are managed at the provider, not in-app.');
+        note('Akron Bot updates by installing a new build (DMG/ZIP) — `/version` shows the current one. Provider plans are managed at the provider, not in-app.');
         break;
       }
       case 'powerup': {
@@ -2060,7 +2060,7 @@ export default function App() {
       case 'heapdump':
       case 'bridge-kick':
       case 'pro-trial-expired': {
-        note('`/' + cmd + '` targets Anthropic-hosted services (Slack app, claude.ai web/mobile/teleport, trial billing, debug tooling) that do not exist in Helio Bot. Nothing to configure locally.');
+        note('`/' + cmd + '` targets Anthropic-hosted services (Slack app, claude.ai web/mobile/teleport, trial billing, debug tooling) that do not exist in Akron Bot. Nothing to configure locally.');
         break;
       }
       default: {
@@ -2108,13 +2108,13 @@ export default function App() {
 
   return (
     <div className="app" data-theme={settings.theme} dir={localeDir(settings.locale)} lang={settings.locale}>
-      <div className="titlebar"><Logo size={16} /><span className="brand">Helio Bot</span><span className="sub">{T('brand.sub')}</span></div>
+      <div className="titlebar"><Logo size={16} /><span className="brand">Akron Bot</span><span className="sub">{T('brand.sub')}</span></div>
 
       <div className="layout">
         {/* Sidebar — Example parity: wordmark / search / collapse, New chat, Recents, Tools, account+settings */}
         <aside className={'sidebar' + (sidebarCollapsed ? ' collapsed' : '')}>
           <div className="sidebar-head">
-            <div className="wordmark"><Logo size={18} /><span className="brand">Helio Bot</span></div>
+            <div className="wordmark"><Logo size={18} /><span className="brand">Akron Bot</span></div>
             <div className="sidebar-actions">
               <button className="icon-btn" title={T('sidebar.search')} onClick={() => setPanel((p) => (p === 'search' ? 'chats' : 'search'))}><Icon name="Search" size={17} /></button>
               <button className="icon-btn" title={sidebarCollapsed ? T('sidebar.expand') : T('sidebar.collapse')} onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
@@ -2158,7 +2158,7 @@ export default function App() {
           <div className="sidebar-foot">
             <button className="account-row" onClick={() => setShowSettings(true)}>
               <span className="avatar-dot">HB</span>
-              <span className="account-name">Helio Bot</span>
+              <span className="account-name">Akron Bot</span>
             </button>
             <button className="icon-btn settings-icon" title={T('sidebar.settings')} onClick={() => setShowSettings(true)}><Icon name="Settings" size={17} /></button>
           </div>
@@ -2355,33 +2355,127 @@ function timeGreeting() {
   return 'Good evening';
 }
 
-// Helio Bot sunburst mark (user-supplied SVG), scaled to any size.
-function Logo({ size = 20 }) {
+// Akron Bot brand mark — emerald symbiote sunburst (user-supplied artwork,
+// build/logo-mark.svg). Below ~30 px the full 12-ray mark plus its orbiting
+// tendrils collapses into mush, so small surfaces (titlebar, avatars, list
+// rows) get a compact 8-ray cut that keeps the same silhouette.
+const MARK = '#10B981';
+const MARK_GLOW = '#A7F3D0';
+const COMPACT_RAYS = [0, 45, 90, 135, 180, 225, 270, 315];
+
+function CompactMark({ size }) {
   return (
-    <svg className="logo" width={size} height={size} viewBox="0 0 240 240" xmlns="http://www.w3.org/2000/svg" aria-label="Helio Bot">
-      <rect width="240" height="240" rx="54" fill="#F6F3EC" />
-      <rect x="2" y="2" width="236" height="236" rx="52" stroke="#E8E2D5" strokeWidth="2" />
-      <g transform="translate(120, 120)">
-        <path d="M 0 -76 C 4 -76, 7 -32, 4 -12 C 1 -6, -1 -6, -4 -12 C -7 -32, -4 -76, 0 -76 Z" fill="#D97757" transform="rotate(-4)" />
-        <path d="M 0 78 C 4 78, 7 34, 4 13 C 1 7, -1 7, -4 13 C -7 34, -4 78, 0 78 Z" fill="#D97757" transform="rotate(2)" />
-        <path d="M 0 -74 C 4 -74, 6 -30, 3 -11 C 1 -6, -1 -6, -3 -11 C -6 -30, -4 -74, 0 -74 Z" fill="#D97757" transform="rotate(42)" />
-        <path d="M 0 75 C 4 75, 6 31, 3 12 C 1 6, -1 6, -3 12 C -6 31, -4 75, 0 75 Z" fill="#D97757" transform="rotate(46)" />
-        <path d="M 0 -77 C 4 -77, 7 -33, 4 -12 C 1 -6, -1 -6, -4 -12 C -7 -33, -4 -77, 0 -77 Z" fill="#D97757" transform="rotate(88)" />
-        <path d="M 0 74 C 4 74, 6 30, 3 11 C 1 6, -1 6, -3 11 C -6 30, -4 74, 0 74 Z" fill="#D97757" transform="rotate(93)" />
-        <path d="M 0 -72 C 3.5 -72, 6 -28, 3 -11 C 1 -6, -1 -6, -3 -11 C -6 -28, -3.5 -72, 0 -72 Z" fill="#D97757" transform="rotate(134)" />
-        <path d="M 0 76 C 4 76, 6.5 32, 3.5 12 C 1 6, -1 6, -3.5 12 C -6.5 32, -4 76, 0 76 Z" fill="#D97757" transform="rotate(137)" />
-        <path d="M 0 -54 C 2.5 -54, 4 -22, 2 -9 C 0.5 -5, -0.5 -5, -2 -9 C -4 -22, -2.5 -54, 0 -54 Z" fill="#E3967B" transform="rotate(20)" />
-        <path d="M 0 -52 C 2.5 -52, 4 -20, 2 -9 C 0.5 -5, -0.5 -5, -2 -9 C -4 -20, -2.5 -52, 0 -52 Z" fill="#E3967B" transform="rotate(112)" />
-        <path d="M 0 55 C 2.5 55, 4 23, 2 9 C 0.5 5, -0.5 5, -2 9 C -4 23, -2.5 55, 0 55 Z" fill="#E3967B" transform="rotate(22)" />
-        <path d="M 0 50 C 2.5 50, 4 20, 2 9 C 0.5 5, -0.5 5, -2 9 C -4 20, -2.5 50, 0 50 Z" fill="#E3967B" transform="rotate(110)" />
-        <circle cx="0" cy="0" r="8" fill="#D97757" />
+    <svg className="logo" width={size} height={size} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Bot">
+      <g fill={MARK}>
+        <circle cx="50" cy="50" r="17" />
+        {COMPACT_RAYS.map((deg) => (
+          <rect key={deg} x="43.5" y="5" width="13" height="31" rx="6.5" transform={`rotate(${deg} 50 50)`} />
+        ))}
+      </g>
+      <circle cx="50" cy="50" r="7.5" fill={MARK_GLOW} opacity="0.55" />
+    </svg>
+  );
+}
+
+// Full mark: 12 radial rays in two counter-breathing groups, a pulsing core and
+// six orbiting tendril circles, all through a gooey filter (the "symbiote"
+// look). Animation is CSS/SMIL inside the SVG and honours reduced-motion.
+function FullMark({ size }) {
+  const raysA = [
+    [191, 76, 18, 96, 9, 0], [192, 88, 16, 84, 8, 32], [190, 72, 20, 102, 10, 64],
+    [192, 92, 16, 80, 8, 95], [191, 74, 18, 98, 9, 128], [192, 86, 16, 86, 8, 158],
+  ];
+  const raysB = [
+    [190, 75, 20, 98, 10, 188], [192, 90, 16, 82, 8, 218], [191, 70, 18, 104, 9, 248],
+    [192, 88, 16, 84, 8, 278], [190, 76, 20, 96, 10, 306], [192, 92, 16, 80, 8, 334],
+  ];
+  const glowSpokes = [[0, 96, 58], [64, 94, 62], [128, 96, 58], [188, 94, 62], [248, 92, 64], [306, 96, 58]];
+  return (
+    <svg className="logo" width={size} height={size} viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Bot">
+      <defs>
+        <filter id="akGooMark" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur" />
+          <feColorMatrix in="blur" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -9" result="goo" />
+          <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+        </filter>
+        <style>{`
+          .ak-core-spin { transform-origin: 200px 200px; animation: akSlowPulseSpin 12s ease-in-out infinite; }
+          .ak-orbit-1 { transform-origin: 200px 200px; animation: akOrbitCw 7s linear infinite; }
+          .ak-orbit-2 { transform-origin: 200px 200px; animation: akOrbitCcw 9s linear infinite; }
+          .ak-ray-a { transform-origin: 200px 200px; animation: akBreathe 3.2s ease-in-out infinite alternate; }
+          .ak-ray-b { transform-origin: 200px 200px; animation: akBreathe 2.6s ease-in-out infinite alternate-reverse; }
+          @keyframes akSlowPulseSpin { 0% { transform: rotate(0deg) scale(0.97); } 50% { transform: rotate(180deg) scale(1.04); } 100% { transform: rotate(360deg) scale(0.97); } }
+          @keyframes akOrbitCw { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+          @keyframes akOrbitCcw { 0% { transform: rotate(360deg); } 100% { transform: rotate(0deg); } }
+          @keyframes akBreathe { 0% { transform: scale(0.92); } 100% { transform: scale(1.09); } }
+          @media (prefers-reduced-motion: reduce) { .ak-core-spin, .ak-orbit-1, .ak-orbit-2, .ak-ray-a, .ak-ray-b { animation: none; } }
+        `}</style>
+      </defs>
+      <g filter="url(#akGooMark)">
+        <g fill={MARK}>
+          <circle cx="200" cy="200" r="34">
+            <animate attributeName="r" values="30;38;29;35;30" dur="3.5s" repeatCount="indefinite" />
+          </circle>
+          <g className="ak-core-spin">
+            <g className="ak-ray-a">
+              {raysA.map(([x, y, w, h, rx, deg]) => (
+                <rect key={deg} x={x} y={y} width={w} height={h} rx={rx} transform={`rotate(${deg} 200 200)`} />
+              ))}
+            </g>
+            <g className="ak-ray-b">
+              {raysB.map(([x, y, w, h, rx, deg]) => (
+                <rect key={deg} x={x} y={y} width={w} height={h} rx={rx} transform={`rotate(${deg} 200 200)`} />
+              ))}
+            </g>
+          </g>
+          <g className="ak-orbit-1">
+            <circle cx="200" cy="84" r="13">
+              <animate attributeName="cy" values="84;62;92;74;84" dur="2.8s" repeatCount="indefinite" />
+              <animate attributeName="r" values="13;8;15;10;13" dur="2.8s" repeatCount="indefinite" />
+            </circle>
+            <circle cx="304" cy="245" r="12">
+              <animate attributeName="cx" values="304;326;294;316;304" dur="3.4s" repeatCount="indefinite" />
+              <animate attributeName="r" values="12;7;14;9;12" dur="3.4s" repeatCount="indefinite" />
+            </circle>
+            <circle cx="102" cy="252" r="11">
+              <animate attributeName="cx" values="102;78;112;88;102" dur="3.1s" repeatCount="indefinite" />
+              <animate attributeName="r" values="11;6;13;8;11" dur="3.1s" repeatCount="indefinite" />
+            </circle>
+          </g>
+          <g className="ak-orbit-2">
+            <circle cx="278" cy="112" r="10">
+              <animate attributeName="cy" values="112;88;122;98;112" dur="2.5s" repeatCount="indefinite" />
+              <animate attributeName="r" values="10;5;12;7;10" dur="2.5s" repeatCount="indefinite" />
+            </circle>
+            <circle cx="118" cy="118" r="12">
+              <animate attributeName="cy" values="118;92;128;104;118" dur="3.6s" repeatCount="indefinite" />
+              <animate attributeName="r" values="12;7;14;9;12" dur="3.6s" repeatCount="indefinite" />
+            </circle>
+            <circle cx="200" cy="316" r="13">
+              <animate attributeName="cy" values="316;342;306;330;316" dur="2.9s" repeatCount="indefinite" />
+              <animate attributeName="r" values="13;7;15;9;13" dur="2.9s" repeatCount="indefinite" />
+            </circle>
+          </g>
+        </g>
+      </g>
+      <g className="ak-core-spin" opacity="0.55" fill={MARK_GLOW}>
+        <circle cx="200" cy="200" r="14">
+          <animate attributeName="r" values="12;17;11;15;12" dur="3.5s" repeatCount="indefinite" />
+        </circle>
+        {glowSpokes.map(([deg, y, h]) => (
+          <rect key={deg} x="197" y={y} width="6" height={h} rx="3" transform={`rotate(${deg} 200 200)`} />
+        ))}
       </g>
     </svg>
   );
 }
 
+function Logo({ size = 20 }) {
+  return size < 30 ? <CompactMark size={size} /> : <FullMark size={size} />;
+}
+
 // ---------- Conversation export / share ----------
-// Example Desktop's "Share chat" publishes a public link; Helio Bot has no backend, so
+// Claude Desktop's "Share chat" publishes a public link; Akron Bot has no backend, so
 // the local equivalent is a self-contained HTML share file (open in any browser, no
 // server) plus Markdown/JSON export. All three route through the renderer and land in
 // a native save dialog via `autobot:saveFile`.
@@ -2389,9 +2483,9 @@ function convToMarkdown(conv) {
   const title = conv.title || 'Untitled conversation';
   const lines = ['# ' + title, ''];
   const ts = new Date(conv.ts || Date.now()).toISOString();
-  lines.push('> Exported from Helio Bot — ' + ts, '');
+  lines.push('> Exported from Akron Bot — ' + ts, '');
   for (const m of conv.messages || []) {
-    const who = m.role === 'user' ? '**You**' : '**Helio Bot**';
+    const who = m.role === 'user' ? '**You**' : '**Akron Bot**';
     lines.push('## ' + who, '');
     if (m.content) lines.push(m.content, '');
     for (const a of m.attachments || []) {
@@ -2407,7 +2501,7 @@ function convToHtml(conv) {
   const title = escapeHtml(conv.title || 'Untitled conversation');
   const ts = new Date(conv.ts || Date.now()).toISOString();
   const body = (conv.messages || []).map((m) => {
-    const role = m.role === 'user' ? 'You' : 'Helio Bot';
+    const role = m.role === 'user' ? 'You' : 'Akron Bot';
     let html = '<div class="msg ' + m.role + '"><div class="role">' + role + '</div>';
     if (m.content) html += '<div class="content">' + renderMarkdown(m.content) + '</div>';
     for (const a of m.attachments || []) {
@@ -2426,7 +2520,7 @@ h1{font-size:22px;margin:0 0 4px} .meta{color:#888;font-size:12px;margin-bottom:
 .msg.assistant{background:#fbfbf9} .role{font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#b45309;margin-bottom:8px}
 .msg.user .role{color:#0b5fff} .content pre{background:#f0f0ee;padding:12px;border-radius:8px;overflow:auto}
 .content img{max-width:100%} .att{color:#666;font-size:13px;margin-top:6px} img.att{max-width:100%;border-radius:8px;margin-top:8px}
-</style></head><body><h1>${title}</h1><div class="meta">Exported from Helio Bot — ${ts}</div>${body}</body></html>`;
+</style></head><body><h1>${title}</h1><div class="meta">Exported from Akron Bot — ${ts}</div>${body}</body></html>`;
 }
 
 // ---------- Chat view ----------
@@ -2672,7 +2766,7 @@ function ToolCard({ t }) {
 
 // ---------- Artifacts ----------
 // Live interactive preview for artifact blocks (HTML/SVG/Mermaid/React/markdown),
-// mirroring Example Desktop's sandboxed artifact runtime. HTML/SVG/Mermaid render
+// mirroring Claude Desktop's sandboxed artifact runtime. HTML/SVG/Mermaid render
 // fully offline; React/JSX use a sandboxed iframe with CDN React + Babel (best-effort).
 function ArtifactPreview({ block }) {
   const lang = (block.lang || 'text').toLowerCase().trim();
@@ -2937,7 +3031,7 @@ function ArtifactsView({ blocks }) {
   return (
     <div className="panel artifacts">
       <h2>Artifacts</h2>
-      {blocks.length === 0 && <p className="muted">No code artifacts yet. Ask Helio Bot to write code and it will appear here.</p>}
+      {blocks.length === 0 && <p className="muted">No code artifacts yet. Ask Akron Bot to write code and it will appear here.</p>}
       {blocks.length > 0 && (
         <>
           <div className="artifact-tabs">
@@ -3196,7 +3290,7 @@ function SkillsView({ skills, toggleSkill, setAllSkills, refreshSkills }) {
   );
 }
 
-// ---------- Plugins & Connectors (Example Desktop parity: directory + install) ----------
+// ---------- Plugins & Connectors (Claude Desktop parity: directory + install) ----------
 function PluginsView() {
   const [items, setItems] = useState([]);
   const [cats, setCats] = useState([]);
@@ -3475,7 +3569,7 @@ function ExtensionsView() {
     <div className="extensions-view">
       <p className="muted">
         Unpacked Chrome MV3/MV2 extensions are hosted with a real <code>chrome-extension://</code> origin and a
-        <code> chrome.*</code> surface backed by Helio Bot. Drop a folder in <code>~/.autobot/extensions/&lt;id&gt;</code> and rescan.
+        <code> chrome.*</code> surface backed by Akron Bot. Drop a folder in <code>~/.autobot/extensions/&lt;id&gt;</code> and rescan.
       </p>
       <div className="plugin-registry-row">
         <span className="muted">
@@ -3521,7 +3615,7 @@ function ExtensionsView() {
   );
 }
 
-// ---------- Scheduled tasks (Example Desktop parity) ----------
+// ---------- Scheduled tasks (Claude Desktop parity) ----------
 const CADENCES = [
   { id: 'once', label: 'Once' },
   { id: 'every', label: 'Every N minutes' },
@@ -3631,7 +3725,7 @@ function ScheduledView() {
   );
 }
 
-// ---------- Projects (Example Desktop parity: bundled custom instructions) ----------
+// ---------- Projects (Claude Desktop parity: bundled custom instructions) ----------
 function ProjectsView({ projects, setProjects, activeProject, setActiveProject }) {
   const [name, setName] = useState('');
   const [instructions, setInstructions] = useState('');
@@ -3679,7 +3773,7 @@ function McpView({ mcpServers, mcpForm, setMcpForm, connectMcp, disconnectMcp })
   return (
     <div className="panel">
       <h2>MCP Servers</h2>
-      <p className="muted">Connect external Model Context Protocol servers over stdio, SSE, or streamable-HTTP. Their tools become available to Helio Bot automatically.</p>
+      <p className="muted">Connect external Model Context Protocol servers over stdio, SSE, or streamable-HTTP. Their tools become available to Akron Bot automatically.</p>
       <div className="mcp-form">
         <select value={transport} onChange={(e) => setMcpForm({ ...mcpForm, transport: e.target.value })}>
           <option value="stdio">stdio</option>
@@ -3781,7 +3875,7 @@ function TerminalView({ terminal, setTerminal, startTerminal, runInTerminal, wri
   );
 }
 
-// ---------- Example Code (repo-aware) ----------
+// ---------- Claude Code (repo-aware) ----------
 function CodeView({ cwd, setCwd, permissions, setPermissions, T }) {
   const [info, setInfo] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -4903,7 +4997,7 @@ function AccountSection({ account, setAccount, T }) {
 
 // ---------- Organization compliance (`taint:*` capabilities) ----------
 // Desktop reads `memberships[].organization.capabilities` from the account API
-// and derives every gate from it. Helio Bot has no account backend, so the
+// and derives every gate from it. Akron Bot has no account backend, so the
 // profile is declared here and the main process evaluates the exact same
 // arithmetic (`electron/compliance.js`). Toggles map 1:1 onto capability strings.
 function ComplianceSection({ compliance, setCompliance }) {
@@ -5168,7 +5262,7 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
         <label className="check"><input type="checkbox" checked={!!orchestrator.enabled} onChange={(e) => saveOrch({ ...orchestrator, enabled: e.target.checked })} /> Enable — multi-model pool for failover AND swarm tier routing</label>
         {orchestrator.enabled && (
           <div className="orch-list">
-            {providers.length === 0 && <p className="muted">No providers added. Add your models below; Helio Bot fails over in order and routes swarm subtasks by tier.</p>}
+            {providers.length === 0 && <p className="muted">No providers added. Add your models below; Akron Bot fails over in order and routes swarm subtasks by tier.</p>}
             <p className="muted" style={{ marginTop: -4 }}>
               <b>Tier</b> decides which model a supervisor-assigned subtask runs on:
               <b> small</b> = cheap/mechanical work, <b>heavy</b> = real implementation,
@@ -5230,7 +5324,7 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
         </div>
         <p className="muted">{T('code.permissions.hint')}</p>
         <label className="check"><input type="checkbox" checked={settings.useMemory} onChange={(e) => setSettings({ ...settings, useMemory: e.target.checked })} /> Inject long-term memory into prompts</label>
-        <label className="check"><input type="checkbox" checked={!!settings.launchAtLogin} onChange={(e) => setSettings({ ...settings, launchAtLogin: e.target.checked })} /> Launch Helio Bot at login</label>
+        <label className="check"><input type="checkbox" checked={!!settings.launchAtLogin} onChange={(e) => setSettings({ ...settings, launchAtLogin: e.target.checked })} /> Launch Akron Bot at login</label>
         <div className="row">
           <label>{T('settings.theme')}
             <select value={settings.theme} onChange={(e) => setSettings({ ...settings, theme: e.target.value })}>
@@ -5269,7 +5363,7 @@ function QuestionModal({ question, answer }) {
   return (
     <div className="modal-overlay">
       <div className="modal">
-        <h2>{isPlan ? 'Plan approval' : 'Helio Bot needs your input'}</h2>
+        <h2>{isPlan ? 'Plan approval' : 'Akron Bot needs your input'}</h2>
         <div className="question-text">{question.text}</div>
 
         {!isPlan && options.length > 0 && (
@@ -5310,12 +5404,12 @@ function QuestionModal({ question, answer }) {
   );
 }
 
-// ---------- B8 permission prompt (Example Code mode) ----------
+// ---------- B8 permission prompt (Claude Code mode) ----------
 function PermissionModal({ permission, answer }) {
   return (
     <div className="modal-overlay">
       <div className="modal">
-        <h2>Helio Bot requests permission</h2>
+        <h2>Akron Bot requests permission</h2>
         <div className="perm-tool">{permission.tool}</div>
         <pre className="perm-summary">{permission.summary}</pre>
         <div className="modal-actions">
@@ -5329,9 +5423,9 @@ function PermissionModal({ permission, answer }) {
 
 // ---------- Computer Use consent (Desktop `computer:request_*`) ----------
 const CU_TIERS = {
-  access: { label: 'See the screen', blurb: 'Helio Bot can look at your screen and click/type to finish this task.' },
-  full_control: { label: 'Full control', blurb: 'Helio Bot can drive any app, window, and keyboard shortcut without asking again.' },
-  teach_access: { label: 'Watch and learn', blurb: 'Helio Bot records your screen while you do a task once, then repeats it.' },
+  access: { label: 'See the screen', blurb: 'Akron Bot can look at your screen and click/type to finish this task.' },
+  full_control: { label: 'Full control', blurb: 'Akron Bot can drive any app, window, and keyboard shortcut without asking again.' },
+  teach_access: { label: 'Watch and learn', blurb: 'Akron Bot records your screen while you do a task once, then repeats it.' },
 };
 function ComputerUseModal({ consent, answer }) {
   const [remember, setRemember] = useState(false);
@@ -5374,7 +5468,7 @@ function CommandPalette({ onClose, onNewChat, onSearch, onToggleBrowser, onToggl
     { key: 'quick', label: 'Quick Entry…', icon: 'CommandLine', run: onQuickEntry },
     { key: 'export', label: 'Export current conversation', icon: 'Download', run: onExport },
     { key: 'settings', label: 'Settings…', icon: 'Settings', run: onSettings },
-    { key: 'about', label: 'About Helio Bot', icon: 'Chat', run: onAbout },
+    { key: 'about', label: 'About Akron Bot', icon: 'Chat', run: onAbout },
   ];
 
   const query = q.trim().toLowerCase();

@@ -3,7 +3,7 @@
 //
 // A command file is plain markdown. Its path relative to the commands dir is
 // the command name, so `.claude/commands/db/migrate.md` → `/db:migrate`.
-// Supports the same substitutions Example Code does:
+// Supports the same substitutions Claude Code does:
 //
 //   $ARGUMENTS        everything after the command name
 //   $1 .. $9          positional arguments (whitespace-split)
@@ -74,10 +74,10 @@ function discover(cwd, { fresh = false } = {}) {
   return list;
 }
 
-// Built-in skill commands. Example Code 2.1.x ships these inside the binary as
+// Built-in skill commands. Claude Code 2.1.x ships these inside the binary as
 // skills (class `skill`) rather than as `.claude/commands` files, so there is
 // nothing on disk to discover. Each one expands to a prompt exactly like a file
-// command does — which is all Example Code does with them too. A real
+// command does — which is all Claude Code does with them too. A real
 // `.claude/commands/<name>.md` always wins (checked first).
 const SKILL_PROMPTS = {
   'claude-api': {
@@ -103,7 +103,7 @@ const SKILL_PROMPTS = {
       '',
       '1. Read recent transcripts from `~/.claude/projects/**/*.jsonl` (fall back to `~/.autobot` history) and count the Bash commands and MCP tool calls that were read-only and repeated.',
       '2. Keep only calls that are provably side-effect free (listing, reading, version checks, `git status`/`diff`/`log`, test runners with no write flags). Never allowlist anything that deletes, pushes, installs, or sends data.',
-      '3. Write the allowlist into `.claude/settings.json` under `permissions.allow`, using Example Code permission syntax (`Bash(git status:*)`, `Read(//path/**)`, `mcp__server__tool`). Merge with what is already there; never drop existing rules.',
+      '3. Write the allowlist into `.claude/settings.json` under `permissions.allow`, using Claude Code permission syntax (`Bash(git status:*)`, `Read(//path/**)`, `mcp__server__tool`). Merge with what is already there; never drop existing rules.',
       '4. Show the diff you applied and explain each rule in one line.',
       '',
       'Project folder: the current working directory. Extra arguments: $ARGUMENTS',
@@ -112,7 +112,7 @@ const SKILL_PROMPTS = {
   'update-config': {
     description: 'Configure the harness through settings.json: permissions, env vars, and hooks.',
     body: [
-      'Change Helio Bot / Example Code configuration using `settings.json` (project `.claude/settings.json`, or `settings.local.json` for machine-local overrides).',
+      'Change Akron Bot / Claude Code configuration using `settings.json` (project `.claude/settings.json`, or `settings.local.json` for machine-local overrides).',
       '',
       'Rules:',
       '- Automated behaviours ("from now on when X", "each time X", "before/after X") require **hooks** in settings.json — memory files cannot enforce them.',
@@ -167,7 +167,7 @@ const SKILL_PROMPTS = {
   'keybindings-help': {
     description: 'Explain or change keyboard shortcuts.',
     body: [
-      'Help with keyboard shortcuts in Helio Bot.',
+      'Help with keyboard shortcuts in Akron Bot.',
       '',
       'Known shortcuts: `⌘K` command palette, `⌘,` settings, `/` at the start of the composer opens the slash menu, `Esc` closes menus, `⌘Enter` sends, `Shift+Enter` newline, `⌘↩` while streaming queues the next message instead of dropping it.',
       'Shortcuts are configured in Settings → Shortcuts (stored with the app, not in a JSON file).',
@@ -200,7 +200,7 @@ function resolve(name, cwd) {
   const want = String(name || '').trim().toLowerCase();
   if (!want) return null;
   // Project/user command files win over the built-in skill registry, exactly
-  // like Example Code (a skill can be overridden by a same-named command file).
+  // like Claude Code (a skill can be overridden by a same-named command file).
   return discover(cwd, { fresh: true }).find((c) => c.name.toLowerCase() === want)
     || skillCommand(want);
 }
@@ -269,7 +269,7 @@ async function expand(cmd, argString, { cwd = process.cwd(), runBash = null } = 
 }
 
 // All built-in commands the GUI exposes, so the picker can merge filesystem
-// commands with the native ones. Mirrors Example Code 2.1.x's registry: every
+// commands with the native ones. Mirrors Claude Code 2.1.x's registry: every
 // real, GUI-implementable command is listed here; terminal-only ones are not.
 const BUILTIN = [
   // session
@@ -328,7 +328,7 @@ const BUILTIN = [
   { name: 'login', description: 'Sign in' },
   { name: 'logout', description: 'Sign out' },
   { name: 'commands', description: 'List custom slash commands' },
-  // Example Code 2.1.x additions / aliases (real registry names)
+  // Claude Code 2.1.x additions / aliases (real registry names)
   { name: 'rename', description: 'Rename the current conversation', aliases: ['name'] },
   { name: 'branch', description: 'Branch the conversation at this point', aliases: ['fork'] },
   { name: 'tasks', description: 'List background tasks', aliases: ['bashes'] },
@@ -350,7 +350,7 @@ const BUILTIN = [
   { name: 'feedback', description: 'Send feedback' },
   { name: 'init-verifiers', description: 'Add verification steps to CLAUDE.md' },
   { name: 'pr-comments', description: 'View pull request comments (via Artifacts)' },
-  { name: 'exit', description: 'Quit Helio Bot', aliases: ['q', 'bye', 'quit'] },
+  { name: 'exit', description: 'Quit Akron Bot', aliases: ['q', 'bye', 'quit'] },
   // GUI equivalents of the remaining real 2.1.x commands (each has a handler
   // in `runSlashCommand`; `guiEquivalent` lets the picker label them).
   { name: 'voice', description: 'Toggle voice mode', guiEquivalent: true },
@@ -360,7 +360,7 @@ const BUILTIN = [
   { name: 'remote-env', description: 'Toggle remote control', guiEquivalent: true },
   { name: 'setup-bedrock', description: 'Configure an Amazon Bedrock endpoint', guiEquivalent: true },
   { name: 'setup-vertex', description: 'Configure a Google Vertex AI endpoint', guiEquivalent: true },
-  { name: 'ide', description: 'Helio Bot is the IDE surface', guiEquivalent: true },
+  { name: 'ide', description: 'Akron Bot is the IDE surface', guiEquivalent: true },
   { name: 'desktop', description: 'Already running in the desktop app', guiEquivalent: true },
   { name: 'tui', description: 'Terminal renderer (not applicable to the GUI)', guiEquivalent: true },
   { name: 'keybindings', description: 'Keyboard shortcuts (Settings → Shortcuts)', guiEquivalent: true },

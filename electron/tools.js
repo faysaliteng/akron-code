@@ -53,7 +53,7 @@ const SLASH_COMMANDS = {
   model: 'Show or switch the active model.',
   review: 'Review the current working tree / recent changes for bugs and issues.',
   memory: 'Show the contents of long-term memory.',
-  reset: 'Reset Helio Bot to a clean state (clear memory + conversations).',
+  reset: 'Reset Akron Bot to a clean state (clear memory + conversations).',
   status: 'Show provider, model, and tool configuration status.',
 };
 
@@ -337,7 +337,7 @@ const executors = {
     if (hostOk !== true) return 'Error: ' + hostOk.reason;
     if (!url || !/^https?:\/\//i.test(url)) return 'Error: absolute http(s) URL required';
     try {
-      const res = await fetch(url, { redirect: 'follow', headers: { 'user-agent': 'HelioBot/1.0' } });
+      const res = await fetch(url, { redirect: 'follow', headers: { 'user-agent': 'AkronBot/1.0' } });
       const ct = res.headers.get('content-type') || '';
       if (ct.includes('text/html')) {
         const html = await res.text();
@@ -844,7 +844,7 @@ function runCode(lang, code, cwd, timeoutMs) {
 }
 
 // ---------- tool definitions (OpenAI function-calling schema) ----------
-// Names/descriptions mirror Example Code's tool surface 1:1 where applicable.
+// Names/descriptions mirror Claude Code's tool surface 1:1 where applicable.
 const toolDefinitions = [
   { name: 'Bash', description: 'Run a shell command in zsh (run code, git, install deps, list/inspect files). Do NOT create or edit files with heredocs, echo, tee or sed -i — use Write/Edit for file content. Set run_in_background:true for long jobs (servers, builds, watches) and poll them with TaskOutput or stop them with KillShell.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'The command to execute' }, description: { type: 'string', description: 'Short human label shown in the UI (3–5 words)' }, cwd: { type: 'string', description: 'Working directory' }, timeout: { type: 'number', description: 'Timeout in ms (max 600000)' }, run_in_background: { type: 'boolean', description: 'Run detached; returns a shell id for TaskOutput/KillShell' }, dangerouslyDisableSandbox: { type: 'boolean', description: 'Accepted for parity; commands already run unsandboxed on macOS' } }, required: ['command'] } },
   { name: 'Read', description: 'Read a text file from disk. Returns up to `limit` lines starting at 1-based `offset` (default 2000 lines per call). For PDFs, pass `pages` (e.g. "1-10") to extract a page range. Always Read a file before editing it.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias for path' }, offset: { type: 'number', description: '1-based line to start at' }, limit: { type: 'number', description: 'Max lines to return (default 2000)' }, pages: { type: 'string', description: 'PDF page range, e.g. "1-10"' }, cwd: { type: 'string' } }, required: ['path'] } },
@@ -887,7 +887,7 @@ const toolDefinitions = [
   { name: 'Linear', description: 'Interact with Linear (list/search issues) if LINEAR_API_KEY is configured.', parameters: { type: 'object', properties: { action: { type: 'string', description: 'issues | search' }, query: { type: 'string' } } } },
   { name: 'mcp__secrets__request_secret', description: '[secrets] Request a secret value (e.g. API key) by name from the secrets store.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
 
-  // ---- Virtual built-in MCP namespaces (mirror Example Code's internal MCP tools 1:1) ----
+  // ---- Virtual built-in MCP namespaces (mirror Claude Code's internal MCP tools 1:1) ----
   { name: 'mcp__workspace__bash', description: '[workspace] Run a shell command.', parameters: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeout: { type: 'number' } }, required: ['command'] } },
   { name: 'mcp__workspace__read_file', description: '[workspace] Read a file.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias for path' }, cwd: { type: 'string' } }, required: ['path'] } },
   { name: 'mcp__workspace__write_file', description: '[workspace] Write a file.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, cwd: { type: 'string' } }, required: ['path', 'content'] } },
@@ -937,7 +937,7 @@ const toolDefinitions = [
   { name: 'mcp__botbridge__register', description: '[botbridge] Register a webhook route that forwards messages to a sub-agent bot.', parameters: { type: 'object', properties: { route: { type: 'string' }, method: { type: 'string' }, bot: { type: 'string' } }, required: ['route'] } },
   { name: 'mcp__bots__send', description: '[bots] Send a message to a connected bot bridge / notify the user.', parameters: { type: 'object', properties: { bot: { type: 'string' }, message: { type: 'string' } }, required: ['message'] } },
 
-  // ---- Built-in Browser (in-app <webview> pane, mirrors Example Desktop's browser) ----
+  // ---- Built-in Browser (in-app <webview> pane, mirrors Claude Desktop's browser) ----
   { name: 'browser_open', description: 'Open a URL in the built-in browser pane (in-app webview). Use for browsing the web visually.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
   { name: 'browser_navigate', description: 'Navigate the built-in browser to a URL.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
   { name: 'browser_back', description: 'Go back in the built-in browser history.', parameters: { type: 'object', properties: {} } },
@@ -1125,7 +1125,7 @@ function fileHead(fp, raw, lines) {
   return `First ${lines || 60} lines of ${path.basename(fp)}:\n${head}`;
 }
 
-// Example Code's file tools use `file_path` / `file_text`; other models copy
+// Claude Code's file tools use `file_path` / `file_text`; other models copy
 // that convention. Accepting it here means a Example-shaped Write from any
 // backend actually lands on disk instead of "path argument required".
 const FILE_TOOLS = new Set([
@@ -1199,7 +1199,7 @@ async function runTool(name, args, ctx) {
   }
   const { shell, askUser, runSubagent, exitPlanMode, mcpListResources, mcpReadResource, setCwd, listAgents, stopTask, sendUserMessage, setGoal, createArtifact, requestSecret, approveTool } = ctx;
 
-  // B8 Example Code mode: require user approval before mutating tools.
+  // B8 Claude Code mode: require user approval before mutating tools.
   const MUTATING = new Set([
     'Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'JavaScript', 'REPL',
     'KillShell', 'Jira', 'Linear', 'POST',
@@ -1342,7 +1342,7 @@ async function runTool(name, args, ctx) {
     if (handled != null) return handled;
   }
 
-  // ---- Virtual terminal MCP namespace (mirrors Example Code's mcp__terminal__*) ----
+  // ---- Virtual terminal MCP namespace (mirrors Claude Code's mcp__terminal__*) ----
   if (name === 'mcp__terminal__list_terminal_tabs') {
     if (!shell) return 'No shell manager available.';
     const tabs = await shell.list();

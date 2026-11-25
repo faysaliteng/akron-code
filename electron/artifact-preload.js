@@ -1,5 +1,5 @@
 'use strict';
-// Helio Bot — preload for standalone artifact windows.
+// Akron Bot — preload for standalone artifact windows.
 //
 // A canvas artifact (Design artboards, Slides deck) is a generated document
 // that the user can then edit by hand. Those edits have to go somewhere

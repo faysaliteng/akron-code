@@ -1,46 +1,46 @@
-# Helio Bot vs Example Desktop — Final Verified Parity Report
+# Akron Bot vs Claude Desktop — Final Verified Parity Report
 
 **Date:** 2026-11-25
-**Target:** Example Desktop `v6.28899.6` (reverse-engineered via REA from
+**Target:** Claude Desktop `v6.28899.6` (reverse-engineered via REA from
 `/Applications/Claude.app/Contents/Resources/app.asar` — 1575 i18n strings, bundled
 skills/MCPs, browser pane, voice, multi-window mapped).
 
 **Method:** Real verification only. Source audit + live CDP DOM/text dumps against the
-installed packaged app (`/Applications/Helio Bot.app`, `--remote-debugging-port=9223`) +
+installed packaged app (`/Applications/Akron Bot.app`, `--remote-debugging-port=9223`) +
 end-to-end streaming against a live NVIDIA NIM endpoint + `npm run build` clean +
 `node --check` on all `electron/*.js` + E2E suite 38/38. Nothing below is asserted that
 wasn't observed in a real tool response.
 
 ---
 
-## A. WHAT Helio Bot DOES THAT EXAMPLE DESKTOP DOESN'T (verifiably MORE advanced)
+## A. WHAT Akron Bot DOES THAT EXAMPLE DESKTOP DOESN'T (verifiably MORE advanced)
 
-These are structural capabilities with no Example Desktop equivalent — not cosmetic.
+These are structural capabilities with no Claude Desktop equivalent — not cosmetic.
 
-| # | Feature | Why Example Desktop lacks it |
+| # | Feature | Why Claude Desktop lacks it |
 |---|---------|------------------------------|
-| 1 | **Orchestrator — 100+ API keys, auto-failover** | Example Desktop binds a single Anthropic account. Helio Bot keeps a provider pool and `chatWithFailover` hot-switches on rate-limit / `limit-reached` / 429 without user action. |
+| 1 | **Orchestrator — 100+ API keys, auto-failover** | Claude Desktop binds a single Anthropic account. Akron Bot keeps a provider pool and `chatWithFailover` hot-switches on rate-limit / `limit-reached` / 429 without user action. |
 | 2 | **Model-agnostic pluggable layer** | Any OpenAI-compatible `/v1/chat/completions` endpoint (NVIDIA NIM, OpenAI, Anthropic-compat, local). Example is locked to Anthropic models. |
-| 3 | **Local, free Computer Use** | Helio Bot drives macOS via `screencapture` + `osascript` System Events (`electron/computer.js`). Example's Computer Use is cloud-hosted and metered. |
+| 3 | **Local, free Computer Use** | Akron Bot drives macOS via `screencapture` + `osascript` System Events (`electron/computer.js`). Example's Computer Use is cloud-hosted and metered. |
 | 4 | **Local, free Chrome control** | Direct CDP → `127.0.0.1:9222` (`electron/chrome.js`). No per-action Anthropic billing. |
 | 5 | **Local built-in browser as agent tools** | Electron `<webview>` + `browser_*` tools + `electron/browser.js`. Example's browser is a cloud-managed MCP. |
-| 6 | **Recursive sub-agent orchestration tree** | `runAgent` recursion tracked in `subagentControllers` Map with per-agent `AbortController` + live subagent panel. Example Desktop doesn't expose a user-visible recursive subagent tree. |
+| 6 | **Recursive sub-agent orchestration tree** | `runAgent` recursion tracked in `subagentControllers` Map with per-agent `AbortController` + live subagent panel. Claude Desktop doesn't expose a user-visible recursive subagent tree. |
 | 7 | **95 tool executors** | `bash`, `read/write/edit`, `glob`, `grep`, `web_fetch`, `web_search`, `todo_write`, notebooks, skills, slash commands, `JavaScript` eval, etc. — a superset of Example's bundled MCP tool surface. |
 | 8 | **MCP: 3 transports + config UI** | stdio + SSE + streamable-HTTP (`electron/mcp.js`, 212 lines) with per-server transport select. |
 | 9 | **Bot bridges (`cowork` equivalents)** | Local `electron/cowork.js` — no cloud relay dependency. |
 
 ---
 
-## B. GENUINELY MISSING vs Example Desktop (real gaps, honestly stated)
+## B. GENUINELY MISSING vs Claude Desktop (real gaps, honestly stated)
 
-These are features the real Example Desktop ships that Helio Bot does **not** yet have. Not
+These are features the real Claude Desktop ships that Akron Bot does **not** yet have. Not
 a claim-by-absence — each was confirmed absent in source and not observed in the running
 app.
 
 ### 🔴 High-impact parity gaps
 
 1. **Anthropic OAuth account + cross-device sync.** **PARTIAL (scaffold shipped
-   2026-11-25, real cloud SSO/sync still a gap).** Helio Bot now has an `Account & Billing`
+   2026-11-25, real cloud SSO/sync still a gap).** Akron Bot now has an `Account & Billing`
    Settings section (`AccountSection` + persisted `autobot:account`): OAuth "Connect to
    Anthropic" / SSO IdP-config scaffold, plan + upgrade row, and a sync-status row — each
    opening the real Anthropic endpoint in the system browser via `autobot:openExternal`.
@@ -51,7 +51,7 @@ app.
    `windows` Set, routes per-window IPC (agent streaming events go to the originating
    window via `winFor(event)` = `BrowserWindow.fromWebContents(event.sender)`), parents
    file/folder dialogs to the originating window, and installs a native application menu
-   (`Helio Bot`/`File`/`Edit`/`View`/`Window`) with **New Window (`CmdOrCtrl+N`)** →
+   (`Akron Bot`/`File`/`Edit`/`View`/`Window`) with **New Window (`CmdOrCtrl+N`)** →
    `createWindow()`. Verified live: `Menu.getApplicationMenu()` installed with 5 top-level
    menus; invoking the New Window item's click handler grew `BrowserWindow.getAllWindows()`
    from 1 → 2 (two live page targets), then closed cleanly back to 1. E2E still green.
@@ -78,12 +78,12 @@ app.
    2026-11-25).** The `Account & Billing` Settings section now renders plan + upgrade,
    SSO IdP config, and sync-status UI. Still local-only (settings live in `~/.autobot` +
    localStorage); no real enterprise IdP handshake or plan/billing backend.
-8. ~~**Example Code CLI integration.**~~ **RESOLVED (2026-11-25).** New repo-aware `Code`
+8. ~~**Claude Code CLI integration.**~~ **RESOLVED (2026-11-25).** New repo-aware `Code`
    panel (sidebar `Code` button → `panel === 'code'` → `CodeView`): live Git dashboard
    (branch / remote / ahead-behind / changed-file counts / porcelain status lines / recent
    commits) via `electron/git.js` (`gitInfo` → `findRoot` + `git status --porcelain` +
    `rev-list --left-right --count` + `log`), folder-open via `autobot:pickFolder`, and a
-   unified LCS diff viewer via `autobot:diff`. **Permission gating** (Example Code's
+   unified LCS diff viewer via `autobot:diff`. **Permission gating** (Claude Code's
    ask-before-write model): `permissions` (`auto`|`ask`|`acceptEdits`|`plan`|`bypass`, persisted `autobot:permissions`) →
    threaded `autobot:run` payload → `runAgent` opts → `approveTool` ctx → `runTool` gate on
    the `MUTATING` set (`Bash`/`Write`/`Edit`/`MultiEdit`/`mcp__workspace__write_file`/
@@ -108,7 +108,7 @@ app.
 
 ### ⚪ Intentional extras (NOT gaps — out-of-model panels)
 
-`Notebooks`, `Terminal`, and `Skills` are **Example Code** concepts, not Example Desktop
+`Notebooks`, `Terminal`, and `Skills` are **Claude Code** concepts, not Claude Desktop
 concepts. They are extra surface added beyond strict 1:1 Desktop parity. If strict Desktop
 parity is the goal, the sidebar should be `Chats / Recents / Projects / (account +
 settings)` and these three panels are out-of-model additions, not parity gaps.
@@ -117,14 +117,14 @@ settings)` and these three panels are out-of-model additions, not parity gaps.
 
 ## B2. PROJECT-FOLDER & CODING/VISUALIZATION PARITY — RESOLVED (2026-11-25)
 
-The user flagged two concrete gaps against Example Desktop and asked for a re-check:
+The user flagged two concrete gaps against Claude Desktop and asked for a re-check:
 
 **10. ~~Models write files outside the conversation project folder.~~ RESOLVED.** Root
 cause: `runAgent` received `opts.cwd` and stored it in `ctx.cwd` for *tool* path
 resolution, but the working directory was **never surfaced to the model** — so any model
 (Gemma4 via Ollama, Kimi, DeepSeek, Nemotron) that emitted a relative `Write`/`Bash` path
 did so against `process.cwd()` or an arbitrary location instead of the conversation's
-`~/Helio Bot/<slug>` folder. Fix: `electron/llm.js` now injects a `<project_workspace>`
+`~/Akron Bot/<slug>` folder. Fix: `electron/llm.js` now injects a `<project_workspace>`
 block into the core system prompt (`messages[0]`) with the resolved `currentCwd`
 (`let currentCwd = opts.cwd || process.cwd()`), instructing every model to create/edit
 files there by default and run shell commands there. The core prompt is also now
@@ -152,9 +152,9 @@ the conversation cwd, `mkdir -p` parent dirs, no save-dialog). `Copy` behaviour 
 
 ## C. PARITY TARGET — RESOLVED
 
-Parity target = **Example Desktop** (the app that was reverse-engineered: `Claude.app`
+Parity target = **Claude Desktop** (the app that was reverse-engineered: `Claude.app`
 v6.28899.6). All parity work in §A/§B is measured against that product. The Code-concept
-panels (Notebooks/Terminal/Skills) are documented as intentional extras, and Example Code
+panels (Notebooks/Terminal/Skills) are documented as intentional extras, and Claude Code
 CLI parity is listed as gap B8 rather than silently conflated with the local Terminal
 shell.
 
@@ -165,7 +165,7 @@ shell.
 - **`npm run build`** — clean.
 - **`electron/*.js` `node --check`** — all pass.
 - **E2E suite** — 57/57 pass; 111 tool definitions (incl. 6 permission-mode gating tests + 7 browser-controller tests + 2 text-protocol tests + renderer-regression tests).
-- **DMG** — `release/HelioBot-1.0.0-arm64.dmg` (108 MB) + `HelioBot-1.0.0-arm64.zip`
+- **DMG** — `release/AkronBot-1.0.0-arm64.dmg` (108 MB) + `AkronBot-1.0.0-arm64.zip`
   (104 MB); packaged `app.asar` verified to contain the 5-mode permission UI and the
   collapsed wordmark rule.
 - **Project-folder & coding/visualization parity (§B2)** — `<project_workspace>` cwd
@@ -177,7 +177,7 @@ shell.
   3-transport client; Projects create/toggle/persist flow; per-message hover toolbar
   (Copy/Edit/Retry/Delete); image drag-drop/paste/attach → `data:image/png;base64` thumbnail
   verified end-to-end.
-- **B8 Example Code mode (2026-11-25)** — `Code` panel dashboard + permission segmented
+- **B8 Claude Code mode (2026-11-25)** — `Code` panel dashboard + permission segmented
   toggle (4 modes: auto/ask/accept-edits/plan, persisted to `autobot:permissions`) + diff
   viewer verified live via CDP;
   `window.autobot.diff` returns typed hunks; `gitInfo` on repo root returns branch/counts/
@@ -185,7 +185,7 @@ shell.
   event → `PermissionModal` → `answerPermission` IPC → 5-min-timeout promise) audited
   source-end-to-end.
 - **Window / chrome surface parity (2026-11-25)** — see §G. 11 secondary-window +
-  chrome features decoded from Example Desktop's own IPC surface (REA) and shipped:
+  chrome features decoded from Claude Desktop's own IPC surface (REA) and shipped:
   Quick Entry floating window, ⌘K Command Palette, ⌘F in-chat Find bar, custom About
   window, Artifact app-window + PDF export, system tray, global shortcut register,
   Computer Use teach/watch-record, Buddy, Remote Control, Extensions, Developer mode,
@@ -195,14 +195,14 @@ shell.
 
 ## E. BROWSER SESSION-PANE PARITY — RESOLVED (2026-11-24)
 
-**Divergence found (REA):** Example Desktop's built-in browser is **not** a full sidebar
+**Divergence found (REA):** Claude Desktop's built-in browser is **not** a full sidebar
 panel — it is a **session pane** that coexists with the chat and is toggled via
 `dispatchToggleSessionPane(Vc.Preview)`. Command palette entries `Show Browser` /
 `Hide Browser` (i18n ids `izpqAIME9m` / `dpcjrIOyI3`), accelerator
 `CmdOrCtrl+Shift+B`, sibling panes `Vc.Files` / `Vc.Terminal` / `Vc.Diff` / `Vc.SideChat`.
 (Source: `index.chunk-nq69RXOm.js`, main bundle 8,079,022 bytes.)
 
-Helio Bot previously rendered the browser as a full `panel === 'browser'` replacement
+Akron Bot previously rendered the browser as a full `panel === 'browser'` replacement
 (`<main>` swap) with **no collapse** — the exact gap the user reported ("i cannot collaps
 browser same like example app").
 
@@ -239,7 +239,7 @@ browser??"
    `lgBlue`, `lgChrome`, `lgPlate`, `lgGlow`. With multiple logos mounted (titlebar +
    sidebar wordmark + welcome + assistant avatars), `url(#lgRed)` etc. resolved to the first
    instance in DOM order, so later logos lost their fills / glowed with the wrong gradient.
-3. **Stale installed binary.** `/Applications/Helio Bot.app` and `release/*.dmg` did not exist
+3. **Stale installed binary.** `/Applications/Akron Bot.app` and `release/*.dmg` did not exist
    at report time — the user was running a build that predated the Browser session-pane work,
    so the sidebar `Browser` entry (and `Cmd+Shift+B`) was simply absent.
 
@@ -249,15 +249,15 @@ browser??"
 - Removed the baked-in `<text>` node. The app glyph is now the **sunburst marque**
   (`build/icon.svg`, 240×240 — terracotta rays `#D97757` on `#F6F3EC`), reused for the
   titlebar, sidebar wordmark, welcome screen, tray, `.icns`/`.png` app icon, and the About
-  window; the wordmark reads `Helio Bot`.
+  window; the wordmark reads `Akron Bot`.
 - Added a **prominent browser toggle** in the composer action row (`Window` icon,
   `Open browser`/`Close browser`), in addition to the existing sidebar `Browser` entry and
   `CmdOrCtrl+Shift+B` accelerator.
 - Rebuilt → `npm run dist` → `hdiutil verify` **VALID** (101.5 MB) → reinstalled to
-  `/Applications/Helio Bot.app` (app.asar present).
+  `/Applications/Akron Bot.app` (app.asar present).
 
 **Verified (CDP, port 9223):**
-- `wordmark.innerText === "Helio Bot"`; `logo.querySelector("text") === null`.
+- `wordmark.innerText === "Akron Bot"`; `logo.querySelector("text") === null`.
 - Gradient defs across all mounted logos: 15 ids, **15 unique** (collision gone).
 - Composer button `title="Open browser"` present; sidebar `Browser` entry present.
 - Clicking the composer browser toggle → `.session-pane` mounts (title `Browser`, webview
@@ -268,7 +268,7 @@ browser??"
 
 ## G. WINDOW / CHROME SURFACE PARITY — RESOLVED (2026-11-25)
 
-**Source of truth (REA):** Example Desktop `v6.28899.6` ships a native-process window
+**Source of truth (REA):** Claude Desktop `v6.28899.6` ships a native-process window
 layer whose IPC namespaces were decoded from the main bundle:
 `example.internal.ui.{AboutWindow,QuickWindow,MainWindowTitleBar,ConfigTemplateExport}`,
 `example.internal.findInPage`, `example.internal.localExecConsent`,
@@ -281,20 +281,20 @@ Corresponding source modules: `quickWindow.js`, `buddy.js`, `findInPage.js`,
 `computerUseWatchRecord.js`, `artifactAppWindow.js`, `designWindow.js`, `aboutWindow.js`,
 `configTemplateWindow.js`.
 
-Helio Bot now implements each as a local equivalent. Verified against the **installed
+Akron Bot now implements each as a local equivalent. Verified against the **installed
 packaged app** via CDP (`--remote-debugging-port=9223`) — window-target enumeration,
 DOM/text dumps, and direct `window.autobot.*` bridge calls.
 
-| Example Desktop feature | Helio Bot implementation | Evidence |
+| Claude Desktop feature | Akron Bot implementation | Evidence |
 |---|---|---|
 | Quick Entry floating prompt (`QuickWindow`) | `createQuickWindow()` → `electron/quick.html` (⇧↩ send / ↩ insert / Esc); global hotkey `CmdOrCtrl+Shift+Space` via `registerQuickShortcuts()`; `autobot:quickSubmit` routes prompt to primary window (`autobot:quickEntry` event) | Live CDP: `openQuickEntry()` → new page target `title="Quick Entry"`, URL `electron/quick.html` |
-| About window (`AboutWindow`) | `createAboutWindow()` → 340×420 non-resizable window, sunburst `logoMarkup()`, "Helio Bot / free-LLM desktop agent / Version 1.0.0 / Electron 33.4.11 / akronlogic.com" | Live CDP: `openAbout()` → `data:text/html` target with title bar + logo + version |
+| About window (`AboutWindow`) | `createAboutWindow()` → 340×420 non-resizable window, sunburst `logoMarkup()`, "Akron Bot / free-LLM desktop agent / Version 1.0.0 / Electron 33.4.11 / akronlogic.com" | Live CDP: `openAbout()` → `data:text/html` target with title bar + logo + version |
 | Command Palette | `⌘K` keydown → `CommandPalette` (`.palette-modal`), items: New chat, Search, Toggle browser, Code mode, Toggle sidebar, Toggle theme, Quick Entry, Export, Settings, About | Live CDP: dispatch `⌘K` → `.palette-modal` present, 10 items enumerated |
 | Find-in-page (`findInPage`) | `⌘F` keydown → `FindBar` (`.findbar` + input), in-chat find | Live CDP: dispatch `⌘F` → `.findbar` + `input` present |
 | Artifact app window (`artifactAppWindow` / `ArtifactAppPage`) | `createArtifactWindow({name,language,content})` — dedicated BrowserWindow (1180×800 for canvas types); ArtifactsView "Open"/"PDF" buttons wired to `openArtifactWindow` | `window.autobot.openArtifactWindow` === function (main-window bridge) |
 | Design canvas + Slides deck artifact types (`designWindow.js`, `artifactsDesignEnabled` / `artifactsSlidesEnabled`) | `electron/artifactcanvas.js` — `parseDesign`/`parseSlides` + `designHtml`/`slidesHtml`/`canvasHtml`/`isCanvas`; used by `createArtifactWindow`, print-to-PDF and the in-chat preview via `autobot:artifactDocument` | Live CDP: `artifactDocument({language:'design'})` → 5336-char doc with `.canvas`; `{language:'slides'}` → 2 `<section class="slide">`; `openArtifactWindow` opened windows 2 & 3; `test/artifactcanvas.test.js` 45/45 |
 | PDF export (`omeletteDesktopPdf.printFrameToPdf`) | `printToPdf()` (main) + `autobot:printToPdf` → dialog + PDF write | `window.autobot.printToPdf` === function |
-| System tray | `createTray()` — `electron/tray.png` / `tray@2x.png` / `tray-16.png`, Quick Entry menu item | tray assets present; `createTray()` in `app.whenReady` |
+| System tray | `createTray()` — `electron/trayTemplate.png` / `trayTemplate@2x.png` (macOS template images, auto-inverted), Quick Entry menu item | tray assets present; `createTray()` in `app.whenReady` |
 | Computer Use teach / watch-record (`CuTeach`/`CuWatchRecord*`) | `computerUseTeach` feature toggle in Settings (teach & watch/record) | Settings `label.check` dump lists "Computer Use — teach & watch/record" |
 | Buddy (pair-hunting co-pilot) (`buddy.Buddy`) | `buddy` feature toggle + "Buddy (pair-hunting co-pilot)" Settings row | Settings dump lists "Buddy (pair-hunting co-pilot)" |
 | Remote Control (Drive/co-browsing) | `remoteControl` feature toggle + Settings row | Settings dump lists "Remote Control (Drive / co-browsing session)" |
@@ -326,16 +326,16 @@ OAuth client secret + backend:
    SSO IdP config render. Still local-only (`~/.autobot` + localStorage); no enterprise IdP
    handshake or plan/billing backend.
 
-These are **not cosmetic** — they are the only two places Helio Bot structurally cannot
-match Example Desktop because they depend on Anthropic's proprietary cloud, not on any
-client-side code. Everything else in the Example Desktop `v6.28899.6` surface is now
+These are **not cosmetic** — they are the only two places Akron Bot structurally cannot
+match Claude Desktop because they depend on Anthropic's proprietary cloud, not on any
+client-side code. Everything else in the Claude Desktop `v6.28899.6` surface is now
 implemented and verified (§A, §B, §E, §F, §G).
 
 ---
 
 ## J. SKILLS MANAGEMENT + PERMISSION MODES — RESOLVED (2026-11-25)
 
-Two further Example Code / Example Desktop parity features shipped and CDP-verified:
+Two further Claude Code / Claude Desktop parity features shipped and CDP-verified:
 
 ### J1 — Full skills system (activate/deactivate any skill)
 - **Discovery now merges 250 skills** across four sources with dedupe priority
@@ -350,7 +350,7 @@ Two further Example Code / Example Desktop parity features shipped and CDP-verif
   (explicit load works regardless of toggle) — matching Example's model where a disabled skill
   is hidden from auto-discovery but still loadable on request.
 - Verified end-to-end (live CDP): 250 switches/items render, group heads `Example 7 /
-  OpenCode 234 / Example Code 9`, toggle persists across `getSkills()` calls, and
+  OpenCode 234 / Claude Code 9`, toggle persists across `getSkills()` calls, and
   `list_skills` filters + `load_skill` stays permissive via direct executor test.
 
 ### J2 — Permission modes (Auto / Manual / Accept edits / Plan / Bypass)
@@ -368,7 +368,7 @@ Two further Example Code / Example Desktop parity features shipped and CDP-verif
   gray description + right-edge number hint (`1`–`5`) + checkmark on the active mode
   (accent-tinted background). Keyboard parity: `1`–`5` select, `Esc` closes, outside-click
   dismisses.
-- Also surfaced in the Example Code panel (5-button segmented control) and **Settings →
+- Also surfaced in the Claude Code panel (5-button segmented control) and **Settings →
   Behavior** (5-option dropdown), all bound to the same persisted `autobot:permissions`.
 - Verified live on the **packaged** app (CDP, port 9333): pill text `Auto`; menu header
   correct; all 5 rows present with correct titles/descriptions/numbers; `Auto` row
@@ -382,7 +382,7 @@ Two further Example Code / Example Desktop parity features shipped and CDP-verif
   open/close icon swap (`SidebarOpen`/`SidebarClose`), and conv icons colored for active
   state — fixing the half-hidden-label / misaligned-icon flaw present before.
 - **Wordmark fully hidden when collapsed:** `.sidebar.collapsed .wordmark { display:none }`
-  removes the `<Logo>` mark **and** the `Helio Bot` text entirely — the rail shows no
+  removes the `<Logo>` mark **and** the `Akron Bot` text entirely — the rail shows no
   logo/wordmark at all (verified: collapsed width 52px, `wordmark` computed `display:none`,
   0 visible rail logos).
 
@@ -390,10 +390,10 @@ Two further Example Code / Example Desktop parity features shipped and CDP-verif
 
 ## I. WHAT'S MOST LIKELY TO PAY
 
-The single highest-value differentiator Helio Bot ships over Example Desktop is **§A1 — the
+The single highest-value differentiator Akron Bot ships over Claude Desktop is **§A1 — the
 Orchestrator (100+ API keys, auto-failover on rate-limit)** combined with **§A2 — the
 model-agnostic pluggable `/v1/chat/completions` layer**. That is the one capability that is
-structurally impossible in Example Desktop (single-account lock) and is the feature a buyer
+structurally impossible in Claude Desktop (single-account lock) and is the feature a buyer
 or evaluator would flag first. The remaining §H gaps (Anthropic OAuth/sync) are the only
 honest parity shortfall and are bounded purely by cloud access, not code.
 
@@ -401,8 +401,8 @@ honest parity shortfall and are bounded purely by cloud access, not code.
 
 ## H. BUILT-IN BROWSER: FULL AGENT PARITY FOR EVERY MODEL (2026-11-25)
 
-Example Desktop's browser is a cloud-managed MCP that only Anthropic models can drive.
-Helio Bot's browser is local and available to **every** configured provider — including
+Claude Desktop's browser is a cloud-managed MCP that only Anthropic models can drive.
+Akron Bot's browser is local and available to **every** configured provider — including
 endpoints with no native function calling.
 
 ### Controller (`electron/browser.js`) — rewritten
@@ -451,7 +451,7 @@ model drives the browser like Example" true rather than aspirational.
 ```
 paneBefore=false → browserLoadURL('https://example.com') → paneAfter=true   (432 ms)
 read:      ok, title "Example Domain", 1 link, text body                   
-screenshot: /var/folders/.../heliobot-shot-*.png  918×971                  
+screenshot: /var/folders/.../akronbot-shot-*.png  918×971                  
 click:     ok, found A "Learn more" → url became iana.org/help/example-domains
 tabs:      1, activeId tab1, synced to renderer                           
 scroll/hover/select/press/waitFor/browser_js(=42): all ok                  
@@ -467,8 +467,8 @@ UI:        webviews 1, tabs 1, omnibox in sync, toolbar 6 buttons
 
 ### Branding
 `productName` / bundle / DMG / About / tray / wordmark / system prompt all read
-**Helio Bot**; identifier `com.heliobot.app`; artifacts
-`release/HelioBot-1.0.0-arm64.dmg` + `.zip`; DMG volume `Helio Bot 1.0.0`.
+**Akron Bot**; identifier `com.akronbot.app`; artifacts
+`release/AkronBot-1.0.0-arm64.dmg` + `.zip`; DMG volume `Akron Bot 1.0.0`.
 Internal identifiers (`window.autobot` bridge, `autobot:*` IPC channels) are unchanged —
 implementation detail with no user-visible effect.
 
@@ -476,7 +476,7 @@ implementation detail with no user-visible effect.
 
 ## K. PLUGINS · MCP REGISTRY · SCHEDULED TASKS · CUSTOM SKILLS — RESOLVED (2026-11-25)
 
-The four remaining *product-surface* gaps from the Example Desktop sidebar are now shipped,
+The four remaining *product-surface* gaps from the Claude Desktop sidebar are now shipped,
 tool-wired, and verified in the running app (CDP, port 9333) and in the headless suite.
 
 ### K1 — Plugins & connectors catalog (`electron/connector-catalog.js` + `electron/plugins.js`)
@@ -697,7 +697,7 @@ never expanded `~`, so `Write ~/Desktop/x.txt` created a literal `~/` directory.
 - **`electron/paths.js`** (new) — `expandPath(p)` expands `~`, `$HOME`, and `~user`; used
   by every path-resolving tool.
 - **`electron/workspace.js`** (new) — each conversation gets a lazily-created project
-  folder under `~/Helio Bot/<slug>` ("every build auto-creates a project folder", Example
+  folder under `~/Akron Bot/<slug>` ("every build auto-creates a project folder", Example
   Desktop parity). Persisted in `~/.autobot/workspaces.json` as `{ [convId]: {dir,title,at} }`.
   `setDir()` also expands `~` now (was `path.resolve` which left a literal `~/`).
 - **`electron/tools.js`** — `bash` runs through a real login shell `spawn('/bin/zsh',
@@ -720,13 +720,13 @@ chat → `runAgent` → Bash → login-shell → filesystem chain. E2E suite **5
 ### M6 — Computer Use default + input fixes (2026-11-25)
 
 - Computer Use gate now defaults **ON** (`store.js` feature default `computerUse:true` +
-  matching `App.jsx` state default) — Example Desktop parity (drive the local Mac by default,
+  matching `App.jsx` state default) — Claude Desktop parity (drive the local Mac by default,
   not off).
 - `electron/computer.js` — fixed `drag(x1,y1,x2,y2)` (was forwarding `x`/`y` instead of
   `x1`/`y1`), and `execP` now feeds `input` to stdin (pbcopy/pbpaste path). Screenshot
   (`screencapture`) and CoreGraphics move/scroll verified working earlier; full click/type
   requires the user to grant Accessibility once (System Settings › Privacy & Security ›
-  Accessibility › Helio Bot) — surfaced as a clear one-line prompt when `AXIsProcessTrusted`
+  Accessibility › Akron Bot) — surfaced as a clear one-line prompt when `AXIsProcessTrusted`
   is false.
 
 ## N. "WHY ONLY 5 STEPS?" — THE AGENT-LOOP GAP AGAINST EXAMPLE DESKTOP — RESOLVED (2026-11-25)
@@ -734,7 +734,7 @@ chat → `runAgent` → Bash → login-shell → filesystem chain. E2E suite **5
 **Demand:** *"why only 5 steps why limit? it should be same like example app. check the example
 app and find the gap and fix it."*
 
-Example Desktop (and Example Code) impose **no per-turn tool budget**. The loop keeps calling
+Claude Desktop (and Claude Code) impose **no per-turn tool budget**. The loop keeps calling
 tools while the model keeps asking for them; it stops when the model emits a plain answer,
 when the user hits Stop, or when the safety valve trips — and if it trips, it says so. Helio
 Bot had a small fixed budget, which is why long builds (a website, then screenshots, then a
@@ -753,7 +753,7 @@ fix, then a preview) died at "step 5". Gap inventory and the fix for each:
 
 ### N1 — Second gap found in the same audit: a cut-off turn stacked instead of replaced
 
-Example replaces a message truncated by the token limit. Helio Bot left the partial draft
+Example replaces a message truncated by the token limit. Akron Bot left the partial draft
 above the regenerated answer. `runAgent` now counts the turn's streamed characters
 (`turnChars` / `turnThink`, reset per `doChat`) and emits
 `{type:'retry', chars, thinkingChars}`; `App.jsx` `case 'retry'` slices exactly that many
@@ -780,7 +780,7 @@ not build a website".
 | Token-limit retry live | ✅ `retry-ui.cjs` stub cuts stream at `length` → `before: ["text:48"]` → `after: []`; transcript keeps one clean answer + the "retrying with 16384 tokens" note |
 | Composer regression | ✅ `composer-flow.cjs` — live activity → ordered transcript (`think>text>tool>text`) → page in pane + on disk |
 | Headless suite | ✅ **111 passed, 0 failed** (111 tool definitions) |
-| Real reasoning model end-to-end | ✅ DeepSeek V4.1 Flash: `Worked for 5m 47s`, 138 samples, ~100 ordered blocks, 6 tool rows, deliverable `~/Helio Bot/build-me-a-live-football-score-website-11/index.html` + `css/`, `js/`, `README.md`, `MINDMAP.md`; no error banner, no `hung` flag |
+| Real reasoning model end-to-end | ✅ DeepSeek V4.1 Flash: `Worked for 5m 47s`, 138 samples, ~100 ordered blocks, 6 tool rows, deliverable `~/Akron Bot/build-me-a-live-football-score-website-11/index.html` + `css/`, `js/`, `README.md`, `MINDMAP.md`; no error banner, no `hung` flag |
 | Build | ✅ `npm run build` clean |
 
 **Operational notes for whoever tests this next:** `npm run build` + CDP `Page.reload` covers
@@ -818,7 +818,7 @@ transcript (main-process scrub + renderer scrub + an assertion in the headless s
 | Headless: humanizer | ✅ `an unrecoverable provider error is humanized, not pasted raw` — `LLM 502: <html>…nginx</html>` → `The provider's gateway returned 502 Bad Gateway` (no angle brackets, no `nginx`); `LLM 401: {"error":{"message":"invalid api key"}}` → `The API key was rejected — …` |
 | Live CDP (`test/live/gateway-502.cjs`, stub on :8903) | ✅ 3 attempts, banner empty, transcript blocks `["think:provider error 502 — waiting 2s before retrying / … 5s …", "text:Back online — the gateway blip was retried and this answer is intact."]`, `document.body.innerText` free of `<html|<head|<title|<body|nginx`, screenshot `screenshots/gateway-502.png` |
 | Regressions | ✅ `retry-ui.cjs` PASS, `composer-flow.cjs` PASS (`think>text>tool>text`, page in pane + on disk), `e2e.test.js` **111 passed, 0 failed** |
-| Real reasoning model after the fix | ✅ `real-model.cjs deepseek` exit 0 — `deepseek-v4.1-flash-1017`, *Worked for 8m 33s*, 204 live samples, 139 ordered blocks (text → think → tool → text), 7 files on disk in `~/Helio Bot/build-me-a-live-football-score-website-15/`, page live in the pane at `http://localhost:8899/index.html`, `errorBanner`/`lastNotice` empty, `hung:false`, no markup anywhere |
+| Real reasoning model after the fix | ✅ `real-model.cjs deepseek` exit 0 — `deepseek-v4.1-flash-1017`, *Worked for 8m 33s*, 204 live samples, 139 ordered blocks (text → think → tool → text), 7 files on disk in `~/Akron Bot/build-me-a-live-football-score-website-15/`, page live in the pane at `http://localhost:8899/index.html`, `errorBanner`/`lastNotice` empty, `hung:false`, no markup anywhere |
 
 ## P. MULTI-AGENT + SWARM — "IS IT LIKE THE EXAMPLE APP?" — RESOLVED (2026-11-25)
 
@@ -826,12 +826,12 @@ The ask was exact: *"does it have multi agent and swarm like the original exampl
 multi model and multi agent work same time for different task, small task can use small model
 and heavy task or critical use frontier model, so there must be a supervisor model as well."*
 
-### P.1 What the Example app / Example Code actually do
+### P.1 What the Example app / Claude Code actually do
 
 | Mechanism | Example's behaviour | What copied it |
 |---|---|---|
 | **Subagents** (`Task`/`Agent`) | A tool call spawns a child agent with its **own** context window and its own system prompt; the child runs its own tool loop and returns **only its final message** to the parent. Parent context never absorbs the child's tool chatter | `Task` / `Agent` tools → `runSubagent`; child gets `subagentMaxSteps`, returns last assistant message |
-| **Concurrency** | Independent subagents are dispatched at the same time (the app runs several in parallel; Example Code fans out one per task) | `Swarm` + `mcp__cowork__orchestrate` dispatch with a concurrency pool |
+| **Concurrency** | Independent subagents are dispatched at the same time (the app runs several in parallel; Claude Code fans out one per task) | `Swarm` + `mcp__cowork__orchestrate` dispatch with a concurrency pool |
 | **Model per agent** | A subagent definition can pin `model: haiku/sonnet/opus` — the child does **not** have to be the parent's model | `Task`/`Agent`/`Swarm` accept `model` **and** `tier`; the provider is resolved per subtask |
 | **Supervisor / lead** | For big goals the top model plans, delegates, then reviews and merges what came back — the "orchestrator + workers" pattern | `electron/swarm.js`: `decompose()` → dispatch → `SUPERVISOR_MERGE_PROMPT` review, all on the strongest tier |
 | **Complexity routing** | Cheap model for mechanical work, frontier model for hard/critical work (cost + latency control) | `tier` (`small`/`heavy`/`critical`) per subtask → `pickProvider` picks the roster entry of that tier |
@@ -890,7 +890,7 @@ docs or recollection:
 | Source | What it is | Used for |
 |---|---|---|
 | `~/.npm-global/lib/node_modules/@anthropic-ai/example-code/sdk-tools.d.ts` (3166 lines) | Example **Code 2.1.154** SDK type definitions | The 43 `*Input` interfaces = the authoritative tool schemas (property names, enums, defaults) |
-| `rea-example/strings.json` (11.5 MB) | REA string dump of **Example Desktop 7.37095.0** | Subsystem existence + user-facing surface: `statusLine`, `outputStyles`, `checkpoint*`, hooks event names, team/task-board contracts, plan-mode phases, workflow/cron/monitor |
+| `rea-example/strings.json` (11.5 MB) | REA string dump of **Claude Desktop 7.37095.0** | Subsystem existence + user-facing surface: `statusLine`, `outputStyles`, `checkpoint*`, hooks event names, team/task-board contracts, plan-mode phases, workflow/cron/monitor |
 | `rea-example/tool_block.txt` (125 KB) | Extracted tool-description block | Tool prompt text + parameter semantics |
 | `rea-example/prompt_strings.txt` (83 KB) | Extracted prompt strings | System-prompt blocks, delegation/plan/skill contracts, agent-type names |
 
@@ -903,7 +903,7 @@ the task-board/team contracts, and that `subagent_type` frontmatter can pin `mod
 Status legend: **CLOSED** = implemented and gated by a test. **GUI-EQ** = the CLI-only
 surface expressed in the GUI (documented, functional equivalent). Nothing is "deferred".
 
-| # | Example subsystem | What Example actually does | Helio Bot module | Wired into | Gate | Status |
+| # | Example subsystem | What Example actually does | Akron Bot module | Wired into | Gate | Status |
 |---|---|---|---|---|---|---|
 | 1 | **Tool surface (43 SDK tools)** | 43 `*Input` interfaces incl. `Task`, `Workflow`, `Monitor`, `TaskCreate/Get/Update/List`, `Cron*`, `Team*`, `EnterPlanMode`, `ExitPlanMode` | `electron/parity.js`, `electron/parity-defs.js`, `electron/tools.js` (139 defs) | `runTool` dispatch → `parity.handle` before `executorsByTool` | `scripts/parity-audit.js`: DEFINE + HANDLE + **every schema property** | **CLOSED** — 43/43 define+handle, 0 missing props, 42 documented alias extras |
 | 2 | **Hooks (10 events)** | `PermissionRequest`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Notification`, `Stop`, `PreCompact`, `PostCompact`, `UserPromptSubmit`, `SessionStart` | `electron/hooks.js` | `llm.js` fires all 10 at the real lifecycle points | `test/hooks.test.js` **49**; `test/live/hooks-live.cjs` **17** | **CLOSED** |
@@ -942,12 +942,12 @@ surface expressed in the GUI (documented, functional equivalent). Nothing is "de
 
 ### Q.3 The three CLI-only surfaces (honest statement)
 
-Example Code's TUI exposes three things that have no desktop equivalent *by nature*, not by
-omission. Helio Bot ships a functional GUI equivalent for each; none silently absent:
+Claude Code's TUI exposes three things that have no desktop equivalent *by nature*, not by
+omission. Akron Bot ships a functional GUI equivalent for each; none silently absent:
 
 1. **Status line** → app status bar (same source: a settings-defined command's stdout).
 2. **Output styles** → Settings selector → `<output_style>` system block (same overlays).
-3. **`/terminal-setup`, shell `bash` completion** → N/A: Helio Bot *is* the terminal host.
+3. **`/terminal-setup`, shell `bash` completion** → N/A: Akron Bot *is* the terminal host.
 
 Everything else on the Example surface — every tool, hook, permission rule, memory file,
 agent type, command, checkpoint, MCP server, workflow primitive, budget directive, cron,
@@ -1049,12 +1049,12 @@ reasoning", "Deep, thorough reasoning"). Level persists with the provider
 
 ### S.0 Ground truth and the gate
 
-The command registry was re-extracted by REA from the installed Example Code CLI **2.1.154**
+The command registry was re-extracted by REA from the installed Claude Code CLI **2.1.154**
 (two key orders appear in the binary — `{type:"local-jsx",name:…}` and `{name:…,type:…}` — so the
 extractor accepts either). The result is 100 real commands, frozen as a test fixture:
 `test/fixtures/cc-commands-2.1.154.txt` (`name<TAB>kind`, `kind ∈ local|skill`).
 
-Two resolution paths, exactly like Example Code:
+Two resolution paths, exactly like Claude Code:
 
 1. **`local` commands** are handled client-side by `runSlashCommand` in `src/App.jsx`
    (a `case` label, or an `ALIAS` entry that maps onto one).
@@ -1062,7 +1062,7 @@ Two resolution paths, exactly like Example Code:
    user) always wins, else the built-in `SKILL_PROMPTS` table added to
    `electron/commands.js`. `resolve()` returns `{name, description, body, source:'skill'}`,
    `main.js:resolveCommand` expands it, and the renderer sends it as a **real user turn** —
-   which is all Example Code does with a skill command too.
+   which is all Claude Code does with a skill command too.
 
 `test/slash-commands.test.js` is the permanent gate:
 
@@ -1078,7 +1078,7 @@ command file fails to override the built-in skill table.
 
 ### S.1 `local` commands (85 `case` handlers + 4 alias-only)
 
-| Command | Behaviour in Helio Bot |
+| Command | Behaviour in Akron Bot |
 |---|---|
 | `/help` | Prints the full command list from the picker (built-ins + skills + project commands) |
 | `/clear` | New conversation in the same folder |
@@ -1136,7 +1136,7 @@ instead of silently falling through. None prints "unknown command".
 | `/remote-env` | Toggles `features.remoteControl` |
 | `/setup-bedrock` | Pre-fills an OpenAI-compatible Bedrock endpoint + opens Settings |
 | `/setup-vertex` | Pre-fills the Vertex OpenAI-compatible endpoint + opens Settings |
-| `/ide`, `/desktop`, `/tui` | Honest note: Helio Bot *is* the IDE/desktop surface; no TUI renderer |
+| `/ide`, `/desktop`, `/tui` | Honest note: Akron Bot *is* the IDE/desktop surface; no TUI renderer |
 | `/keybindings`, `/keybindings-help` | Settings → Shortcuts (+ documented shortcut list) |
 | `/scroll-speed`, `/wellbeing` | OS-level settings; explained, no duplicate control |
 | `/privacy-settings`, `/rate-limit-options` | Open Settings (data handling / provider failover) |
@@ -1156,7 +1156,7 @@ not missing, and never throw.
 
 ### S.4 `skill` commands — built-in prompt bodies
 
-Example Code 2.1.154 ships these inside the binary as skills, so there is nothing on disk to
+Claude Code 2.1.154 ships these inside the binary as skills, so there is nothing on disk to
 discover. `electron/commands.js` now carries faithful prompt bodies for all eight, appearing in the
 picker as `source:'skill'` and overridable by a same-named `.claude/commands/*.md`:
 
@@ -1199,12 +1199,12 @@ guessed it was data-flow provenance for prompt-injection defence. That guess
 was wrong. In `index.chunk-zlLu4KiP.js` the 12 channels resolve to a map over
 `memberships[].organization.capabilities` — the **organization compliance
 strings** claude.ai returns with an account. The bundle's human-facing strings
-are only the `refused_under_*` codes, so the copy in Helio Bot is authored, not
+are only the `refused_under_*` codes, so the copy in Akron Bot is authored, not
 copied.
 
 ### T.1 What each channel maps to
 
-| channel group | meaning in Desktop | Helio Bot |
+| channel group | meaning in Desktop | Akron Bot |
 |---|---|---|
 | `taint:hipaa_regulated` | workspace is HIPAA-regulated: sessions cannot be deleted, MCP tools cannot sync | `sessionDeletion` refused, `mcpToolSwitch` local-only, deletion refusal line |
 | `taint:claude_code_zdr` | zero data retention for Code: no cloud/model move, no site framing | `cloudMovePolicy` → `zero_retention`, `siteFraming` off |
@@ -1300,7 +1300,7 @@ Tokens are stored through `secretstore` under `mcp-oauth:<host><path>`.
 | Parity gate | `scripts/parity-audit.js` → **27 subsystem rows**, *NO ATOMIC GAPS*, EXIT 0 |
 | Tool count | unchanged at **141** — no new definitions, swarm gate untouched |
 | e2e / search | **112 / 0** and **9 / 0** |
-| Packaged DMG | the same Install → Sign in → Sign out loop re-proven inside `release/mac-arm64/Helio Bot.app` (`app.asar` ships `electron/mcpoauth.js`); connected in 1 s, pills flip both ways, foot layout identical |
+| Packaged DMG | the same Install → Sign in → Sign out loop re-proven inside `release/mac-arm64/Akron Bot.app` (`app.asar` ships `electron/mcpoauth.js`); connected in 1 s, pills flip both ways, foot layout identical |
 
 ### U.4 Why this was worth doing before the cosmetic items
 
@@ -1485,7 +1485,7 @@ Desktop treats `design` and `slides` as *frame types*, not as fenced code that
 happens to render. Each carries a versioned manifest — `schemaVersion`, a
 `contract` string, a production slug, twelve/nine feature flags, capability
 verdicts resolved against the live environment, and per-type UI metadata
-(emoji favicon, tint, tab label). Helio Bot had the canvases and none of the
+(emoji favicon, tint, tab label). Akron Bot had the canvases and none of the
 manifest, so the Artifacts panel, the artifact window title and the in-chat
 preview all invented their own labels.
 

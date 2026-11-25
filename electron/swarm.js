@@ -1,7 +1,7 @@
 'use strict';
 // Supervisor-led multi-agent swarm with complexity-based model routing.
 //
-// This is the local equivalent of what the Example app/Example Code do when a
+// This is the local equivalent of what the Example app/Claude Code do when a
 // task is big enough to need a team: a *lead* model (the supervisor) reads the
 // goal, splits it into independent subtasks, tags each subtask with a
 // complexity tier, the host routes every subtask to the model tier that fits it

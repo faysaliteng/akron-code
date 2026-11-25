@@ -1,7 +1,7 @@
 'use strict';
 // Session project folders — the "auto create a project folder for every build"
-// behaviour Example Desktop has. Each conversation gets its own working directory
-// under ~/Helio Bot/<slug>, created lazily on first run and shown in the composer.
+// behaviour Claude Desktop has. Each conversation gets its own working directory
+// under ~/Akron Bot/<slug>, created lazily on first run and shown in the composer.
 //
 // Persistence: ~/.autobot/workspaces.json  ->  { [convId]: { dir, title, at } }
 
@@ -12,7 +12,11 @@ const store = require('./store');
 const { expandPath } = require('./paths');
 const mindmap = require('./mindmap');
 
-const ROOT = path.join(os.homedir(), 'Helio Bot');
+const ROOT = path.join(os.homedir(), 'Akron Bot');
+// Rebrand: projects used to live under `~/Helio Bot`. The tree is moved once
+// (only when the new root does not exist yet) and every stored dir is rewritten
+// so conversations keep pointing at the folder their files actually live in.
+const LEGACY_ROOT = path.join(os.homedir(), 'Helio Bot');
 const FILE = path.join(store.DATA_DIR, 'workspaces.json');
 
 function read(file) {
@@ -227,5 +231,25 @@ function scratch() {
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
+
+// One-time rebrand migration: projects used to live under `~/Helio Bot`. Move the
+// tree when the new root is absent, then rewrite stored absolute dirs that still
+// point into the legacy root so no conversation loses its folder.
+(function migrateLegacyRoot() {
+  try {
+    if (!fs.existsSync(ROOT) && fs.existsSync(LEGACY_ROOT)) migrateDir(LEGACY_ROOT, ROOT);
+  } catch (_) {}
+  try {
+    const map = read();
+    let dirty = false;
+    for (const id of Object.keys(map)) {
+      const d = map[id] && map[id].dir;
+      if (typeof d !== 'string' || !d.startsWith(LEGACY_ROOT + path.sep)) continue;
+      map[id] = { ...map[id], dir: path.join(ROOT, d.slice(LEGACY_ROOT.length + 1)) };
+      dirty = true;
+    }
+    if (dirty) write(map);
+  } catch (_) {}
+})();
 
 module.exports = { ROOT, ensure, get, setDir, scratch, read, write, slugify, reconcile, isGenericDirName, migrateDir };

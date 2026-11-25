@@ -1,7 +1,7 @@
 'use strict';
 // Slash-command parity gate.
 //
-// Ground truth: the command registry extracted from Example Code CLI 2.1.154
+// Ground truth: the command registry extracted from Claude Code CLI 2.1.154
 // (test/fixtures/cc-commands-2.1.154.txt — one `name<TAB>kind` per line, where
 // kind is `local` for a real local/local-jsx command and `skill` for a
 // prompt/skill command).

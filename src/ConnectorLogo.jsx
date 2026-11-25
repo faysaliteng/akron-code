@@ -1,4 +1,4 @@
-// Helio Bot — connector / plugin card artwork.
+// Akron Bot — connector / plugin card artwork.
 //
 // <ConnectorLogo> paints, in order of preference:
 //   1. the service's own icon (apple-touch-icon, then favicon), lazily loaded,

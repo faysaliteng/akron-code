@@ -16,7 +16,7 @@
 //   Edit(src/**)     → file path glob (gitignore-style)
 //   Read(./.env)     → exact path (relative to cwd)
 //
-// Precedence (matches Example Code): deny > ask > allow > defaultMode.
+// Precedence (matches Claude Code): deny > ask > allow > defaultMode.
 // Everything here is pure so the parity gate can exercise it.
 
 const cc = require('./claudeconfig');

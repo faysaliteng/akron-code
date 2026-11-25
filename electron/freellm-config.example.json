@@ -1,0 +1,52 @@
+{
+  "host": "127.0.0.1",
+  "port": 3001,
+  "token": "",
+  "timeoutMs": 120000,
+  "order": ["groq", "gemini", "cloudflare", "nvidia", "cohere", "kilo", "openrouter"],
+  "providers": {
+    "groq": {
+      "enabled": true,
+      "apiKey": "PASTE_GROQ_KEY",
+      "baseURL": "https://api.groq.com/openai/v1",
+      "defaultModel": "qwen/qwen3.8-27b"
+    },
+    "gemini": {
+      "enabled": true,
+      "apiKey": "PASTE_GEMINI_KEY",
+      "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "defaultModel": "gemini-3.5-flash-lite"
+    },
+    "cloudflare": {
+      "enabled": true,
+      "apiKey": "PASTE_CLOUDFLARE_TOKEN",
+      "accountId": "PASTE_CLOUDFLARE_ACCOUNT_ID",
+      "baseURL": "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1",
+      "defaultModel": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    },
+    "nvidia": {
+      "enabled": true,
+      "apiKey": "PASTE_NVIDIA_KEY",
+      "baseURL": "https://integrate.api.nvidia.com/v1",
+      "defaultModel": "nvidia/nemotron-3-ultra-550b-a55b"
+    },
+    "cohere": {
+      "enabled": true,
+      "apiKey": "PASTE_COHERE_KEY",
+      "baseURL": "https://api.cohere.com/compatibility/v1",
+      "defaultModel": "command-r-08-2024"
+    },
+    "kilo": {
+      "enabled": true,
+      "apiKey": "PASTE_KILO_TOKEN",
+      "baseURL": "https://kilo.ai/api/openrouter",
+      "defaultModel": "kilo-auto/free"
+    },
+    "openrouter": {
+      "enabled": true,
+      "apiKey": "PASTE_OPENROUTER_KEY",
+      "baseURL": "https://openrouter.ai/api/v1",
+      "defaultModel": "liquid/lfm-3-1.7b:free"
+    }
+  }
+}

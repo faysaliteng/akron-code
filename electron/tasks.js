@@ -1,7 +1,7 @@
 'use strict';
-// Helio Bot — shared task board + team model (Example Code parity).
+// Akron Bot — shared task board + team model (Claude Code parity).
 //
-// Example Code's multi-agent runtime is built on two pieces of shared state:
+// Claude Code's multi-agent runtime is built on two pieces of shared state:
 //
 //   * a TEAM  — a named group with a lead ("team-lead") and named teammates.
 //     Teammates address each other by NAME; a teammate can be resumed by
@@ -10,8 +10,8 @@
 //     (blocks / blockedBy), an optional owner, and free-form metadata.
 //     Teammates poll the board for work: pending + unowned + nothing blocking.
 //
-// Both live under ~/.autobot (deliberately NOT ~/.claude, so Helio Bot never
-// mutates a real Example Code installation's state). The on-disk shape mirrors
+// Both live under ~/.autobot (deliberately NOT ~/.claude, so Akron Bot never
+// mutates a real Claude Code installation's state). The on-disk shape mirrors
 // Example's so a board can be inspected or migrated with plain jq.
 //
 //   ~/.autobot/teams/<team>/config.json     { name, description, members[], createdAt }

@@ -51,6 +51,12 @@ contextBridge.exposeInMainWorld('autobot', {
   providerAddBearer: (id, token, label) => ipcRenderer.invoke('autobot:providerAddBearer', id, token, label),
   providerSetActive: (id, account) => ipcRenderer.invoke('autobot:providerSetActive', id, account),
 
+  // FreeLLMAPI — the local OpenAI-compatible router that aggregates the free
+  // provider keys. Status/models never include key material.
+  freellmStatus: () => ipcRenderer.invoke('autobot:freellmStatus'),
+  freellmProviders: () => ipcRenderer.invoke('autobot:freellmProviders'),
+  freellmSave: (patch) => ipcRenderer.invoke('autobot:freellmSave', patch),
+
   listScheduledTasks: () => ipcRenderer.invoke('autobot:listScheduledTasks'),
   createScheduledTask: (input) => ipcRenderer.invoke('autobot:createScheduledTask', input),
   updateScheduledTask: (id, patch) => ipcRenderer.invoke('autobot:updateScheduledTask', id, patch),
@@ -71,7 +77,7 @@ contextBridge.exposeInMainWorld('autobot', {
   getVersion: () => ipcRenderer.invoke('autobot:getVersion'),
   getHooks: (cwd) => ipcRenderer.invoke('autobot:getHooks', cwd),
 
-  // Example-parity config surface: the same `.claude/` files Example Code reads.
+  // Example-parity config surface: the same `.claude/` files Claude Code reads.
   listCommands: (cwd) => ipcRenderer.invoke('autobot:listCommands', cwd),
   resolveCommand: (name, args, cwd) => ipcRenderer.invoke('autobot:resolveCommand', name, args, cwd),
   listAgentDefs: (cwd) => ipcRenderer.invoke('autobot:listAgents', cwd),

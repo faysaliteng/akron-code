@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Provider OAuth — sign in to the *actual AI subscriptions* you already pay for
- * and use them as models inside Helio Bot.
+ * and use them as models inside Akron Bot.
  *
  * Why this exists
  * ---------------
@@ -152,7 +152,7 @@ const PROVIDERS = {
     redirectPath: '/callback',
     // Their authorize endpoint wants a nonce even in the code flow.
     authNonce: true,
-    extraAuthParams: { plan: 'generic', referrer: 'helio-bot' },
+    extraAuthParams: { plan: 'generic', referrer: 'akron-bot' },
     // A pasted xAI API key still works as a secondary way in.
     allowBearer: true,
     models: [
@@ -655,14 +655,14 @@ function callbackPage(payload) {
   const ok = !payload.error && payload.code;
   const title = ok ? 'Signed in' : 'Sign-in did not complete';
   const detail = ok
-    ? 'Helio Bot can close this tab and keep working.'
+    ? 'Akron Bot can close this tab and keep working.'
     : escapeHtml(payload.errorDescription || payload.error || 'no authorization code was returned');
   return '<!doctype html><meta charset="utf-8"><title>' + escapeHtml(title) + '</title>' +
     '<style>body{font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;' +
-    'background:#F6F3EC;color:#2b2622;display:grid;place-items:center;height:100vh;margin:0}' +
+    'background:#F5FAF8;color:#12211c;display:grid;place-items:center;height:100vh;margin:0}' +
     '.c{max-width:30rem;padding:2.2rem 2.4rem;background:#fff;border-radius:16px;' +
-    'box-shadow:0 10px 40px rgba(60,45,35,.09);text-align:center}' +
-    'h1{font-size:1.15rem;margin:0 0 .6rem}p{margin:0;color:#6d635a}</style>' +
+    'box-shadow:0 10px 40px rgba(6,50,38,.10);text-align:center}' +
+    'h1{font-size:1.15rem;margin:0 0 .6rem;color:#0b3d2e}p{margin:0;color:#4f6b60}</style>' +
     '<div class="c"><h1>' + escapeHtml(title) + '</h1><p>' + detail + '</p></div>';
 }
 

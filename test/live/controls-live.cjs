@@ -27,7 +27,7 @@ const evaluate = async (ws, expr) => {
   const list = await new Promise((res, rej) => {
     http.get('http://127.0.0.1:9333/json/list', (r) => { let s = ''; r.on('data', (d) => (s += d)); r.on('end', () => res(s)); }).on('error', rej);
   }).then(JSON.parse);
-  const page = list.find((t) => t.type === 'page' && /Helio Bot|index\.html/.test(t.title + t.url));
+  const page = list.find((t) => t.type === 'page' && /Akron Bot|index\.html/.test(t.title + t.url));
   if (!page) throw new Error('no page target');
   const ws = new WebSocket(page.webSocketDebuggerUrl, { perMessageDeflate: false });
   await new Promise((r, j) => { ws.on('open', r); ws.on('error', j); });

@@ -1,8 +1,8 @@
 'use strict';
-// Helio Bot — lifecycle hooks (Example Code parity).
+// Akron Bot — lifecycle hooks (Claude Code parity).
 //
-// Example Code lets a user attach shell commands, prompts, or agents to ten
-// lifecycle events. Helio Bot implements the same ten events and the same
+// Claude Code lets a user attach shell commands, prompts, or agents to ten
+// lifecycle events. Akron Bot implements the same ten events and the same
 // on-disk contract, so a `.claude/settings.json` hooks block works unchanged.
 //
 // EVENTS

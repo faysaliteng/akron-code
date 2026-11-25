@@ -331,7 +331,7 @@ function parsePermissionProbe(raw) {
 function permissionHint(missing) {
   const list = Array.isArray(missing) ? missing : [];
   if (!list.length) return 'All Computer Use permissions are granted.';
-  return `Open System Settings › Privacy & Security and enable ${list.join(' and ')} for Helio Bot.`;
+  return `Open System Settings › Privacy & Security and enable ${list.join(' and ')} for Akron Bot.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -488,7 +488,7 @@ async function screenCapture(opts = {}) {
   args.push(file);
   const r = await execAsync('/usr/sbin/screencapture', args, { timeout: 20000 });
   if (r.code !== 0 || !fs.existsSync(file)) {
-    return { ok: false, error: 'screencapture failed — grant Screen Recording to Helio Bot.', stderr: r.err };
+    return { ok: false, error: 'screencapture failed — grant Screen Recording to Akron Bot.', stderr: r.err };
   }
   const buf = fs.readFileSync(file);
   return {
@@ -520,7 +520,7 @@ async function recordCapture(opts = {}) {
   }
   const r = await execAsync('/usr/sbin/screencapture', args, { timeout: (seconds + 20) * 1000 });
   if (r.code !== 0 || !fs.existsSync(file)) {
-    return { ok: false, error: 'Screen recording failed — grant Screen Recording to Helio Bot.', stderr: r.err };
+    return { ok: false, error: 'Screen recording failed — grant Screen Recording to Akron Bot.', stderr: r.err };
   }
   const s = load();
   s.teaching = true;

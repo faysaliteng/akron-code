@@ -1,5 +1,5 @@
 'use strict';
-// Helio Bot — interactive runtime embedded in Design / Slides canvas artifacts.
+// Akron Bot — interactive runtime embedded in Design / Slides canvas artifacts.
 //
 // These two functions are serialized with `.toString()` and inlined into the
 // generated document, so they must be completely self-contained: no imports, no

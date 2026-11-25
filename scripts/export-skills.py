@@ -112,7 +112,7 @@ def main():
            "   frontmatter and saves it as a custom skill.",
            "2. **Custom skills folder** — copy to `~/.autobot/skills/<name>.md`. Flat `.md`",
            "   files are discovered directly, no wrapping folder needed.",
-           "3. **Example Code skills** — `~/.claude/skills/<name>/SKILL.md`.",
+           "3. **Claude Code skills** — `~/.claude/skills/<name>/SKILL.md`.",
            "4. **Project scope** — `<project>/.claude/skills/<name>/SKILL.md`.",
            "",
            "Each file is self-contained: bundled scripts and references are inlined in",

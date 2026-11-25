@@ -350,7 +350,7 @@ async function screenshot(fullPage) {
           await new Promise((r) => setTimeout(r, 250));
           const img = await g.capturePage();
           await g.disableDeviceEmulation().catch(() => {});
-          const file = path.join(os.tmpdir(), 'heliobot-shot-' + Date.now() + '.png');
+          const file = path.join(os.tmpdir(), 'akronbot-shot-' + Date.now() + '.png');
           fs.writeFileSync(file, img.toPNG());
           const sz = img.getSize();
           return { ok: true, path: file, width: sz.width, height: sz.height };
@@ -358,7 +358,7 @@ async function screenshot(fullPage) {
       } catch (e) { /* fall through to viewport capture */ }
     }
     const img = await g.capturePage();
-    const file = path.join(os.tmpdir(), 'heliobot-shot-' + Date.now() + '.png');
+    const file = path.join(os.tmpdir(), 'akronbot-shot-' + Date.now() + '.png');
     fs.writeFileSync(file, img.toPNG());
     const sz = img.getSize();
     return { ok: true, path: file, width: sz.width, height: sz.height };

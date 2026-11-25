@@ -1,8 +1,8 @@
 'use strict';
-// Helio Bot — Scheduled tasks (Example Desktop parity).
+// Akron Bot — Scheduled tasks (Claude Desktop parity).
 //
-// Example Desktop exposes scheduled-tasks__create/list/update tools backed by a
-// local queue. Helio Bot implements the same surface with a real timer:
+// Claude Desktop exposes scheduled-tasks__create/list/update tools backed by a
+// local queue. Akron Bot implements the same surface with a real timer:
 // a task = a prompt that is run through the agent on a cadence, with results
 // persisted. Cadences: once | every (minutes) | hourly | daily | weekly.
 //
@@ -17,7 +17,7 @@ const cronexpr = require('./cronexpr');
 
 const DATA_DIR = path.join(os.homedir(), '.autobot');
 const TASKS_FILE = path.join(DATA_DIR, 'scheduled-tasks.json');
-// Example Code keeps *durable* cron tasks in the project at
+// Claude Code keeps *durable* cron tasks in the project at
 // .claude/scheduled_tasks.json so they travel with the repo. Mirror ours there.
 const DURABLE_FILE = path.join(process.cwd(), '.claude', 'scheduled_tasks.json');
 

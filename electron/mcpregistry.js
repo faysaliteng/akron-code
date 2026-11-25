@@ -1,5 +1,5 @@
 'use strict';
-// Helio Bot — live connector feed from the official Model Context Protocol registry.
+// Akron Bot — live connector feed from the official Model Context Protocol registry.
 //
 // The built-in `connector-catalog.js` is a curated snapshot so the directory is
 // useful offline. This module adds the long tail: it pulls servers from

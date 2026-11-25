@@ -1,16 +1,16 @@
-# ⚡ Helio Bot
+# ⚡ Akron Bot
 
-**Helio Bot** — a Example Desktop–compatible desktop AI agent that runs
+**Akron Bot** — a Claude Desktop–compatible desktop AI agent that runs
 on **any free LLM API** (OpenAI-compatible).
 
-Built by reverse-engineering Example Desktop (`/Applications/Claude.app`, Electron 45.3.3)
+Built by reverse-engineering Claude Desktop (`/Applications/Claude.app`, Electron 45.3.3)
 with REA and reproducing its full feature surface on a pluggable local/remote LLM layer.
 
 ---
 
-## Features (feature parity with Example Desktop)
+## Features (feature parity with Claude Desktop)
 
-| Example feature | Helio Bot equivalent |
+| Example feature | Akron Bot equivalent |
 |---|---|
 | Streaming chat w/ markdown + code | ✅ SSE streaming, `marked` + `highlight.js` + DOMPurify |
 | Agent tool loop (full classic surface, **56 tools**) | ✅ built-in function-calling loop with no-tools fallback |
@@ -51,14 +51,39 @@ OpenAI-compatible base URL + key), then **Test connection**.
 
 | Preset | Base URL | Needs key |
 |---|---|---|
+| FreeLLMAPI (local router) | `http://localhost:3001/v1` | no |
 | Ollama (local) | `http://localhost:11434/v1` | no |
 | LM Studio (local) | `http://localhost:1234/v1` | no |
 | Groq (free tier) | `https://api.groq.com/openai/v1` | yes |
 | OpenRouter (free models) | `https://openrouter.ai/api/v1` | yes |
 
+### FreeLLMAPI — seven free providers, one endpoint
+
+`localhost:3001/v1` is an OpenAI-compatible **router** that ships with the app and
+starts automatically. It fans one model string out to Groq, Google Gemini,
+Cloudflare Workers AI, NVIDIA NIM, Cohere (trial), Kilo and OpenRouter, and
+falls through to the next provider on 429 / 5xx / network error **before the
+first stream byte** — so a dead free tier never kills a turn.
+
+```bash
+# address a provider explicitly…
+curl -s localhost:3001/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"groq/llama-3.3-70b-versatile","messages":[{"role":"user","content":"hi"}]}'
+# …or let the router pick (auto | free | fast | smart)
+curl -s localhost:3001/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'
+curl -s localhost:3001/v1/models     # merged catalogue, ~1000 ids
+curl -s localhost:3001/health        # per-provider readiness, keys redacted
+```
+
+Keys live in `~/.autobot/freellm.json` (mode `0600`) and are **never** committed —
+the repo ships `electron/freellm-config.example.json` with placeholders only.
+Run it headless with `npm run freellm`. Responses carry `x-freellm-provider` and
+`x-freellm-attempts` so you can see who answered.
+
 ### Tool toggles
 
-The agent exposes the complete classic Example Code tool surface (56 total definitions)
+The agent exposes the complete classic Claude Code tool surface (56 total definitions)
 to the model: `Bash, Edit, Write, Read, Glob, Grep, WebSearch, WebFetch, Task, Agent,
 TodoWrite, NotebookEdit, NotebookRead, AskUserQuestion, KillShell, SlashCommand, Skill,
 ExitPlanMode, MultiEdit, REPL, JavaScript, Cd, ListMcpResources, ReadMcpResource,
@@ -71,7 +96,7 @@ tools (namespaced `mcp__<server>__<tool>`).
 
 Add **100+ API keys** in **⚙️ Settings → Orchestrator Mode** and toggle it on. When a
 provider returns a rate-limit / quota / "limit reached" error (HTTP 429, `quota`,
-`insufficient_quota`, billing/capacity/throttle messages), Helio Bot automatically fails
+`insufficient_quota`, billing/capacity/throttle messages), Akron Bot automatically fails
 over to the **next** provider+model in your list — without interrupting the stream. You
 select which models participate (each row = name + base URL + key + model) and which one
 starts first (radio `#1`, `#2`, …). Failover events are shown in-chat as

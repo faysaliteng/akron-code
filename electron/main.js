@@ -29,6 +29,26 @@ const compliance = require('./compliance');
 const mcpoauth = require('./mcpoauth');
 const computeruse = require('./computeruse');
 const windowstate = require('./windowstate');
+const freellm = require('./freellm');
+
+// ---------------------------------------------------------------------------
+// Rebrand migration: user data used to live under "Helio Bot".
+// ---------------------------------------------------------------------------
+// Chromium state (Local Storage, the persisted extension partition, the cache)
+// is keyed by the userData folder name, and `productName` is now "Akron Bot", so
+// the old tree is moved into place once, before anything reads userData. The OS
+// keychain entry is named after the app as well, so secrets encrypted under the
+// old name need a one-time re-entry (see VERIFICATION.md §24); nothing here
+// touches `~/.autobot`, which is where every piece of app state actually lives.
+(function migrateUserData() {
+  try {
+    const base = app.getPath('appData');
+    const next = path.join(base, 'Akron Bot');
+    const prev = path.join(base, 'Helio Bot');
+    if (fs.existsSync(next) || !fs.existsSync(prev)) return;
+    fs.renameSync(prev, next);
+  } catch (_) { /* non-fatal: the app starts with a fresh profile */ }
+})();
 
 const windows = new Set(); // all open BrowserWindows (multi-window parity)
 // The primary chat window (first created). Desktop's launcher focuses it when a
@@ -161,8 +181,8 @@ function describeConnectError(err) {
   return (status ? 'HTTP ' + status + ': ' : '') + flat.slice(0, 160);
 }
 
-// ── MCP auto-connect (Example Code parity) ────────────────────────────────
-// Example Code starts every server declared in `.mcp.json`, `~/.claude.json`
+// ── MCP auto-connect (Claude Code parity) ────────────────────────────────
+// Claude Code starts every server declared in `.mcp.json`, `~/.claude.json`
 // and its own config the moment a session begins. We do the same, once per
 // server name per cwd, and remember the id so tools land in `extraTools`.
 const autoMcp = new Map(); // `${cwd}::${name}` -> serverId
@@ -241,7 +261,7 @@ function summarizeTool(name, args) {
 let pendingQuestions = new Map();
 let nextQuestionId = 1;
 
-// Pending write/bash permission prompts (B8 Example Code mode) (id -> resolver).
+// Pending write/bash permission prompts (B8 Claude Code mode) (id -> resolver).
 let pendingPermissions = new Map();
 let nextPermissionId = 1;
 
@@ -260,7 +280,7 @@ function createWindow() {
     ...(bounds.x !== undefined ? { x: bounds.x, y: bounds.y } : {}),
     minWidth: 940,
     minHeight: 600,
-    title: 'Helio Bot',
+    title: 'Akron Bot',
     backgroundColor: '#30302e',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 14, y: 14 },
@@ -298,30 +318,38 @@ function createWindow() {
   return win;
 }
 
-// ---------- Secondary windows (Example Desktop parity) ----------
+// ---------- Secondary windows (Claude Desktop parity) ----------
 
-// Helio Bot sunburst mark (same artwork as the renderer <Logo/>), for About /
-// Quick Entry / Artifact chrome that render outside the React tree.
-function logoMarkup(size) {
-  return `<svg width="${size}" height="${size}" viewBox="0 0 240 240" xmlns="http://www.w3.org/2000/svg" aria-label="Helio Bot">
-<rect width="240" height="240" rx="54" fill="#F6F3EC"/>
-<rect x="2" y="2" width="236" height="236" rx="52" stroke="#E8E2D5" stroke-width="2"/>
-<g transform="translate(120,120)">
-<path d="M 0 -76 C 4 -76, 7 -32, 4 -12 C 1 -6, -1 -6, -4 -12 C -7 -32, -4 -76, 0 -76 Z" fill="#D97757" transform="rotate(-4)"/>
-<path d="M 0 78 C 4 78, 7 34, 4 13 C 1 7, -1 7, -4 13 C -7 34, -4 78, 0 78 Z" fill="#D97757" transform="rotate(2)"/>
-<path d="M 0 -74 C 4 -74, 6 -30, 3 -11 C 1 -6, -1 -6, -3 -11 C -6 -30, -4 -74, 0 -74 Z" fill="#D97757" transform="rotate(42)"/>
-<path d="M 0 75 C 4 75, 6 31, 3 12 C 1 6, -1 6, -3 12 C -6 31, -4 75, 0 75 Z" fill="#D97757" transform="rotate(46)"/>
-<path d="M 0 -77 C 4 -77, 7 -33, 4 -12 C 1 -6, -1 -6, -4 -12 C -7 -33, -4 -77, 0 -77 Z" fill="#D97757" transform="rotate(88)"/>
-<path d="M 0 74 C 4 74, 6 30, 3 11 C 1 6, -1 6, -3 11 C -6 30, -4 74, 0 74 Z" fill="#D97757" transform="rotate(93)"/>
-<path d="M 0 -72 C 3.5 -72, 6 -28, 3 -11 C 1 -6, -1 -6, -3 -11 C -6 -28, -3.5 -72, 0 -72 Z" fill="#D97757" transform="rotate(134)"/>
-<path d="M 0 76 C 4 76, 6.5 32, 3.5 12 C 1 6, -1 6, -3.5 12 C -6.5 32, -4 76, 0 76 Z" fill="#D97757" transform="rotate(137)"/>
-<path d="M 0 -54 C 2.5 -54, 4 -22, 2 -9 C 0.5 -5, -0.5 -5, -2 -9 C -4 -22, -2.5 -54, 0 -54 Z" fill="#E3967B" transform="rotate(20)"/>
-<path d="M 0 -52 C 2.5 -52, 4 -20, 2 -9 C 0.5 -5, -0.5 -5, -2 -9 C -4 -20, -2.5 -52, 0 -52 Z" fill="#E3967B" transform="rotate(112)"/>
-<path d="M 0 55 C 2.5 55, 4 23, 2 9 C 0.5 5, -0.5 5, -2 9 C -4 23, -2.5 55, 0 55 Z" fill="#E3967B" transform="rotate(22)"/>
-<path d="M 0 50 C 2.5 50, 4 20, 2 9 C 0.5 5, -0.5 5, -2 9 C -4 20, -2.5 50, 0 50 Z" fill="#E3967B" transform="rotate(110)"/>
-<circle cx="0" cy="0" r="8" fill="#D97757"/>
-</g>
-</svg>`;
+// Akron Bot brand mark — emerald symbiote sunburst. This is the animated
+// version for About / splash, which live in their own `data:` documents so the
+// class names and keyframes cannot collide with anything else. The renderer's
+// <Logo/> (src/App.jsx) draws the same geometry.
+const MARK_RAYS = [
+  [191, 76, 18, 96, 9, 0], [192, 88, 16, 84, 8, 32], [190, 72, 20, 102, 10, 64],
+  [192, 92, 16, 80, 8, 95], [191, 74, 18, 98, 9, 128], [192, 86, 16, 86, 8, 158],
+  [190, 75, 20, 98, 10, 188], [192, 90, 16, 82, 8, 218], [191, 70, 18, 104, 9, 248],
+  [192, 88, 16, 84, 8, 278], [190, 76, 20, 96, 10, 306], [192, 92, 16, 80, 8, 334],
+];
+const MARK_ORBS = [[200, 84, 13], [304, 245, 12], [102, 252, 11], [278, 112, 10], [118, 118, 12], [200, 316, 13]];
+const MARK_GLOW = [[0, 96, 58], [64, 94, 62], [128, 96, 58], [188, 94, 62], [248, 92, 64], [306, 96, 58]];
+
+function logoMarkup(size, opts) {
+  const animate = !(opts && opts.static);
+  const rects = MARK_RAYS.map(([x, y, w, h, rx, d]) =>
+    `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${rx}" transform="rotate(${d} 200 200)"/>`).join('');
+  const orbs = MARK_ORBS.map(([cx, cy, r]) => `<circle cx="${cx}" cy="${cy}" r="${r}"/>`).join('');
+  const glow = MARK_GLOW.map(([d, y, h]) =>
+    `<rect x="197" y="${y}" width="6" height="${h}" rx="3" transform="rotate(${d} 200 200)"/>`).join('');
+  const css = animate ? `<style>
+.akm-spin{transform-origin:200px 200px;animation:akmSpin 12s ease-in-out infinite}
+.akm-breathe{transform-origin:200px 200px;animation:akmBreathe 3s ease-in-out infinite alternate}
+@keyframes akmSpin{0%{transform:rotate(0deg) scale(.97)}50%{transform:rotate(180deg) scale(1.04)}100%{transform:rotate(360deg) scale(.97)}}
+@keyframes akmBreathe{0%{transform:scale(.94)}100%{transform:scale(1.06)}}
+@media (prefers-reduced-motion:reduce){.akm-spin,.akm-breathe{animation:none}}
+</style>` : '';
+  return `<svg width="${size}" height="${size}" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Bot">${css}<defs><filter id="akGoo" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur"/><feColorMatrix in="blur" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 22 -9" result="goo"/><feComposite in="SourceGraphic" in2="goo" operator="atop"/></filter></defs>
+<g class="akm-spin"><g filter="url(#akGoo)"><g fill="#10B981"><circle cx="200" cy="200" r="34"/>${rects}${orbs}</g></g>
+<g opacity="0.55" fill="#A7F3D0" class="akm-breathe"><circle cx="200" cy="200" r="14"/>${glow}</g></g></svg>`;
 }
 
 // Find the primary (chat) window to focus / route commands into.
@@ -341,7 +369,7 @@ function createAboutWindow() {
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
-    title: 'About Helio Bot',
+    title: 'About Akron Bot',
     backgroundColor: '#30302e',
     titleBarStyle: 'hiddenInset',
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false },
@@ -350,19 +378,19 @@ function createAboutWindow() {
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#f5f4f0;background:#30302e;-webkit-user-select:none;user-select:none}
     .wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:28px 24px;box-sizing:border-box;text-align:center}
-    .logo{filter:drop-shadow(0 0 18px rgba(217,119,87,.4));margin-bottom:14px}
+    .logo{filter:drop-shadow(0 0 18px rgba(16,185,129,.4));margin-bottom:14px}
     h1{font-size:19px;margin:0 0 2px;font-weight:650}
     .sub{font-size:12px;color:#b8b5ae;margin:0 0 20px}
     .ver{font-size:11px;color:#8d8a84;background:#3a3936;border-radius:6px;padding:3px 9px;margin-bottom:18px}
     .row{font-size:12.5px;color:#d6d3cc;line-height:1.65}
-    a{color:#d97f57;text-decoration:none}
+    a{color:#10b981;text-decoration:none}
     .foot{margin-top:auto;font-size:10.5px;color:#8d8a84}
   </style></head><body><div class="wrap">
     <div class="logo">${logoMarkup(72)}</div>
-    <h1>Helio Bot</h1>
+    <h1>Akron Bot</h1>
     <p class="sub">free-LLM desktop agent</p>
     <span class="ver">Version ${app.getVersion()}</span>
-    <div class="row">A free-LLM desktop agent.<br>Example Desktop–compatible.<br>Electron ${process.versions.electron}</div>
+    <div class="row">A free-LLM desktop agent.<br>Claude Desktop–compatible.<br>Electron ${process.versions.electron}</div>
     <div class="foot"><a href="https://akronlogic.com">akronlogic.com</a></div>
   </div></body></html>`;
   win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
@@ -398,18 +426,23 @@ function createQuickWindow() {
 // Menu-bar tray icon (macOS): show window, quick entry, new window, quit.
 function createTray() {
   if (tray) return tray;
-  let img = nativeImage.createFromPath(path.join(__dirname, 'tray.png'));
-  if (img.isEmpty()) img = nativeImage.createEmpty();
-  const sized = img.isEmpty() ? img : img.resize({ width: 16, height: 16 });
-  tray = new Tray(sized);
-  tray.setToolTip('Helio Bot');
+  // `…Template.png` is a macOS template image: black + alpha, auto-inverted by
+  // the system for light/dark menu bars. @2x is picked up automatically.
+  let img = nativeImage.createFromPath(path.join(__dirname, 'trayTemplate.png'));
+  if (img.isEmpty()) {
+    const legacy = nativeImage.createFromPath(path.join(__dirname, 'tray.png'));
+    img = legacy.isEmpty() ? nativeImage.createEmpty() : legacy.resize({ width: 16, height: 16 });
+  }
+  tray = new Tray(img);
+  if (!img.isEmpty()) tray.setImage(img);
+  tray.setToolTip('Akron Bot');
   const menu = Menu.buildFromTemplate([
-    { label: 'Show Helio Bot', click: () => { const w = mainWindow() || createWindow(); w.show(); w.focus(); } },
+    { label: 'Show Akron Bot', click: () => { const w = mainWindow() || createWindow(); w.show(); w.focus(); } },
     { label: 'Quick Entry', accelerator: 'CmdOrCtrl+Shift+Space', click: () => createQuickWindow() },
     { type: 'separator' },
     { label: 'New Window', accelerator: 'CmdOrCtrl+N', click: () => createWindow() },
     { type: 'separator' },
-    { label: 'About Helio Bot', click: () => createAboutWindow() },
+    { label: 'About Akron Bot', click: () => createAboutWindow() },
     { type: 'separator' },
     { label: 'Quit', role: 'quit' },
   ]);
@@ -540,7 +573,7 @@ function broadcastArtifactSaved(key, skipId) {
   }
 }
 
-// ---------- Hosted Chrome extensions (Example Desktop extension-host parity) ----------
+// ---------- Hosted Chrome extensions (Claude Desktop extension-host parity) ----------
 //
 // Three moving parts, mirroring Desktop:
 //   1. `ExtensionHost` (electron/extensionhost.js) answers the 11
@@ -827,7 +860,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     return `Resource not found: ${uri}`;
   };
 
-  // B8 Example Code mode: prompt for approval before mutating tools (Bash/Write/Edit).
+  // B8 Claude Code mode: prompt for approval before mutating tools (Bash/Write/Edit).
   // Permission modes: 'auto' (allow all), 'ask' (prompt for every mutating tool),
   // 'acceptEdits' (auto-allow file edits, prompt for shell/terminal), 'plan' (deny all
   // mutations — the model must propose a plan via ExitPlanMode instead),
@@ -881,7 +914,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     }
     const mode = permissions || 'auto';
     // settings.json `permissions.allow/deny/ask` rules run BEFORE the mode, the
-    // way Example Code evaluates them: deny always wins (even in bypass), ask
+    // way Claude Code evaluates them: deny always wins (even in bypass), ask
     // forces a prompt, allow skips it.
     try {
       const perms = require('./permissions').loadPermissions(runCwd);
@@ -1141,6 +1174,36 @@ ipcMain.handle('autobot:providerSetActive', (event, id, account) => {
   }
 });
 
+ipcMain.handle('autobot:freellmStatus', () => {
+  try { return { ok: true, ...freellmStatus() }; } catch (e) { return { ok: false, error: oneLine(e) }; }
+});
+
+ipcMain.handle('autobot:freellmProviders', async () => {
+  try {
+    const cfg = freellm.loadConfig(freellm.CONFIG_FILE);
+    const data = await freellm.listModels(cfg, { timeoutMs: 6000 });
+    return { ok: true, models: data };
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
+ipcMain.handle('autobot:freellmSave', (event, patch) => {
+  try {
+    const cfg = freellm.loadConfig(freellm.CONFIG_FILE);
+    const cur = freellm.normalizeConfig(cfg);
+    const next = freellm.normalizeConfig({ ...cur, ...(patch || {}), providers: { ...cur.providers, ...((patch && patch.providers) || {}) } });
+    const file = freellm.saveConfig(next, freellm.CONFIG_FILE);
+    // Restart the listener so new keys/ports take effect immediately.
+    const restart = () => startFreeLLM();
+    if (freellmHandle) freellmHandle.stop().then(restart, restart);
+    else restart();
+    return { ok: true, configFile: file };
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
 // One-shot completion — used by GUI slash commands (/compact, /btw, /recap,
 // /advisor) that need a model answer without opening a transcript turn.
 ipcMain.handle('autobot:chatOnce', async (event, payload) => {
@@ -1355,7 +1418,7 @@ ipcMain.handle('autobot:pluginAuthStart', async (e, id, opts) => {
             const w = new BrowserWindow({
               parent, modal: false, width: 520, height: 720,
               title: 'Sign in to ' + entry.name,
-              backgroundColor: '#F6F3EC',
+              backgroundColor: '#F5FAF8',
               webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
             });
             w.setMenuBarVisibility(false);
@@ -1465,7 +1528,7 @@ ipcMain.handle('autobot:setSettings', (e, patch) => {
 
 // ── Example-parity config surface (commands / agents / memory / permissions / rewind) ──
 // The renderer's slash menu and settings panes read the SAME `.claude/` files
-// Example Code reads, so anything defined there shows up here too.
+// Claude Code reads, so anything defined there shows up here too.
 const cwdFor = (cwd) => cwd || store.getSettings().lastCwd || require('./workspace').ROOT;
 
 ipcMain.handle('autobot:listCommands', (e, cwd) => {
@@ -1514,7 +1577,7 @@ ipcMain.handle('autobot:setFeatures', (e, patch) => {
   return features;
 });
 ipcMain.handle('autobot:getDefaultCwd', (event, convId, title) => {
-  // Every conversation gets its own project folder under ~/Helio Bot/<slug>,
+  // Every conversation gets its own project folder under ~/Akron Bot/<slug>,
   // created lazily — "every build auto-creates a project folder" (Example parity).
   const ws = workspace.ensure(convId, title);
   return ws.dir;
@@ -1588,7 +1651,7 @@ ipcMain.handle('autobot:saveFile', async (event, { defaultName, content, filters
   }
 });
 
-// "Apply to file" (Example Code parity): write a code block straight into the
+// "Apply to file" (Claude Code parity): write a code block straight into the
 // conversation's project folder (or an absolute/`~`/relative path) with no dialog.
 ipcMain.handle('autobot:writeFile', async (event, { file, content, cwd }) => {
   try {
@@ -1603,7 +1666,7 @@ ipcMain.handle('autobot:writeFile', async (event, { file, content, cwd }) => {
   }
 });
 
-// macOS TTS (Example Desktop parity: "speak" uses the system voice). `say` ships
+// macOS TTS (Claude Desktop parity: "speak" uses the system voice). `say` ships
 // with macOS; non-darwin is a no-op.
 let sayProc = null;
 ipcMain.handle('autobot:speak', (e, text) => {
@@ -1703,7 +1766,7 @@ ipcMain.handle('autobot:shellRead', (e, id) => shells.read(id));
 ipcMain.handle('autobot:shellList', () => shells.list());
 ipcMain.handle('autobot:shellKill', (e, id) => shells.kill(id));
 
-// Repo-aware "Example Code" mode (B8): git introspection + unified diff.
+// Repo-aware "Claude Code" mode (B8): git introspection + unified diff.
 ipcMain.handle('autobot:gitInfo', async (e, cwd) => git.gitInfo(cwd));
 ipcMain.handle('autobot:gitRun', async (e, cwd, args) => {
   try {
@@ -1760,7 +1823,7 @@ ipcMain.handle('autobot:browserScreenshot', (e, fullPage) => browser.screenshot(
 ipcMain.handle('autobot:browserSyncTabs', (e, state) => browser.syncTabs(state));
 ipcMain.handle('autobot:browserListTabs', () => browser.listTabs());
 
-// ---- Secondary-window / chrome IPC (Example Desktop parity surfaces) ----
+// ---- Secondary-window / chrome IPC (Claude Desktop parity surfaces) ----
 ipcMain.handle('autobot:openAbout', () => { createAboutWindow(); return { ok: true }; });
 ipcMain.handle('autobot:openQuickEntry', () => { createQuickWindow(); return { ok: true }; });
 ipcMain.handle('autobot:openArtifactWindow', (e, payload) => createArtifactWindow(payload || {}));
@@ -2007,7 +2070,7 @@ function buildMenu() {
     ...(isMac ? [{
       label: app.name,
       submenu: [
-        { label: 'About Helio Bot', click: () => createAboutWindow() },
+        { label: 'About Akron Bot', click: () => createAboutWindow() },
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -2109,6 +2172,43 @@ function broadcast(evt) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// FreeLLMAPI (local OpenAI-compatible router over the free-tier providers)
+// ---------------------------------------------------------------------------
+let freellmHandle = null;
+let freellmError = null;
+
+function startFreeLLM() {
+  freellm.start({ configPath: freellm.CONFIG_FILE }).then((handle) => {
+    freellmHandle = handle;
+    freellmError = null;
+    const live = freellm.PROVIDER_IDS.filter((id) => freellm.isConfigured(id, handle.config));
+    console.log('FreeLLMAPI on ' + handle.url + ' (' + (live.join(', ') || 'no providers configured') + ')');
+  }).catch((err) => {
+    freellmHandle = null;
+    freellmError = (err && err.message) || 'failed to start';
+    console.error('FreeLLMAPI unavailable:', freellmError);
+  });
+}
+
+function freellmStatus() {
+  let cfg = null;
+  try { cfg = freellm.loadConfig(freellm.CONFIG_FILE); } catch (_) {}
+  return {
+    running: !!freellmHandle,
+    url: freellmHandle ? freellmHandle.url : 'http://127.0.0.1:' + ((cfg && cfg.port) || 3001) + '/v1',
+    configFile: freellm.CONFIG_FILE,
+    error: freellmError,
+    providers: cfg ? freellm.PROVIDER_IDS.map((id) => ({
+      id,
+      label: freellm.PROVIDERS[id].label,
+      configured: freellm.isConfigured(id, cfg),
+      enabled: cfg.providers[id].enabled !== false,
+      defaultModel: cfg.providers[id].defaultModel,
+    })) : [],
+  };
+}
+
 app.whenReady().then(() => {
   // Repair any project folder split left by the old auto-create logic (files in
   // `project/` while the conversation points at a titled-but-empty folder).
@@ -2160,6 +2260,10 @@ app.whenReady().then(() => {
   } catch (e) {
     console.error('scheduler start failed:', e.message);
   }
+  // FreeLLMAPI: aggregate every configured free-tier key behind one
+  // OpenAI-compatible endpoint. Non-fatal — a missing config or a busy port must
+  // never stop the app from booting.
+  startFreeLLM();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -2169,6 +2273,8 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   try { scheduler.stop(); } catch (_) {}
   try { extHost.stopBridge(); } catch (_) {}
+  try { if (freellmHandle) freellmHandle.stop(); } catch (_) {}
+  freellmHandle = null;
 });
 
 app.on('window-all-closed', () => {

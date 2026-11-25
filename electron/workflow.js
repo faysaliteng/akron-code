@@ -1,7 +1,7 @@
 'use strict';
-// Helio Bot — Workflow DSL (Example Code `Workflow` parity).
+// Akron Bot — Workflow DSL (Claude Code `Workflow` parity).
 //
-// Example Code's Workflow tool takes a self-contained JavaScript script that
+// Claude Code's Workflow tool takes a self-contained JavaScript script that
 // MUST begin with
 //
 //     export const meta = { name, description, phases }   // pure literal

@@ -65,13 +65,13 @@ const CHROME = `
   await sleep(2500);
 
   const home = await evaluate(CHROME);
-  check('document title is Helio Bot', /Helio Bot/.test(home.chrome), home.chrome.split('\n')[0]);
+  check('document title is Akron Bot', /Akron Bot/.test(home.chrome), home.chrome.split('\n')[0]);
   check('app chrome has zero "Claude"', home.claude === 0, home.claude);
-  check('Helio Bot wordmark rendered', /Helio Bot/.test(home.body));
+  check('Akron Bot wordmark rendered', /Akron Bot/.test(home.body));
   check('sidebar footer links akronlogic.com', home.akron.includes('https://akronlogic.com'), home.akron);
   check('no stray "Example" placeholder leaks', !/Example Example|@@!P/.test(home.body));
 
-  // A panel with rebranded copy: /status writes "Helio Bot renders status in the composer".
+  // A panel with rebranded copy: /status writes "Akron Bot renders status in the composer".
   await evaluate(`(() => {
     const el = document.querySelector('textarea, input[type=text], .composer textarea');
     return !!el;

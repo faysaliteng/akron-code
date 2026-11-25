@@ -13,7 +13,7 @@
 //
 // Built-in types (general-purpose, Explore, Plan, Bash, claude-code-guide,
 // statusline-setup, output-style-setup) always exist, and a user definition
-// with the same name overrides the built-in — exactly like Example Code.
+// with the same name overrides the built-in — exactly like Claude Code.
 
 const path = require('path');
 const cc = require('./claudeconfig');
@@ -31,7 +31,7 @@ const BUILTIN = {
     model: null,
     tools: null, // all tools
     body: [
-      'You are a general-purpose agent running inside Helio Bot. Given the task in the prompt, use the tools available to you to complete it and then report back concisely.',
+      'You are a general-purpose agent running inside Akron Bot. Given the task in the prompt, use the tools available to you to complete it and then report back concisely.',
       '',
       'Work autonomously: gather what you need with Read/Grep/Glob, make the changes with Write/Edit, verify with Bash, and finish with a short report of what you did, what you found, and anything the caller must know.',
       'Do not ask the caller questions — if something is ambiguous, choose the most reasonable interpretation, state the assumption, and continue.',
@@ -85,11 +85,11 @@ const BUILTIN = {
   },
   'claude-code-guide': {
     name: 'claude-code-guide',
-    description: 'Answers questions about Example Code, the Example Agent SDK, and the Example API.',
+    description: 'Answers questions about Claude Code, the Example Agent SDK, and the Example API.',
     model: 'haiku',
     tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'],
     body: [
-      'You answer questions about (1) Example Code — features, hooks, slash commands, MCP servers, settings, IDE integrations, keyboard shortcuts; (2) the Example Agent SDK — building custom agents; (3) the Example API — tool use, streaming, SDK usage.',
+      'You answer questions about (1) Claude Code — features, hooks, slash commands, MCP servers, settings, IDE integrations, keyboard shortcuts; (2) the Example Agent SDK — building custom agents; (3) the Example API — tool use, streaming, SDK usage.',
       'Answer from what you know plus the local documentation you can read. Be concise and concrete; include a code snippet when it helps.',
     ].join('\n'),
   },
@@ -99,7 +99,7 @@ const BUILTIN = {
     model: 'haiku',
     tools: ['Read', 'Write', 'Edit', 'Bash'],
     body: [
-      'You configure the status line for Helio Bot. Write a shell command that prints one line of status text (model, cwd, git branch, tokens), and save it as statusLine.command in ~/.claude/settings.json (or ~/.autobot/settings.json).',
+      'You configure the status line for Akron Bot. Write a shell command that prints one line of status text (model, cwd, git branch, tokens), and save it as statusLine.command in ~/.claude/settings.json (or ~/.autobot/settings.json).',
       'Keep it fast (<100 ms) and side-effect free.',
     ].join('\n'),
   },

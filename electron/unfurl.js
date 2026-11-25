@@ -5,7 +5,7 @@
 // off a fetched document and paints a preview card in the transcript
 // (`og:title`, `og:description`, `og:image`, `twitter:card`, `twitter:title`,
 // `twitter:description`, `twitter:image`, and the SVG `xlink:href` /
-// `xlink:title` used for the card icon). Helio Bot implements the same
+// `xlink:title` used for the card icon). Akron Bot implements the same
 // capability in the main process: fetch the head, extract OpenGraph + Twitter
 // Card metadata (falling back to <title> / <meta name=description> / favicon),
 // cache it, and hand it to the renderer for a card.
@@ -31,7 +31,7 @@ const MAX_REDIRECTS = 4;
 const TIMEOUT_MS = 7000;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CACHE_MAX = 500;
-const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HelioBot/1.0.0 Safari/537.36';
+const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) AkronBot/1.0.0 Safari/537.36';
 
 // ---------------------------------------------------------------------------
 // HTML entity decoding (just the set that shows up in meta content)

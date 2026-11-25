@@ -1,7 +1,7 @@
 'use strict';
-// Helio Bot — Example Code parity tools.
+// Akron Bot — Claude Code parity tools.
 //
-// Every tool in Example Code's surface that is NOT a plain file/shell primitive
+// Every tool in Claude Code's surface that is NOT a plain file/shell primitive
 // lives here, so `tools.js` stays readable and the parity surface is one file:
 //
 //   LS  Search  TaskOutput  EnterPlanMode  EnterWorktree  ExitWorktree  Mcp
@@ -699,7 +699,7 @@ async function monitor(args, ctx) {
 
 function pushNotification(args, ctx) {
   const message = String(args.message != null ? args.message : (args.body || args.text || ''));
-  const title = String(args.title || 'Helio Bot');
+  const title = String(args.title || 'Akron Bot');
   const status = args.status || 'proactive';
   if (!message && !args.title) return { content: 'Error: message required.', isError: true };
   if (typeof ctx.notify === 'function') {

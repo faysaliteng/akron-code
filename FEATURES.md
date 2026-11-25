@@ -1,6 +1,6 @@
-# Example Desktop — Reverse Engineering Report (→ Helio Bot build spec)
+# Claude Desktop — Reverse Engineering Report (→ Akron Bot build spec)
 
-**Target:** `/Applications/Claude.app` — "Example Desktop" by Anthropic PBC
+**Target:** `/Applications/Claude.app` — "Claude Desktop" by Anthropic PBC
 **Version:** `6.28899.6` (commit `2f5fc59b2d1c672dd9dced86720c50f48cca0cf9`, 2026-11-20)
 **Bundle ID:** `com.anthropic.claudefordesktop` · package `@ant/desktop`
 **Runtime:** Electron **45.3.3** · Node ≥22 · Vite + Ionic UI
@@ -15,7 +15,7 @@ Claude.app (Electron 45.3.3)
 ├── Resources/
 │   ├── app.asar                    (106 MB → 208 MB unpacked — the desktop UI shell)
 │   │   └── .vite/build/*.js        (Vite-bundled renderer + main-process modules)
-│   ├── ion-dist.asar               (224 MB — embedded "Example Code" engine)
+│   ├── ion-dist.asar               (224 MB — embedded "Claude Code" engine)
 │   ├── app.asar.unpacked/
 │   │   ├── resources/github-mcp/   (bundled GitHub MCP server)
 │   │   ├── resources/office365-mcp/ (bundled Office365 MCP server: msal-node-runtime)
@@ -41,7 +41,7 @@ Claude.app (Electron 45.3.3)
 ### 2.1 Model families
 `claude-3-5-haiku`, `claude-3-5-sonnet`, `claude-3-7-sonnet`, `claude-3p` / `claude-3p-dev` (preview line), `example-agent-sdk`.
 
-### 2.2 Core chat/tool capabilities (Example Code engine)
+### 2.2 Core chat/tool capabilities (Claude Code engine)
 `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep`, `WebSearch`, `WebFetch`, `Task`, `Agent`, `TodoWrite`, `NotebookEdit`, `NotebookRead`, `AskUserQuestion`, `KillShell`, `SlashCommand`, `Skill`, `ExitPlanMode`.
 
 ### 2.3 Native MCP tool surface (67 tools) — grouped
@@ -76,12 +76,12 @@ Claude.app (Electron 45.3.3)
 
 ---
 
-## 3. What Helio Bot reproduces
+## 3. What Akron Bot reproduces
 
-The build below mirrors this surface with a **pluggable OpenAI-compatible LLM adapter** (works with Ollama, LM Studio, Groq, OpenRouter, OpenAI, and any custom `/v1/chat/completions` endpoint), so it behaves like Example Desktop but runs on **any free LLM API**:
+The build below mirrors this surface with a **pluggable OpenAI-compatible LLM adapter** (works with Ollama, LM Studio, Groq, OpenRouter, OpenAI, and any custom `/v1/chat/completions` endpoint), so it behaves like Claude Desktop but runs on **any free LLM API**:
 
 1. **Chat UI** — streaming, markdown + code highlighting, copy buttons.
-2. **Agent tool loop** — function calling with the full classic Example Code tool surface (56 tools, see §4).
+2. **Agent tool loop** — function calling with the full classic Claude Code tool surface (56 tools, see §4).
 3. **MCP client** — connect to external stdio MCP servers, list & call their tools (the defining Example feature).
 4. **Artifacts panel** — code/files render in a live preview pane (+ explicit `Artifact` tool). Six renderers (`html` / `svg` / `mermaid` / `react` / `markdown` / `text`) plus the two Desktop canvas types: **`design`** (rail + wrapping canvas of live `srcdoc` artboards, per-board width×height, zoom overlay, save-per-board / save-all, print) and **`slides`** (16:9 stage, keyboard nav, progress bar, speaker-notes toggle, present-fullscreen, one-slide-per-page print). All three surfaces — artifact window, in-chat preview, print-to-PDF — build from one module (`electron/artifactcanvas.js`).
 5. **Memory** — persistent `.auto-memory` store.
@@ -103,13 +103,13 @@ The build below mirrors this surface with a **pluggable OpenAI-compatible LLM ad
 20. **Bot bridges** — local HTTP webhook bridge server for hearthbot/slackbot/teamsbot/webagent.
 21. **Visualize** — built-in SVG chart renderer (`visualize.js`).
 22. **Example-order transcript** — tool cards render above the assistant answer (streaming and
-    finished), so a run reads call-then-conclusion like Example Desktop.
+    finished), so a run reads call-then-conclusion like Claude Desktop.
 
 ---
 
 ## 4. Tool parity — 1:1 verification
 
-The complete classic Example Code tool inventory is reproduced:
+The complete classic Claude Code tool inventory is reproduced:
 
 `Bash, Edit, Write, Read, Glob, Grep, WebSearch, WebFetch, Task, Agent, TodoWrite,
 NotebookEdit, NotebookRead, AskUserQuestion, KillShell, SlashCommand, Skill,
@@ -120,7 +120,7 @@ TaskStop, ListAgents, SendUserMessage, SetGoal, ToolSearch, Artifact, Jira, Line
 
 ### Server-side features → local equivalents (config-gated in Settings)
 
-Example Desktop's server-side multi-agent / cloud-collaboration / bot-bridge features are
+Claude Desktop's server-side multi-agent / cloud-collaboration / bot-bridge features are
 reproduced as **local equivalents** (not stubbed dead), each gated by a Settings → Feature
 toggle:
 
@@ -145,7 +145,7 @@ toggle:
 
 ## 5. Product-surface parity: Plugins, Scheduled tasks, Custom skills (2026-11-25)
 
-Example Desktop's sidebar now maps 1:1 onto working local features — not stubs.
+Claude Desktop's sidebar now maps 1:1 onto working local features — not stubs.
 
 ### 5.1 Plugins & connectors
 - Curated catalog: **467 connectors / 50 plugins / 31 categories**
@@ -183,7 +183,7 @@ Example Desktop's sidebar now maps 1:1 onto working local features — not stubs
   servers) and a **Refresh registry** button.
 
 ### 5.1b Chrome extensions (Desktop `extension-host` parity)
-- Helio Bot hosts unpacked Chrome MV3/MV2 extensions with a **real
+- Akron Bot hosts unpacked Chrome MV3/MV2 extensions with a **real
   `chrome-extension://` origin** — `session.loadExtension()` first, with a
   privileged `helio-extension://` fallback served by `extHost.servePage` when
   native load fails.
@@ -364,7 +364,7 @@ Example Desktop's sidebar now maps 1:1 onto working local features — not stubs
 - **`electron/paths.js`** — `expandPath`/`resolvePath` expand `~`/`$HOME`/`~user` so every
   tool lands files in the real filesystem, never a literal `~/` directory.
 - **`electron/workspace.js`** — every conversation gets a project folder under
-  `~/Helio Bot/<slug>` created on demand (Example "auto create a project folder" parity),
+  `~/Akron Bot/<slug>` created on demand (Example "auto create a project folder" parity),
   persisted in `~/.autobot/workspaces.json`, with a `scratch()` folder for headless runs.
 - **Bash tool** runs through a genuine login shell (`/bin/zsh -l -c`) so `brew`/`npm`/`pip`
   binaries resolve exactly as in Terminal.
@@ -385,7 +385,7 @@ holds the conversation — everything is keyed by `convId` on the client:
   separately, so changing models never touches the transcript. Memory (`~/.autobot/memory.json`)
   is global, injected via `<long_term_memory>`, and applies across every model.
 - **Per-project mindmap** — `electron/mindmap.js` writes a `MINDMAP.md` into each
-  conversation's project folder (`~/Helio Bot/<slug>/MINDMAP.md`). It captures the goal
+  conversation's project folder (`~/Akron Bot/<slug>/MINDMAP.md`). It captures the goal
   (first user message), todos, decisions, file list, last exchange and working directory.
   `workspace.js` auto-creates a stub the moment a folder is created; `main.js` refreshes it
   on every completed or stopped run.
@@ -421,3 +421,57 @@ nothing is fetched from an account backend, and no data leaves the device.
   the tool count stays at 141 and the swarm frontier gate is unchanged.
 - Tests: `node test/compliance.test.js` → **147 passed, 0 failed**;
   live CDP verified the HIPAA / ZDR / CMEK profiles end to end.
+
+### FreeLLMAPI — one OpenAI-compatible endpoint over seven free providers (2026-11-25)
+
+`http://localhost:3001/v1` is a local router that presents the OpenAI wire format
+and multiplexes to Groq, Google Gemini, Cloudflare Workers AI, NVIDIA NIM,
+Cohere trial, Kilo and OpenRouter.
+
+- **Addressing** — `provider/model`, `provider:model`, a bare provider id (→ its
+  configured default), a `freellm/` prefix, or an alias: `auto` / `free` / `fast`
+  / `smart`.
+- **Fallback** — 429, 5xx, network failure and empty completions fall through to
+  the next configured provider, but only *before* the first stream byte reaches
+  the client. An explicit `provider/…` request never falls back, so you get the
+  error you asked for.
+- **Surfaces** — `POST /v1/chat/completions` (stream + non-stream),
+  `GET /v1/models` (merged, ~1000 ids, 10-minute cache), `GET /health`
+  (all providers + defaults, keys redacted), `GET /v1/providers`. CORS `*`,
+  8 MB body cap, optional `FREELM_TOKEN` bearer gate.
+- **Secrets** — `~/.autobot/freellm.json` at mode `0600`; env overrides
+  (`GROQ_API_KEY`, `GEMINI_API_KEY`, …) win when present. Repo ships only
+  `electron/freellm-config.example.json` with `PASTE_*` placeholders.
+- **Error hygiene** — upstream HTML is flattened to a single sentence, so a 429
+  reads `rate-limited`, never markup.
+- **In-app** — starts inside `app.whenReady()` (non-fatal on failure) and stops
+  on `will-quit`; Settings exposes status, providers and a save-and-restart path
+  through `autobot:freellmStatus` / `autobot:freellmProviders` /
+  `autobot:freellmSave`. Preset **`FreeLLMAPI (local router)`** points at it.
+- **Provider quirks encoded** — Cloudflare `/ai/v1/chat/completions`; Kilo
+  `/api/openrouter/chat/completions` (5–20 s, reasoning field); Gemini
+  `/v1beta/openai/chat/completions` with current model names; Cohere
+  `api.cohere.com` (no `/models` compat path); OpenRouter `:free` ids only;
+  reasoning models need `max_tokens ≥ 300` before `content` is non-empty.
+- Tests: `node test/freellm.test.js` → **37 passed, 0 failed** (hermetic, fake
+  upstream); all seven keys proven live through the router with `PONG`.
+
+### Brand mark + emerald palette (2026-11-25)
+
+The mark is a 12-ray emerald symbiote (`#10B981`), `#A7F3D0` inner glow at 0.55,
+six orbit tendrils and a gooey filter — one set of geometry constants drives the
+in-app `FullMark`/`CompactMark`, the tray template image and the app icon.
+
+- **Canonical artwork** — `build/logo-mark.svg` (animated), `build/icon.svg`
+  (dark squircle plate), `build/tray.svg` (monochrome, thick rays for 16 px).
+- **Rasterisation** — `npm run icons` → `build/render_icon.cjs` drives
+  Electron/Chromium (`canvas.toDataURL`) to emit `icon.png` (1024),
+  `icon.iconset/*`, `icon.icns` and `trayTemplate{,@2x}.png`. macOS template
+  naming means the menu-bar icon auto-inverts.
+- **Palette** — dark `--accent #10b981` / `--accent-strong #059669` /
+  `--accent-text #a7f3d0`; light `--accent #047857` / `#036b4e` / `#065f46`.
+  `--green` semantic tokens are untouched; warnings moved to amber so they no
+  longer read as brand.
+- **Every surface swept** — About window, MCP-OAuth result page, `quick.html`
+  overlay, Computer-Use panel, artifact canvas chrome, artifact swatch
+  (`clay` → `emerald`), landing page. Zero `#D97757` remains in source.

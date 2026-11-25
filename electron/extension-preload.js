@@ -1,5 +1,5 @@
 'use strict';
-// Preload for hosted Chrome extension pages — Helio Bot's equivalent of
+// Preload for hosted Chrome extension pages — Akron Bot's equivalent of
 // Chromium's extension bindings (Desktop's `extensionWindow.js`).
 //
 // Two modes, both fed by the same 11 `extension-host:*` channels:
