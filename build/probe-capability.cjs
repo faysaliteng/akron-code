@@ -140,15 +140,27 @@ const PROMPT = [
 
   const joined = [...toolNames].join(' | ');
   const lower = joined.toLowerCase();
+  // The collapsed "Ran 1 command, wrote 1 file, fetched 1 page" summary is part
+  // of the assistant bubble, not a .toolcard, so match it there too.
+  const runSummary = String((snap && snap.text) || '').toLowerCase();
   const result = {
     account: ACCOUNT,
     model: MODEL,
     transport: TRANSPORT,
     modelCount: Array.isArray(models) ? models.length : models,
     toolsCalled: [...toolNames],
-    wroteFile: /writ(e|ing):/.test(lower) && /toolcap\.txt/.test(lower),
-    ranShell: /(run|bash|shell|command)/.test(lower) && /cat toolcap\.txt/.test(lower),
-    usedBrowser: /(brows|navigat)/.test(lower) && /example\.com/.test(lower),
+    // A model that batches its tool calls gets ONE collapsed summary card
+    // ("Ran 1 command, wrote 1 file, fetched 1 page"), so the per-card scrape
+    // alone under-reports. Count both: explicit cards and the run summary.
+    wroteFile:
+      (/writ(e|ing):/.test(lower) && /toolcap\.txt/.test(lower))
+      || /wrote \d+ files?/.test(runSummary),
+    ranShell:
+      (/(run|bash|shell|command)/.test(lower) && /cat toolcap\.txt/.test(lower))
+      || /ran \d+ commands?/.test(runSummary),
+    usedBrowser:
+      (/(brows|navigat)/.test(lower) && /example\.com/.test(lower))
+      || /fetched \d+ pages?/.test(runSummary),
     answerHasOk: /TOOLCAP-OK/.test(snap ? snap.text : ''),
     browserTitle: (snap && /BROWSE=([^\n]+)/.exec(snap.text) || [])[1] || null,
     markupLeak: !!(snap && snap.leak),

@@ -34,6 +34,118 @@ const subagentControllers = new Map(); // name -> AbortController
 // else that starts with mcp__ is an external MCP server tool.
 const localToolNames = new Set(toolDefinitions.map((t) => t.name));
 
+// ── Provider tool caps ─────────────────────────────────────────────────────
+// Tools that must never be shed when a provider limits the advertised count:
+// they are the ones every task needs (read/edit/run/search/browse/todo + the
+// discovery escape hatch that makes shed tools findable again).
+const CORE_TOOLS = new Set([
+  'Bash', 'Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep',
+  'WebFetch', 'WebSearch', 'TodoWrite', 'Task', 'Agent',
+  'browser_open', 'browser_navigate', 'browser_read', 'browser_snapshot',
+  'browser_click', 'browser_type', 'browser_screenshot', 'browser_js',
+  'ToolSearch', 'find_mcp_tools', 'Skill', 'AskUserQuestion', 'KillShell',
+]);
+
+// Shed order: lowest marginal value first. The virtual `mcp__*` aliases come
+// first because each one duplicates a core tool above (workspace__bash = Bash,
+// memory__* = memory_*, chrome__* = browser_*), so dropping them costs nothing
+// while the real tool stays advertised.
+const AUX_TOOL_ORDER = [
+  'mcp__workspace__bash', 'mcp__workspace__read_file', 'mcp__workspace__write_file',
+  'mcp__workspace__edit_file', 'mcp__workspace__glob', 'mcp__workspace__grep',
+  'mcp__workspace__web_fetch',
+  'mcp__chrome__list_tabs', 'mcp__chrome__navigate', 'mcp__chrome__evaluate',
+  'mcp__chrome__screenshot',
+  'mcp__terminal__list_terminal_tabs', 'mcp__terminal__open_terminal_tab',
+  'mcp__terminal__read_terminal', 'mcp__terminal__run_in_terminal',
+  'mcp__terminal__stop_terminal_tab',
+  'mcp__memory__memory_add', 'mcp__memory__memory_list', 'mcp__memory__memory_delete',
+  'mcp__skills__list_skills', 'mcp__skills__load_skill',
+  'mcp__ccd_submit', 'mcp__ccd_list', 'mcp__bots__send',
+  'mcp__botbridge__start', 'mcp__botbridge__register',
+  'mcp__cowork__register_worker', 'mcp__cowork__list_workers', 'mcp__cowork__orchestrate',
+  'mcp-registry__list_connectors', 'mcp-registry__search_mcp_registry',
+  'mcp-registry__suggest_connectors',
+  'plugins__list_plugins', 'plugins__search_plugins', 'plugins__search_connectors',
+  'plugins__suggest_plugin_install', 'plugins__install', 'plugins__uninstall',
+  'plugins__directory_stats', 'plugins__refresh_registry',
+  'PushNotification', 'RemoteTrigger', 'Monitor', 'ScheduleWakeup',
+  'CronCreate', 'CronList', 'CronDelete', 'SendUserFile', 'Brief', 'StructuredOutput',
+  'Workflow', 'TaskOutput', 'TeamCreate', 'TeamDelete', 'ListAgents',
+  'SendUserMessage', 'SetGoal', 'EnterWorktree', 'ExitWorktree',
+  'EnterPlanMode', 'ExitPlanMode', 'ConnectGitHub', 'PowerShell', 'Mcp',
+  'LS', 'Search', 'Cd', 'Jira', 'Linear', 'Artifact', 'SlashCommand',
+  'ListMcpResources', 'ReadMcpResource', 'NotebookRead', 'NotebookEdit',
+  'REPL', 'JavaScript', 'create_skill', 'delete_skill',
+  'mcp__visualize__visualize', 'list_notebooks', 'list_slash_commands',
+  'memory_add', 'memory_list', 'memory_delete', 'list_skills',
+];
+
+/**
+ * Max tools this provider accepts in one request. 0 = no known cap.
+ * `provider.maxTools` wins; otherwise infer from the endpoint, because a
+ * provider that rejects the request outright costs the entire turn.
+ * A cap learned from a live rejection (`shaveCaps`) always wins over the
+ * inferred one — the provider told us the number it will accept.
+ */
+function toolCapFor(provider) {
+  const key = providerCapKey(provider);
+  if (shaveCaps.has(key)) return shaveCaps.get(key);
+  const explicit = Number(provider && provider.maxTools);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const hay = [
+    provider && provider.baseURL,
+    provider && provider.name,
+    provider && provider.id,
+  ].filter(Boolean).join(' ').toLowerCase();
+  // Groq: "'tools' : maximum number of items is 128". FreeLLMAPI routes to
+  // Groq/Gemini/Cloudflare behind one host, so it inherits the strictest cap.
+  if (/groq\.com|127\.0\.0\.1:3001|localhost:3001/.test(hay)) return 128;
+  return 0;
+}
+
+function providerCapKey(provider) {
+  return String((provider && (provider.baseURL || provider.id || provider.transport)) || 'default');
+}
+
+// Caps learned from a real rejection, per provider. Session-scoped on purpose:
+// a provider's limit can change with an account tier, and a hardcoded guess
+// must never outlive the evidence.
+const shaveCaps = new Map();
+
+/** Shrink an advertised tool list to `cap`, lowest-value tools first. */
+function trimToolsTo(tools, cap) {
+  let out = tools;
+  const dropped = [];
+  if (!cap || out.length <= cap) return { tools: out, dropped };
+  const order = AUX_TOOL_ORDER.filter((n) => out.some((t) => t.function && t.function.name === n));
+  while (out.length > cap && order.length) {
+    const name = order.shift();
+    out = out.filter((t) => !(t.function && t.function.name === name));
+    dropped.push(name);
+  }
+  // Still over (a huge MCP surface): shed the fattest non-core schemas too.
+  while (out.length > cap) {
+    let worst = -1; let worstLen = -1;
+    out.forEach((t, i) => {
+      const nm = t.function && t.function.name;
+      if (CORE_TOOLS.has(nm)) return;
+      const len = JSON.stringify(t).length;
+      if (len > worstLen) { worstLen = len; worst = i; }
+    });
+    if (worst < 0) break;
+    dropped.push(out[worst].function.name);
+    out = out.slice(0, worst).concat(out.slice(worst + 1));
+  }
+  return { tools: out, dropped };
+}
+
+/** True when the provider refused the request shape/size rather than the task. */
+function isToolCapError(e) {
+  const s = String((e && (e.message || e.reason)) || '');
+  return /maximum number of items|too many tools|tools.{0,20}(exceed|limit)|request(ed)? too large|tokens per minute|\bTPM\b|payload too large|reduce your/i.test(s);
+}
+
 const SYSTEM_PROMPT = `You are Akron Bot, an agentic desktop coding assistant running on the user's Mac (a local alternative to the Example desktop app). You work inside the user's project folder and you actually create, edit, and run code. You do not just describe code — you build it.
 
 ## Working style
@@ -558,11 +670,18 @@ async function chatWithFailover(opts) {
   const list = opts.list;
   const onDelta = opts.onDelta || (() => {});
   const emit = opts.emit || (() => {});
-  const tools = opts.tools;
+  let tools = opts.tools;
   const messages = opts.messages;
   const signal = opts.signal;
   const maxTokens = opts.maxTokens;
   const n = list.length;
+  // Advertised tools can be shaved mid-run when a provider says the request is
+  // too big (Groq's 8000 TPM free tier, an endpoint capping at 128 tools).
+  // Retrying the identical payload only burns allowance, so on the first such
+  // rejection we halve the surface, remember the cap for the rest of the
+  // session, and retry the SAME provider immediately — the turn keeps going.
+  const shaved = new Set();
+  let reqMax = maxTokens;
   // Rate limits (HTTP 429 / "too many requests") are TRANSIENT. Previously a
   // single-provider setup threw immediately and the whole run died with a red
   // banner mid-task. Now: try every provider once per round, then back off and
@@ -579,9 +698,45 @@ async function chatWithFailover(opts) {
       const i = (start + a) % n;
       const p = list[i];
       try {
-        return await chatCompletion(p, messages, tools, onDelta, signal, maxTokens);
+        // A model can advertise a window this account cannot actually use
+        // (Anthropic serves Sonnet 4.x at 1M only with an entitled beta). The
+        // transport demotes the catalog when the provider says no; tell the user
+        // in prose so the context ring changing from 1M to 200K is explained
+        // instead of looking like a bug.
+        const winPid = String(p.oauthProvider || '').split(':')[0] || p.transport || '';
+        const winBefore = modelCatalog.contextWindowFor(p.model, winPid, p.contextWindow);
+        const out = await chatCompletion(p, messages, tools, onDelta, signal, reqMax);
+        const winAfter = modelCatalog.contextWindowFor(p.model, winPid, p.contextWindow);
+        if (winAfter && winBefore && winAfter < winBefore) {
+          emit({ type: 'notice', text: `${p.model} advertises ${modelCatalog.fmtWindow(winBefore)} but this account is not entitled to it — this session budgets ${modelCatalog.fmtWindow(winAfter)} and compacts to fit.` });
+        }
+        return out;
       } catch (e) {
         if (signal && signal.aborted) throw e;
+        // The provider refused the request SHAPE (too many tools, request over a
+        // per-minute token limit) — not the task. Halve the advertised surface
+        // once or twice, remember it for the session, and retry the same
+        // provider so the run continues instead of dying on a limit we can
+        // satisfy by asking for less.
+        if (isToolCapError(e) && shaved.size < 2) {
+          const key = providerCapKey(p);
+          const msg = String((e && (e.message || e.reason)) || '');
+          // A per-minute token limit also counts the reserved output budget, so
+          // shrink both the tool surface and the reserve when that is the wall.
+          const tpmLike = /tokens per minute|\bTPM\b/i.test(msg);
+          const before = tools.length;
+          const nextCap = Math.max(CORE_TOOLS.size + 2, Math.floor(tools.length / 2));
+          shaved.add(key);
+          shaveCaps.set(key, nextCap);
+          const trimmed = trimToolsTo(tools, nextCap);
+          if (trimmed.tools.length < before) {
+            tools = trimmed.tools;
+            if (tpmLike && reqMax != null) reqMax = Math.max(1024, Math.floor(reqMax / 2));
+            emit({ type: 'notice', text: `${p.model || 'The provider'} accepts fewer tools per request than we advertise — continuing with the ${tools.length} most useful ones (${trimmed.dropped.length} deferred; still callable via ToolSearch).` });
+            a--; // retry this provider with the smaller surface
+            continue;
+          }
+        }
         // An oversized prompt is not transient: re-sending the identical history
         // five times only stalls for ~37 s and then blames the provider. Hand it
         // back to the agent loop, which compacts or chunks the input.
@@ -1150,6 +1305,17 @@ async function runAgent(opts) {
       tools.push({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } });
     }
   }
+
+  // ── Provider tool cap ────────────────────────────────────────────────────
+  // Some OpenAI-compatible endpoints hard-cap how many tools may be advertised
+  // in one request. Groq answers 141 tools with the 400 `'tools' : maximum
+  // number of items is 128` and the whole turn dies before the model ever sees
+  // the prompt (measured through the FreeLLMAPI gateway: gpt-oss-120b refuses
+  // at 141, accepts at 128). Dispatch here is by NAME, and `tool_search`
+  // indexes the full definition list, so a tool we stop advertising is still
+  // discoverable and still callable — only the request shrinks.
+  const cap = toolCapFor(provider);
+  if (cap) tools = trimToolsTo(tools, cap).tools;
 
   // Always ensure the core system prompt is the first message. The renderer may
   // send its own system message (style / project / web-search directives); that
