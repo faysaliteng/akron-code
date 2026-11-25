@@ -173,6 +173,68 @@ const REASON_LEVELS = [
 ];
 const REASON_LABELS = REASON_LEVELS.reduce((acc, l) => { acc[l.id] = l.name; return acc; }, {});
 
+// ---------- token / cost helpers (slash commands: /usage /cost /context) ----------
+// Per-million-token list prices in USD. Matched by substring against the model
+// id; the default is a mid-tier frontier rate so an unknown model still gives a
+// sane order-of-magnitude estimate rather than $0.
+const PRICES = [
+  { re: /opus/i, in: 15, out: 75 },
+  { re: /sonnet/i, in: 3, out: 15 },
+  { re: /haiku/i, in: 0.8, out: 4 },
+  { re: /kimi|moonshot/i, in: 0.6, out: 2.5 },
+  { re: /deepseek/i, in: 0.28, out: 0.42 },
+  { re: /glm|zhipu/i, in: 0.6, out: 2.2 },
+  { re: /gpt-5|gpt5|o[1-4]/i, in: 1.25, out: 10 },
+  { re: /gpt-4/i, in: 2.5, out: 10 },
+  { re: /gemini.*(pro|ultra)/i, in: 1.25, out: 10 },
+  { re: /qwen/i, in: 0.4, out: 1.2 },
+  { re: /grok/i, in: 2, out: 10 },
+  { re: /command-r/i, in: 2.5, out: 10 },
+  { re: /mistral-large/i, in: 2, out: 6 },
+];
+const priceFor = (model) => {
+  const m = PRICES.find((p) => p.re.test(String(model || '')));
+  return m ? { in: m.in, out: m.out } : { in: 3, out: 15 };
+};
+const fmtTokens = (n) => {
+  const v = Number(n) || 0;
+  if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + 'k';
+  return String(v);
+};
+const estimateCost = (model, prompt, completion) => {
+  const p = priceFor(model);
+  return ((Number(prompt) || 0) / 1e6) * p.in + ((Number(completion) || 0) / 1e6) * p.out;
+};
+const fmtCost = (usd) => {
+  const v = Number(usd) || 0;
+  if (v === 0) return '$0.00';
+  if (v < 0.01) return '$' + v.toFixed(4);
+  return '$' + v.toFixed(v < 1 ? 3 : 2);
+};
+// Rough context-window estimate: ~4 chars/token for english+code. The window
+// itself varies by model; these are the documented/typical values.
+const contextWindowFor = (model) => {
+  const m = String(model || '');
+  if (/kimi|moonshot/i.test(m)) return 256000;
+  if (/deepseek/i.test(m)) return 128000;
+  if (/glm|zhipu/i.test(m)) return 200000;
+  if (/gemini/i.test(m)) return 1000000;
+  if (/gpt-5|o[1-4]/i.test(m)) return 400000;
+  if (/gpt-4/i.test(m)) return 128000;
+  if (/qwen/i.test(m)) return 128000;
+  if (/grok/i.test(m)) return 131072;
+  if (/claude|sonnet|opus|haiku/i.test(m)) return 200000;
+  return 128000;
+};
+const msgText = (m) => {
+  const c = m && m.content;
+  if (c == null) return '';
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) return c.map((x) => (x && typeof x === 'object' ? (x.text || '') : String(x))).join('\n');
+  try { return JSON.stringify(c); } catch { return String(c); }
+};
+
 // ---------- payload builders (pure) ----------
 const buildDirectives = (styleId, reasoningLevel, opts = {}) => {
   const style = STYLES.find((s) => s.id === styleId);
@@ -319,6 +381,11 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   // Wall-clock start of the active run — powers the live "Working · 12s" row.
   const [runStartedAt, setRunStartedAt] = useState(0);
+  // Token accounting for /usage, /cost, /context and /insights. `usage` events
+  // stream from the main process each step; the final `done` carries the total.
+  const [lastUsage, setLastUsage] = useState(() => loadJSON('autobot:lastUsage', null));
+  useEffect(() => { saveJSON('autobot:lastUsage', lastUsage); }, [lastUsage]);
+  const [goal, setGoal] = useState('');
   const [queued, setQueued] = useState([]); // messages typed while a reply streams
   const [thinking, setThinking] = useState('');
   const [live, setLive] = useState(null); // { content, tools: [] }
@@ -595,6 +662,7 @@ export default function App() {
           break;
         case 'done':
         case 'complete':
+          if (evt && evt.usage) setLastUsage({ ...evt.usage, model: evt.usage.model || (evt.usage && evt.usage.model) || null, at: Date.now() });
           commitLive();
           break;
         case 'cancelled':
@@ -698,7 +766,11 @@ export default function App() {
           setNotice(String(evt.text || ''));
           break;
         case 'goal':
+          setGoal(String(evt.goal || ''));
           setNotice('Goal: ' + evt.goal);
+          break;
+        case 'usage':
+          if (evt.usage) setLastUsage({ ...evt.usage, model: evt.model || (evt.usage && evt.usage.model) || null, at: Date.now() });
           break;
         case 'notice':
           // Context compaction and other system-level messages from the agent.
@@ -1133,35 +1205,134 @@ export default function App() {
   // ---- Slash commands ----
   // Built-ins are client-side; everything else is resolved against the SAME
   // command files Claude Code reads (`.claude/commands/*.md`, bundled, user).
+  // Every command Claude Code 2.1.x ships is either implemented here, mapped to
+  // its GUI surface, or documented as GUI-EQ / N-A — never silently "unknown".
   const runSlashCommand = async (raw) => {
     const body = String(raw || '').replace(/^\//, '');
     const [head, ...rest] = body.trim().split(/\s+/);
-    const cmd = (head || '').toLowerCase();
+    const rawCmd = (head || '').toLowerCase();
+    // Claude Code 2.1.x aliases → canonical command (matches the real registry's
+    // aliases[] fields exactly; undocumented ones are noted inline).
+    const ALIAS = {
+      q: 'quit', exit: 'quit', bye: 'quit',
+      c: 'compact',
+      cost: 'usage', stats: 'usage', 'usage-credits': 'usage', 'extra-usage': 'usage',
+      bashes: 'bashes', tasks: 'bashes',
+      plugins: 'plugins', plugin: 'plugins', marketplace: 'plugins',
+      branch: 'fork', fork: 'fork',
+      name: 'rename',
+      'code-review': 'review',
+      schedule: 'schedule', loops: 'schedule', loop: 'schedule',
+    };
+    const cmd = ALIAS[rawCmd] || rawCmd;
     const argText = rest.join(' ');
+    const model = provider.model || '';
+    const note = (s) => appendAssistant(s);
+    const lastAssistant = () => [...messages].reverse().find((m) => m.role === 'assistant' && m.content);
+    // One-shot model call shared by /advisor, /btw, /recap, /brief. Errors are
+    // surfaced, never swallowed.
+    const askOnce = async (system, question, maxTokens = 1200) => {
+      try {
+        const r = await window.autobot.chatOnce({
+          provider, maxTokens,
+          messages: [{ role: 'system', content: system }, { role: 'user', content: question }],
+        });
+        if (r && r.ok) return String(r.content || '').trim() || '_(empty response)_';
+        return '⚠️ ' + ((r && r.error) || 'model call failed');
+      } catch (e) { return '⚠️ ' + (e.message || 'model call failed'); }
+    };
+    const transcriptText = () => (messages || [])
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => (m.role === 'user' ? 'User: ' : 'Assistant: ') + msgText(m)).join('\n\n');
+
     switch (cmd) {
       case 'help': {
         let custom = [];
         try { custom = (await window.autobot.listCommands(cwd)) || []; } catch (_) {}
-        const builtins = '`/help` — this help\n`/clear` — clear current conversation\n`/compact` — summarize then clear\n`/model` — open provider settings\n`/review` — review note\n`/memory` — open memory panel\n`/agents` — list sub-agent definitions\n`/permissions` — show permission rules\n`/rewind` — restore files from a checkpoint\n`/reset` — clear memory + conversations\n`/status` — show provider/model/tool status\n`/notebooks` — open notebooks\n`/terminal` — open terminal';
+        const groups = [
+          ['Session', [
+            ['/help', 'this help'], ['/clear', 'clear current conversation'], ['/compact', 'summarize the transcript, then continue from the digest'],
+            ['/resume', 'list conversations to switch to'], ['/continue', 'continue the last turn'], ['/fork', 'branch a copy of this conversation'],
+            ['/export [md|html|json]', 'export the conversation'], ['/copy', 'copy my last reply'], ['/reset', 'clear memory + conversations'],
+          ]],
+          ['Model & context', [
+            ['/model', 'open provider settings'], ['/usage', 'token usage for the last run'], ['/cost', 'estimated cost of the last run'],
+            ['/context', 'context-window usage'], ['/insights', 'usage summary'], ['/effort [auto|low|medium|high]', 'set thinking level'],
+            ['/output-style [name]', 'writing style'], ['/config', 'open settings'], ['/theme', 'toggle light/dark'],
+          ]],
+          ['Workspace', [
+            ['/status', 'provider / model / tools'], ['/diff', 'git diff of the workspace'], ['/add-dir [path]', 'change working directory'],
+            ['/init', 'write a CLAUDE.md for this project'], ['/todos', 'show the current todo list'], ['/plan [off]', 'toggle plan mode (read-only)'],
+            ['/notebooks', 'open notebooks'], ['/terminal', 'open terminal'], ['/bashes', 'list background shells'],
+          ]],
+          ['Agent', [
+            ['/agents', 'list sub-agent definitions'], ['/permissions', 'show permission rules'], ['/rewind', 'restore files from a checkpoint'],
+            ['/memory', 'open memory panel'], ['/review', 'review the working-tree diff'], ['/security-review', 'security review of the diff'],
+            ['/simplify', 'simplify the changed code'], ['/advisor [q]', 'second opinion from the model'], ['/btw [q]', 'quick side answer'],
+            ['/recap', 'recap this conversation'], ['/brief', 'short brief of this conversation'], ['/goal [text]', 'set the run goal'],
+          ]],
+          ['Config & system', [
+            ['/hooks', 'show merged hook config'], ['/mcp', 'show MCP servers'], ['/skills', 'list skills'], ['/reload-skills', 'refresh skills'],
+            ['/plugins', 'list plugins'], ['/debug', 'build + environment info'], ['/doctor', 'diagnose the setup'], ['/version', 'app version'],
+          ]],
+        ];
+        const fmtGroup = (title, rows) => '**' + title + '**\n' + rows.map((r) => '`' + r[0] + '` — ' + r[1]).join('\n');
+        const builtins = groups.map((g) => fmtGroup(g[0], g[1])).join('\n\n');
         const customList = custom.length ? '\n\n**Project commands**\n' + custom.map((c) => '`/' + c.name + '`' + (c.description ? ' — ' + c.description : '')).join('\n') : '';
-        appendAssistant('Slash commands:\n' + builtins + customList);
+        note('Slash commands:\n\n' + builtins + customList);
         break;
       }
       case 'clear':
         clearActiveConversation();
         break;
-      case 'compact':
-        appendAssistant('⚠️ `/compact` — summarizing then clearing. (Full context compaction runs automatically on the next turn.)');
+      case 'commands': {
+        let custom = [];
+        try { custom = (await window.autobot.listCommands(cwd)) || []; } catch (_) {}
+        const only = custom.filter((c) => c.custom);
+        note('**Custom commands** (' + only.length + ')\n' + (only.length ? only.map((c) => '- `/' + c.name + '`' + (c.description ? ' — ' + c.description : '') + ' _(' + c.source + ')_').join('\n') : '_(none — add `.claude/commands/*.md`)_'));
         break;
+      }
+      case 'compact': {
+        const msgs = (active && active.messages) || [];
+        if (msgs.length < 4) { note('Nothing to compact — this conversation is still short.'); break; }
+        note('⏳ Compacting ' + msgs.length + ' messages…');
+        const r = await window.autobot.compact({ provider, messages: msgs });
+        if (!r || !r.ok) { note('❌ Compact failed: ' + ((r && r.error) || 'unknown error')); break; }
+        const digest = { id: uid(), role: 'assistant', content: '**Compacted conversation** — earlier turns were summarized.\n\n' + String(r.summary || ''), ts: Date.now() };
+        setConvs((cs) => cs.map((c) => (c.id === activeId ? { ...c, messages: [digest], compactedAt: Date.now() } : c)));
+        if (r.usage) setLastUsage({ ...r.usage, model: r.model || model, at: Date.now() });
+        break;
+      }
       case 'model':
         setShowSettings(true);
         break;
-      case 'review':
-        appendAssistant('Review note: recent changes are tracked in the Artifacts panel. Open Artifacts to inspect code produced this session.');
+      case 'review': {
+        if (streaming) { note('A run is in progress — wait for it to finish before /review.'); break; }
+        send('Review the current working-tree changes. Run `git diff` (or `git status` then read the changed files), then give a concise code review: correctness bugs, security issues, edge cases, and concrete fixes. Reference files and line numbers.');
         break;
-      case 'memory':
+      }
+      case 'security-review': {
+        if (streaming) { note('A run is in progress — wait for it to finish.'); break; }
+        send('Perform a security review of the current working-tree changes. Run `git diff`, read the affected files, and report concrete vulnerabilities (injection, authz/IDOR, secrets, unsafe deserialization, SSRF, path traversal, XSS) with file/line references and fixes. If nothing is exploitable, say so briefly.');
+        break;
+      }
+      case 'simplify': {
+        if (streaming) { note('A run is in progress — wait for it to finish.'); break; }
+        send('Simplify the code in the current working-tree changes without changing behavior. Run `git diff`, then apply focused edits that remove duplication, dead code, and needless complexity. Keep the diff small and explain each change.');
+        break;
+      }
+      case 'memory': {
         setPanel('memory');
+        let pm = null;
+        try { pm = await window.autobot.getProjectMemory(cwd); } catch (_) {}
+        const files = (pm && pm.files) || [];
+        const chars = ((pm && pm.text) || '').length;
+        note('**Memory** — the Memory panel lists saved notes. Project memory comes from the `CLAUDE.md` hierarchy:\n' +
+          (files.length
+            ? files.map((f) => '- `' + (f.file || f.path) + '` (' + (f.scope || 'project') + ', ' + (f.bytes || 0) + ' B)').join('\n') + '\n\nCombined size: ' + chars + ' characters.'
+            : '_(no CLAUDE.md found in this folder, its parents, or ~/.claude)_'));
         break;
+      }
       case 'agents': {
         let list = [];
         try { list = (await window.autobot.listAgentDefs(cwd)) || []; } catch (_) {}
@@ -1211,6 +1382,485 @@ export default function App() {
       case 'terminal':
         setPanel('terminal');
         break;
+      // ---------- model & context ----------
+      case 'usage': {
+        if (!lastUsage) { note('No token usage recorded yet for this session. Run a message first.'); break; }
+        const u = lastUsage;
+        const cost = estimateCost(u.model || model, u.prompt_tokens, u.completion_tokens);
+        note('**Usage** (last run)\n- Model: `' + (u.model || model) + '`\n- Prompt: ' + fmtTokens(u.prompt_tokens) + ' tokens\n- Completion: ' + fmtTokens(u.completion_tokens) + ' tokens\n- Total: ' + fmtTokens(u.total_tokens) + ' tokens across ' + (u.calls || 1) + ' call(s)\n- Est. cost: ' + fmtCost(cost));
+        break;
+      }
+      case 'cost': {
+        if (!lastUsage) { note('No usage recorded yet. Nothing to price.'); break; }
+        const u = lastUsage;
+        const cost = estimateCost(u.model || model, u.prompt_tokens, u.completion_tokens);
+        const p = priceFor(u.model || model);
+        note('**Cost** (last run)\n- Model: `' + (u.model || model) + '`\n- Rate: $' + p.in + ' / $' + p.out + ' per 1M in/out\n- ' + fmtTokens(u.prompt_tokens) + ' in + ' + fmtTokens(u.completion_tokens) + ' out\n- **' + fmtCost(cost) + '** (estimate)');
+        break;
+      }
+      case 'context': {
+        const chars = (messages || []).reduce((n, m) => n + msgText(m).length, 0) + (live ? (live.content || '').length : 0);
+        const est = Math.round(chars / 4);
+        const win = contextWindowFor(model);
+        const pct = win ? Math.min(100, (est / win) * 100) : 0;
+        const bar = '█'.repeat(Math.round(pct / 5)) + '░'.repeat(20 - Math.round(pct / 5));
+        note('**Context**\n- Model: `' + model + '`\n- Window: ' + fmtTokens(win) + ' tokens\n- This conversation: ~' + fmtTokens(est) + ' tokens (' + pct.toFixed(1) + '%)\n`' + bar + '`\n- Messages: ' + (messages || []).length);
+        break;
+      }
+      case 'insights': {
+        const turns = (messages || []).filter((m) => m.role === 'user').length;
+        const replies = (messages || []).filter((m) => m.role === 'assistant').length;
+        const u = lastUsage || {};
+        const conv = convs.find((c) => c.id === activeId);
+        note('**Insights**\n- Conversation: ' + (conv ? conv.title : '(none)') + '\n- User turns: ' + turns + '\n- Assistant turns: ' + replies + '\n- Last model: `' + (u.model || model) + '`\n- Last total tokens: ' + fmtTokens(u.total_tokens || 0) + '\n- Est. last-run cost: ' + fmtCost(estimateCost(u.model || model, u.prompt_tokens, u.completion_tokens)) + '\n- Total conversations: ' + convs.length);
+        break;
+      }
+      case 'effort': {
+        const lv = String(argText || '').trim().toLowerCase();
+        if (!lv) { note('Current thinking level: **' + (reasoningLevel || 'auto') + '**\nUse `/effort auto|low|medium|high` or the Thinking control in the composer.'); break; }
+        if (!['auto', 'low', 'medium', 'high'].includes(lv)) { note('Unknown level `' + lv + '`. Pick auto, low, medium, or high.'); break; }
+        setReasoningLevel(lv);
+        note('Thinking level set to **' + lv + '**.');
+        break;
+      }
+      case 'output-style': {
+        const st = String(argText || '').trim().toLowerCase();
+        const found = STYLES.find((s) => s.id === st || s.name.toLowerCase() === st);
+        if (!st) {
+          note('**Output styles**\n' + STYLES.map((s) => '- `' + s.id + '` — ' + s.name + (s.hint ? ' (' + s.hint + ')' : '') + (s.id === styleId ? '  ← current' : '')).join('\n') + '\n\nUse `/output-style <id>`.');
+          break;
+        }
+        if (!found) { note('Unknown style `' + st + '`. Run `/output-style` to list them.'); break; }
+        setStyleId(found.id);
+        note('Output style set to **' + found.name + '**.');
+        break;
+      }
+      case 'theme':
+      case 'color': {
+        const next = (settings.theme === 'dark') ? 'light' : 'dark';
+        setSettings((s) => ({ ...s, theme: next }));
+        note('Theme switched to **' + next + '**.');
+        break;
+      }
+      case 'config':
+        setShowSettings(true);
+        break;
+      case 'version': {
+        let v = null;
+        try { v = await window.autobot.getVersion(); } catch (_) {}
+        note(v ? ('**Version**\n- Helio Bot `' + v.app + '`\n- Electron `' + v.electron + '` · Chrome `' + v.chrome + '` · Node `' + v.node + '`\n- Platform: ' + v.platform + '/' + v.arch) : 'Version info unavailable.');
+        break;
+      }
+      case 'debug': {
+        let v = null;
+        try { v = await window.autobot.getVersion(); } catch (_) {}
+        let gi = null;
+        try { gi = await window.autobot.gitInfo(cwd); } catch (_) {}
+        note('**Debug**\n- Provider: `' + provider.baseURL + '`\n- Model: `' + model + '`\n- Tools: ' + (provider.supportsTools ? 'on' : 'off') + '\n- Reasoning: `' + (reasoningLevel || 'auto') + '`\n- Swarm: ' + (swarmEnabled ? 'on' : 'off') + '\n- Permission mode: `' + (permissions || 'auto') + '`\n- CWD: `' + (cwd || '~') + '`\n' + (gi && gi.isRepo ? '- Repo: `' + gi.root + '` on `' + gi.branch + '` (+' + gi.ahead + '/-' + gi.behind + ')' : '- Repo: none') + (v ? '\n- Build: ' + v.app + ' · Electron ' + v.electron : ''));
+        break;
+      }
+      case 'doctor': {
+        const checks = [];
+        let v = null;
+        try { v = await window.autobot.getVersion(); } catch (_) {}
+        checks.push((v ? '✅' : '❌') + ' App runtime' + (v ? ' (' + v.app + ')' : ''));
+        checks.push((provider.baseURL && provider.model ? '✅' : '❌') + ' Provider configured (' + (provider.model || 'none') + ')');
+        checks.push((provider.apiKey || provider.baseURL) ? '✅' : '⚠️' + ' Credentials');
+        let gi = null;
+        try { gi = await window.autobot.gitInfo(cwd); } catch (_) {}
+        checks.push((gi && gi.isRepo ? '✅' : '⚠️') + ' Git repo ' + (gi && gi.isRepo ? gi.root : 'not detected'));
+        let sk = [];
+        try { sk = (await window.autobot.getSkills()) || []; } catch (_) {}
+        checks.push('✅ Skills loaded: ' + sk.length);
+        let hooks = null;
+        try { hooks = await window.autobot.getHooks(cwd); } catch (_) {}
+        const hookCount = hooks ? Object.values(hooks).reduce((n, a) => n + (Array.isArray(a) ? a.length : 0), 0) : 0;
+        checks.push((hookCount ? '✅' : 'ℹ️') + ' Hooks: ' + hookCount);
+        note('**Doctor**\n' + checks.join('\n') + '\n\nIf a provider check is red, open `/model` and re-enter the key.');
+        break;
+      }
+      // ---------- workspace ----------
+      case 'diff': {
+        let gi = null;
+        try { gi = await window.autobot.gitInfo(cwd); } catch (_) {}
+        if (!gi || !gi.isRepo) { note('Not a git repository (`' + (cwd || '~') + '`).'); break; }
+        const c = gi.counts || {};
+        let stat = null;
+        try { stat = await window.autobot.gitRun(gi.root, ['diff', '--stat']); } catch (_) {}
+        let full = null;
+        try { full = await window.autobot.gitRun(gi.root, ['diff']); } catch (_) {}
+        const body = (full && full.stdout ? full.stdout : '').slice(0, 12000);
+        note('**Git diff** — `' + gi.branch + '`\n- modified ' + (c.modified || 0) + ' · added ' + (c.added || 0) + ' · deleted ' + (c.deleted || 0) + ' · untracked ' + (c.untracked || 0) + '\n\n' + ((stat && stat.stdout) ? '```\n' + stat.stdout + '\n```\n\n' : '') + (body ? '```diff\n' + body + '\n```' : '_(no unstaged changes)_'));
+        break;
+      }
+      case 'add-dir':
+      case 'cwd': {
+        const dir = String(argText || '').trim();
+        if (!dir) { note('Current working directory: `' + (cwd || '~') + '`\nUse `/add-dir <path>` to change it.'); break; }
+        setCwd(dir);
+        note('Working directory set to `' + dir + '`.');
+        break;
+      }
+      case 'init': {
+        const content = [
+          '# Project guide',
+          '',
+          'This file (`CLAUDE.md`) is read automatically at the start of every conversation. Keep it short and factual.',
+          '',
+          '## Overview',
+          '<!-- what this project is, one paragraph -->',
+          '',
+          '## Commands',
+          '- install: `npm install`',
+          '- build: `npm run build`',
+          '- test: `npm test`',
+          '',
+          '## Conventions',
+          '- <!-- style, structure, gotchas -->',
+          '',
+        ].join('\n');
+        const r = await window.autobot.writeFile({ file: 'CLAUDE.md', content, cwd });
+        note(r && r.ok ? '✅ Created `CLAUDE.md` at `' + r.path + '`. Edit it to describe this project.' : '❌ Could not write CLAUDE.md: ' + ((r && r.error) || 'unknown'));
+        break;
+      }
+      case 'todos': {
+        let todos = null;
+        for (let i = (messages || []).length - 1; i >= 0; i--) {
+          const m = messages[i];
+          const tool = (m.tools || []).find((t) => t && t.name === 'TodoWrite' && t.args && Array.isArray(t.args.todos));
+          if (tool) { todos = tool.args.todos; break; }
+        }
+        if (!todos || !todos.length) { note('No todo list in this conversation yet. The agent creates one with the TodoWrite tool.'); break; }
+        const mark = (s) => s === 'completed' ? '✅' : s === 'in_progress' ? '🔄' : '⬜';
+        note('**Todos**\n' + todos.map((t) => mark(t.status) + ' ' + (t.content || t.activeForm || '')).join('\n'));
+        break;
+      }
+      case 'plan': {
+        const off = /^(off|stop|exit|false)$/i.test(String(argText || '').trim());
+        if (off) { setPermissions('auto'); note('Plan mode off — back to auto.'); break; }
+        setPermissions('plan');
+        note('Plan mode on — the agent is read-only and writes only the plan file until you approve. Use the permission pill or `/plan off` to exit.');
+        break;
+      }
+      case 'bashes': {
+        let jobs = [];
+        try { jobs = (await window.autobot.shellList()) || []; } catch (_) {}
+        if (!jobs.length) { note('No background shells running.'); break; }
+        note('**Background shells**\n' + jobs.map((j) => '- `' + (j.id || '?') + '` ' + (j.status || '') + (j.label ? ' — ' + j.label : '')).join('\n'));
+        break;
+      }
+      // ---------- session ----------
+      case 'copy': {
+        const last = lastAssistant();
+        if (!last) { note('Nothing to copy yet.'); break; }
+        try { await navigator.clipboard.writeText(last.content || ''); note('Copied the last reply to the clipboard.'); }
+        catch (_) { note('Clipboard unavailable.'); }
+        break;
+      }
+      case 'export': {
+        const fmt = ['md', 'html', 'json'].includes(String(argText || '').trim().toLowerCase()) ? String(argText).trim().toLowerCase() : 'md';
+        await exportConv(fmt);
+        break;
+      }
+      case 'resume': {
+        const want = String(argText || '').trim();
+        if (want) {
+          const hit = convs.find((c) => c.id === want || (c.title || '').toLowerCase().includes(want.toLowerCase()));
+          if (hit) { setActiveId(hit.id); note('Resumed **' + (hit.title || hit.id) + '**.'); break; }
+        }
+        const rows = convs.slice(0, 25).map((c) => '- `' + c.id + '` — ' + (c.title || 'Untitled') + ' (' + (c.messages || []).length + ' msgs)' + (c.id === activeId ? '  ← current' : ''));
+        note('**Conversations**\n' + (rows.length ? rows.join('\n') : '_(none yet)_') + '\n\nUse `/resume <id-or-title>`.');
+        break;
+      }
+      case 'continue': {
+        if (streaming) { note('Already running — the current turn will finish first.'); break; }
+        send('continue');
+        break;
+      }
+      case 'fork': {
+        const conv = convs.find((c) => c.id === activeId);
+        if (!conv) { note('No active conversation to fork.'); break; }
+        const copy = { ...conv, id: uid(), title: (conv.title || 'Untitled') + ' (fork)', messages: (conv.messages || []).map((m) => ({ ...m, id: uid() })), ts: Date.now() };
+        setConvs((cs) => [copy, ...cs]);
+        setActiveId(copy.id);
+        note('Forked into **' + copy.title + '**.');
+        break;
+      }
+      case 'goal': {
+        if (!argText) { note(goal ? 'Current goal: ' + goal : 'No goal set. Use `/goal <text>`.'); break; }
+        setGoal(argText);
+        setNotice('Goal: ' + argText);
+        note('🎯 Goal set: ' + argText);
+        break;
+      }
+      // ---------- one-shot model calls ----------
+      case 'advisor': {
+        if (!argText) { note('Use `/advisor <question>` for a second opinion from the model without adding a turn to the transcript.'); break; }
+        const q = transcriptText().slice(-6000) + '\n\nQuestion: ' + argText;
+        note('**Advisor**\n' + await askOnce('You are a second-opinion advisor. Given the conversation and a question, give a direct, critical answer. Point out risks and concrete next steps. Be brief.', q, 900));
+        break;
+      }
+      case 'btw': {
+        if (!argText) { note('Use `/btw <question>` for a quick side answer that stays out of the main thread.'); break; }
+        note('**By the way**\n' + await askOnce('Answer the user\'s side question briefly and directly. It is a tangent, not the main task.', argText, 700));
+        break;
+      }
+      case 'recap': {
+        if (!messages.length) { note('Nothing to recap yet.'); break; }
+        note('**Recap**\n' + await askOnce('Summarize this conversation in a short recap: what the user wanted, what was done, current state, and what is left. Terse bullets.', transcriptText().slice(-12000), 900));
+        break;
+      }
+      case 'brief': {
+        if (!messages.length) { note('Nothing to brief yet.'); break; }
+        note('**Brief**\n' + await askOnce('Give a one-paragraph brief of this conversation and 3 bullet next steps.', transcriptText().slice(-12000), 600));
+        break;
+      }
+      // ---------- config & system ----------
+      case 'hooks': {
+        let hooks = null;
+        try { hooks = await window.autobot.getHooks(cwd); } catch (_) {}
+        if (!hooks) { note('Hook config unavailable.'); break; }
+        const rows = [];
+        for (const [ev, arr] of Object.entries(hooks)) {
+          if (!Array.isArray(arr) || !arr.length) continue;
+          for (const entry of arr) rows.push('- `' + ev + '`' + (entry.matcher ? ' [' + entry.matcher + ']' : '') + ' — ' + (entry.hooks || []).map((h) => h.type + (h.command ? ': `' + h.command + '`' : '')).join(', '));
+        }
+        note('**Hooks**\n' + (rows.length ? rows.join('\n') : '_(no hooks configured — checked ~/.claude, ./.claude, ~/.autobot/hooks.json)_'));
+        break;
+      }
+      case 'mcp': {
+        let cfg = null;
+        try { cfg = await window.autobot.mcpConfig(cwd); } catch (_) {}
+        if (!cfg) { note('MCP config unavailable.'); break; }
+        const st = (cfg.status || []).map((s) => '- `' + (s.id || s.name) + '` — ' + (s.status || s.state || 'configured'));
+        note('**MCP servers**\n' + (cfg.servers && cfg.servers.length ? cfg.servers.join(', ') : '_(none configured)_') + (st.length ? '\n\n**Status**\n' + st.join('\n') : ''));
+        break;
+      }
+      case 'skills':
+      case 'reload-skills': {
+        let list = [];
+        try { list = (await window.autobot.getSkills()) || []; } catch (_) {}
+        setSkills(list);
+        note('**Skills** (' + list.length + ')\n' + (list.length ? list.map((s) => '- `' + (s.name || s.id) + '`' + (s.enabled === false ? ' _(disabled)_' : '') + (s.description ? ' — ' + s.description : '')).join('\n') : '_(none found)_'));
+        break;
+      }
+      case 'plugins':
+      case 'reload-plugins': {
+        let list = [];
+        try { list = (await window.autobot.listPlugins({})) || []; } catch (_) {}
+        const arr = Array.isArray(list) ? list : (list.items || []);
+        note('**Plugins** (' + arr.length + ')\n' + (arr.length ? arr.map((p) => '- `' + (p.name || p.id) + '`' + (p.description ? ' — ' + p.description : '')).join('\n') : '_(none installed)_'));
+        break;
+      }
+      // ---------- GUI-EQ / informational ----------
+      case 'statusline':
+        note('`/statusline` — Helio Bot renders status in the composer (provider, model, thinking level, context). Use `/status` for a text dump.');
+        break;
+      case 'login':
+        setShowSettings(true);
+        note('Sign-in lives in Settings → Account.');
+        break;
+      case 'logout': {
+        setAccount((a) => ({ ...a, signedIn: false, email: '', authMethod: null, plan: 'Free' }));
+        note('Signed out.');
+        break;
+      }
+      case 'quit':
+        note('`/quit` — Helio Bot is a GUI app, so there is no terminal to exit. Close the window (⌘W) to quit, or use the app menu.');
+        break;
+      case 'pr-comments':
+        note('`/pr-comments` — pull request comments are reviewed in the Artifacts / GitHub panel. Connect a repo with `/init` and view PRs there.');
+        break;
+      case 'sandbox':
+        note('`/sandbox` — sandboxing is governed by the permission pill (Auto / Manual / Accept edits / Plan / Bypass). See `/permissions`.');
+        break;
+      case 'alias':
+        note('`/alias` — command aliases are configured in Settings → Commands. Project commands live in `.claude/commands/*.md`.');
+        break;
+      case 'focus':
+        note('`/focus` — narrow the working set with a project (Projects panel) or `/add-dir`.');
+        break;
+      case 'bug':
+        note('Found a bug? File it with `/feedback` or the akronlogic.com support link. Include `/debug` output.');
+        break;
+      case 'feedback':
+        note('Feedback goes to akronlogic.com. Include `/debug` and `/version` output so it is actionable.');
+        break;
+      case 'init-verifiers':
+        note('`/init-verifiers` — add test/verification steps to `CLAUDE.md`. Use `/init` first, then describe how to verify changes.');
+        break;
+      // ---------- remaining Claude Code 2.1.x commands implemented in the GUI ----------
+      case 'rename': {
+        if (!argText) { note('Usage: `/rename <new title>` (alias: `/name`).'); break; }
+        setConvs((cs) => cs.map((c) => (c.id === activeId ? { ...c, title: argText } : c)));
+        note('Renamed this conversation to **' + argText + '**.');
+        break;
+      }
+      case 'toggle-memory': {
+        const cur = localStorage.getItem('autobot:autoMemory') !== 'off';
+        localStorage.setItem('autobot:autoMemory', cur ? 'off' : 'on');
+        note('Auto-memory ' + (cur ? 'OFF' : 'ON') + ' for this session. (Settings → Memory toggles the global default.)');
+        break;
+      }
+      case 'autocompact': {
+        if (!argText) {
+          const w = localStorage.getItem('autobot:autoCompactWindow') || 'auto';
+          note('Auto-compact window: **' + w + '**. Set with `/autocompact <tokens|auto>`.');
+          break;
+        }
+        localStorage.setItem('autobot:autoCompactWindow', argText);
+        note('Auto-compact window set to **' + argText + '**. `/compact` still works on demand.');
+        break;
+      }
+      case 'fast': {
+        setReasoningLevel('low');
+        note('⚡ Fast mode — reasoning level set to **Low**. Use `/effort` to change it.');
+        break;
+      }
+      case 'background': {
+        note('Helio Bot runs every task in-app, so there is no terminal to background. Use `/tasks` to see background shells, sub-agents, and monitors.');
+        break;
+      }
+      case 'stop': {
+        if (streaming) { stop(); note('Stopped the current run — the partial reply is kept.'); }
+        else { note('Nothing is running. `/tasks` lists background work you can inspect or kill.'); }
+        break;
+      }
+      case 'schedule': {
+        setPanel('scheduled');
+        note('Opened **Scheduled** — create, edit, or pause recurring runs here.');
+        break;
+      }
+      case 'workflows': {
+        setPanel('scheduled');
+        note('**Workflows** — dynamic multi-step runs live under **Scheduled**. Completed and running workflow history is listed there.');
+        break;
+      }
+      // ---------- terminal/account/product surfaces: GUI equivalents ----------
+      case 'voice': {
+        if (voiceMode) { stopVoiceMode(); note('Voice mode stopped.'); }
+        else { startVoiceMode(); note('🎙️ Voice mode on — speak, and the reply is read back. Send `/voice` again to stop.'); }
+        break;
+      }
+      case 'chrome': {
+        const on = !features.chrome;
+        const next = { ...features, chrome: on };
+        setFeatures(next);
+        window.autobot.setFeatures(next);
+        note('Chrome control (CDP) is now **' + (on ? 'ON' : 'OFF') + '**. Point it at a running Chrome with `--remote-debugging-port=9222` (Settings → Chrome host/port).');
+        break;
+      }
+      case 'daemon': {
+        setPanel('scheduled');
+        note('**Background services** — Helio Bot keeps scheduled tasks, background shells, sub-agents, and monitors inside the app (no separate daemon). Opened **Scheduled**; `/tasks` lists live work.');
+        break;
+      }
+      case 'session': {
+        const conv = convs.find((c) => c.id === activeId);
+        note('**Session** `' + (activeId || 'new') + '` — ' + (conv ? (conv.messages || []).length + ' messages, titled “' + (conv.title || 'Untitled') + '”' : 'not yet persisted') + '.\nWorking folder: `' + cwd + '`. Use `/export` to save the transcript.');
+        break;
+      }
+      case 'remote-env': {
+        const on = !features.remoteControl;
+        const next = { ...features, remoteControl: on };
+        setFeatures(next);
+        window.autobot.setFeatures(next);
+        note('Remote control is now **' + (on ? 'ON' : 'OFF') + '** (Settings → Features). Helio Bot has no cloud workspace, so remote sessions run against this machine.');
+        break;
+      }
+      case 'setup-bedrock': {
+        setProvider((v) => ({ ...v, baseURL: 'https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1', model: v.model || 'anthropic.claude-sonnet-4-5', apiKey: v.apiKey || '', supportsTools: true }));
+        setShowSettings(true);
+        note('**Amazon Bedrock** — Bedrock ships an OpenAI-compatible endpoint. Set the API key to a Bedrock API key (or `AWS_BEARER_TOKEN_BEDROCK`) and change the region in the URL, then press **Test** in Settings.');
+        break;
+      }
+      case 'setup-vertex': {
+        setProvider((v) => ({ ...v, baseURL: 'https://us-central1-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/us-central1/endpoints/openapi', model: v.model || 'google/gemini-2.5-pro', apiKey: v.apiKey || '', supportsTools: true }));
+        setShowSettings(true);
+        note('**Google Vertex AI** — replace `PROJECT_ID` with your GCP project, put an OAuth access token in the API key field, and press **Test** in Settings.');
+        break;
+      }
+      case 'ide': {
+        note('Helio Bot **is** the IDE surface — the chat pane, file previews, artifacts, and the browser pane live in one window. Use `/add-dir` to widen the working folder.');
+        break;
+      }
+      case 'desktop': {
+        note('You are already in the desktop app, so there is nothing to hand off. `/session` shows the current session and folder.');
+        break;
+      }
+      case 'tui': {
+        note('Helio Bot renders a full GUI, so the terminal renderer setting does not apply. Use **Settings → Appearance** for density.');
+        break;
+      }
+      case 'keybindings': {
+        note('Keybindings are configured in **Settings → Shortcuts** (they are stored with the app, not in a JSON file). Press `⌘K` for the command palette.');
+        break;
+      }
+      case 'scroll-speed': {
+        note('Scroll speed follows the OS pointer setting. In-app transcript scrolling is momentum-based, so there is no separate multiplier to tune.');
+        break;
+      }
+      case 'wellbeing': {
+        note('Break reminders are handled by the OS. Helio Bot keeps long runs visible with elapsed time and a live activity row instead of nudging you.');
+        break;
+      }
+      case 'privacy-settings': {
+        setShowSettings(true);
+        note('Opened **Settings**. Helio Bot sends data only to the provider you configure — there is no telemetry endpoint and no account requirement.');
+        break;
+      }
+      case 'rate-limit-options': {
+        setShowSettings(true);
+        note('Hit a provider limit? Opened **Settings** — switch provider/model, add a second key, or enable the orchestrator to fail over automatically.');
+        break;
+      }
+      case 'release-notes': {
+        let v = '';
+        try { v = (await window.autobot.getVersion()) || ''; } catch (_) {}
+        note('**Helio Bot** ' + (v ? 'v' + v : '') + ' — no changelog feed is bundled; release notes ship with each build at akronlogic.com.');
+        break;
+      }
+      case 'update':
+      case 'upgrade':
+      case 'install': {
+        note('Helio Bot updates by installing a new build (DMG/ZIP) — `/version` shows the current one. Provider plans are managed at the provider, not in-app.');
+        break;
+      }
+      case 'powerup': {
+        note('**Quick tour** — start with `/help`, then try `/plan` for read-only exploration, `/compact` to shrink context, `/context` to see what is loaded, and `/usage` for tokens and cost.');
+        break;
+      }
+      case 'team-onboarding': {
+        note('**Onboarding a teammate:** install the app, set a provider in Settings, open the project folder, then `/init` writes `CLAUDE.md`. `/usage` summarises tokens and cost.');
+        break;
+      }
+      case 'autofix-pr': {
+        if (streaming) { note('Already running — wait for the current turn to finish.'); break; }
+        send('Monitor the current pull request: run `gh pr checks --watch` (or `gh pr view --json statusCheckRollup`) and, for every failing check, read the logs, fix the cause in the working tree, re-run the failing command locally, and commit. Repeat until all checks pass, then summarise the fixes.');
+        break;
+      }
+      case 'ultrareview': {
+        if (streaming) { note('Already running — wait for the current turn to finish.'); break; }
+        send('Perform an exhaustive review of the pending changes (`git diff` plus untracked files). For each hunk: correctness, edge cases, security (injection, authz, secrets), performance, and test coverage. Rank findings by severity, quote the exact lines, and propose a concrete patch for each. Do not apply changes — report only.');
+        break;
+      }
+      case 'install-github-app': {
+        if (streaming) { note('Already running — wait for the current turn to finish.'); break; }
+        send('Set up GitHub Actions for this repository: inspect the project type, write `.github/workflows/ci.yml` that installs dependencies and runs the existing test/lint scripts, and explain how to add the API key as a repository secret. Ask before committing.');
+        break;
+      }
+      case 'install-slack-app':
+      case 'web-setup':
+      case 'mobile':
+      case 'teleport':
+      case 'stickers':
+      case 'radio':
+      case 'heapdump':
+      case 'bridge-kick':
+      case 'pro-trial-expired': {
+        note('`/' + cmd + '` targets Anthropic-hosted services (Slack app, claude.ai web/mobile/teleport, trial billing, debug tooling) that do not exist in Helio Bot. Nothing to configure locally.');
+        break;
+      }
       default: {
         // Project / user command: expand its markdown body into a real prompt.
         let hit = null;

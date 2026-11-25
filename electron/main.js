@@ -627,6 +627,87 @@ ipcMain.handle('autobot:testProvider', async (event, provider) => {
   }
 });
 
+// One-shot completion — used by GUI slash commands (/compact, /btw, /recap,
+// /advisor) that need a model answer without opening a transcript turn.
+ipcMain.handle('autobot:chatOnce', async (event, payload) => {
+  try {
+    const { chatOnce } = require('./llm');
+    const p = (payload && payload.provider) || store.getSettings().provider || {};
+    const res = await chatOnce({
+      provider: p,
+      messages: (payload && payload.messages) || [],
+      maxTokens: payload && payload.maxTokens,
+    });
+    return { ok: true, content: res.content, usage: res.usage, model: res.model };
+  } catch (e) {
+    return { ok: false, error: humanizeLLMError(e) };
+  }
+});
+
+// Real `/compact`: summarize the transcript with the active model, then the
+// renderer swaps the conversation for the returned digest. Same retry/failover
+// path as a normal turn, so a transient 429/502 doesn't break compaction.
+ipcMain.handle('autobot:compact', async (event, payload) => {
+  try {
+    const { chatOnce } = require('./llm');
+    const p = (payload && payload.provider) || store.getSettings().provider || {};
+    const msgs = (payload && payload.messages) || [];
+    const text = (c) => {
+      if (c == null) return '';
+      if (typeof c === 'string') return c;
+      if (Array.isArray(c)) return c.map((x) => (x && typeof x === 'object' ? (x.text || '') : String(x))).join('\n');
+      try { return JSON.stringify(c); } catch { return String(c); }
+    };
+    // Keep the tail intact — recent turns matter most; cap the head.
+    const lines = [];
+    for (const m of msgs) {
+      if (!m || !m.role || m.role === 'system') continue;
+      const who = m.role === 'user' ? 'User' : m.role === 'assistant' ? 'Assistant' : m.role;
+      let body = text(m.content).trim();
+      if (!body && Array.isArray(m.tools) && m.tools.length) {
+        body = m.tools.map((t) => `${t.name || 'tool'}(${JSON.stringify(t.args || {}).slice(0, 160)})`).join('; ');
+      }
+      if (!body) continue;
+      lines.push(`${who}: ${body}`);
+    }
+    let transcript = lines.join('\n\n');
+    const CAP = 120000;
+    if (transcript.length > CAP) {
+      transcript = '[earlier turns trimmed]\n…' + transcript.slice(-CAP);
+    }
+    const summaryPrompt = [
+      {
+        role: 'system',
+        content: 'You are compacting a conversation so it can continue with the same context in far fewer tokens. Produce a dense, factual summary. Preserve: the user\'s goals and constraints, decisions made, files/paths/commands touched, code changes, open questions, errors and their fixes, and any pending tasks. Do not add commentary or invent details. Use terse markdown with short sections.',
+      },
+      { role: 'user', content: 'Summarize this conversation transcript.\n\n' + transcript },
+    ];
+    const res = await chatOnce({ provider: p, messages: summaryPrompt, maxTokens: Math.min(4000, Number(p.maxTokens) || 4000) });
+    return { ok: true, summary: res.content, usage: res.usage, model: res.model, before: msgs.length };
+  } catch (e) {
+    return { ok: false, error: humanizeLLMError(e) };
+  }
+});
+
+// Version / environment + merged hook config (parity surfaces for /version,
+// /status, /debug, /doctor and /hooks).
+ipcMain.handle('autobot:getVersion', () => ({
+  app: app.getVersion(),
+  electron: process.versions.electron,
+  chrome: process.versions.chrome,
+  node: process.versions.node,
+  platform: process.platform,
+  arch: process.arch,
+}));
+ipcMain.handle('autobot:getHooks', async (e, cwd) => {
+  try {
+    const hooks = require('./hooks');
+    return hooks.loadHookConfig(cwd || workspace.ROOT);
+  } catch (err) {
+    return {};
+  }
+});
+
 // memory / skills / settings
 ipcMain.handle('autobot:getMemory', () => store.getMemory());
 ipcMain.handle('autobot:addMemory', (e, content) => store.addMemory(content));

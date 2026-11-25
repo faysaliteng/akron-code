@@ -1133,6 +1133,27 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     return text;
   };
 
+  // ── Token / usage accounting ────────────────────────────────────────────
+  // Claude surfaces `/usage`, `/cost` and `/context`; every one of those needs
+  // numbers, and until now the run threw `json.usage` away after reading it.
+  // Accumulate prompt/completion tokens across every step of this turn (and any
+  // sub-agent share, since sub-runs report their own totals upward) and stream
+  // a `usage` event so the renderer can show live spend.
+  const usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0, model: provider.model };
+  const addUsage = (u) => {
+    if (!u || typeof u !== 'object') return;
+    const pin = Number(u.prompt_tokens != null ? u.prompt_tokens : u.input_tokens);
+    const pout = Number(u.completion_tokens != null ? u.completion_tokens : u.output_tokens);
+    const ptotal = Number(u.total_tokens);
+    if (Number.isFinite(pin) && pin > 0) usageTotals.prompt_tokens += pin;
+    if (Number.isFinite(pout) && pout > 0) usageTotals.completion_tokens += pout;
+    usageTotals.total_tokens += (Number.isFinite(ptotal) && ptotal > 0
+      ? ptotal
+      : (Number.isFinite(pin) ? pin : 0) + (Number.isFinite(pout) ? pout : 0));
+    usageTotals.calls++;
+    emit({ type: 'usage', usage: { ...usageTotals }, model: provider.model });
+  };
+
   for (let step = 0; step < maxSteps; step++) {
     if (opts.signal && opts.signal.aborted) throw new Error('aborted');
     let message;
@@ -1164,6 +1185,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           const out = Number(m.usage.completion_tokens != null ? m.usage.completion_tokens : m.usage.output_tokens);
           if (Number.isFinite(out) && out > 0) budgetPool.addOutput(out);
         }
+        addUsage(m && m.usage);
         return m;
       });
     };
@@ -1251,7 +1273,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           if (v.additionalContext) continue;
         }
       }
-      emit({ type: 'done', messages });
+      emit({ type: 'done', messages, usage: { ...usageTotals } });
       return messages;
     }
 
@@ -1595,8 +1617,30 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
   messages.push({ role: 'assistant', content: stopNote });
   emit({ type: 'delta', text: '\n\n' + stopNote });
   emit({ type: 'limit', steps: maxSteps });
-  emit({ type: 'done', messages, stopped: true });
+  emit({ type: 'done', messages, stopped: true, usage: { ...usageTotals } });
   return messages;
 }
 
-module.exports = { runAgent, normalizeProvider, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, humanizeLLMError, isRateLimitError };
+// ── One-shot completion ────────────────────────────────────────────────────
+// The primitive behind `/compact`, `/btw`, `/recap` and `/advisor`: same request
+// path (and retry/failover behaviour) as a full run, but it returns the finished
+// text instead of streaming events into a transcript.
+async function chatOnce({ provider, messages, maxTokens, signal, tools }) {
+  const p = normalizeProvider(provider || {});
+  let streamed = '';
+  const msg = await chatWithFailover({
+    list: [p],
+    getIndex: () => 0,
+    setIndex: () => {},
+    messages,
+    tools,
+    signal,
+    maxTokens: maxTokens != null ? maxTokens : p.maxTokens,
+    onDelta: (t, thinking) => { if (!thinking) streamed += t; },
+    emit: () => {},
+  });
+  const content = msg && typeof msg.content === 'string' && msg.content ? msg.content : streamed;
+  return { content: String(content || ''), usage: (msg && msg.usage) || null, model: p.model };
+}
+
+module.exports = { runAgent, normalizeProvider, chatOnce, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, humanizeLLMError, isRateLimitError };

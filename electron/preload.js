@@ -4,6 +4,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('autobot', {
   run: (payload) => ipcRenderer.invoke('autobot:run', payload),
   cancel: (runId) => ipcRenderer.invoke('autobot:cancel', runId),
+  // One-shot completion used by GUI slash commands (/compact, /btw, /recap,
+  // /advisor). Same request path + retry semantics as a full run.
+  chatOnce: (payload) => ipcRenderer.invoke('autobot:chatOnce', payload),
+  compact: (payload) => ipcRenderer.invoke('autobot:compact', payload),
   testProvider: (provider) => ipcRenderer.invoke('autobot:testProvider', provider),
   probeProviders: (list) => ipcRenderer.invoke('autobot:probeProviders', list),
   ollamaModels: (baseURL) => ipcRenderer.invoke('autobot:ollamaModels', baseURL),
@@ -39,6 +43,8 @@ contextBridge.exposeInMainWorld('autobot', {
   runScheduledTask: (id) => ipcRenderer.invoke('autobot:runScheduledTask', id),
   getSettings: () => ipcRenderer.invoke('autobot:getSettings'),
   setSettings: (patch) => ipcRenderer.invoke('autobot:setSettings', patch),
+  getVersion: () => ipcRenderer.invoke('autobot:getVersion'),
+  getHooks: (cwd) => ipcRenderer.invoke('autobot:getHooks', cwd),
 
   // Claude-parity config surface: the same `.claude/` files Claude Code reads.
   listCommands: (cwd) => ipcRenderer.invoke('autobot:listCommands', cwd),

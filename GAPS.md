@@ -1028,3 +1028,150 @@ reasoning", "Deep, thorough reasoning"). Level persists with the provider
 | Gate set | e2e **111**, hooks **49**, workflow **108**, parity-modules **PASS**, `parity-audit` **EXIT 0** |
 | Live set | parity-ui **22/22**, hooks-live **17**, plan-live **18**, bg-live **21**, parity-live **18** |
 | Screenshot | `screenshots/composer-controls.png` — both controls visible in one composer row |
+
+---
+
+## S. SLASH-COMMAND PARITY — ALL 100 REAL COMMANDS RESOLVE (2026-11-25)
+
+### S.0 Ground truth and the gate
+
+The command registry was re-extracted by REA from the installed Claude Code CLI **2.1.154**
+(two key orders appear in the binary — `{type:"local-jsx",name:…}` and `{name:…,type:…}` — so the
+extractor accepts either). The result is 100 real commands, frozen as a test fixture:
+`test/fixtures/cc-commands-2.1.154.txt` (`name<TAB>kind`, `kind ∈ local|skill`).
+
+Two resolution paths, exactly like Claude Code:
+
+1. **`local` commands** are handled client-side by `runSlashCommand` in `src/App.jsx`
+   (a `case` label, or an `ALIAS` entry that maps onto one).
+2. **`skill` commands** expand to a prompt — a real `.claude/commands/<name>.md` (project or
+   user) always wins, else the built-in `SKILL_PROMPTS` table added to
+   `electron/commands.js`. `resolve()` returns `{name, description, body, source:'skill'}`,
+   `main.js:resolveCommand` expands it, and the renderer sends it as a **real user turn** —
+   which is all Claude Code does with a skill command too.
+
+`test/slash-commands.test.js` is the permanent gate:
+
+```
+100 registry commands covered
+(103 case labels, 103 built-ins, 8 skill prompts, 111 in picker)
+OK
+```
+
+It fails if any registry command would reach `Unknown slash command`, if a `case` label exists for a
+command outside the registry (typo/drift guard), if a skill prompt loses its body, or if a project
+command file fails to override the built-in skill table.
+
+### S.1 `local` commands (85 `case` handlers + 4 alias-only)
+
+| Command | Behaviour in Helio Bot |
+|---|---|
+| `/help` | Prints the full command list from the picker (built-ins + skills + project commands) |
+| `/clear` | New conversation in the same folder |
+| `/compact` | **Real** summarisation over IPC (`autobot:compact`) — the transcript is replaced by the digest and the run continues from it |
+| `/model` | Opens Settings → provider/model |
+| `/review`, `/security-review`, `/simplify` | Sends a real prompt turn (`git diff` → review / security audit / quality cleanup) |
+| `/memory` | Lists the `CLAUDE.md` hierarchy with byte sizes and the `@import` graph |
+| `/toggle-memory` | Flips auto-memory for the session (`autobot:autoMemory`) |
+| `/autocompact` | Shows/sets the auto-compact window |
+| `/agents` | Lists built-in + `.claude/agents/*.md` types with their model pin and `toolAllow` |
+| `/permissions` | Shows mode + rules from `settings.json` (`allow`/`deny`/`ask`), notes that deny wins |
+| `/rewind` | Lists checkpoints and restores files through `autobot:rewind` (real byte restore) |
+| `/status` | Provider, model, folder, permission mode, features, version |
+| `/notebooks`, `/terminal`, `/bashes` | Lists running/background jobs from `bg.js` (shells, agents, monitors) + persistent REPL contexts |
+| `/usage` | Token + cost totals per model from `autobot:lastUsage` (persisted) |
+| `/context` | Context-window occupancy, percent used, message count |
+| `/insights` | Per-model token/cost breakdown |
+| `/effort` | Sets the thinking level (`Auto · Low · Medium · High`) — same control as the composer |
+| `/theme`, `/color`, `/output-style`, `/statusline`, `/config` | Act on the in-app Appearance/Settings surfaces (theme, accent, prompt overlay, status command) |
+| `/version` | `autobot:getVersion` |
+| `/debug`, `/doctor` | Diagnostics: module load, provider probe, config resolution, MCP status |
+| `/diff` | `autobot:diff` — real working-tree diff |
+| `/add-dir`, `/cwd` | Widens / prints the working folder |
+| `/init` | Writes `CLAUDE.md` for the project |
+| `/init-verifiers` | Prompt turn that appends verification steps to `CLAUDE.md` |
+| `/todos`, `/copy`, `/export` | Todo list, transcript to clipboard, transcript to file |
+| `/plan` | Toggles **plan mode** (`setPermissions('plan')`, `/plan off` → auto) — the real read-only gate |
+| `/resume`, `/continue`, `/fork`, `/branch` | Conversation picker / resume / fork (alias `branch → fork`) |
+| `/goal`, `/advisor`, `/btw`, `/recap`, `/brief` | One-shot `chatOnce` turns (set goal, second opinion, aside, recap, executive brief) |
+| `/hooks` | Lists the merged hook config from `~/.claude/settings.json`, `<cwd>/.claude/settings.json`, `~/.autobot/hooks.json` |
+| `/mcp` | MCP servers, transport, connection state (`autobot:mcpStatus`) |
+| `/skills`, `/reload-skills` | Skill registry + re-scan (bundled, project, user dirs) |
+| `/plugins`, `/reload-plugins`, `/plugin` (alias) | Plugins/marketplace view + re-scan |
+| `/login`, `/logout` | Provider credentials in Settings; local account state |
+| `/rename`, `/name` (alias) | Renames the conversation |
+| `/focus`, `/bug`, `/feedback` | Diagnostics / issue capture |
+| `/fast` | Toggles the fast (low-latency) path |
+| `/background`, `/stop`, `/quit` | Background the run / stop and **keep the partial reply** / quit (aliases `q`, `exit`, `bye`) |
+| `/schedule`, `/loop` (alias), `/loops` (alias) | Opens the **Scheduled** panel (cron + interval jobs, real scheduler) |
+| `/workflows` | Opens **Scheduled** with the workflow history |
+| `/tasks` (alias → `bashes`) | Live work list |
+| `/extra-usage`, `/usage-credits` | Usage/credits view (renamed in 2.1.154; both accepted) |
+
+### S.2 GUI equivalents — real commands whose CLI surface is the app itself
+
+These are genuine 2.1.154 commands; each has a `case` that performs the functional equivalent
+instead of silently falling through. None prints "unknown command".
+
+| Command | GUI equivalent |
+|---|---|
+| `/voice` | `startVoiceMode()` / `stopVoiceMode()` — the real full-duplex voice session |
+| `/chrome` | Toggles `features.chrome` (CDP control, Settings host/port) |
+| `/daemon` | Opens **Scheduled** — background services live in-app (no separate daemon) |
+| `/session` | Prints conversation id, message count, folder; points at `/export` |
+| `/remote-env` | Toggles `features.remoteControl` |
+| `/setup-bedrock` | Pre-fills an OpenAI-compatible Bedrock endpoint + opens Settings |
+| `/setup-vertex` | Pre-fills the Vertex OpenAI-compatible endpoint + opens Settings |
+| `/ide`, `/desktop`, `/tui` | Honest note: Helio Bot *is* the IDE/desktop surface; no TUI renderer |
+| `/keybindings`, `/keybindings-help` | Settings → Shortcuts (+ documented shortcut list) |
+| `/scroll-speed`, `/wellbeing` | OS-level settings; explained, no duplicate control |
+| `/privacy-settings`, `/rate-limit-options` | Open Settings (data handling / provider failover) |
+| `/release-notes`, `/version` | Current version; release notes ship with the build |
+| `/update`, `/upgrade`, `/install` | Install a newer DMG/ZIP — the only update path |
+| `/powerup`, `/team-onboarding` | Guided tour / onboarding text |
+| `/autofix-pr` | Real prompt turn: watch PR checks, fix each failure, re-run, commit |
+| `/ultrareview` | Real prompt turn: exhaustive review of the pending diff (report only) |
+| `/install-github-app` | Real prompt turn: writes `.github/workflows/ci.yml` for this repo |
+
+### S.3 Not applicable — Anthropic-hosted services
+
+`/install-slack-app`, `/web-setup`, `/mobile`, `/teleport`, `/stickers`, `/radio`,
+`/heapdump`, `/bridge-kick`, `/pro-trial-expired` each answer with one honest line naming the
+Anthropic-hosted surface that does not exist in a self-hosted desktop app. They are **documented**,
+not missing, and never throw.
+
+### S.4 `skill` commands — built-in prompt bodies
+
+Claude Code 2.1.154 ships these inside the binary as skills, so there is nothing on disk to
+discover. `electron/commands.js` now carries faithful prompt bodies for all eight, appearing in the
+picker as `source:'skill'` and overridable by a same-named `.claude/commands/*.md`:
+
+| Command | Prompt body does |
+|---|---|
+| `/batch` | Research → `PLAN.md` with non-conflicting items → 5–30 disjoint chunks → worktree agent per chunk → integrate, test, open PRs |
+| `/claude-api` | Grounded Claude API reference (endpoint, headers, `max_tokens`, SSE events, tool_use/tool_result, prompt caching, error codes) then answers |
+| `/claude-in-chrome` | Drives Chrome over CDP: tabs, navigate, read DOM, click, type, screenshot, console — observe→act→re-observe, no unattended purchases |
+| `/fewer-permission-prompts` | Counts repeated read-only calls in transcripts, writes only provably side-effect-free rules into `.claude/settings.json permissions.allow`, merges, never drops existing rules |
+| `/keybindings-help` | Explains/changes shortcuts (⌘K, ⌘,, Esc, ⌘Enter, Shift+Enter, ⌘↩ queue-while-streaming) |
+| `/run` | Detects project type → starts the app in background → waits for the port → drives it (browser pane or CLI) → reports command, URL, logs |
+| `/run-skill-generator` | Writes `.claude/skills/run-<unit>/SKILL.md`: exact install/run commands, port, success check, log reading, failure modes — every command verified before writing |
+| `/update-config` | Edits `settings.json` correctly: hooks for "whenever X", `permissions.*` (deny wins), `env`; merges and preserves unknown keys |
+
+### S.5 Removed in 2.1.154 (kept as harmless extras, documented)
+
+`/output-style`, `/pr-comments`, `/vim`, `/extra-usage` (renamed `/usage-credits`) are no longer in
+the 2.1.154 registry. The first three remain as working conveniences; `/extra-usage` is kept as an
+alias of `/usage` so muscle memory still works. `test`, `ultraplan` and `mcp__*` were never registry
+commands (artifacts of string scraping) and are deliberately **not** implemented.
+
+### S.6 Verification
+
+| Check | Result |
+|---|---|
+| `test/slash-commands.test.js` (new) | **PASS** — 100/100 registry commands covered, 0 unknown `case` labels, 8 skill bodies non-empty and resolvable, project file overrides a skill, picker has no duplicates |
+| Registry gap sweep (script) | **gaps 0** across all 100 (`case` 85, alias 4, skill prompt 8, builtin 2, alias→schedule 2… ) |
+| `electron/commands.js` load check | `resolve()` succeeds for all 8 skill commands with no file on disk; `SKILL_PROMPTS` exported; `listForUi` = 111 entries, no dupes |
+| Build | `npx vite build` succeeds |
+| `test/live/slash-commands-live.cjs` (new, CDP :9333) | **PASS — 58/58.** Real keystrokes into the composer: 1 negative control (unknown command still fails), 41 command behaviours asserted on the rendered transcript, `/voice` toggles the live session, `/chrome` + `/remote-env` flip persisted features, `/effort high` moves the composer label, `/rename` rewrites the conversation title, 8 skill commands resolve to real prompt bodies through the IPC bridge, picker lists all 8, zero console errors |
+| Panel-unmount fix found by the live suite | Commands that switch the main panel (`/daemon`, `/workflows`, `/memory`, `/notebooks`, `/terminal`) unmount the transcript, so the test re-selects the conversation before reading. `/memory` previously opened the panel but printed nothing — it now also reports the merged `CLAUDE.md` hierarchy (file, scope, bytes, combined size) so the command reports its subject |
+| `/diff` verified against a real repo | The live suite creates a throwaway git repo **inside the conversation's own working folder**, commits a file, modifies it, then asserts `/diff` prints `Git diff` plus that filename, and removes the fixture afterwards |
