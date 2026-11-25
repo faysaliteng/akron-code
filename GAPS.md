@@ -1615,3 +1615,74 @@ top-up is off"* — with `markupLeak:false` and `hasEnvelope:false`.
 | Claude identity gate still needs a fresh account to reconfirm | The `CC_IDENTITY` system block (`You are Claude Code, Anthropic's official CLI for Claude.`) is what turned a permanent 429 into a working turn. It is verified by code + the earlier passing turn; a new account would re-confirm it independently. |
 | Non-Claude tokens stored before the rename | Old secrets encrypted under `Helio Bot Safe Storage` do not decrypt under `Akron Bot Safe Storage`. Claude is handled by adoption; every other provider needs one re-sign-in. |
 | Window maximize/restore via CDP | Not drivable (`-32601`), and `osascript` lacks assistive access — unit-tested only (`test/windowstate.test.js` 18/0). |
+
+---
+
+## XII. TOOL MODE — the 400 that looked like billing was a tool *name* (2026-11-25)
+
+### XII.1 The gap
+
+Every Claude turn that carried tools failed with a message that names billing:
+
+```
+LLM 400: Third-party apps now draw from your extra usage, not your plan limits.
+```
+
+and the loop silently downgraded the turn to `withTools:false`. The app still
+answered, so the failure looked like "the model just didn't want to use tools" —
+in reality `Write` / `Bash` / `browser_*` had been removed from the request.
+
+### XII.2 The cause (measured, not inferred)
+
+Dumping the exact rejected body (`AUTOBOT_REQDUMP=<dir>`) and bisecting it against
+the live subscription endpoint with the same token isolates one construct:
+
+| body | result |
+|---|---|
+| exact rejected payload (141 tools) | **400** |
+| same body minus the deferred-MCP index tool (140) | 200 |
+| 140 tools + a trivial `noop_probe` | 200 |
+| `[{"name":"mcp_find_tools"}]` alone | **400** |
+| `[{"name":"mcp_probe"}]`, `mcp_a`, `mcp_ab` | **400** |
+| `[{"name":"find_mcp_tools"}]`, `mcp__srv1__foo`, `mcp`, `mcpA`, `mcp-probe`, `MCP_probe`, `a_mcp_b`, `_mcp_probe` | 200 |
+| `mcp_probe` with UA `claude-cli/2.0.0` | **400** (not UA-dependent) |
+
+Rule: on the OAuth/subscription endpoint a tool name matching `^mcp_[A-Za-z0-9]`
+is rejected and *reported as a billing error*. Anthropic's own `mcp__server__tool`
+convention never trips it; our index tool was the only offender.
+
+### XII.3 What was fixed
+
+- Index tool renamed `mcp_find_tools` → **`find_mcp_tools`** (advertisement,
+  allow-check, dispatch) with the measured rule in a comment.
+- **Class guard** in `electron/providertransport.js`: `wireToolName()` rewrites
+  `mcp_<alnum>` → `x_mcp_<alnum>` on the Anthropic wire, `unwireToolName()` reverses
+  it in `newToolAcc()`, so neither the schema nor dispatch-by-name can regress.
+  Verified: `toAnthropicBody([mcp_probe, mcp__srv__t, Write])` →
+  `["x_mcp_probe","mcp__srv__t","Write"]`.
+- **Downgrade heuristic corrected**: a billing-shaped 400 can no longer flip a turn
+  to text mode (`billingish` vetoes; a schema-shaped signal is required), and a
+  genuine non-credit downgrade now emits a visible `notice` instead of silence.
+- `isCreditExhausted()` recognises `extra usage` / `not your plan limits` so that
+  shape takes the graceful notice path, not a red banner.
+
+### XII.4 State
+
+| Item | State |
+|---|---|
+| Wire payload from the running app | **Fixed + verified**: dumped request has 141 tools, **0** `mcp_`+letter names, `find_mcp_tools` present, `mcp__…` untouched. |
+| Full tool turn (Write/Bash/browser) in-app | **Pending a credential, not a schema.** Between the bisect and the re-run the stored access token hard-expired (`401 authentication_error: "OAuth access token has expired"`, fp `457f6c294751`, keychain copy identical) and both refresh-token copies are dead (`invalid_grant`). Re-run `build/probe-capability.cjs` after Sign in. |
+| Dead-credential UX | **Fixed**: hydrate failure emits a normal `error` run event with `needsSignIn`, which opens the model menu and prints "Claude needs to be signed in again — open the model menu and choose Sign in."; the composer can no longer spin. |
+| Stale-token tolerance | **Fixed**: a token past its stated `expiresAt` is still tried once (the keychain one demonstrably returned 200 while "expired"); only a real 401/403 raises `provider_needs_signin`, and `expired` is not inferred from metadata alone. |
+
+### XII.5 Composer layout (frontend parity)
+
+`+N −M` counters, the Environment pane, the browser chrome menu, the dev-server
+card and the composer footer are verified in `VERIFICATION.md` §34. The footer
+overflow that put the send arrow and the model pill outside the rounded box was
+structural — eight controls inside an `overflow:hidden` box — and is closed by
+moving the labelled settings (Thinking level, Swarm, tools popover) into
+`.composer-topbar` above the box and the permission pill into `.topbar-right`.
+Positions were preserved; measured at 940–1440 px with and without the
+Environment pane: `BAD_CONTROLS 0 · actionsOverflow 0 · footOverflow 0`, all
+eight controls `hitInside: true`.

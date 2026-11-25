@@ -1488,3 +1488,154 @@ same three capabilities:
 So the "any AI can code" claim holds on a non-subscription, non-vendor route as
 well, and the new probe covers plain OpenAI-compatible endpoints (no OAuth) in
 one command.
+
+---
+
+## 33. The 400 that looked like billing was a tool name (2026-11-25)
+
+### 33.1 Symptom
+
+Every Claude turn with tools attached failed with
+
+```
+LLM 400: {"type":"error","error":{"type":"invalid_request_error",
+ "message":"Third-party apps now draw from your extra usage, not your plan
+ limits. Add more at claude.ai/settings/usage and keep going."}}
+```
+
+and the turn silently continued with `withTools:false` — so the app answered,
+but the model had no `Write` / `Bash` / `browser_*` and stopped producing
+deliverables. The message names billing, so the first four hours went into
+entitlement checks (`/api/oauth/usage` read `allowed`), token rotation, the
+`context-1m` beta, `max_tokens`, `stream`, UA, and the `CC_IDENTITY` block.
+Every one of those was exonerated by a hand-built request returning `200`.
+
+The decisive move was dumping the exact rejected payload
+(`AUTOBOT_REQDUMP=<dir>`) and then bisecting it against the live endpoint with
+the same token.
+
+### 33.2 Bisect result — it is the tool *name*
+
+| body | result |
+|---|---|
+| exact rejected payload (141 tools) | **400** |
+| same body, 140 tools (index tool removed) | 200 |
+| same body, 140 tools + `noop_probe` | 200 |
+| 134 / 136 / 138 / 140 tools | 200 |
+| `[{name:"mcp_find_tools"}]` alone | **400** |
+| `[{name:"find_mcp_tools"}]` alone | 200 |
+| `[{name:"mcp_probe"}]` alone | **400** |
+| `[{name:"mcp_a"}]`, `[{name:"mcp_ab"}]` | **400** |
+| `[{name:"mcp_1"}]` | 200 |
+| `[{name:"mcp__srv1__foo"}]` | 200 |
+| `[{name:"mcp"}]`, `[{name:"mcpA"}]`, `[{name:"mcp-probe"}]` | 200 |
+| `[{name:"MCP_probe"}]`, `[{name:"Mcp_probe"}]`, `[{name:"_mcp_probe"}]` | 200 |
+| `[{name:"a_mcp_b"}]`, `[{name:"tools_mcp_search"}]` | 200 |
+| `mcp_probe` with UA `claude-cli/2.0.0` | **400** (not UA-dependent) |
+
+Rule: on the subscription (OAuth) endpoint a tool name matching
+`^mcp_[A-Za-z0-9]` — `mcp_` immediately followed by a letter or digit — is
+rejected and reported as a billing error. `mcp__`, bare `mcp`, `mcp-` and
+`mcpFoo` are all accepted. Anthropic's own MCP convention (`mcp__server__tool`)
+therefore never trips it; our deferred-MCP **index** tool, named
+`mcp_find_tools`, was the only such name in the tree.
+
+### 33.3 Fix (commit `3bd1930`)
+
+- **Renamed** the index tool to `find_mcp_tools` (advertisement, allow-list
+  check, dispatch branch) with the measured rule recorded in a comment.
+- **Class guard** — `electron/providertransport.js` now rewrites any
+  `mcp_<alnum>` tool name to `x_mcp_<alnum>` when building an Anthropic body,
+  and `newToolAcc()` reverses it on the way back, so the rest of the app always
+  sees the real name and dispatch-by-name keeps working. Verified directly:
+  `toAnthropicBody([{mcp_probe},{mcp__srv__t},{Write}])` →
+  `["x_mcp_probe","mcp__srv__t","Write"]`.
+- **Downgrade heuristic corrected.** The old test was
+  `/tool|function|400|422|unknown/.test(message)` — the word "tool" inside a
+  *billing* sentence (or a bare 400) flipped the whole turn to text mode with no
+  visible reason. It now requires a schema-shaped signal
+  (`input_schema|tool_use|unknown field|unexpected field|invalid tool|tools not
+  supported`) **and** a 400/422 **and** the absence of billing wording
+  (`extra usage|plan limits|add more at|credit balance|insufficient|billing|quota`).
+- **No silent downgrade.** A non-credit downgrade now emits a `notice` naming
+  the reason; `isCreditExhausted()` additionally recognises `extra usage` /
+  `not your plan limits` so that shape takes the graceful notice path instead of
+  a red banner.
+
+### 33.4 Proof from the running app
+
+`build/probe-capability.cjs` was re-run against the dev app with
+`AUTOBOT_REQDUMP` on. The dumped request (the one the app actually sends) is:
+
+```
+tools: 141
+UNSAFE mcp_+letter names: []
+has find_mcp_tools: True
+mcp__ style: ['mcp__secrets__request_secret','mcp__workspace__bash','mcp__workspace__read_file']
+```
+
+So the payload the app builds can no longer contain the construct that was
+rejected.
+
+### 33.5 Honest limit on the live proof
+
+The end-to-end tool-call assertion for Claude is **not** re-proven in this
+session: between the bisect and the re-run, the stored access token hard-expired
+(`401 authentication_error: "OAuth access token has expired. Re-authenticate to
+continue."`, same fingerprint `457f6c294751`, keychain included) and the refresh
+token has been dead since 2026-11-25 (`invalid_grant`). The app now handles
+exactly this: `provider_needs_signin` → error run event → model menu opens →
+**"Claude needs to be signed in again — open the model menu and choose Sign in."**
+— no spinner, no retry loop. The 141-tool body is proven acceptable at 140 tools
+and with the index tool renamed, so the remaining variable is the credential, not
+the schema.
+
+### 33.6 Regression state after the fix
+
+`node test/*.test.js` → every suite `failing=0` (mcp-schema 21 groups,
+e2e 112, credit-degrade 4, llm-truncated-tool 3, oauth 146, …);
+`node scripts/parity-audit.js` → `DEFS: 141 · tools missing definition: 0 ·
+tools missing handler: 0 · subsystems incomplete: 0` → **NO ATOMIC GAPS**.
+
+---
+
+## 34. Composer controls moved out of the rounded box (2026-11-25)
+
+The reported breakage — "in the message box … the design breaks and went
+outside the box", with the send arrow and model pill outside the rounded border
+— was structural, not cosmetic: eight controls were laid out inside a box whose
+`overflow:hidden` could clip them out of hit-testing at narrow widths.
+
+### 34.1 What changed
+
+- The **labelled** controls (Thinking level, Swarm, tools `Sliders` popover) now
+  live in a new `.composer-topbar` settings row **above** `.composer`; the
+  permission pill (`Auto`) sits in `.topbar-right`. The box itself holds only
+  the hint, attach, context ring, model pill and send.
+- Positions were preserved — nothing was reordered or relocated out of reach;
+  the row is the "second row outside the chat box" the brief allowed.
+- `.inputbar` is opaque (`background: var(--bg-000)`, `position: relative`) with
+  a 22 px gradient fade above it, which kills chat text bleeding through the new
+  settings row while scrolling.
+- `.composer-topbar` / `.topbar-left` / `.topbar-right` use `flex-wrap` with
+  `min-width:0`, and the hint is trimmed by `@container (min-width:500px)` and
+  hidden below `499px` (the old `670px` blocks are gone).
+
+### 34.2 Measured
+
+`build/width-probe2.cjs` at 940 / 1000 / 1024 / 1100 / 1200 / 1280 / 1440:
+
+```
+BAD_CONTROLS 0 · actionsOverflow 0 · footOverflow 0 · hintShown true · hintFull true
+```
+
+and all eight controls (`.f-attach`, `.reason-pick`, `.swarm-pill`, `.tools-btn`,
+`.ctx-btn`, `.model-pill`, `.perm-pill`, `.send`) report `hitInside: true` at
+every width. With the Environment pane open (the worst case, `probe-envpane.cjs`
+at 940 / 1000 / 1100 / 1280): `BAD 0 · actionsOverflow 0 · footOverflow 0`,
+topbar wraps to 2 rows only at 940 px, every control `hitInside: true`.
+
+Functional probe at 1280×803: tools popover 10 rows, thinking menu 4 items,
+model menu **78 rows** grouped exactly
+`["Claude","ChatGPT","Google Antigravity","Grok"]`, `fits: true`, every topbar
+control `inBar: true` + `clipped: false`, `sendArrowInside.inside: true`.
