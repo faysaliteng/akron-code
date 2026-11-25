@@ -20,6 +20,7 @@ const paths = require('./paths');
 const mindmap = require('./mindmap');
 const artifactcanvas = require('./artifactcanvas');
 const extensionhost = require('./extensionhost');
+const unfurlMod = require('./unfurl');
 
 const windows = new Set(); // all open BrowserWindows (multi-window parity)
 // BrowserWindow.id -> extension id, for the hosting windows created by
@@ -1279,6 +1280,13 @@ ipcMain.handle('autobot:openQuickEntry', () => { createQuickWindow(); return { o
 ipcMain.handle('autobot:openArtifactWindow', (e, payload) => createArtifactWindow(payload || {}));
 ipcMain.handle('autobot:printToPdf', (e, payload) => printToPdf(e, payload || {}));
 ipcMain.handle('autobot:artifactDocument', async (e, payload) => artifactDocument(payload || {}));
+
+// ---- Link unfurl (Desktop `og` / `twitter` / `xlink` parity) ----
+// The renderer never fetches a link itself: the model or the user can put an
+// arbitrary URL in a message, so the fetch happens here behind the SSRF guard
+// and only sanitized metadata goes back.
+ipcMain.handle('autobot:unfurl', async (e, url) => unfurlMod.unfurl(url));
+ipcMain.handle('autobot:unfurlMany', async (e, urls) => unfurlMod.unfurlMany(urls, { limit: 6 }));
 
 // ---- Hosted Chrome extensions (Desktop `extension-host` parity) ----
 // The 11 channel handlers, plus the app-facing helpers the Plugins/Extensions

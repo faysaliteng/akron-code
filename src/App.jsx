@@ -100,6 +100,92 @@ function renderMarkdown(md) {
   return DOMPurify.sanitize(html);
 }
 
+// ---------- Link unfurl (Example Desktop og / twitter / xlink parity) ----------
+// Bare URLs in a message become preview cards. The fetch happens in the main
+// process behind an SSRF guard (electron/unfurl.js) — the renderer only ever
+// receives sanitised metadata, never page HTML.
+const URL_RE = /https?:\/\/[^\s<>"'`)\]}]+/gi;
+
+function extractLinks(text) {
+  const out = [];
+  const seen = new Set();
+  const src = String(text || '');
+  let m;
+  URL_RE.lastIndex = 0;
+  while ((m = URL_RE.exec(src))) {
+    let url = m[0].replace(/[.,;:!?*_~]+$/, '');
+    // Balance a trailing ")" only when the URL itself contains "("
+    while (url.endsWith(')') && (url.match(/\(/g) || []).length < (url.match(/\)/g) || []).length) url = url.slice(0, -1);
+    const key = url.replace(/#.*$/, '');
+    if (seen.has(key)) continue;
+    if (/\.(png|jpe?g|gif|webp|avif|svg|ico|mp4|webm|mov|mp3|wav|pdf|zip|tar|gz|dmg|exe)$/i.test(key)) continue;
+    seen.add(key);
+    out.push(url);
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
+const UNFURL_MEMO = new Map(); // url -> Promise<result>
+
+function fetchUnfurl(url) {
+  if (!UNFURL_MEMO.has(url)) {
+    const p = (window.autobot && window.autobot.unfurl)
+      ? window.autobot.unfurl(url).catch(() => ({ ok: false, url, message: 'Preview failed.' }))
+      : Promise.resolve({ ok: false, url, message: 'Preview unavailable.' });
+    UNFURL_MEMO.set(url, p);
+    // A failure is not worth remembering forever; a success is cached in main.
+    p.then((r) => { if (!r || !r.ok) setTimeout(() => UNFURL_MEMO.delete(url), 30000); });
+  }
+  return UNFURL_MEMO.get(url);
+}
+
+function LinkPreviews({ text }) {
+  const links = useMemo(() => extractLinks(text), [text]);
+  const [cards, setCards] = useState({});
+  const [dismissed, setDismissed] = useState({});
+  useEffect(() => {
+    let alive = true;
+    links.forEach((url) => {
+      fetchUnfurl(url).then((res) => {
+        if (!alive || !res || !res.ok) return;
+        if (!res.title && !res.image && !res.description) return;
+        setCards((prev) => (prev[url] ? prev : { ...prev, [url]: res }));
+      });
+    });
+    return () => { alive = false; };
+  }, [links.join('|')]);
+  const visible = links.filter((u) => cards[u] && !dismissed[u]);
+  if (!visible.length) return null;
+  return (
+    <div className="link-previews">
+      {visible.map((url) => {
+        const c = cards[url];
+        const host = c.siteName || '';
+        return (
+          <div className="link-card" key={url}>
+            <a className="link-card-main" href={c.resolvedUrl || url} target="_blank" rel="noreferrer">
+              {c.image ? (
+                <span className="link-card-img"><img src={c.image} alt="" loading="lazy" onError={(e) => { e.currentTarget.parentElement.style.display = 'none'; }} /></span>
+              ) : (
+                <span className="link-card-icon"><Icon name="Globe" size={18} /></span>
+              )}
+              <span className="link-card-text">
+                <span className="link-card-site">{host}</span>
+                <span className="link-card-title">{c.title}</span>
+                {c.description ? <span className="link-card-desc">{c.description}</span> : null}
+              </span>
+            </a>
+            <button className="icon-btn link-card-x" title="Hide preview" onClick={() => setDismissed((d) => ({ ...d, [url]: true }))}>
+              <Icon name="X" size={13} />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function extractCodeBlocks(md) {
   const blocks = [];
   const re = /```([^\n]*)\n([\s\S]*?)```/g;
@@ -2415,6 +2501,7 @@ function Message({ m, convId, idx, copyMessage, editMessage, deleteMessage, retr
               </div>
             )}
             <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
+            <LinkPreviews text={m.content} />
           </>
         )}
         {m.role === 'assistant' && m.durationMs > 800 && (

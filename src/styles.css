@@ -1226,3 +1226,88 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
 .ext-perms { display: flex; flex-wrap: wrap; gap: 4px; }
 .ext-perms .badge { font-family: var(--mono); font-size: 10px; }
 .mono-id { font-family: var(--mono); font-size: 10px; opacity: 0.75; }
+
+/* ---------- Link unfurl cards (og / twitter / xlink parity) ---------- */
+.link-previews {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  max-width: 560px;
+}
+.link-card {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-100);
+  overflow: hidden;
+  transition: border-color .15s ease, background .15s ease;
+}
+.link-card:hover { border-color: var(--border-strong, rgba(127,127,127,0.35)); }
+.link-card-main {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  color: inherit;
+  text-decoration: none;
+}
+.link-card-img {
+  flex: 0 0 96px;
+  width: 96px;
+  height: 72px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-300);
+}
+.link-card-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.link-card-icon {
+  flex: 0 0 36px;
+  width: 36px; height: 36px;
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+  align-self: center;
+}
+.link-card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; justify-content: center; }
+.link-card-site {
+  font-size: 11px;
+  text-transform: lowercase;
+  letter-spacing: .01em;
+  opacity: .6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.link-card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.link-card-desc {
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: .72;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.link-card-x {
+  position: absolute;
+  top: 4px; right: 4px;
+  opacity: 0;
+  transition: opacity .15s ease;
+  background: var(--bg-000);
+  border-radius: 6px;
+}
+.link-card:hover .link-card-x { opacity: 1; }

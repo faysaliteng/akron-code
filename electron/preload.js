@@ -151,6 +151,10 @@ contextBridge.exposeInMainWorld('autobot', {
   artifactDocument: (payload) => ipcRenderer.invoke('autobot:artifactDocument', payload),
   printToPdf: (payload) => ipcRenderer.invoke('autobot:printToPdf', payload),
 
+  // ---- Link unfurl (Desktop og / twitter / xlink parity) ----
+  unfurl: (url) => ipcRenderer.invoke('autobot:unfurl', url),
+  unfurlMany: (urls) => ipcRenderer.invoke('autobot:unfurlMany', urls),
+
   // ---- Hosted Chrome extensions (Desktop `extension-host` parity) ----
   extensionList: () => ipcRenderer.invoke('autobot:extensionList'),
   extensionScan: () => ipcRenderer.invoke('autobot:extensionScan'),

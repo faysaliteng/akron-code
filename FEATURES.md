@@ -200,6 +200,26 @@ Example Desktop's sidebar now maps 1:1 onto working local features — not stubs
 - Storage lives in `~/.autobot/extensions/<id>/`, `~/.autobot/extension-storage.json`
   and `~/.autobot/extension-state.json`.
 
+### 5.1c Link previews (Desktop `og` / `twitter` / `xlink` parity)
+- Bare URLs in a message become a preview card under the text: site name, title,
+  two-line description, and the `og:image` when the page has one, with an icon
+  fallback. Up to three per message; each carries a × dismiss.
+- Extraction order matches Desktop: `og:title` → `twitter:title` → `<title>`;
+  `og:description` → `twitter:description` → `<meta name=description>`;
+  `og:image:url` → `og:image` → `twitter:image:src` → `twitter:image`;
+  `og:site_name` → `twitter:site` → hostname. Entities decoded, relative URLs
+  resolved, values clipped (200 / 400 chars), `data:` images dropped.
+- `electron/unfurl.js` is pure Node and testable headless; results cache for
+  7 days in `~/.autobot/unfurl-cache.json` (500 entries, LRU-pruned).
+- Security: the renderer never fetches. `autobot:unfurl` / `autobot:unfurlMany`
+  run in the main process behind an SSRF guard — loopback / private / link-local
+  / CGNAT / multicast / cloud-metadata addresses refused (IPv4, IPv6 and
+  hostname forms), connection pinned to the DNS-resolved IP with Host + SNI
+  preserved so rebinding can't swap in an internal address, 4-hop redirect cap,
+  320 KB cap, 7 s timeout, HTML content-types only, `data:` / non-http schemes
+  rejected, credentials-in-URL rejected.
+- Skips obvious non-pages (`.png|jpg|gif|webp|svg|mp4|mp3|pdf|zip|dmg|exe|…`).
+
 ### 5.2 MCP registry
 - Tools: `mcp-registry__list_connectors`, `mcp-registry__search_mcp_registry`,
   `mcp-registry__suggest_connectors` (shares the curated catalog and scoring).

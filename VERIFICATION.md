@@ -531,3 +531,25 @@ surface. Helio Bot now does the same, in three files plus a UI tab.
 | Live CDP (dev app on 9333) | ✅ fixture `aabbccddeeffgghhiijjkkllmmnnoopp` opens at `chrome-extension://hniiejk…/popup/index.html`; `window.__probe` **READY = true**, 15 namespaces, `storage.local` roundtrip + bytes + remove, `storage.sync` roundtrip, `notifications.create`, `alarms.create`, `i18n.getUILanguage`, `commands.getAll` (1), `tabs.query`, `permissions.contains(storage)=true` / `(downloads)=false`, `permissions.getAll`, `runtime.sendMessage` roundtrip **true** |
 | UI (Plugins → Chrome extensions) | ✅ card renders `1.0.0 · MV3 · worker` + 4 permission chips + id; status row `1 installed · 0 native · 0 open · 0 attached · bridge ready on :56097`; **Open** → `1 native · 1 open`, button becomes **Close**, window opens with the probe READY; **Close** → `0 open`, no extension page targets left |
 | Regression gates | ✅ e2e **112 passed / 0 failed**; `parity-audit.js` → *NO ATOMIC GAPS* (141 defs), EXIT 0 |
+
+---
+
+## 17. Link unfurl — `og` / `twitter` / `xlink` parity (2026-11-25)
+
+Desktop paints a preview card for each link in a transcript. Helio Bot does the
+same, with the fetch moved out of the renderer entirely.
+
+| Check | Result |
+|---|---|
+| Metadata precedence | ✅ `og:title` → `twitter:title` → `<title>`; `og:description` → `twitter:description` → `<meta name=description>`; `og:image:url` → `og:image` → `twitter:image:src` → `twitter:image`; `og:site_name` → `twitter:site` → host |
+| Parsing robustness | ✅ any attribute order, single/double/unquoted values, `property`/`name`/`itemprop`, entity decoding (named + numeric), whitespace collapse, clipping (200 / 400), `<link rel=icon>` resolution, `data:` URLs dropped, self-closing tags |
+| Card contract | ✅ `{ok,url,title,description,image,icon,siteName,card,type}`; `card` normalised to `summary` / `summary_large_image` / `player` |
+| SSRF guard | ✅ IPv4 (loopback, RFC1918, link-local, CGNAT, multicast, reserved, TEST-NET), IPv6 (`::1`, `::`, `fc00::/7`, `fe80::/10`, v4-mapped), hostnames (`localhost`, `.local`, `.internal`, `metadata.google.internal`, `.lan`, `.corp`), literal IPs in `parseTarget`, non-http schemes, credentials-in-URL |
+| Rebinding defence | ✅ every hop re-resolved, connection pinned to the resolved IP, `Host` + `servername` preserved, 4-hop redirect cap |
+| Caps | ✅ 320 KB body, 7 s timeout, HTML-only content types, gzip/deflate/br |
+| Cache | ✅ 7-day TTL in `~/.autobot/unfurl-cache.json`, 500-entry LRU prune, corrupt file recovers to empty, cache hit answers without network |
+| Renderer | ✅ `LinkPreviews` — 3 cards/message, module-level promise memo (no refetch on re-render), image-error fallback, × dismiss, non-page extensions skipped |
+| Unit suite | ✅ `node test/unfurl.test.js` → **99 passed, 0 failed** (incl. a live loopback HTTP server that must never be reached) |
+| Live CDP (dev app on 9333) | ✅ `window.autobot.unfurl('https://github.com/anthropics/claude-code')` → `ok:true`, title, description, `opengraph.githubassets.com` image; `http://169.254.169.254/latest/meta-data/` → *"That host points at a private address and is not previewed."* |
+| Live UI | ✅ injected transcript renders **3 cards** (GitHub with image, `example.com` with icon fallback, correct hrefs/site/title/description); dismiss → **3 → 2**, counter stable |
+| Regression gates | ✅ e2e **112 passed / 0 failed**; `parity-audit.js` → *NO ATOMIC GAPS* (141 defs), EXIT 0 |
