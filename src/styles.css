@@ -740,7 +740,8 @@ button { font-family: inherit; letter-spacing: inherit; }
 
 .model-menu {
   position: absolute; bottom: calc(100% + 8px); right: 0;
-  width: 300px; max-height: 340px; overflow-y: auto;
+  width: 300px; max-height: min(74vh, 620px); overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--bg-100); border: 1px solid var(--border-strong);
   border-radius: var(--radius-card); box-shadow: 0 12px 40px rgba(0,0,0,0.4);
   padding: 6px; z-index: 60;
@@ -790,11 +791,58 @@ button { font-family: inherit; letter-spacing: inherit; }
 .prov-acct { display: flex; align-items: center; gap: 2px; border-radius: var(--radius-md); flex-wrap: wrap; }
 .prov-acct:hover { background: var(--bg-200); }
 .prov-acct.on { background: var(--accent-soft); }
-/* Per-model rows for the selected subscription account. Indented under the
-   account row and showing the resolved context window on the right. */
+/* Per-model rows for the selected subscription account. Grouped by family,
+   filterable when long, height-capped with its own scroll so a 38-model
+   provider (Antigravity) can't bury the pick or flood the menu. */
 .prov-models {
   flex: 1 0 100%; display: flex; flex-direction: column;
-  padding: 2px 0 6px 22px;
+  padding: 2px 0 6px 20px; min-width: 0;
+}
+.prov-search {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 6px 6px 2px; color: var(--text-400);
+}
+.prov-search-in {
+  flex: 1 1 auto; min-width: 0; height: 24px; padding: 0 8px;
+  border: 1px solid var(--border-200); border-radius: var(--radius-sm);
+  background: var(--bg-100); color: var(--text-100);
+  font-size: var(--fs-caption); font-family: inherit;
+}
+.prov-search-in::placeholder { color: var(--text-400); }
+.prov-search-x {
+  flex: 0 0 auto; border: none; background: none; cursor: pointer;
+  color: var(--text-400); padding: 2px; display: flex; border-radius: var(--radius-sm);
+}
+.prov-search-x:hover { color: var(--text-100); background: var(--bg-300); }
+.prov-model-scroll {
+  max-height: 238px; overflow-y: auto; overscroll-behavior: contain;
+  padding-right: 2px;
+}
+.prov-more {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  border: none; background: none; color: var(--accent-text);
+  font-family: var(--micro); font-size: 10px; letter-spacing: 0.02em;
+  padding: 4px 8px 6px; border-radius: var(--radius-sm);
+}
+.prov-more:hover { background: var(--bg-300); color: var(--text-000); }
+.prov-fam { display: flex; flex-direction: column; }
+.prov-fam + .prov-fam { margin-top: 2px; }
+.prov-fam-head {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg-100);
+  font-family: var(--micro); font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-400);
+  padding: 4px 8px 2px;
+}
+.prov-acct.on .prov-fam-head { background: var(--accent-soft); }
+.prov-fam-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prov-fam-count { font-size: 9px; opacity: 0.6; flex: 0 0 auto; }
+.prov-model-tag {
+  flex: 0 0 auto; font-family: var(--micro); font-size: 9px;
+  text-transform: uppercase; letter-spacing: 0.03em;
+  color: var(--accent-text); background: var(--accent-soft);
+  border-radius: 999px; padding: 0 5px; line-height: 14px;
 }
 .prov-models .prov-model { padding: 5px 8px; }
 .prov-models .prov-model .model-opt-name { font-size: var(--fs-caption); }

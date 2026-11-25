@@ -4281,6 +4281,232 @@ function SessionPane({ icon, title, width, onWidth, onHide, children }) {
   );
 }
 
+// ---------- Subscription model list (Claude Max / ChatGPT / Antigravity / Grok) ----------
+// A signed-in account can expose dozens of models — Antigravity returns 38 — which
+// used to render as one flat, unscrollable column that buried the current pick.
+// Group them by family, add a filter once the list gets long, cap the height with
+// its own scroll, and scroll the active model into view on open.
+function ProvModelList({ list, picked, onPick }) {
+  const [q, setQ] = useState('');
+  const boxRef = useRef(null);
+  const selRef = useRef(null);
+
+  // Provider-reported family ("Gemini", "Claude", an API_PROVIDER_* slug) is the
+  // right shelf: Antigravity's 38 models collapse to three headers instead of
+  // 38 unlabelled rows. Within a shelf, sort by display name so the
+  // "Gemini 4 Neon (Low/Medium/High)" variants sit next to each other.
+  const groups = useMemo(() => {
+    const query = q.trim().toLowerCase();
+    const famLabel = (g) => {
+      const s = String(g || '').trim();
+      if (!s) return 'Other';
+      const api = s.match(/^API_PROVIDER_([A-Za-z0-9_]+)$/);
+      if (api) {
+        const known = { openai: 'OpenAI', vertex: 'Vertex', anthropic: 'Anthropic', google: 'Google', azure: 'Azure' };
+        const name = api[1].toLowerCase().split('_').filter(Boolean)
+          .map((p) => known[p] || p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+        return name + ' (API)';
+      }
+      return s.charAt(0).toUpperCase() + s.slice(1);
+    };
+    const FAM_ORDER = ['gemini', 'claude', 'gpt', 'grok', 'codex'];
+    const buckets = new Map();
+    for (const raw of list || []) {
+      const m = typeof raw === 'string' ? { id: raw, label: raw } : (raw || {});
+      const id = String(m.id || '');
+      if (!id) continue;
+      const label = String(m.label || id);
+      if (query && !(id.toLowerCase().includes(query) || label.toLowerCase().includes(query))) continue;
+      const fam = famLabel(m.group);
+      if (!buckets.has(fam)) buckets.set(fam, []);
+      buckets.get(fam).push({ ...m, id, label });
+    }
+    const rank = (name) => {
+      const i = FAM_ORDER.findIndex((f) => name.toLowerCase().startsWith(f));
+      return i < 0 ? FAM_ORDER.length : i;
+    };
+    return Array.from(buckets.entries())
+      .sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0]))
+      .map(([fam, models]) => [
+        fam,
+        models.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' })),
+      ]);
+  }, [list, q]);
+
+  const total = (list || []).length;
+
+  // Bring the selected model into view once the catalog has populated.
+  useEffect(() => {
+    const el = selRef.current, box = boxRef.current;
+    if (!el || !box) return;
+    const eb = el.getBoundingClientRect(), bb = box.getBoundingClientRect();
+    if (eb.top < bb.top || eb.bottom > bb.bottom) {
+      box.scrollTop += (eb.top - bb.top) - (box.clientHeight - el.offsetHeight) / 2;
+    }
+  }, [picked, total]);
+  return (
+    <div className="prov-models">
+      {total > 12 && (
+        <div className="prov-search">
+          <Icon name="Search" size={12} />
+          <input
+            className="prov-search-in"
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={`Filter ${total} models…`}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          {q && <button className="prov-search-x" onClick={() => setQ('')} title="Clear"><Icon name="X" size={11} /></button>}
+        </div>
+      )}
+      <div className="prov-model-scroll" ref={boxRef}>
+        {!total && <div className="prov-none">Loading models…</div>}
+        {total > 0 && !groups.length && <div className="prov-none">No models match “{q}”.</div>}
+        {groups.map(([fam, models]) => (
+          <div key={fam} className="prov-fam">
+            <div className="prov-fam-head">
+              <span className="prov-fam-name">{fam}</span>
+              <span className="prov-fam-count">{models.length}</span>
+            </div>
+            {models.map((m) => {
+              const on = picked === m.id;
+              return (
+                <button
+                  key={m.id}
+                  ref={on ? selRef : null}
+                  className={'model-opt prov-model' + (on ? ' on' : '')}
+                  title={m.id + (m.windowLabel ? ' · ' + m.windowLabel + ' context' : '')}
+                  onClick={() => onPick(m.id)}
+                >
+                  <span className="model-opt-name">{m.label}</span>
+                  {m.tag && <span className="prov-model-tag">{m.tag}</span>}
+                  {on && <Icon name="Check" size={13} className="model-check" />}
+                  <span className="model-opt-prov">{m.windowLabel || ''}</span>
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Session model list (presets + locally-installed catalogs) ----------
+// The FreeLLMAPI router alone contributes ~1050 installed models, and the menu
+// used to render every one of them as a flat row in a 340 px box. Same shell as
+// the subscription list: group by provider, filter when long, one capped scroll,
+// and put the group holding the current pick first so it is visible on open.
+const SESSION_SHELF_CAP = 30;
+
+function SessionModelList({ rows, isActive, renderRow }) {
+  const [q, setQ] = useState('');
+  const [expanded, setExpanded] = useState({});
+  const boxRef = useRef(null);
+  const selRef = useRef(null);
+
+  const groups = useMemo(() => {
+    const query = q.trim().toLowerCase();
+    const buckets = new Map();
+    for (const r of rows || []) {
+      if (query) {
+        const hay = (String(r.label || '') + ' ' + String(r.model || '') + ' ' + String(r.prov || '') + ' ' + String((r.preset && r.preset.name) || '')).toLowerCase();
+        if (!hay.includes(query)) continue;
+      }
+      const fam = String(r.prov || 'Other').replace(/\s*·\s*installed$/, '');
+      if (!buckets.has(fam)) buckets.set(fam, { fam, installed: false, items: [] });
+      const g = buckets.get(fam);
+      if (/·\s*installed$/.test(String(r.prov || ''))) g.installed = true;
+      g.items.push(r);
+    }
+    const list = Array.from(buckets.values());
+    // Active group first, otherwise keep preset order (local → paid).
+    const ai = list.findIndex((g) => g.items.some((r) => isActive(r)));
+    if (ai > 0) list.unshift(list.splice(ai, 1)[0]);
+    return list;
+  }, [rows, q]);
+
+  const total = (rows || []).length;
+  const searching = !!q.trim();
+
+  // A router catalog can be 1000+ models. Mounting all of them inside one
+  // scroll box makes the shelf 35 000 px tall and the menu unusable, so each
+  // shelf mounts a bounded slice — the current pick is pinned to the top of
+  // its slice when it would otherwise fall outside it — and "Show all" opens
+  // the rest on demand. A filter query lifts the cap.
+  const shelf = (g) => {
+    const cap = searching ? 400 : (expanded[g.fam] ? Infinity : SESSION_SHELF_CAP);
+    if (!isFinite(cap) || g.items.length <= cap) return { shown: g.items, hidden: 0 };
+    const ai = g.items.findIndex((r) => isActive(r));
+    if (ai >= cap) {
+      return { shown: [g.items[ai], ...g.items.slice(0, cap - 1)], hidden: g.items.length - cap, pinned: true };
+    }
+    return { shown: g.items.slice(0, cap), hidden: g.items.length - cap };
+  };
+
+  useEffect(() => {
+    const el = selRef.current, box = boxRef.current;
+    if (!el || !box) return;
+    const eb = el.getBoundingClientRect(), bb = box.getBoundingClientRect();
+    if (eb.top < bb.top || eb.bottom > bb.bottom) {
+      box.scrollTop += (eb.top - bb.top) - (box.clientHeight - el.offsetHeight) / 2;
+    }
+  }, [q, total, expanded]);
+
+  return (
+    <>
+      {total > 12 && (
+        <div className="prov-search">
+          <Icon name="Search" size={12} />
+          <input
+            className="prov-search-in"
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={`Filter ${total} models…`}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          {q && <button className="prov-search-x" onClick={() => setQ('')} title="Clear"><Icon name="X" size={11} /></button>}
+        </div>
+      )}
+      <div className="prov-model-scroll" ref={boxRef}>
+        {total > 0 && !groups.length && <div className="prov-none">No models match “{q}”.</div>}
+        {groups.map((g) => {
+          const { shown, hidden, pinned } = shelf(g);
+          return (
+            <div key={g.fam} className="prov-fam">
+              <div className="prov-fam-head">
+                <span className="prov-fam-name">{g.fam}</span>
+                {g.installed && <span className="prov-model-tag">installed</span>}
+                <span className="prov-fam-count">{g.items.length}</span>
+              </div>
+              {shown.map((r) => {
+                const active = isActive(r);
+                const node = renderRow(r);
+                if (!active) return node;
+                return React.cloneElement(node, { ref: selRef });
+              })}
+              {hidden > 0 && (
+                <button className="prov-more" onClick={() => setExpanded((e) => ({ ...e, [g.fam]: true }))}>
+                  Show all {g.items.length}{pinned ? ' · current pick pinned above' : ''}
+                </button>
+              )}
+              {!hidden && expanded[g.fam] && g.items.length > SESSION_SHELF_CAP && !searching && (
+                <button className="prov-more" onClick={() => setExpanded((e) => ({ ...e, [g.fam]: false }))}>
+                  Show fewer
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 // ---------- Input bar (composer) — Example parity: model-selector pill bottom-left, attach + style + think + send right ----------
 const PERM_MODES = [
   { id: 'auto',        title: 'perm.auto',        desc: 'perm.autoDesc',        icon: 'LockOpen' },
@@ -4821,32 +5047,36 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
               {modelMenuOpen && (
                 <div className="model-menu" ref={modelMenuRef}>
                   <div className="model-menu-head">Model · this session{keyProbing ? ' · checking keys…' : ''}</div>
-                  {pickerRows.map((r) => {
-                    const active = provider.baseURL === r.preset.baseURL && provider.model === r.model;
-                    const st = presetStatus(r.preset, { keyFor, status: keyStatus, probing: keyProbing });
-                    const rowBase = normBase(r.preset.baseURL);
-                    const isOllama = /:11434\b/.test(rowBase);
-                    const scan = ollama[rowBase];
-                    const ollamaDown = isOllama && !(scan && scan.ok && scan.models && scan.models.length);
-                    return (
-                      <button
-                        key={r.key}
-                        className={'model-opt' + (active ? ' on' : '') + (st.row ? ' ' + st.row : '')}
-                        title={r.local ? 'Local Ollama model — ' + r.model : (ollamaDown ? 'Ollama is not running — click to connect' : st.label)}
-                        onClick={() => {
-                          if (r.local) return pickModel(r.preset, r.model);
-                          if (ollamaDown) return connectOllama();
-                          if (st.row === 'dim') return configurePreset(r.preset);
-                          return pickModel(r.preset, r.model);
-                        }}
-                      >
-                        <span className={'model-dot ' + (r.local ? 'ok' : st.dot)} />
-                        <span className="model-opt-name">{r.label}</span>
-                        <span className="model-opt-prov">{ollamaDown ? 'click to connect' : r.prov}</span>
-                        {active && <Icon name="Check" size={13} className="model-check" />}
-                      </button>
-                    );
-                  })}
+                  <SessionModelList
+                    rows={pickerRows}
+                    isActive={(r) => provider.baseURL === r.preset.baseURL && provider.model === r.model}
+                    renderRow={(r) => {
+                      const active = provider.baseURL === r.preset.baseURL && provider.model === r.model;
+                      const st = presetStatus(r.preset, { keyFor, status: keyStatus, probing: keyProbing });
+                      const rowBase = normBase(r.preset.baseURL);
+                      const isOllama = /:11434\b/.test(rowBase);
+                      const scan = ollama[rowBase];
+                      const ollamaDown = isOllama && !(scan && scan.ok && scan.models && scan.models.length);
+                      return (
+                        <button
+                          key={r.key}
+                          className={'model-opt' + (active ? ' on' : '') + (st.row ? ' ' + st.row : '')}
+                          title={r.local ? 'Local Ollama model — ' + r.model : (ollamaDown ? 'Ollama is not running — click to connect' : st.label)}
+                          onClick={() => {
+                            if (r.local) return pickModel(r.preset, r.model);
+                            if (ollamaDown) return connectOllama();
+                            if (st.row === 'dim') return configurePreset(r.preset);
+                            return pickModel(r.preset, r.model);
+                          }}
+                        >
+                          <span className={'model-dot ' + (r.local ? 'ok' : st.dot)} />
+                          <span className="model-opt-name">{r.label}</span>
+                          <span className="model-opt-prov">{ollamaDown ? 'click to connect' : r.prov}</span>
+                          {active && <Icon name="Check" size={13} className="model-check" />}
+                        </button>
+                      );
+                    }}
+                  />
                   {ollamaEmpty && (
                     <button className="model-opt model-connect" disabled={ollamaBusy} onClick={connectOllama}>
                       <Icon name="Plug" size={14} />
@@ -4899,30 +5129,16 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                                   </button>
                                   <button className="prov-x" title="Sign out" disabled={!!provBusy} onClick={() => providerAction('signout', pv.id, a.account)}><Icon name="X" size={12} /></button>
                                   {on && (
-                                    <div className="prov-models">
-                                      {!list.length && (
-                                        <div className="prov-none">
-                                          {own && own.warning ? own.warning : 'Loading models…'}
-                                        </div>
+                                    <>
+                                      {own && own.warning && !list.length && (
+                                        <div className="prov-none">{own.warning}</div>
                                       )}
-                                      {list.map((m) => {
-                                        const mid = m.id || m;
-                                        const win = m.windowLabel || '';
-                                        const picked = provider.model === mid;
-                                        return (
-                                          <button
-                                            key={mid}
-                                            className={'model-opt prov-model' + (picked ? ' on' : '')}
-                                            title={mid + (win ? ' · ' + win + ' context' : '')}
-                                            onClick={() => pickOauthAccount(pv, a.account, mid)}
-                                          >
-                                            <span className="model-opt-name">{m.label || mid}</span>
-                                            <span className="model-opt-prov">{win || ''}</span>
-                                            {picked && <Icon name="Check" size={13} className="model-check" />}
-                                          </button>
-                                        );
-                                      })}
-                                    </div>
+                                      <ProvModelList
+                                        list={list}
+                                        picked={provider.model}
+                                        onPick={(mid) => pickOauthAccount(pv, a.account, mid)}
+                                      />
+                                    </>
                                   )}
                                 </div>
                               );
