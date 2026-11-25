@@ -1328,8 +1328,16 @@ Rows therefore mixed Title Case with raw ids, and two of the 38 selectable
 1. `isInternalAntigravityModel(id)` — `/^tab_/i` or `/_preview$/i` → row is
    dropped entirely. A chat picker never offers an inline-completion engine.
 2. `prettyModelId(id)` — split on `[-_]`, title-case each token, keep versions
-   (`3.8`, `120b`) verbatim, and restore the casing the vendor uses for known
-   abbreviations (`GPT`, `OSS`, `XHigh`, `Pro`, `XL`, `API`, `AGY`).
+   verbatim, and restore the casing the vendor uses for known abbreviations
+   (`GPT`, `OSS`, `XHigh`, `Pro`, `XL`, `API`, `AGY`). Then:
+   - a trailing reasoning level (`high`/`xhigh`/`medium`/`low`/`minimal`/
+     `thinking`/`orchestrator`) is **parenthesised**, matching the vendor's own
+     names — `gemini-4-hydrogen-high` → `Gemini 4 Hydrogen (High)`, not
+     `Gemini 4 Hydrogen High` sitting next to `Gemini 4 Argon (High)`;
+   - adjacent single digits are a dotted version — `claude-sonnet-5-5-medium`
+     → `Claude Sonnet 5.5 (Medium)`;
+   - a numeric size suffix is upper-cased — `gpt-oss-120b-medium` →
+     `GPT OSS 120B (Medium)`.
 3. Label = `displayName` when it differs from the id, else `prettyModelId(id)`.
 4. When a displayName collides across rows, **replace** it with the prettified
    id (→ `Gemini 2.5 Flash`, `Gemini 2.5 Flash Lite`, `Gemini 3.5 Flash Lite`)
@@ -1344,26 +1352,120 @@ working.
 
 ### 31.3 Live proof (`:9333`, real Antigravity account)
 
+Read from the **rendered menu** (`/tmp/agdom.cjs`, selects the Antigravity
+account and scrapes `.prov-acct.on .prov-model`), not from the IPC catalog —
+the DOM is what the user sees:
+
 ```
-live true n 36                    ← was 38 (two tab_*_preview removed)
-Gemini | "Gemini 2.5 Flash"                | id=gemini-2.5-flash
-Gemini | "Gemini 2.5 Flash Lite"           | id=gemini-2.5-flash-lite
-Gemini | "Gemini 2.5 Flash Thinking"       | id=gemini-2.5-flash-thinking
-Gemini | "Gemini 3 Flash"                  | id=gemini-3-flash
-Gemini | "Gemini 3.5 Flash Lite"           | id=gemini-3.5-flash-lite
-Gemini | "Gemini 3.8 Flash Tiered"         | id=gemini-3.8-flash-tiered
-Gemini | "Gemini 4 Argon (High)"           | id=gemini-4-argon-high
-Gemini | "Gemini 4 Hydrogen (Orchestrator)"| id=gemini-flash-worker-agy
+rendered rows: 36                 ← was 38 (two tab_*_preview removed)
+* Gemini 2.5 Flash  [1M]                     ← selected (active conversation)
+  Gemini 2.5 Flash (Thinking)  [1M]
+  Gemini 2.5 Flash Lite  [1M]
+  Gemini 3 Flash  [1M]
+  Gemini 3.1 Flash Image  [66K]
+  Gemini 3.5 Flash Lite  [1M]
+  Gemini 3.8 Flash Tiered  [1M]
+  Gemini 4 Argon (High)  [1M]
+  Gemini 4 Hydrogen (High)  [1M]
+  Gemini 4 Hydrogen (Orchestrator)  [1M]
+  Gemini 4 Hydrogen (XHigh)  [1M]
+  Gemini 4 Hydrogen Tiered (High)  [1M]
+  Gemini 4 Neon (XHigh)  [1M]
+  Orchestrator (Argon)  [1M]
+  Claude Opus 5.5 (High)  [1M]
+  Claude Sonnet 5.5 (Medium)  [1M]
+  GPT-OSS 120B (Medium)  [131K]
+raw-slug labels: 0 | tab/preview rows: 0 | duplicate labels: 0
 ```
 
-No lowercase slug survives, no `tab_*`, and the four former
+No lowercase slug survives, no `tab_*`, no duplicate label, every reasoning
+level is parenthesised the same way, and the four former identical
 `Gemini 3.5 Flash Lite` rows are now four distinct, accurate names.
 
 ### 31.4 Regression
 
-`node test/antigravity-catalog.test.js` → **8 / 8** (internal models dropped;
-slug prettified; vendor abbreviations keep casing; explicit displayName kept
-verbatim; colliding names fall back to the prettified id; all labels unique; no
-label looks like a raw slug; group + window survive). Full suite
+`node test/antigravity-catalog.test.js` → **9 / 9** (internal models dropped;
+slug prettified; trailing level parenthesised; size suffix upper-cased and
+`5-5` → `5.5`; explicit displayName kept verbatim; colliding names fall back to
+the prettified id; all labels unique; no label looks like a raw slug; group +
+window survive). Full suite
 `failing=0`; `scripts/parity-audit.js` → `DEFS: 141`,
+`subsystems incomplete: 0`.
+
+### 31.5 A spent Claude allowance is reported, not hammered
+
+`claudeAllowanceHint(provider)` reads the plan's own usage endpoint
+(`GET /api/oauth/usage`, OAuth header only — an API key never probes it) and
+`formatResetIn()` renders the reset as prose:
+
+- `the Claude plan's 5-hour allowance is 100% used (resets 9:29 PM, in 4 min); send this request again after the reset — nothing in the conversation is lost`
+- 7-day window, unspent window (`62% used`), and API-key providers produce no
+  banner at all.
+
+A hint containing `100% used` sets `err.retryHopeless = true`, so
+`chatWithFailover` throws immediately instead of walking five rounds of
+backoff against an exhausted plan, and `humanizeLLMError` returns the
+capitalised allowance sentence alone (never prefixed with "The provider is rate
+limiting this key").
+
+`node test/claude-allowance.test.js` → **10 / 10**. Live check against the real
+endpoint: the 5-hour window flipped `100.0 → 0.0` at 20:30 UTC and the same
+model then completed a full tool turn (see below).
+
+## 32. A cut tool call never runs, and the recovery is silent (2026-11-25)
+
+### 32.1 The defect that made "coding with any AI" look broken
+
+Two independent wrinkles in the output-limit path:
+
+1. A reply cut at the output limit can still carry a `tool_calls` entry whose
+   `arguments` string stops mid-JSON. The old recovery loop verified the JSON but
+   then fell through when the escalated attempt was *also* cut, so the sliced call
+   was dispatched anyway. `parseArgs` turned it into `{_raw,_parse_error}`
+   (`{}`-shaped), `Write` ran with no path, the UI showed an empty **error** card,
+   and nothing landed on disk.
+2. The recovery streamed its own thought line — "… retrying with N tokens" — which
+   no Claude app / Claude Code / Antigravity turn ever shows.
+
+### 32.2 What the loop does now
+
+- `isCutJSON(raw)` / `hasCutCalls(list)` treat non-empty, unparseable arguments as
+  cut. Empty arguments stay legal (tools with no parameters).
+- The `finish_reason === 'length'` block is an **escalating loop** (3 bumps,
+  `+8192` per bump, capped by `min(65536, window − promptReserve, reserveOut × 4)`)
+  that breaks the moment the attempt is complete or carries a complete call.
+  Every bump emits `retry` (drops the cut text from the UI) and **no** thought
+  line, so the user sees the animated working state and then one answer.
+- `outCeiling` remembers the raised budget for the rest of the turn, so the model's
+  redone call is not cut a second time at the small default.
+- Before dispatch, a cut call is dropped without a card (no empty-arg row), a
+  `role:"tool"` message explains *"This tool call was cut off before its arguments
+  were complete, so it did NOT run. Redo the work in smaller pieces: keep each
+  Write under ~150 lines, then append the rest with the Edit tool (or a Bash
+  redirect)…"*, and the turn continues.
+- `parseTextToolCalls`' `push()` **skips** a fenced call whose argument JSON is
+  unparseable instead of substituting `{}`.
+
+### 32.3 Live proof (`:9333`, real Claude account, 6 000-line file)
+
+`longout.cjs 9333 claude-sonnet-5-5 claude:rxpromedbd-gmail-com anthropic 6000 8192`:
+
+- `sawRetry: false`, `retryWording: ""`, `limitWording: false`, `think: ""`,
+  `composing: ""`, `error: null`, `streaming: false`
+- cards: `Writing → longcount.txt`, `Running → wc -l longcount.txt`, result `6000`
+- on disk: `~/Akron Bot/use-the-write-tool-to-create-the-file-lo-3/longcount.txt`
+  → **6 000 lines**, real content, `Worked for 3m 15s`
+
+Normal turns are unaffected: `probe-capability` passes on
+`claude-sonnet-5-5` (15 live models, Write/Run/Browse, `markupLeak: false`, 11 s)
+and on Antigravity `gemini-3-flash` (36 live models, same four tools, 2 s).
+
+### 32.4 Regression
+
+`node test/llm-truncated-tool.test.js` → **3 / 3** (a cut `Write` produces zero
+tool cards, the tool message carries the redo-in-pieces instruction and the
+matching `tool_call_id`, the budget escalates and is reused, no limit wording,
+`parseArgs` flags sliced JSON, `parseTextToolCalls` skips sliced fenced calls).
+`test/e2e.test.js` updated to the silent-retry contract → **112 / 112**. Full
+suite `failing=0`; `scripts/parity-audit.js` → `DEFS: 141`,
 `subsystems incomplete: 0`.

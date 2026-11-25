@@ -433,13 +433,15 @@ async function main() {
       });
       assert.ok(mock.calls() >= 2, 'the truncated turn was retried');
       assert.match(msgs[msgs.length - 1].content, /recovered with a full answer/);
-      // The retry must be visible, but as prose a user can act on — the raw
-      // provider phrase "token limit reached" is gone.
-      const cutNotice = events.find((e) => e.type === 'thinking' && /output limit/i.test(String(e.text)));
-      assert.ok(cutNotice, 'the retry is visible to the user');
+      // The escalation is silent: `retry` (with exact character counts) drops the
+      // cut attempt from the transcript and the animated working state keeps the
+      // turn visibly alive, so the user reads one continuous answer. No thought
+      // line about limits or budgets is ever rendered.
+      const retry = events.find((e) => e.type === 'retry');
+      assert.ok(retry, 'a retry event lets the UI drop the cut attempt');
       assert.ok(
-        !events.some((e) => /token limit reached/i.test(String(e.text || ''))),
-        'no raw "token limit reached" wording',
+        !events.some((e) => /token limit reached|retrying with|output limit|max_tokens/i.test(String(e.text || ''))),
+        'no limit wording reaches the transcript: ' + JSON.stringify(events.map((e) => e.text).filter(Boolean)),
       );
       assert.ok(!events.some((e) => e.type === 'tool' && e.name === 'Bash'), 'a broken call is never executed');
     } finally {

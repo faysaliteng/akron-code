@@ -149,6 +149,63 @@ function isAnthropicOauth(provider) {
   return !!(provider && provider.oauth) || /^sk-ant-oat/.test(tok);
 }
 
+const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+
+function formatResetIn(iso) {
+  const t = Date.parse(iso || '');
+  if (!Number.isFinite(t)) return '';
+  const mins = Math.round((t - Date.now()) / 60000);
+  const at = new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (mins <= 0) return at;
+  if (mins < 90) return `${at}, in ${mins} min`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 36) return `${at}, in ${hrs} h`;
+  return new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * Turn a Claude subscription 429 into a fact instead of a guess. The OAuth usage
+ * endpoint reports both allowance windows and when each resets, so the banner
+ * can say "the 5-hour allowance is 100% used, resets at 2:30 AM" instead of
+ * "rate limiting this key" after five rounds of 45 s backoff. Only subscription
+ * tokens can read it — API keys cannot.
+ */
+async function claudeAllowanceHint(provider) {
+  try {
+    const { headers, oauth } = anthropicAuth(provider);
+    if (!oauth) return '';
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 2500);
+    let res;
+    try {
+      res = await fetch(CLAUDE_USAGE_URL, {
+        headers: { authorization: headers.authorization, 'anthropic-beta': headers['anthropic-beta'] },
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res || !res.ok) return '';
+    const j = await res.json().catch(() => null);
+    if (!j) return '';
+    const wins = ['five_hour', 'seven_day']
+      .map((k) => ({ k, w: j[k] }))
+      .filter((x) => x.w && Number.isFinite(Number(x.w.utilization)));
+    if (!wins.length) return '';
+    // Name the window that is actually blocking this request.
+    const hit = wins.find((x) => Number(x.w.utilization) >= 99.5) || wins[0];
+    const util = Number(hit.w.utilization);
+    const pct = Math.max(0, Math.min(100, Math.round(util)));
+    const label = hit.k === 'five_hour' ? '5-hour' : '7-day';
+    const when = formatResetIn(hit.w.resets_at);
+    let hint = `the Claude plan's ${label} allowance is ${pct}% used${when ? ` (resets ${when})` : ''}`;
+    if (util >= 99.5) hint += '; send this request again after the reset — nothing in the conversation is lost';
+    return hint;
+  } catch (_) {
+    return '';
+  }
+}
+
 function anthropicAuth(provider) {
   const tok = String(provider.accessToken || provider.apiKey || '');
   const oauth = isAnthropicOauth(provider);
@@ -272,7 +329,19 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   const res = await fetch(base + '/v1/messages', {
     method: 'POST', headers, body: JSON.stringify(body), signal,
   });
-  if (!res.ok) throw httpError('anthropic', res, await res.text().catch(() => ''));
+  if (!res.ok) {
+    const err = httpError('anthropic', res, await res.text().catch(() => ''));
+    // A subscription window that is genuinely spent is not a blip: retrying five
+    // times only delays the answer. Read the real allowance and stop the ladder.
+    if (err.status === 429) {
+      const hint = await claudeAllowanceHint(provider);
+      if (hint) {
+        err.hint = hint;
+        if (/ 100% used/.test(hint)) err.retryHopeless = true;
+      }
+    }
+    throw err;
+  }
 
   const ct = res.headers.get('content-type') || '';
   const message = { role: 'assistant', content: '', tool_calls: [] };
@@ -1099,5 +1168,6 @@ module.exports = {
     claudeUa, codexUa, grokUa, clientVersions, setClientVersions, DEFAULT_CLIENT_VERSIONS,
     CODEX_RESPONSES_URL, GROK_RESPONSES_URL, CLOUDCODE_BASE, DEFAULT_ANTHROPIC_BASE, cloudcodeBase,
     grokHeaders, GROK_PRODUCT, GROK_CREDITS_URL, grokCreditHint,
+    claudeAllowanceHint, CLAUDE_USAGE_URL, formatResetIn,
   },
 };

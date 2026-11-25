@@ -145,7 +145,13 @@ function parseTextToolCalls(text) {
       : o.parameters != null ? o.parameters
       : o.function && o.function.arguments != null ? o.function.arguments
       : {};
-    if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
+    if (typeof args === 'string') {
+      const s = args.trim();
+      if (!s) args = {};
+      else {
+        try { args = JSON.parse(s); } catch { return; } // cut off mid-JSON — never run it as {}
+      }
+    }
     if (!args || typeof args !== 'object') args = {};
     seq++;
     out.push({ id: 'txt_' + seq + '_' + Math.random().toString(36).slice(2, 7), type: 'function', function: { name, arguments: JSON.stringify(args) } });
@@ -487,6 +493,14 @@ function humanizeLLMError(e) {
   // vendor's envelope (Grok 402 → allowance %, reset date, prepaid balance).
   const hint = String((e && (e.hint || e.creditHint)) || '').trim();
   if (hint) body = hint;
+  // A spent subscription allowance is not a rate limit to wait out — the reset
+  // time is known, so the allowance read-out is the whole message. Prefixing it
+  // with "rate limiting this key" told the user to retry a request that cannot
+  // succeed for the next few hours.
+  if (hint && e && e.retryHopeless) {
+    const sentence = body.charAt(0).toUpperCase() + body.slice(1);
+    return sentence.length > 200 ? sentence.slice(0, 197).trimEnd() + '…' : sentence;
+  }
   // The hint is our own prose and may already lead with the friendly phrase
   // ("This account is out of credit for that provider — …"), which the earlier
   // dedupe could not see. Strip it again so the banner never repeats itself.
@@ -564,6 +578,9 @@ async function chatWithFailover(opts) {
           throw e;
         }
         if (isRateLimitError(e)) {
+          // A spent subscription allowance carries its own reset time, so there
+          // is nothing to wait for: surface it now, in prose, with the reset.
+          if (e && e.retryHopeless) throw e;
           lastErr = e;
           rateLimited = true;
           if (n > 1 && a < n - 1) {
@@ -650,6 +667,22 @@ function parseArgs(raw) {
     if (v3 !== undefined) return v3;
   }
   return { _raw: raw, _parse_error: 'arguments were not valid JSON' };
+}
+
+// Did the model's JSON get sliced by the output limit? A `Write`/`Edit` call cut
+// mid-string parses as nothing at all, and running it with `{}` produced an empty
+// "error" card while the file never appeared — the "coding with any AI is broken"
+// symptom. Empty arguments stay legal (tools with no parameters).
+function isCutJSON(raw) {
+  if (raw == null) return false;
+  if (typeof raw === 'object') return false;
+  const s = String(raw).trim();
+  if (!s) return false;
+  try { JSON.parse(s); return false; } catch { return true; }
+}
+
+function hasCutCalls(list) {
+  return (list || []).some((tc) => isCutJSON(tc && tc.function && tc.function.arguments));
 }
 
 // If a coding turn ends with the code only pasted in chat (no Write/Edit and no
@@ -1466,6 +1499,11 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     emit({ type: 'usage', usage: { ...usageTotals }, model: provider.model });
   };
 
+  // Output budget for this turn. Starts as "whatever the provider config says"
+  // and is raised if a reply gets cut, so later retries in the same turn ask
+  // for the bigger budget straight away instead of being cut a second time.
+  let outCeiling = 0;
+
   for (let step = 0; step < maxSteps; step++) {
     if (opts.signal && opts.signal.aborted) throw new Error('aborted');
     let message;
@@ -1538,7 +1576,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       }
     };
     try {
-      message = await chatRound(toolMode);
+      message = await chatRound(toolMode, outCeiling || undefined);
     } catch (e) {
       // Two different reasons to stop using native tool calls, both recoverable:
       //   • the endpoint rejects the tools schema (capability mismatch), and
@@ -1567,7 +1605,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           });
         }
         try {
-          message = await chatRound(false);
+          message = await chatRound(false, outCeiling || undefined);
         } catch (e2) {
           if (!isCreditExhausted(e2) || (opts.signal && opts.signal.aborted)) throw e2;
           // The allowance is spent for plain chat too. Throwing here put a red
@@ -1596,32 +1634,41 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     // on chain-of-thought BEFORE emitting the code/tool calls. When the stream is
     // cut at the token limit (finish_reason "length") the website/code silently
     // never appears — either no tool calls at all, or a call whose JSON arguments
-    // were sliced mid-string. Escalate the output budget; if the answer is STILL
-    // cut, continue it in place so a long file or explanation finishes instead of
-    // stopping at "…" (this is the Claude-app behaviour).
+    // were sliced mid-string. Escalate the output budget and regenerate; if the
+    // answer is STILL cut, continue it in place so a long file or explanation
+    // finishes instead of stopping at "…" (this is the Claude-app behaviour).
+    //
+    // The escalation is silent: `retry` drops the cut attempt from the UI and the
+    // animated "Working…" keeps the turn visibly alive, so the user gets one
+    // continuous answer instead of a "retrying with N tokens" thought line.
     if (message && message.finish_reason === 'length') {
-      const broken = (list) => (list || []).some((tc) => {
-        const raw = tc.function && tc.function.arguments;
-        if (!raw || !String(raw).trim()) return false; // no-arg tools are legal
-        try { JSON.parse(String(raw)); return false; } catch { return true; }
-      });
+      const base = outCeiling || (Number(provider.maxTokens) > 0 ? Number(provider.maxTokens) : 16384);
+      // Never ask for more room than the window can hold: output + a prompt
+      // reserve must still fit, and no model accepts more than 65536 output.
+      const roomLeft = Math.max(8192, Math.round(modelBudget.window - modelBudget.promptReserve));
+      const ceiling = Math.max(base, Math.min(65536, roomLeft, Math.max(8192, modelBudget.reserveOut * 4)));
+      let bumped = base;
       let cutCalls = message.tool_calls || [];
-      if (!cutCalls.length || broken(cutCalls)) {
-        const base = provider.maxTokens || 16384;
-        // Never exceed the room the window reserved for output, but never ask for
-        // less than we already did either.
-        const ceiling = Math.max(base, Math.min(65536, Math.max(8192, modelBudget.reserveOut * 2)));
-        const bumped = Math.min(Math.max(base * 2, base + 4096), ceiling);
-        // Tell the UI to drop the cut-off attempt before the retry streams, then
-        // show what is happening (no silent re-generation).
+      for (let attempt = 0; attempt < 3; attempt++) {
+        // A complete tool call (or any complete answer) is the win condition.
+        if (message && message.finish_reason !== 'length') break;
+        if (cutCalls.length && !hasCutCalls(cutCalls)) break;
+        const next = Math.min(Math.max(bumped * 2, bumped + 8192), ceiling);
+        if (next <= bumped) break;
+        bumped = next;
         emit({ type: 'retry', chars: turnChars, thinkingChars: turnThink });
-        emit({ type: 'thinking', text: ' (the reply reached the output limit — regenerating with a larger budget)' });
         message = await chatRound(toolMode, bumped);
-        cutCalls = message.tool_calls || [];
+        cutCalls = (message && message.tool_calls) || [];
+      }
+      // Remember the larger budget for the rest of this turn: if a call was cut
+      // and the model redoes it, that retry must not start over at the small
+      // default and get cut again.
+      outCeiling = Math.max(outCeiling, bumped);
+      {
         // A complete tool call wins. Otherwise merge continuation passes so the
         // user gets the whole answer rather than a truncated one.
         let part = 1;
-        while (message && message.finish_reason === 'length' && !(cutCalls.length && !broken(cutCalls)) && part <= 3) {
+        while (message && message.finish_reason === 'length' && !(cutCalls.length && !hasCutCalls(cutCalls)) && part <= 3) {
           const partial = String(message.content || '');
           if (!partial.trim()) break;
           const partialMsg = { role: 'assistant', content: partial };
@@ -1921,6 +1968,25 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       requestSecret,
     };
 
+    // A tool call whose JSON was sliced by the output limit must never run with
+    // empty arguments: that produced an empty "error" card, lost the work, and
+    // made long writes look like the agent was broken. Drop the cut call, tell
+    // the model precisely how to redo it in pieces, and keep the turn alive.
+    if (!textCalls && hasCutCalls(calls)) {
+      const cutNote = 'This tool call was cut off before its arguments were complete, so it did NOT run. Redo the work in smaller pieces: keep each Write under ~150 lines, then append the rest with the Edit tool (or a Bash redirect), and do not resend the same oversized call.';
+      const kept = [];
+      for (const tc of calls) {
+        const name = (tc.function && tc.function.name) || 'tool';
+        if (!isCutJSON(tc.function && tc.function.arguments)) { kept.push(tc); continue; }
+        // No card for a call that never ran: an empty-argument "error" row is
+        // exactly the broken-looking output users complained about. The tool
+        // message still goes back so the assistant/tool pairing stays valid.
+        messages.push({ role: 'tool', tool_call_id: tc.id, name, content: cutNote });
+      }
+      calls = kept;
+      if (!calls.length) continue;
+    }
+
     // Example runs independent read-only calls from the same turn concurrently
     // and shows all of the rows at once. Doing them one-by-one made a 4-file
     // read take 4 round trips of wall time and stacked rows progressively.
@@ -2063,4 +2129,4 @@ async function chatOnce({ provider, messages, maxTokens, signal, tools }) {
   return { content: String(content || ''), usage: (msg && msg.usage) || null, model: p.model };
 }
 
-module.exports = { runAgent, normalizeProvider, chatOnce, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, chunkText, humanizeLLMError, isRateLimitError, isContextOverflow, isCreditExhausted };
+module.exports = { runAgent, normalizeProvider, chatOnce, chatWithFailover, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, chunkText, humanizeLLMError, isRateLimitError, isContextOverflow, isCreditExhausted };
