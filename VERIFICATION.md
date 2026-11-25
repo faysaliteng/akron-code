@@ -138,10 +138,10 @@ remain on disk; the `-mac.zip`, blockmaps, and `mac-arm64/` staging dir were rem
 
 | Check | Result |
 |---|---|
-| Headless E2E (`node test/e2e.test.js`) | ✅ **53 passed, 0 failed** |
-| Registry integrity | ✅ **111 tool definitions**, every plugins/mcp-registry/scheduled-tasks/custom-skill tool resolves to an executor or inline handler |
-| Plugins catalog | ✅ 51 entries, 11 categories; search("github")→`github`; install→state→uninstall round-trip |
-| MCP registry tools | ✅ list / search / suggest wired to the same catalog |
+| Headless E2E (`node test/e2e.test.js`) | ✅ **111 passed, 0 failed** |
+| Registry integrity | ✅ **141 tool definitions**, every plugins/mcp-registry/scheduled-tasks/custom-skill tool resolves to an executor or inline handler |
+| Plugins catalog | ✅ 406 curated connectors / 50 plugins / 31 categories (+444 live MCP registry = 850 pool); search("stripe")→`stripe`; install→auto-connect→state→uninstall round-trip (`test/live/plugins-live.cjs`, 21 checks) |
+| MCP registry tools | ✅ list / search / suggest / directory_stats / refresh_registry wired to the merged catalog |
 | Scheduler lifecycle | ✅ create → list → update → runNow → remove; `computeNext`/`describe` correct; `runCount`/`lastResult` persisted |
 | Custom skills | ✅ `addCustomSkill` → discovered with `source:'custom'` + parsed frontmatter → `deleteCustomSkill` removes only custom |
 | Renderer wiring | ✅ `Add skill (.md)`, `New skill`, Plugins panel, Scheduled panel present in source + DOM |
@@ -169,7 +169,7 @@ so they are exercised by the agent loop exactly like the Example Desktop equival
 
 | Check | Result |
 |---|---|
-| Headless E2E (`node test/e2e.test.js`) | ✅ **53 passed, 0 failed** |
+| Headless E2E (`node test/e2e.test.js`) | ✅ **111 passed, 0 failed** |
 | Classifier | ✅ 200→`ok`, 402→`out`, quota-text 429→`out`, plain 429→`ok`, 401→`badkey`, 403+credit→`out`, 5xx→`unknown` |
 | Probe | ✅ authenticated `GET {baseURL}/models`; `Authorization: Bearer <key>` observed on the wire; local endpoints probed without a key |
 | Dedupe | ✅ `probeMany` collapses duplicate endpoints (DeepSeek chat/reasoner share one base) and keeps the keyed entry |

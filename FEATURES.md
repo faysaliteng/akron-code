@@ -51,7 +51,7 @@ Claude.app (Electron 45.3.3)
 | **Terminal** | `terminal__open_terminal_tab`, `read_terminal`, `run_in_terminal`, `stop_terminal_tab` |
 | **Memory** | `memory__memory_list`, `memory__memory_read` |
 | **Skills** | `skills__list_skills`, `skills__suggest_skills` |
-| **Plugins** | `plugins__list_plugins`, `search_connectors`, `search_plugins`, `suggest_plugin_install` |
+| **Plugins** | `plugins__list_plugins`, `search_connectors`, `search_plugins`, `suggest_plugin_install`, `directory_stats`, `refresh_registry` |
 | **MCP Registry** | `mcp-registry__list_connectors`, `search_mcp_registry`, `suggest_connectors` |
 | **Scheduled tasks** | `scheduled-tasks__create/list/update_scheduled_task` |
 | **Cowork (multi-agent)** | `cowork__create_from_type`, `db_write`, `launch_code_session`, `present_files`, `publish_files`, `request_cowork_directory`, `upload_asset`, `import_files`, `allow_cowork_file_delete` + `cowork-onboarding__show_onboarding_role_picker` |
@@ -148,20 +148,33 @@ toggle:
 Example Desktop's sidebar now maps 1:1 onto working local features — not stubs.
 
 ### 5.1 Plugins & connectors
-- Catalog: **51 curated entries / 11 categories** (`electron/plugins.js`), covering the
-  Example connector list (Google Drive, GitHub, Slack, Notion, Linear, Jira, Figma,
-  Postgres, Snowflake, Stripe, …) plus local plugins.
-- Ranking search (name > tag > description) + `suggest()` relevance.
+- Curated catalog: **406 connectors / 50 plugins / 31 categories**
+  (`electron/connector-catalog.js`) mirroring the Example app's connector directory —
+  Google Drive, GitHub, Slack, Notion, Linear, Jira, Figma, Postgres, Snowflake, Stripe,
+  Salesforce, Zendesk, Datadog, AWS, GCP, Azure, Okta, Workday, DocuSign, … plus local
+  plugins, each with `auth`, `tools` (connectors) or `provides` (plugins), and an MCP
+  `endpoint` where one is publicly known.
+- Live registry layer: `electron/mcpregistry.js` syncs
+  `registry.modelcontextprotocol.io` (paginated, 24 h TTL, versioned disk cache
+  `~/.autobot/mcp-registry.json`), categorises by keyword hints, and degrades silently
+  offline. Merged pool at runtime: **850 connectors** (406 curated + 444 live).
+- Ranking search (name > tag > description) + `suggest()` relevance across both layers.
 - Install state persisted in `~/.autobot/plugins.json`; `install` / `uninstall` /
-  `markConnected` / `setConfig`.
+  `markConnected` / `setConfig`. Installing an entry that carries a transport
+  auto-connects it (`sse`/`http` URL or stdio `command`), stashes `tools/list`, and
+  reports failures as one human line (e.g. “this server requires sign-in before its
+  tools work”) instead of a raw JSON-RPC envelope.
 - Tools: `plugins__list_plugins`, `plugins__search_plugins`, `plugins__search_connectors`,
-  `plugins__suggest_plugin_install`, `plugins__install`, `plugins__uninstall`.
+  `plugins__suggest_plugin_install`, `plugins__install`, `plugins__uninstall`,
+  `plugins__directory_stats`, `plugins__refresh_registry`.
 - Panel: **Plugins & Connectors** — search, type/category filters, installed-only toggle,
-  Install/Remove per card, connected badge.
+  Install/Remove per card, connected badge, directory stats line (built-in vs live MCP
+  servers) and a **Refresh registry** button.
 
 ### 5.2 MCP registry
 - Tools: `mcp-registry__list_connectors`, `mcp-registry__search_mcp_registry`,
   `mcp-registry__suggest_connectors` (shares the curated catalog and scoring).
+- IPC: `autobot:registryStatus`, `autobot:refreshRegistry`, `autobot:pluginStats`.
 
 ### 5.3 Scheduled tasks
 - Store: `~/.autobot/scheduled-tasks.json`; cadences `once | every | hourly | daily |

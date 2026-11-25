@@ -35,6 +35,9 @@ contextBridge.exposeInMainWorld('autobot', {
   suggestPlugins: (goal, opts) => ipcRenderer.invoke('autobot:suggestPlugins', goal, opts),
   installPlugin: (id) => ipcRenderer.invoke('autobot:installPlugin', id),
   uninstallPlugin: (id) => ipcRenderer.invoke('autobot:uninstallPlugin', id),
+  pluginStats: () => ipcRenderer.invoke('autobot:pluginStats'),
+  refreshRegistry: (opts) => ipcRenderer.invoke('autobot:refreshRegistry', opts),
+  registryStatus: () => ipcRenderer.invoke('autobot:registryStatus'),
 
   listScheduledTasks: () => ipcRenderer.invoke('autobot:listScheduledTasks'),
   createScheduledTask: (input) => ipcRenderer.invoke('autobot:createScheduledTask', input),

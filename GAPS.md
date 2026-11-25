@@ -476,20 +476,31 @@ implementation detail with no user-visible effect.
 The four remaining *product-surface* gaps from the Example Desktop sidebar are now shipped,
 tool-wired, and verified in the running app (CDP, port 9333) and in the headless suite.
 
-### K1 — Plugins & connectors catalog (`electron/plugins.js`)
-- **51 curated entries** across **11 categories** (Productivity, Communication, Developer,
-  Data, Design, Finance, Storage, Analytics, Marketing, AI, Other) covering the Example
-  connector list (Google Drive, GitHub, Slack, Notion, Linear, Jira, Figma, Postgres,
-  Snowflake, Stripe, …) plus local plugins.
-- **Scoring search** (name > tag > description) and `suggest(query)` relevance ranking.
+### K1 — Plugins & connectors catalog (`electron/connector-catalog.js` + `electron/plugins.js`)
+- **406 curated connectors / 50 plugins / 31 categories** (`electron/connector-catalog.js`)
+  mirroring the Example app's connector directory — Productivity, PM, Communication,
+  Email, Calendar, Engineering/DevOps, Analytics, Data/DBs, Cloud, Storage, Finance,
+  Sales/CRM, Support/Incident, Design, HR, Legal, Education, Research, Media/Social,
+  Commerce, AI/ML, Travel, Health, Government/Nonprofit, Automation — with `auth`,
+  `tools` (connectors) / `provides` (plugins), and an MCP `endpoint` where public.
+- **Live registry layer** (`electron/mcpregistry.js`): paginated sync of
+  `registry.modelcontextprotocol.io`, 24 h TTL, versioned disk cache
+  (`~/.autobot/mcp-registry.json`), keyword-based categorisation, silent offline
+  degradation. Runtime pool = **850 connectors** (406 curated + 444 live).
+- **Scoring search** (name > tag > description) and `suggest(query)` relevance ranking
+  across the merged pool.
 - **Install state** persisted to `~/.autobot/plugins.json`; `install` / `uninstall` /
-  `markConnected` / `setConfig` round-trip cleanly.
+  `markConnected` / `setConfig` round-trip cleanly. Installing a transport-bearing entry
+  auto-connects it (`sse`/`http` URL or stdio `command`), caches `tools/list`, and
+  reports failures as one human-readable line (no raw JSON-RPC / markup).
 - Tool surface: `plugins__list_plugins`, `plugins__search_plugins`,
   `plugins__search_connectors`, `plugins__suggest_plugin_install`,
-  `plugins__install`, `plugins__uninstall`; plus `mcp-registry__list_connectors`,
+  `plugins__install`, `plugins__uninstall`, `plugins__directory_stats`,
+  `plugins__refresh_registry`; plus `mcp-registry__list_connectors`,
   `mcp-registry__search_mcp_registry`, `mcp-registry__suggest_connectors`.
 - UI: **Plugins & Connectors** panel — search box, type + category filters, "installed
-  only" toggle, per-card Install/Remove, connected badge.
+  only" toggle, per-card Install/Remove, connected badge, directory stats line
+  (built-in vs live MCP servers), **Refresh registry** button, paged "Show more".
 
 ### K2 — Scheduled tasks (`electron/scheduler.js`)
 - Full task store at `~/.autobot/scheduled-tasks.json`; cadences `once | every | hourly |

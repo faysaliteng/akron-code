@@ -1139,6 +1139,11 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
 /* ---------- Plugins & connectors ---------- */
 .plugins-panel { max-width: 1000px; }
 .plugin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; margin-top: 12px; }
+.plugin-registry-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-100); }
+.plugin-registry-row button { margin-left: auto; padding: 4px 12px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg-200); color: var(--text-100); font-size: var(--fs-caption); cursor: pointer; }
+.plugin-registry-row button:disabled { opacity: 0.55; cursor: default; }
+.plugin-more { display: flex; justify-content: center; margin: 16px 0 4px; }
+.plugin-more button { padding: 6px 16px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg-200); color: var(--text-100); font-size: var(--fs-footnote); cursor: pointer; }
 .plugin-card { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-100); }
 .plugin-card.installed { border-color: var(--accent); background: var(--accent-soft); }
 .plugin-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }

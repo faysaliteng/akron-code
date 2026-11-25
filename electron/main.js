@@ -23,6 +23,33 @@ const windows = new Set(); // all open BrowserWindows (multi-window parity)
 const runs = new Map(); // runId -> AbortController
 const mcp = new MCPClient();
 
+// Turn MCP transport failures into one human-readable line: no raw JSON-RPC
+// envelopes, HTML error pages, or escaped newlines ever reach the UI.
+function describeConnectError(err) {
+  const raw = String((err && err.message) || err || '').trim();
+  if (!raw) return 'could not connect';
+  const status = (raw.match(/\b(4\d\d|5\d\d)\b/) || [])[1];
+  // Pull the nested reason out of a JSON-RPC error body when one is present.
+  let reason = '';
+  const m = raw.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/g);
+  if (m && m.length) {
+    reason = m[m.length - 1].replace(/^"message"\s*:\s*"/, '').replace(/"$/, '');
+    try { reason = JSON.parse('"' + reason + '"'); } catch (_) {}
+  }
+  if (status === '401' || /authentication required|unauthori[sz]ed/i.test(raw)) {
+    return 'this server requires sign-in before its tools work';
+  }
+  if (status === '403') return 'access denied by the server';
+  if (status === '404') return 'server endpoint not found';
+  if (/timed out/i.test(raw)) return 'connection timed out';
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(raw)) return 'host could not be resolved';
+  if (/ECONNREFUSED|ECONNRESET/i.test(raw)) return 'connection refused';
+  if (reason) return reason.replace(/\s+/g, ' ').slice(0, 160);
+  // Last resort: strip anything markup-ish and clamp the length.
+  const flat = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return (status ? 'HTTP ' + status + ': ' : '') + flat.slice(0, 160);
+}
+
 // ── MCP auto-connect (Example Code parity) ────────────────────────────────
 // Example Code starts every server declared in `.mcp.json`, `~/.claude.json`
 // and its own config the moment a session begins. We do the same, once per
@@ -737,8 +764,40 @@ ipcMain.handle('autobot:listPlugins', (e, opts) => pluginsDir.listPlugins(opts))
 ipcMain.handle('autobot:pluginCategories', () => pluginsDir.categories());
 ipcMain.handle('autobot:searchPlugins', (e, query, opts) => pluginsDir.search(query, opts));
 ipcMain.handle('autobot:suggestPlugins', (e, goal, opts) => pluginsDir.suggest(goal, opts));
-ipcMain.handle('autobot:installPlugin', (e, id) => pluginsDir.install(id));
+ipcMain.handle('autobot:installPlugin', async (e, id) => {
+  const r = pluginsDir.install(id);
+  if (!r.ok) return r;
+  // Connect immediately when the entry carries a usable MCP transport.
+  const entry = r.entry || {};
+  const withTimeout = (p, ms) => Promise.race([
+    p,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('connect timed out after ' + (ms / 1000) + 's')), ms)),
+  ]);
+  try {
+    if (entry.endpoint && entry.endpoint.url) {
+      const info = await withTimeout(mcp.connect({ url: entry.endpoint.url, transport: entry.endpoint.type === 'sse' ? 'sse' : 'http', name: entry.name }), 12000);
+      const srv = mcp.servers.get(info.serverId);
+      if (srv) srv.fullTools = info.tools || [];
+      const upd = pluginsDir.markConnected(id);
+      return { ok: true, entry: upd || r.entry, serverId: info.serverId, tools: info.tools || [] };
+    }
+    if (entry.command && entry.command.command) {
+      const info = await withTimeout(mcp.connect({ command: entry.command.command, args: entry.command.args || [], name: entry.name }), 15000);
+      const srv = mcp.servers.get(info.serverId);
+      if (srv) srv.fullTools = info.tools || [];
+      const upd = pluginsDir.markConnected(id);
+      return { ok: true, entry: upd || r.entry, serverId: info.serverId, tools: info.tools || [] };
+    }
+  } catch (err) {
+    // Install intent is preserved; surface the transport error without failing.
+    return { ok: true, entry: r.entry, connectError: describeConnectError(err) };
+  }
+  return r;
+});
 ipcMain.handle('autobot:uninstallPlugin', (e, id) => pluginsDir.uninstall(id));
+ipcMain.handle('autobot:pluginStats', () => pluginsDir.stats());
+ipcMain.handle('autobot:refreshRegistry', (e, opts) => pluginsDir.refreshRegistry(opts));
+ipcMain.handle('autobot:registryStatus', () => pluginsDir.registryStatus());
 
 // Scheduled tasks.
 ipcMain.handle('autobot:listScheduledTasks', () => scheduler.list());

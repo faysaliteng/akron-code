@@ -476,6 +476,25 @@ const executors = {
     return `Uninstalled ${id}.`;
   },
 
+  async plugins_directory_stats() {
+    const st = pluginsDir.stats();
+    const r = st.registry || {};
+    return [
+      'PLUGINS & CONNECTORS DIRECTORY',
+      `- total: ${st.total}`,
+      `- connectors: ${st.connectors}`,
+      `- plugins: ${st.plugins}`,
+      `- categories: ${st.categories}`,
+      `- with MCP endpoint: ${st.withEndpoint}`,
+      `- live MCP registry: ${r.count || 0} entries${r.stale ? ' (stale)' : ''}${r.refreshing ? ' (syncing…)' : ''}`,
+    ].join('\n');
+  },
+  async plugins_refresh_registry({ maxPages } = {}) {
+    const r = await pluginsDir.refreshRegistry({ maxPages });
+    if (!r.ok) return 'Registry refresh failed: ' + r.error + ' (cached entries still available)';
+    return `Refreshed the MCP registry: ${r.count} connectors from ${r.pages} page(s).`;
+  },
+
   // ---- MCP registry (connector view of the same catalog) ----
   async mcp_registry_list_connectors({ installedOnly } = {}) {
     const list = pluginsDir.listPlugins({ type: 'connector', installedOnly: !!installedOnly });
@@ -949,6 +968,8 @@ const toolDefinitions = [
   // ---- MCP Registry ----
   { name: 'mcp-registry__list_connectors', description: 'List all connectors in the MCP registry (installed and available).', parameters: { type: 'object', properties: { installedOnly: { type: 'boolean' } } } },
   { name: 'mcp-registry__search_mcp_registry', description: 'Search the MCP registry for connectors by keyword.', parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'number' } }, required: ['query'] } },
+  { name: 'plugins__directory_stats', description: 'Report plugin/connector directory size, categories and live MCP registry status.', parameters: { type: 'object', properties: {} } },
+  { name: 'plugins__refresh_registry', description: 'Refresh the connector list from the live Model Context Protocol registry.', parameters: { type: 'object', properties: { maxPages: { type: 'number' } } } },
   { name: 'mcp-registry__suggest_connectors', description: 'Suggest MCP connectors that match a described task or goal.', parameters: { type: 'object', properties: { goal: { type: 'string' }, limit: { type: 'number' } }, required: ['goal'] } },
 
   // ---- Scheduled tasks ----
@@ -1048,6 +1069,8 @@ const executorsByTool = {
   'mcp-registry__list_connectors': 'mcp_registry_list_connectors',
   'mcp-registry__search_mcp_registry': 'mcp_registry_search_mcp_registry',
   'mcp-registry__suggest_connectors': 'mcp_registry_suggest_connectors',
+  plugins__directory_stats: 'plugins_directory_stats',
+  plugins__refresh_registry: 'plugins_refresh_registry',
   'scheduled-tasks__create_scheduled_task': 'scheduled_tasks_create_scheduled_task',
   'scheduled-tasks__list_scheduled_tasks': 'scheduled_tasks_list_scheduled_tasks',
   'scheduled-tasks__update_scheduled_task': 'scheduled_tasks_update_scheduled_task',

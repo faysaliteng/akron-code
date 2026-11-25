@@ -2899,6 +2899,17 @@ function PluginsView() {
   const [installedOnly, setInstalledOnly] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [stats, setStats] = useState(null);
+  const [shown, setShown] = useState(120);
+
+  const refreshStats = useCallback(async () => {
+    try {
+      const s = await window.autobot.pluginStats();
+      if (s) setStats(s);
+      const c = await window.autobot.pluginCategories();
+      if (Array.isArray(c)) setCats(c);
+    } catch (_) {}
+  }, []);
 
   const refresh = useCallback(async () => {
     const opts = {};
@@ -2907,13 +2918,22 @@ function PluginsView() {
     if (installedOnly) opts.installedOnly = true;
     const query = q.trim();
     const list = query
-      ? await window.autobot.searchPlugins(query, { ...opts, limit: 200 })
+      ? await window.autobot.searchPlugins(query, { ...opts, limit: 600 })
       : await window.autobot.listPlugins(opts);
     setItems(Array.isArray(list) ? list : []);
   }, [q, type, cat, installedOnly]);
 
-  useEffect(() => { window.autobot.pluginCategories().then((c) => setCats(Array.isArray(c) ? c : [])); }, []);
+  useEffect(() => { refreshStats(); }, [refreshStats]);
   useEffect(() => { refresh(); }, [refresh]);
+  // Any filter change starts the list over at the first page.
+  useEffect(() => { setShown(120); }, [q, type, cat, installedOnly]);
+
+  // Registry sync runs in the background; pick it up shortly after first paint.
+  useEffect(() => {
+    if (!stats || stats.registry) return;
+    const t = setTimeout(refreshStats, 4000);
+    return () => clearTimeout(t);
+  }, [stats, refreshStats]);
 
   const setInstalled = async (id, on) => {
     setErr('');
@@ -2921,19 +2941,34 @@ function PluginsView() {
     try {
       const r = on ? await window.autobot.installPlugin(id) : await window.autobot.uninstallPlugin(id);
       if (r && r.ok === false) setErr(r.error);
+      else if (r && r.connectError) setErr('Installed, but could not connect: ' + r.connectError);
     } finally {
       setBusy(false);
       await refresh();
+      refreshStats();
     }
   };
 
+  const refreshRegistry = async () => {
+    setErr('');
+    setBusy(true);
+    try {
+      await window.autobot.refreshRegistry();
+      await refreshStats();
+      await refresh();
+    } finally { setBusy(false); }
+  };
+
   const installedCount = items.filter((i) => i.installed).length;
+  const visible = items.slice(0, shown);
+  const reg = stats && stats.registry;
+  const regCount = reg ? reg.count || 0 : 0;
 
   return (
     <div className="panel plugins-panel">
       <div className="panel-head">
         <h2>Plugins &amp; Connectors</h2>
-        <span className="muted">{installedCount} installed · {items.length} shown</span>
+        <span className="muted">{installedCount} installed · {items.length} available</span>
       </div>
       <p className="muted">Connect external services so the model can read your docs, issues, messages, and data. Installing a connector registers it with the MCP layer; connectors marked “needs sign-in” require credentials before their tools work.</p>
 
@@ -2951,11 +2986,26 @@ function PluginsView() {
         <label className="check"><input type="checkbox" checked={installedOnly} onChange={(e) => setInstalledOnly(e.target.checked)} /> Installed only</label>
       </div>
 
+      {stats && (
+        <div className="plugin-registry-row">
+          <span className="muted">
+            {(stats.curated && stats.curated.connectors) || stats.connectors} built-in connectors ·{' '}
+            {(stats.curated && stats.curated.plugins) || stats.plugins} plugins · {stats.categories} categories
+          </span>
+          <span className="muted">
+            {regCount > 0
+              ? `+${regCount} live MCP servers${reg && reg.refreshing ? ' (syncing…)' : ''}`
+              : reg && reg.refreshing ? 'Syncing MCP registry…' : 'MCP registry not synced yet'}
+          </span>
+          <button disabled={busy || (reg && reg.refreshing)} onClick={refreshRegistry}>Refresh registry</button>
+        </div>
+      )}
+
       {err && <p className="form-error">{err}</p>}
       {items.length === 0 && <p className="muted">No plugins or connectors match.</p>}
 
       <div className="plugin-grid">
-        {items.map((it) => (
+        {visible.map((it) => (
           <div key={it.id} className={'plugin-card' + (it.installed ? ' installed' : '')}>
             <div className="plugin-card-head">
               <div>
@@ -2973,12 +3023,21 @@ function PluginsView() {
             <p className="plugin-card-desc">{it.description}</p>
             <div className="plugin-card-foot">
               <span className="muted">{it.auth === 'none' ? 'No sign-in needed' : it.auth === 'oauth' ? 'OAuth sign-in' : 'API key'}</span>
+              {it.origin === 'registry' && <span className="badge">registry</span>}
               {it.installed && it.requiresSignIn && <span className="badge warn">needs sign-in</span>}
               {it.installed && !it.requiresSignIn && <span className="badge ok">installed</span>}
             </div>
           </div>
         ))}
       </div>
+
+      {items.length > visible.length && (
+        <div className="plugin-more">
+          <button onClick={() => setShown((n) => n + 240)}>
+            Show more ({items.length - visible.length} left)
+          </button>
+        </div>
+      )}
     </div>
   );
 }
