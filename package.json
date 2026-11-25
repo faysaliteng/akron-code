@@ -10,7 +10,11 @@
     "build": "vite build",
     "start": "electron .",
     "dev": "vite --host 127.0.0.1",
+    "vendor:runtimes": "node scripts/vendor-runtimes.js",
+    "vendor:runtimes:check": "node scripts/vendor-runtimes.js --check",
+    "prepack": "npm run vendor:runtimes",
     "pack": "npm run build && electron-builder --dir",
+    "predist": "npm run vendor:runtimes",
     "dist": "npm run build && electron-builder --mac dmg zip",
     "freellm": "node scripts/freellm-server.js",
     "icons": "electron build/render_icon.cjs"
@@ -35,11 +39,18 @@
     "productName": "Akron Bot",
     "copyright": "AkronLogic",
     "asar": true,
+    "compression": "maximum",
     "files": [
       "dist/**/*",
       "electron/**/*",
       "resources/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/runtimes",
+        "to": "runtimes"
+      }
     ],
     "directories": {
       "output": "release",

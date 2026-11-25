@@ -759,9 +759,27 @@ button { font-family: inherit; letter-spacing: inherit; }
 }
 .prov-link:hover { background: var(--accent-soft); }
 .prov-link:disabled { opacity: 0.55; cursor: default; }
-.prov-acct { display: flex; align-items: center; gap: 2px; border-radius: var(--radius-md); }
+.prov-acct { display: flex; align-items: center; gap: 2px; border-radius: var(--radius-md); flex-wrap: wrap; }
 .prov-acct:hover { background: var(--bg-200); }
 .prov-acct.on { background: var(--accent-soft); }
+/* Per-model rows for the selected subscription account. Indented under the
+   account row and showing the resolved context window on the right. */
+.prov-models {
+  flex: 1 0 100%; display: flex; flex-direction: column;
+  padding: 2px 0 6px 22px;
+}
+.prov-models .prov-model { padding: 5px 8px; }
+.prov-models .prov-model .model-opt-name { font-size: var(--fs-caption); }
+.prov-models .prov-model .model-opt-prov {
+  font-family: var(--micro); font-size: 10px; letter-spacing: 0.02em;
+  text-transform: none; max-width: none;
+}
+/* Context-window chip next to the model name in the composer pill. */
+.model-pill .model-win {
+  font-family: var(--micro); font-size: 10px; color: var(--text-400);
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  padding: 0 5px; line-height: 14px; margin-left: 2px;
+}
 .prov-acct .prov-pick {
   display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0;
   border: none; background: none; cursor: pointer; text-align: left;
@@ -1451,3 +1469,31 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
   margin-top: 12px;
   flex-wrap: wrap;
 }
+
+/* Bundled agent runtimes (Settings → Runtimes) */
+.rt-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 10px; }
+.rt-item {
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-100);
+}
+.rt-item.busy { border-color: var(--accent); }
+.rt-main { display: flex; align-items: center; gap: 8px; font-size: var(--fs-footnote); }
+.rt-name { font-weight: 600; color: var(--text-100); }
+.rt-vendor { color: var(--text-400); font-size: var(--fs-caption); }
+.rt-src {
+  margin-left: auto; padding: 1px 7px; border-radius: 999px; font-size: var(--fs-caption);
+  border: 1px solid var(--border); color: var(--text-300);
+}
+.rt-src-installed { color: var(--accent-text); border-color: var(--accent); background: var(--accent-soft); }
+.rt-src-missing { color: #ef4444; border-color: rgba(239, 68, 68, 0.45); }
+.rt-ver { margin-top: 3px; font-size: var(--fs-caption); color: var(--text-300); }
+.rt-ver code { font-size: var(--fs-caption); color: var(--text-100); }
+.rt-arrow { color: var(--text-400); }
+.rt-arrow b { color: var(--accent-text); }
+.rt-uptodate { color: var(--text-400); }
+.rt-err { color: #ef4444; }
+.rt-actions { display: flex; gap: 6px; margin-top: 6px; }
+.rt-prog { margin-top: 5px; font-size: var(--fs-caption); color: var(--accent-text); }
+.rt-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rt-note { font-size: var(--fs-caption); }
+.rt-path { margin-top: 6px; font-size: var(--fs-caption); color: var(--text-400); word-break: break-all; }

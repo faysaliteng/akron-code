@@ -1,0 +1,159 @@
+'use strict';
+/**
+ * Unit tests for `electron/model-catalog.js` — the per-model window resolver and
+ * the auto-compact character budget.
+ *
+ * The module is pure (no I/O, no providers), so these tests are deterministic
+ * and assert numbers that come from the module's own documented constants.
+ */
+const assert = require('assert');
+const cat = require('../electron/model-catalog.js');
+
+let pass = 0;
+function ok(name, fn) {
+  try {
+    fn();
+    pass++;
+    console.log('ok   - ' + name);
+  } catch (e) {
+    console.error('FAIL - ' + name + '\n       ' + e.message);
+    process.exitCode = 1;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Documented rules
+// ---------------------------------------------------------------------------
+ok('Antigravity Gemini 4 codenames resolve to 1 048 576', () => {
+  for (const m of ['gemini-4-neon-high', 'gemini-4-carbon-low', 'gemini-4-argon-xhigh', 'gemini-4-hydrogen-medium']) {
+    assert.strictEqual(cat.contextWindowFor(m), 1048576, m);
+  }
+});
+
+ok('Vertex-hosted Claude 5.5 through Antigravity is 1M', () => {
+  assert.strictEqual(cat.contextWindowFor('claude-sonnet-5-5-medium'), 1000000);
+  assert.strictEqual(cat.contextWindowFor('claude-opus-5-5-high'), 1000000);
+});
+
+ok('first-party Claude 4.x is 200k', () => {
+  assert.strictEqual(cat.contextWindowFor('claude-sonnet-4-5-20250929'), 200000);
+  assert.strictEqual(cat.contextWindowFor('claude-opus-4-5-20251101'), 200000);
+  assert.strictEqual(cat.contextWindowFor('claude-haiku-4-5-20251001'), 200000);
+});
+
+ok('GPT-5 family is 400k, GPT-4.1 is 1 047 576', () => {
+  assert.strictEqual(cat.contextWindowFor('gpt-5.1-codex-max'), 400000);
+  assert.strictEqual(cat.contextWindowFor('gpt-5'), 400000);
+  assert.strictEqual(cat.contextWindowFor('gpt-4.1'), 1047576);
+});
+
+ok('Grok 4 is 256k, Grok 3 is 128k', () => {
+  assert.strictEqual(cat.contextWindowFor('grok-4'), 256000);
+  assert.strictEqual(cat.contextWindowFor('grok-3'), 131072);
+});
+
+ok('an unknown model floors at 128k', () => {
+  assert.strictEqual(cat.contextWindowFor('totally-unknown-model'), 128000);
+});
+
+// ---------------------------------------------------------------------------
+// Live catalog precedence
+// ---------------------------------------------------------------------------
+ok('a registered live catalog beats the documented rule', () => {
+  cat.clear();
+  const n = cat.register('antigravity', [
+    { id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)', contextWindow: 777777 },
+    { id: 'claude-sonnet-5-5-medium', label: 'Claude Sonnet 5.5 (Medium)', contextWindow: 555555 },
+  ]);
+  assert.strictEqual(n, 2);
+  assert.strictEqual(cat.contextWindowFor('gemini-4-neon-high', 'antigravity'), 777777);
+  // Without the provider id the rule applies.
+  assert.strictEqual(cat.contextWindowFor('gemini-4-neon-high'), 1048576);
+  // Label-based pick resolves too.
+  assert.strictEqual(cat.contextWindowFor('Claude Sonnet 5.5 (Medium)', 'antigravity'), 555555);
+});
+
+ok('explicit contextWindow outranks the live catalog (registry entry wins)', () => {
+  assert.strictEqual(cat.contextWindowFor('gemini-4-neon-high', 'antigravity', 123456), 123456);
+});
+
+ok('register() ignores entries with no positive window and reports 0', () => {
+  cat.clear('emptyish');
+  assert.strictEqual(cat.register('emptyish', [{ id: 'x', contextWindow: 0 }, { id: 'y' }]), 0);
+  assert.strictEqual(cat.register('emptyish', []), 0);
+  // Nothing was installed, so the rule still answers.
+  assert.strictEqual(cat.contextWindowFor('gemini-4-neon-high', 'emptyish'), 1048576);
+});
+
+ok('clear(provider) removes only that catalog', () => {
+  cat.clear();
+  cat.register('antigravity', [{ id: 'm1', contextWindow: 111111 }]);
+  cat.register('claude', [{ id: 'm2', contextWindow: 222222 }]);
+  cat.clear('antigravity');
+  assert.strictEqual(cat.contextWindowFor('m1', 'antigravity'), 128000);
+  assert.strictEqual(cat.contextWindowFor('m2', 'claude'), 222222);
+  cat.clear();
+});
+
+// ---------------------------------------------------------------------------
+// Budget math
+// ---------------------------------------------------------------------------
+ok('budgetFor caps the output reserve so a 1M window does not reserve 100k', () => {
+  const b = cat.budgetFor(1048576);
+  assert.strictEqual(b.window, 1048576);
+  assert.strictEqual(b.reserveOut, 32000);
+  assert.strictEqual(b.promptReserve, 8000);
+  assert.strictEqual(b.usableTokens, 1048576 - 32000 - 8000);
+  assert.strictEqual(b.maxChars, Math.round(b.usableTokens * cat.CHARS_PER_TOKEN));
+  assert.strictEqual(b.compactAt, Math.round(b.maxChars * 0.9));
+});
+
+ok('budgetFor on a small window keeps at least MIN_USABLE_TOKENS', () => {
+  const b = cat.budgetFor(1000);
+  assert.strictEqual(b.usableTokens, 8000);
+  assert.strictEqual(b.maxChars, Math.round(8000 * cat.CHARS_PER_TOKEN));
+});
+
+ok('a 200k window yields ~190k usable tokens and ~640k chars', () => {
+  const b = cat.budgetForModel('claude-sonnet-4-5-20250929');
+  assert.strictEqual(b.window, 200000);
+  // 10% of 200k = 20 000 output reserve
+  assert.strictEqual(b.reserveOut, 20000);
+  assert.strictEqual(b.usableTokens, 200000 - 20000 - 8000);
+  assert.ok(b.maxChars > 550000 && b.maxChars < 600000, 'maxChars ' + b.maxChars);
+});
+
+ok('a 1M window gives a much bigger budget than the old fixed 220k chars', () => {
+  const b = cat.budgetForModel('gemini-4-neon-high', 'antigravity');
+  assert.ok(b.maxChars > 220000 * 10, 'maxChars ' + b.maxChars);
+});
+
+// ---------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------
+ok('fmtWindow labels 1M / 200K / 128K', () => {
+  assert.strictEqual(cat.fmtWindow(1048576), '1M');
+  assert.strictEqual(cat.fmtWindow(1000000), '1M');
+  assert.strictEqual(cat.fmtWindow(200000), '200K');
+  assert.strictEqual(cat.fmtWindow(128000), '128K');
+  assert.strictEqual(cat.fmtWindow(131072), '131K');
+  assert.strictEqual(cat.fmtWindow(0), '');
+  assert.strictEqual(cat.fmtWindow(undefined), '');
+});
+
+ok('tokensForChars matches the budget ratio', () => {
+  assert.strictEqual(cat.tokensForChars(3400), 1000);
+  assert.strictEqual(cat.tokensForChars(0), 0);
+  assert.strictEqual(cat.tokensForChars(-5), 0);
+});
+
+ok('snapshot() exposes registered catalogs only', () => {
+  cat.clear();
+  cat.register('antigravity', [{ id: 'a', contextWindow: 5 }, { id: 'b', contextWindow: 0 }]);
+  const snap = cat.snapshot();
+  assert.deepStrictEqual(Object.keys(snap), ['antigravity']);
+  assert.strictEqual(snap.antigravity.length, 1, 'zero-window entry must not be stored');
+  cat.clear();
+});
+
+console.log('\n' + pass + ' assertions groups passed' + (process.exitCode ? ' (with failures)' : ''));

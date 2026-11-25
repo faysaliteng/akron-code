@@ -1,5 +1,6 @@
 'use strict';
 const { spawn } = require('child_process');
+const path = require('path');
 
 // Background shell manager — mirrors Example's terminal MCP (mcp__terminal__*)
 // and powers the Bash tool's background mode + KillShell.
@@ -13,7 +14,7 @@ class ShellManager {
   }
 
   // Spawn a persistent shell in a given cwd.
-  start({ cwd, shell = '/bin/zsh' } = {}) {
+  start({ cwd, shell = '/bin/zsh', pathPrefix = '' } = {}) {
     const id = 'sh' + this.nextId++;
     const proc = spawn(shell, ['-i'], {
       cwd: cwd || process.cwd(),
@@ -22,6 +23,18 @@ class ShellManager {
     });
     const entry = { proc, buffer: '', listeners: [], cwd: cwd || process.cwd() };
     this.shells.set(id, entry);
+
+    // Re-assert the runtime dirs *after* the rc files. An interactive zsh runs
+    // .zshrc, and third-party installers there (`export PATH="$HOME/.grok/bin:$PATH"`)
+    // otherwise put an older global agent ahead of the bundled/self-updated one.
+    if (pathPrefix) {
+      const quoted = String(pathPrefix)
+        .split(path.delimiter)
+        .filter(Boolean)
+        .map((d) => '"' + d.replace(/(["\\$`])/g, '\\$1') + '"')
+        .join(path.delimiter);
+      try { proc.stdin.write('export PATH=' + quoted + ':"$PATH"\n'); } catch (_) { /* ignore */ }
+    }
 
     const feed = (d) => {
       entry.buffer += d.toString();

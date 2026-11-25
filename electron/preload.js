@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('autobot', {
   // Subscription accounts (Claude Max / ChatGPT / Antigravity / Grok). Only
   // non-secret status crosses the bridge; tokens stay in the main process.
   providerStatus: () => ipcRenderer.invoke('autobot:providerStatus'),
+  providerModels: (id) => ipcRenderer.invoke('autobot:providerModels', id),
   providerSignIn: (id) => ipcRenderer.invoke('autobot:providerSignIn', id),
   providerSignOut: (id, account) => ipcRenderer.invoke('autobot:providerSignOut', id, account),
   providerImport: () => ipcRenderer.invoke('autobot:providerImport'),
@@ -56,6 +57,14 @@ contextBridge.exposeInMainWorld('autobot', {
   freellmStatus: () => ipcRenderer.invoke('autobot:freellmStatus'),
   freellmProviders: () => ipcRenderer.invoke('autobot:freellmProviders'),
   freellmSave: (patch) => ipcRenderer.invoke('autobot:freellmSave', patch),
+
+  // Bundled agent runtimes (Claude Code / Codex / Grok CLI). `runtimes` returns
+  // non-secret status only: version, latest version, source, update availability.
+  runtimes: () => ipcRenderer.invoke('autobot:runtimes'),
+  runtimesCheck: () => ipcRenderer.invoke('autobot:runtimesCheck'),
+  runtimesUpdate: (id, force) => ipcRenderer.invoke('autobot:runtimesUpdate', id, !!force),
+  runtimesRollback: (id) => ipcRenderer.invoke('autobot:runtimesRollback', id),
+  runtimesAutoUpdate: (on) => ipcRenderer.invoke('autobot:runtimesAutoUpdate', on),
 
   listScheduledTasks: () => ipcRenderer.invoke('autobot:listScheduledTasks'),
   createScheduledTask: (input) => ipcRenderer.invoke('autobot:createScheduledTask', input),

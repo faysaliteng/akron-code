@@ -5,6 +5,9 @@ node_modules/
 dist/
 release/
 
+# vendored agent CLIs (≈500 MB of binaries) — regenerate with `npm run vendor:runtimes`
+vendor/runtimes/
+
 # runtime / tooling noise
 *.log
 .DS_Store

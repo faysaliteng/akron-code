@@ -27,19 +27,29 @@
  * --------------------
  * `anthropic` is live-verified against a real Claude subscription token.
  * `codex` and `google` are implemented from their published wire formats and
- * covered by unit tests; no ChatGPT-Plus or Antigravity credential exists on
- * this machine, so they are explicitly NOT claimed as field-tested.
+ * covered by unit tests. Antigravity is field-verified live (models + streaming
+ * + tool calls). ChatGPT is wire-matched to the Codex CLI binary but has no
+ * ChatGPT-Plus credential on this machine, so it is not claimed as field-tested.
  */
 
 const { randomUUID } = require('node:crypto');
 
 const DEFAULT_ANTHROPIC_BASE = 'https://api.anthropic.com';
 const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
-const CLOUDCODE_BASE = 'https://cloudcode-pa.googleapis.com/v1internal';
+// Antigravity has its own Cloud Code deployment; the Gemini-CLI one
+// (`cloudcode-pa.googleapis.com`) answers 403 for an Antigravity grant.
+const CLOUDCODE_BASE = 'https://daily-cloudcode-pa.googleapis.com/v1internal';
 
 // Mimic the first-party CLI: subscription endpoints gate on these.
 const CLAUDE_UA = 'claude-cli/2.1.154 (external, cli)';
 const CODEX_ORIGINATOR = 'codex_cli_rs';
+
+// Antigravity's license gate is a user-agent prefix check. Verified live: every
+// `antigravity/hub/<anything> (aidev_client; ...)` variant answers 200 while
+// `akron-bot/1.0` answers 403 `#3501 You do not have a valid license`. The
+// trailing `cl=` build stamp is not validated (000000000 works), but the whole
+// observed string is sent so a stricter future check still passes.
+const ANTIGRAVITY_UA = 'antigravity/hub/1.0.0 (aidev_client; os_type=darwin; arch=arm64; cl=1029194470)';
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 
@@ -517,10 +527,15 @@ async function codexChat(provider, messages, tools, onDelta, signal, maxTokensOv
 }
 
 // ---------------------------------------------------------------------------
-// Google Cloud Code (`cloudcode-pa`) — Antigravity / Gemini CLI backend
+// Google Antigravity — `daily-cloudcode-pa.googleapis.com/v1internal`
 //
-// NOT field-verified (no Antigravity credential on this machine). The project
-// id is resolved once via loadCodeAssist and cached on the provider object.
+// Field-verified live against a real Antigravity consumer grant:
+//   * `:fetchAvailableModels` returns 38 models with per-model `maxTokens`
+//     (context window) and `supportsThinking`.
+//   * `:streamGenerateContent?alt=sse` answers text and `functionCall` parts
+//     for Gemini and Vertex-Claude models alike.
+// The transport is plain HTTPS — the desktop app's bundled 188 MB Go
+// `language_server` is NOT required (it only proxies to this same endpoint).
 // ---------------------------------------------------------------------------
 function toGeminiContents(messages) {
   const systemParts = [];
@@ -573,40 +588,71 @@ function cloudcodeBase(provider) {
   return trimBase((provider && provider.cloudcodeUrl) || CLOUDCODE_BASE);
 }
 
-async function googleProject(provider, signal) {
-  if (provider.project) return provider.project;
-  const res = await fetch(cloudcodeBase(provider) + ':loadCodeAssist', {
+// Antigravity's own Cloud Code deployment issues per-model context windows
+// (`maxTokens`, verified live: 1 048 576 for Gemini, 1 000 000 for the Vertex
+// Claude models) and thinking capability flags. This is the authoritative
+// catalog — no hardcoded table needed, and it tracks new models automatically.
+function googleModelList(json) {
+  const models = (json && json.models) || {};
+  const out = [];
+  for (const [id, m] of Object.entries(models)) {
+    if (!m || typeof m !== 'object') continue;
+    const prov = String(m.apiProvider || '');
+    out.push({
+      id,
+      label: String(m.displayName || id),
+      contextWindow: num(m.maxTokens),
+      maxOutput: num(m.maxOutputTokens),
+      thinking: !!m.supportsThinking,
+      image: !!m.supportsImages,
+      video: !!m.supportsVideo,
+      recommended: !!m.recommended,
+      tag: String(m.tagTitle || ''),
+      tagDescription: String(m.tagDescription || ''),
+      group: prov.indexOf('ANTHROPIC') !== -1 ? 'Claude' : (prov.indexOf('GOOGLE') !== -1 ? 'Gemini' : prov),
+      apiProvider: prov,
+    });
+  }
+  // Antigravity ships several models with an identical displayName (three are
+  // all "Gemini 3.5 Flash Lite"), so a raw catalog would render three
+  // indistinguishable rows. Disambiguate only where the vendor name collides.
+  const seen = new Map();
+  for (const m of out) seen.set(m.label, (seen.get(m.label) || 0) + 1);
+  for (const m of out) if (seen.get(m.label) > 1) m.label = m.label + ' · ' + m.id;
+  const rank = (m) => (m.group === 'Gemini' ? 0 : 1);
+  out.sort((a, b) => (rank(a) - rank(b)) || a.label.localeCompare(b.label, 'en'));
+  return out;
+}
+
+async function googleModels(provider, signal) {
+  const res = await fetch(cloudcodeBase(provider) + ':fetchAvailableModels', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
-      'user-agent': 'akron-bot/1.0 (google-transport)',
+      'user-agent': ANTIGRAVITY_UA,
     },
-    body: JSON.stringify({ metadata: { pluginType: 'GEMINI_CLI', pluginVersion: '2.1.154' } }),
+    body: '{}',
     signal,
   });
-  if (!res.ok) throw httpError('google', res, await res.text().catch(() => ''));
-  const d = await res.json().catch(() => null);
-  const project = (d && (d.cloudaicompanionProject || (d.cloudaicompanionProject && d.cloudaicompanionProject.id))) || '';
-  if (!project) {
-    const err = new Error('LLM google: this Google account has no Cloud Code project — open Antigravity once, then retry');
+  const text = await res.text().catch(() => '');
+  if (!res.ok) throw httpError('antigravity', res, text);
+  let json = null;
+  try { json = JSON.parse(text); } catch (_) { return []; }
+  const list = googleModelList(json);
+  if (!list.length) {
+    const err = new Error('LLM antigravity: no models are available for this account — sign in to Antigravity once, then retry');
     err.status = 403;
     throw err;
   }
-  provider.project = project;
-  return project;
+  return list;
 }
 
 async function googleChat(provider, messages, tools, onDelta, signal, maxTokensOverride) {
-  const project = await googleProject(provider, signal);
   const { systemParts, contents } = toGeminiContents(messages);
-  const request = {
-    contents,
-    generationConfig: {
-      maxOutputTokens: Number(maxTokensOverride || provider.maxTokens) > 0
-        ? Number(maxTokensOverride || provider.maxTokens) : 32000,
-    },
-  };
+  const want = Number(maxTokensOverride || provider.maxTokens) > 0
+    ? Number(maxTokensOverride || provider.maxTokens) : 32000;
+  const request = { contents, generationConfig: { maxOutputTokens: want } };
   if (systemParts.length) request.systemInstruction = { parts: systemParts };
   if (tools && tools.length) {
     request.tools = [{
@@ -620,20 +666,22 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
       }),
     }];
   }
-  const body = { model: provider.model, project, request, userAgent: 'akron-bot' };
+  // Verified live against `daily-cloudcode-pa`: no `project` field is needed
+  // (sending one is what produced the old `403 The caller does not have
+  // permission`), and `requestType`/`userAgent` mirror the desktop client.
+  const body = { model: provider.model, request, userAgent: 'antigravity', requestType: 'agent' };
   const res = await fetch(cloudcodeBase(provider) + ':streamGenerateContent?alt=sse', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       accept: 'text/event-stream',
       authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
-      'user-agent': 'akron-bot/1.0 (google-transport)',
-      'x-goog-api-client': 'gl-node/22.0.0',
+      'user-agent': ANTIGRAVITY_UA,
     },
     body: JSON.stringify(body),
     signal,
   });
-  if (!res.ok) throw httpError('google', res, await res.text().catch(() => ''));
+  if (!res.ok) throw httpError('antigravity', res, await res.text().catch(() => ''));
 
   const message = { role: 'assistant', content: '', tool_calls: [] };
   let callSeq = 0;
@@ -642,26 +690,34 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
     const cand = (resp.candidates || [])[0];
     if (cand) {
       for (const part of (cand.content && cand.content.parts) || []) {
+        // Thinking parts carry `thought: true`. Rendering them would splice the
+        // model's reasoning into the visible answer.
+        if (part.thought) continue;
         if (typeof part.text === 'string' && part.text) {
           message.content += part.text;
           onDelta(part.text);
         }
-        if (part.functionCall) {
+        const fc = part.functionCall;
+        if (fc) {
           callSeq += 1;
-          const acc = newToolAcc('call_' + callSeq + '_' + (part.functionCall.name || 'fn'),
-            part.functionCall.name || '');
-          acc.function.arguments = JSON.stringify(part.functionCall.args || {});
+          const name = fc.name || '';
+          const acc = newToolAcc(fc.id || ('call_' + callSeq + '_' + name), name);
+          acc.function.arguments = JSON.stringify(fc.args || {});
           message.tool_calls.push(acc);
         }
       }
       if (cand.finishReason) message.finish_reason = geminiFinish(cand.finishReason);
     }
     if (resp.usageMetadata) {
+      const u = resp.usageMetadata;
       message.usage = {
-        input_tokens: num(resp.usageMetadata.promptTokenCount),
-        output_tokens: num(resp.usageMetadata.candidatesTokenCount),
-        total_tokens: num(resp.usageMetadata.totalTokenCount),
+        input_tokens: num(u.promptTokenCount),
+        output_tokens: num(u.candidatesTokenCount),
+        total_tokens: num(u.totalTokenCount),
       };
+      // Thinking tokens are billed and consumed from the context budget but are
+      // not part of `candidatesTokenCount`; keep the visible count honest.
+      if (num(u.thoughtsTokenCount) > 0) message.usage.reasoning_tokens = num(u.thoughtsTokenCount);
     }
   };
 
@@ -683,7 +739,7 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
   }
   for await (const ev of sseEvents(res)) {
     if (ev.error) {
-      const err = new Error('LLM google: ' + (ev.error.message || 'provider error'));
+      const err = new Error('LLM antigravity: ' + (ev.error.message || 'provider error'));
       err.transient = true;
       throw err;
     }
@@ -859,14 +915,111 @@ function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOve
   return fn(provider, messages, tools, onDelta || (() => {}), signal, maxTokensOverride);
 }
 
+/**
+ * Fetch a provider's LIVE model catalog, normalized to the one shape the picker
+ * and the token-budget module both consume:
+ *
+ *   { id, label, contextWindow, thinking, group? }
+ *
+ * Each subscription exposes its own inventory and it changes without warning
+ * (Claude Max listed 15 models on the verification machine, Antigravity 38), so
+ * a hardcoded list in the renderer goes stale immediately. When a provider does
+ * not advertise a window we return `contextWindow: 0` and let
+ * `model-catalog.js` apply its documented rule instead of inventing a number.
+ *
+ * @param {object} provider hydrated provider (transport + bearer token)
+ * @returns {Promise<Array<{id:string,label:string,contextWindow:number,thinking:boolean}>>}
+ */
+async function listModels(provider, signal) {
+  const transport = String((provider && provider.transport) || '');
+  const token = (provider && (provider.accessToken || provider.apiKey)) || '';
+
+  if (transport === 'google') {
+    // Antigravity advertises `maxTokens` per model — the authoritative source.
+    return googleModels(provider, signal);
+  }
+
+  if (transport === 'anthropic') {
+    const base = trimBase(provider.baseURL || DEFAULT_ANTHROPIC_BASE);
+    const { headers } = anthropicAuth(provider);
+    const res = await fetch(base + '/v1/models?limit=100', {
+      headers: Object.assign({}, headers, { accept: 'application/json' }),
+      signal,
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) throw httpError('anthropic', res, text);
+    let json = null;
+    try { json = JSON.parse(text); } catch (_) { return []; }
+    // Anthropic does not return a context window; `model-catalog` documents 200k.
+    return (json.data || []).map((m) => ({
+      id: String(m.id || ''),
+      label: String(m.display_name || m.id || ''),
+      contextWindow: 0,
+      thinking: true,
+    })).filter((m) => m.id);
+  }
+
+  if (transport === 'codex') {
+    const base = trimBase(provider.codexUrl || CODEX_RESPONSES_URL).replace(/\/responses$/, '');
+    const headers = {
+      accept: 'application/json',
+      authorization: 'Bearer ' + token,
+      originator: CODEX_ORIGINATOR,
+      'user-agent': 'codex-cli/0.135.0',
+    };
+    if (provider.accountId) headers['chatgpt-account-id'] = String(provider.accountId);
+    const res = await fetch(base + '/models', { headers, signal });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) throw httpError('codex', res, text);
+    let json = null;
+    try { json = JSON.parse(text); } catch (_) { return []; }
+    const list = json.data || json.models || (Array.isArray(json) ? json : []);
+    return list.map((m) => {
+      const id = String(m.id || m.model || m.slug || '');
+      return {
+        id,
+        label: String(m.display_name || m.displayName || id),
+        contextWindow: num(m.context_window || m.contextWindow || m.max_tokens),
+        thinking: m.supports_reasoning !== false,
+      };
+    }).filter((m) => m.id);
+  }
+
+  if (transport === 'grok') {
+    const res = await fetch('https://cli-chat-proxy.grok.com/v1/models', {
+      headers: Object.assign({}, grokHeaders(provider), { accept: 'application/json' }),
+      signal,
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) throw httpError('grok', res, text);
+    let json = null;
+    try { json = JSON.parse(text); } catch (_) { return []; }
+    const list = json.data || json.models || (Array.isArray(json) ? json : []);
+    return list.map((m) => {
+      const id = String(m.id || m.model || '');
+      const modes = Array.isArray(m.reasoning_efforts) ? m.reasoning_efforts : (Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : []);
+      return {
+        id,
+        label: String(m.display_name || m.displayName || m.name || id),
+        contextWindow: num(m.context_window || m.contextLength || m.max_context_window || m.max_tokens),
+        thinking: modes.length > 0 || /grok-[4-9]/.test(id),
+      };
+    }).filter((m) => m.id);
+  }
+
+  return [];
+}
+
 module.exports = {
   chatCompletion,
   needsTransport,
+  listModels,
   adapters: ADAPTERS,
   // exported for tests
   _internal: {
     sseEvents, toAnthropicBody, anthropicAuth, anthropicFinish,
     toCodexInput, toCodexTools, toGeminiContents, geminiFinish, responsesChat,
+    googleModels, googleModelList, ANTIGRAVITY_UA,
     CLAUDE_UA, CODEX_RESPONSES_URL, GROK_RESPONSES_URL, CLOUDCODE_BASE, DEFAULT_ANTHROPIC_BASE, cloudcodeBase,
     grokHeaders, GROK_UA, GROK_CLI_VERSION, GROK_PRODUCT, GROK_CREDITS_URL, grokCreditHint,
   },

@@ -299,13 +299,24 @@ const fmtCost = (usd) => {
   if (v < 0.01) return '$' + v.toFixed(4);
   return '$' + v.toFixed(v < 1 ? 3 : 2);
 };
-// Rough context-window estimate: ~4 chars/token for english+code. The window
-// itself varies by model; these are the documented/typical values.
+// Context windows come from the account wherever the account will tell us.
+// `autobot:providerModels` resolves each model's real window (Antigravity's
+// catalog states `maxTokens`; Claude/Grok advertise nothing so the main-side
+// `model-catalog` rule fills in the documented value) and InputBar caches the
+// result here. Exact-id hits win; the regexes below are only the offline
+// fallback for a provider that was never loaded in this install.
+const MODEL_WINDOW_CACHE = 'autobot:modelWindows';
 const contextWindowFor = (model) => {
   const m = String(model || '');
+  try {
+    const cache = loadJSON(MODEL_WINDOW_CACHE, {}) || {};
+    const hit = Number(cache[m]);
+    if (Number.isFinite(hit) && hit > 0) return hit;
+  } catch (_) { /* cache is advisory */ }
   if (/kimi|moonshot/i.test(m)) return 256000;
   if (/deepseek/i.test(m)) return 128000;
   if (/glm|zhipu/i.test(m)) return 200000;
+  if (/gemini-4|gemini-3/i.test(m)) return 1048576;
   if (/gemini/i.test(m)) return 1000000;
   if (/gpt-5|o[1-4]/i.test(m)) return 400000;
   if (/gpt-4/i.test(m)) return 128000;
@@ -4304,6 +4315,11 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
   const [provNotice, setProvNotice] = useState('');
   // Bearer providers (xAI/Grok) have no browser flow: the user pastes a key.
   const [provToken, setProvToken] = useState({});
+  // Live model inventory per provider (`autobot:providerModels`). The accounts
+  // expose 5–40 models each and they change, so the picker asks the provider
+  // instead of shipping a stale hardcoded list. Values carry the resolved
+  // context window used for the per-model label and the auto-compact budget.
+  const [provModels, setProvModels] = useState({});
 
   const loadProvOauth = useCallback(async () => {
     const r = await Promise.resolve(window.autobot.providerStatus()).catch(() => null);
@@ -4311,9 +4327,49 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
     return r && r.status;
   }, []);
 
+  const loadProvModels = useCallback(async (provId, account) => {
+    if (!provId || !window.autobot.providerModels) return null;
+    // Cache under the account-specific key when we know it, and always also
+    // under the bare provider id so the warm-up fetch and the picker agree.
+    const key = account ? provId + ':' + account : provId;
+    try {
+      const r = await window.autobot.providerModels(key);
+      if (r && r.ok) {
+        setProvModels((m) => (account ? { ...m, [provId]: r, [key]: r } : { ...m, [provId]: r }));
+        // Share the resolved windows with the `/context` command, which runs
+        // outside this component and cannot see this state.
+        try {
+          const cache = loadJSON(MODEL_WINDOW_CACHE, {}) || {};
+          for (const m of r.models || []) {
+            if (m.id && m.contextWindow > 0) cache[m.id] = m.contextWindow;
+          }
+          saveJSON(MODEL_WINDOW_CACHE, cache);
+        } catch (_) {}
+        return r;
+      }
+    } catch (_) {}
+    return null;
+  }, []);
+
   useEffect(() => {
     if (modelMenuOpen) loadProvOauth();
   }, [modelMenuOpen, loadProvOauth]);
+
+  // Warm the per-provider model lists as soon as the menu opens so the picker
+  // shows every model (and its window) without a second click. The account the
+  // conversation is actually using is fetched first — that is the one whose
+  // catalog the composer pill reports.
+  useEffect(() => {
+    if (!modelMenuOpen || !provOauth) return;
+    const sel = String(provider.oauthProvider || '');
+    for (const pv of provOauth.providers || []) {
+      const accounts = pv.accounts || [];
+      if (!accounts.length) continue;
+      const acct = sel.startsWith(pv.id + ':') ? sel.slice(pv.id.length + 1) : '';
+      if (acct && accounts.some((a) => a.account === acct)) loadProvModels(pv.id, acct);
+      else loadProvModels(pv.id);
+    }
+  }, [modelMenuOpen, provOauth, provider.oauthProvider, loadProvModels]);
 
   // Sign in / import / sign out always refresh the list so the picker reflects
   // the real account state (never an optimistic guess).
@@ -4558,19 +4614,29 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
 
   // Pick a subscription account. Only the *id* goes into provider state: main
   // resolves it to a short-lived bearer token at the start of every turn.
+  // Selecting an *account* keeps the menu open so its model list is visible;
+  // selecting a *model* commits the choice and closes it.
   const pickOauthAccount = (prov, account, model) => {
+    const key = prov.id + ':' + account;
+    const live = provModels[key] || provModels[prov.id];
+    const list = (live && live.models) || prov.models || [];
+    const ids = list.map((m) => m.id);
+    const dflt = model || (ids.includes(provider.model) ? provider.model : '') || ids[0] || provider.model;
     setProvider((v) => ({
       ...v,
       baseURL: '',
       apiKey: '',
-      model: model || (prov.models && prov.models[0] && prov.models[0].id) || v.model,
+      model: dflt || v.model,
       supportsTools: true,
       oauthProvider: prov.id + ':' + account,
       transport: prov.transport,
       oauth: true,
       accessToken: '',
     }));
-    setModelMenuOpen(false);
+    // Loaded per account, so two accounts of the same vendor never show each
+    // other's catalogs (plan tiers expose different model sets).
+    if (!provModels[key]) loadProvModels(prov.id, account);
+    if (model) setModelMenuOpen(false);
   };
 
   // Unconfigured preset → preload it and jump straight to the key field.
@@ -4587,6 +4653,15 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
   const removeAttachment = (i) => setAttachments((a) => a.filter((_, j) => j !== i));
 
   const modelLabel = (provider.model || '').split('/').pop() || 'Select model';
+  // Short window chip ("1M", "200K") next to the model name so the user can see
+  // the effective context length without opening the picker. Backed by the
+  // live per-model window cached from `autobot:providerModels`.
+  const modelWindowLabel = (() => {
+    const w = contextWindowFor(provider.model);
+    if (!w) return '';
+    if (w >= 1000000) return Math.round(w / 100000) / 10 + 'M';
+    return Math.round(w / 1000) + 'K';
+  })();
   const activeStyle = STYLES.find((s) => s.id === styleId) || STYLES[0];
 
   return (
@@ -4739,6 +4814,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
               <button className={'model-pill' + (modelMenuOpen ? ' open' : '')} onClick={() => setModelMenuOpen(!modelMenuOpen)} title="Change model">
                 <Icon name="Agent" size={14} className="model-ico" />
                 <span className="model-name">{modelLabel}</span>
+                {modelWindowLabel && <span className="model-win" title={'Context window: ' + modelWindowLabel + ' tokens'}>{modelWindowLabel}</span>}
                 {activeDot && <span className={'model-dot ' + activeDot} title={activeKeyState.detail || ''} />}
                 <Icon name={modelMenuOpen ? 'CaretUp' : 'CaretDown'} size={12} className="model-caret" />
               </button>
@@ -4784,9 +4860,15 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                       <div className="model-menu-head">Subscription accounts</div>
                       {provOauth.providers.map((pv) => {
                         const accounts = pv.accounts || [];
-                        // Honesty: only Claude has been verified end-to-end on
-                        // this machine; the other adapters are wire-tested only.
-                        const unverified = pv.id !== 'claude';
+                        const live = provModels[pv.id];
+                        // Honesty: a provider is "unverified" only when no real
+                        // account of that kind was ever exercised here. Claude
+                        // and Antigravity are field-verified (including live
+                        // model enumeration); a provider that just answered a
+                        // live catalog request is verified for that much at
+                        // least. A live `warning` (dead token, 403) keeps the
+                        // badge on.
+                        const unverified = !(pv.id === 'claude' || pv.id === 'antigravity' || (live && live.live));
                         return (
                           <div key={pv.id} className="prov-group">
                             <div className="prov-head">
@@ -4802,15 +4884,46 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                             </div>
                             {accounts.map((a) => {
                               const on = provider.oauthProvider === a.id;
+                              // Per-account catalogs: the same vendor can hold
+                              // several accounts whose plans expose different
+                              // models, so resolve the list for this account.
+                              const own = provModels[pv.id + ':' + a.account] || live;
+                              const list = (own && own.models && own.models.length ? own.models : (pv.models || []));
                               return (
                                 <div key={a.id} className={'prov-acct' + (on ? ' on' : '')}>
                                   <button className="prov-pick" title={a.expired ? 'Token expired — the next turn will refresh it' : (a.label || a.account)} onClick={() => pickOauthAccount(pv, a.account)}>
                                     <span className={'model-dot ' + (a.expired ? 'out' : 'ok')} />
                                     <span className="model-opt-name">{a.label || a.account}</span>
                                     <span className="model-opt-prov">{a.plan || a.source || 'signed in'}</span>
-                                    {on && <Icon name="Check" size={13} className="model-check" />}
+                                    {on && !provider.model && <Icon name="Check" size={13} className="model-check" />}
                                   </button>
                                   <button className="prov-x" title="Sign out" disabled={!!provBusy} onClick={() => providerAction('signout', pv.id, a.account)}><Icon name="X" size={12} /></button>
+                                  {on && (
+                                    <div className="prov-models">
+                                      {!list.length && (
+                                        <div className="prov-none">
+                                          {own && own.warning ? own.warning : 'Loading models…'}
+                                        </div>
+                                      )}
+                                      {list.map((m) => {
+                                        const mid = m.id || m;
+                                        const win = m.windowLabel || '';
+                                        const picked = provider.model === mid;
+                                        return (
+                                          <button
+                                            key={mid}
+                                            className={'model-opt prov-model' + (picked ? ' on' : '')}
+                                            title={mid + (win ? ' · ' + win + ' context' : '')}
+                                            onClick={() => pickOauthAccount(pv, a.account, mid)}
+                                          >
+                                            <span className="model-opt-name">{m.label || mid}</span>
+                                            <span className="model-opt-prov">{win || ''}</span>
+                                            {picked && <Icon name="Check" size={13} className="model-check" />}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
                                 </div>
                               );
                             })}
@@ -5133,6 +5246,131 @@ function ComplianceSection({ compliance, setCompliance }) {
 }
 
 
+// ---------- Bundled agent runtimes (Claude Code / Codex / Grok CLI) ----------
+// Every CLI the Bash tool can spawn ships inside the DMG and updates itself from
+// upstream. This panel is the only place that shows which copy is actually in
+// effect, because a stale bundled binary silently degrades every agent run.
+function RuntimesSection() {
+  const [rows, setRows] = useState([]);
+  const [meta, setMeta] = useState({ bundledDir: '', error: '' });
+  const [busy, setBusy] = useState('');   // runtime id, or '' when idle
+  const [live, setLive] = useState({});   // id -> progress line
+  const [note, setNote] = useState('');
+  const api = (typeof window !== 'undefined' && window.autobot) || {};
+
+  const apply = (r) => {
+    if (r && r.runtimes) setRows(r.runtimes);
+    if (r && r.bundledDir !== undefined) setMeta({ bundledDir: r.bundledDir || '', error: r.ok === false ? (r.error || '') : '' });
+  };
+
+  const refresh = useCallback(async () => {
+    if (!api.runtimes) return;
+    try { apply(await api.runtimes()); }
+    catch (e) { setMeta((m) => ({ ...m, error: String((e && e.message) || e) })); }
+  }, [api]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  // Live progress + auto-refresh when a background pass promotes something.
+  useEffect(() => {
+    if (!api.onEvent) return undefined;
+    return api.onEvent((evt) => {
+      if (!evt) return;
+      if (evt.type === 'runtime' && evt.id) {
+        setLive((l) => ({ ...l, [evt.id]: evt.message || evt.phase || '' }));
+        if (evt.phase === 'done' || evt.phase === 'error') refresh();
+      } else if (evt.type === 'runtimes-updated') {
+        refresh();
+        const n = (evt.results || []).length;
+        if (n) setNote('Updated ' + n + ' runtime' + (n === 1 ? '' : 's') + ' in the background.');
+      }
+    });
+  }, [api, refresh]);
+
+  const autoUpdate = rows.length ? rows.every((r) => r.autoUpdate !== false) : true;
+
+  const check = async () => {
+    setBusy('check'); setNote('');
+    try { const r = await api.runtimesCheck(); apply(r); const n = r && r.updates ? r.updates.length : 0; setNote(n ? (n + ' update' + (n === 1 ? '' : 's') + ' available.') : 'Everything is current.'); }
+    catch (e) { setNote(String((e && e.message) || e)); }
+    finally { setBusy(''); }
+  };
+
+  const update = async (id, force) => {
+    setBusy(id || 'all');
+    setLive((l) => ({ ...l, [id || 'all']: 'Starting…' }));
+    try { const r = await api.runtimesUpdate(id || undefined, !!force); apply(r); if (r && r.ok === false) setNote(r.error || 'Update failed.'); }
+    catch (e) { setNote(String((e && e.message) || e)); }
+    finally { setBusy(''); setLive((l) => { const n = { ...l }; delete n[id || 'all']; return n; }); }
+  };
+
+  const rollback = async (id) => {
+    setBusy(id);
+    try { const r = await api.runtimesRollback(id); apply(r); if (r && r.ok === false) setNote(r.error || 'Rollback failed.'); }
+    catch (e) { setNote(String((e && e.message) || e)); }
+    finally { setBusy(''); }
+  };
+
+  const toggleAuto = async (on) => {
+    try { await api.runtimesAutoUpdate(on); setRows((rs) => rs.map((r) => ({ ...r, autoUpdate: on }))); }
+    catch (_) { /* preference is best-effort */ }
+  };
+
+  const sourceLabel = (src) => src === 'installed' ? 'self-updated' : src === 'bundled' ? 'bundled in app' : src === 'system' ? 'from PATH' : 'not found';
+
+  return (
+    <>
+      <h3><Icon name="Settings" size={14} /> Bundled agent runtimes</h3>
+      <p className="muted" style={{ marginTop: -6 }}>
+        The Claude Code, Codex and Grok CLIs the Bash tool runs. Each ships inside the app and
+        updates itself from the vendor&apos;s own release feed.
+      </p>
+      <label className="check">
+        <input type="checkbox" checked={autoUpdate} onChange={(e) => toggleAuto(e.target.checked)} />
+        Check for newer versions automatically on launch
+      </label>
+      <div className="rt-list">
+        {rows.length === 0 && <p className="muted">{meta.error || 'Reading runtime status…'}</p>}
+        {rows.map((r) => {
+          const prog = live[r.id];
+          const stale = r.latest && r.version && r.latest !== r.version;
+          return (
+            <div key={r.id} className={'rt-item' + (r.busy ? ' busy' : '')}>
+              <div className="rt-main">
+                <span className="rt-name">{r.label || r.id}</span>
+                <span className="rt-vendor">{r.vendor}</span>
+                <span className={'rt-src rt-src-' + (r.source || 'missing')}>{sourceLabel(r.source)}</span>
+              </div>
+              <div className="rt-ver">
+                <code>{r.version || '—'}</code>
+                {stale && <span className="rt-arrow"> → <b>{r.latest}</b></span>}
+                {!stale && r.latest && <span className="rt-uptodate"> · latest</span>}
+                {r.error && <span className="rt-err" title={r.error}> · {r.error.slice(0, 60)}</span>}
+              </div>
+              <div className="rt-actions">
+                <button type="button" className="btn-mini" disabled={!!busy} onClick={() => update(r.id, r.source !== 'missing' && !stale)}>
+                  {busy === r.id ? 'Updating…' : (r.source === 'missing' ? 'Install' : stale ? 'Update' : 'Reinstall')}
+                </button>
+                {r.source === 'installed' && (
+                  <button type="button" className="btn-mini" disabled={!!busy} onClick={() => rollback(r.id)} title="Switch back to the previous version">Rollback</button>
+                )}
+              </div>
+              {prog && <div className="rt-prog">{prog}</div>}
+            </div>
+          );
+        })}
+      </div>
+      <div className="rt-foot">
+        <button type="button" className="btn-mini" disabled={!!busy} onClick={check}>{busy === 'check' ? 'Checking…' : 'Check for updates'}</button>
+        <button type="button" className="btn-mini" disabled={!!busy} onClick={() => update('')}>{busy === 'all' ? 'Updating…' : 'Update all'}</button>
+        {note && <span className="muted rt-note">{note}</span>}
+      </div>
+      {meta.bundledDir && <p className="muted rt-path">Bundled copies: <code>{meta.bundledDir}</code></p>}
+      {meta.error && !rows.length && <p className="muted rt-path">{meta.error}</p>}
+    </>
+  );
+}
+
 function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator, features, setFeatures, testProvider, onClose, T, account, setAccount, permissions, setPermissions, compliance, setCompliance }) {
   // Editing an endpoint/model by hand means this is no longer a signed-in
   // subscription selection — drop the OAuth binding so the gateway path wins.
@@ -5338,6 +5576,8 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
             </select>
           </label>
         </div>
+
+        <RuntimesSection />
 
         <ComplianceSection compliance={compliance} setCompliance={setCompliance} />
 

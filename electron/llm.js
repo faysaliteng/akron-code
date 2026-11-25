@@ -5,6 +5,7 @@ const { toolDefinitions, runTool } = require('./tools');
 const swarm = require('./swarm');
 const hooks = require('./hooks');
 const budgetPool = require('./budget');
+const modelCatalog = require('./model-catalog');
 const providertransport = require('./providertransport');
 
 // Registry of live sub-agents (for TaskStop / ListAgents).
@@ -196,6 +197,11 @@ function normalizeProvider(p) {
     accountId: p.accountId || '',
     sessionId: p.sessionId || '',
     codexUrl: p.codexUrl || '',
+    cloudcodeUrl: p.cloudcodeUrl || '',
+    // `<providerId>:<account>` as set by the renderer's account picker. The
+    // provider prefix keys the live model catalog, so the token budget must see
+    // it — dropping it here silently reverted every model to the 128k default.
+    oauthProvider: p.oauthProvider || '',
     project: p.project || '',
   };
 }
@@ -838,6 +844,7 @@ async function runAgent(opts) {
       transport: p.transport, oauth: p.oauth, accessToken: p.accessToken,
       account: p.account, accountId: p.accountId, sessionId: p.sessionId,
       codexUrl: p.codexUrl, cloudcodeUrl: p.cloudcodeUrl, project: p.project,
+      oauthProvider: p.oauthProvider,
     }));
     activeIndex = Math.max(0, Math.min(Number(orch.activeIndex) || 0, providerList.length - 1));
   }
@@ -1008,9 +1015,14 @@ async function runAgent(opts) {
   // Normalize the carried-over history for THIS provider so a mid-conversation
   // model switch never 400s on the previous model's message shapes.
   // Example compacts the conversation when it outgrows the model window and says
-  // so. Do the same: keep the state, tell the user once, and carry on working.
+  // so. The window is resolved per model (live catalog → explicit → documented
+  // rule) instead of one hardcoded character count, so a 1M-token Gemini model
+  // is not amputated at 55k tokens while a small model still fits.
+  const providerId = String(provider.oauthProvider || '').split(':')[0] || provider.transport || '';
+  const modelBudget = modelCatalog.budgetForModel(provider.model, providerId, provider.contextWindow);
   messages = sanitizeHistory(messages, {
     supportsTools: toolMode,
+    maxChars: modelBudget.maxChars,
     onCompact: ({ dropped }) => {
       // PreCompact/PostCompact fire around the compaction itself. They run
       // fire-and-forget: compaction is synchronous and must not block on I/O.
@@ -1024,7 +1036,7 @@ async function runAgent(opts) {
         .catch(() => {});
       emit({
         type: 'notice',
-        text: `Compacted ${dropped} earlier turns to fit ${provider.model}'s context window — the chat history and project files are unchanged.`,
+        text: `Compacted ${dropped} earlier turns to fit ${provider.model}'s ${modelCatalog.fmtWindow(modelBudget.window)} context window — the chat history and project files are unchanged.`,
       });
     },
   });
@@ -1250,7 +1262,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           textToolMode = true;
           // Re-normalize the history (earlier steps may already contain native
           // tool_calls / role:"tool" entries that this endpoint would reject).
-          messages = sanitizeHistory(messages, { supportsTools: false });
+          messages = sanitizeHistory(messages, { supportsTools: false, maxChars: modelBudget.maxChars });
           if (messages[0] && messages[0].role === 'system') messages[0].content += '\n\n' + TEXT_TOOL_PROTOCOL;
         }
         message = await doChat(false);

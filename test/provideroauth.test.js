@@ -209,6 +209,30 @@ const jwt = (claims) => 'h.' + b64url(claims) + '.sig';
     const g = new URL(I.buildAuthorizeUrl(po.provider('antigravity'), { redirectUri: 'r', state: 's', challenge: 'c' }));
     eq('google offline params applied', [g.searchParams.get('access_type'), g.searchParams.get('prompt')], ['offline', 'consent']);
     ok('authorize url keeps the provider host', g.host === 'accounts.google.com');
+    // Field-verified against Antigravity `dist/remote/signInUrls.js`:
+    // `SIGN_IN_PARAMS` whitelists exactly these ten names and rejects any other
+    // key, so an extra param makes the Hub refuse the URL it was handed.
+    const SIGN_IN_PARAMS = ['access_type', 'client_id', 'code_challenge', 'code_challenge_method',
+      'prompt', 'provider_name', 'redirect_uri', 'response_type', 'scope', 'state'];
+    const got = [...g.searchParams.keys()].sort();
+    eq('antigravity authorize params are exactly the Hub whitelist',
+      got, SIGN_IN_PARAMS.filter((p) => got.includes(p)));
+    ok('antigravity sends no param the Hub would reject',
+      got.every((k) => SIGN_IN_PARAMS.includes(k)), got);
+    // `hasExactScopes` requires the same cardinality and membership, no dupes.
+    const wantsScopes = [
+      'openid',
+      'https://www.googleapis.com/auth/cloud-platform',
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/userinfo.profile',
+      'https://www.googleapis.com/auth/cclog',
+      'https://www.googleapis.com/auth/experimentsandconfigs',
+      'https://www.googleapis.com/auth/aicode',
+    ];
+    const sentScopes = g.searchParams.get('scope').split(' ');
+    eq('antigravity personal scope set matches the Hub byte for byte',
+      sentScopes.slice().sort(), wantsScopes.slice().sort());
+    eq('antigravity sends no duplicate scope', new Set(sentScopes).size, sentScopes.length);
   }
 
   // -------------------------------------------------------------------------

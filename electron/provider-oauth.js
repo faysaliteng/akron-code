@@ -70,10 +70,25 @@ const PROVIDERS = {
     scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code', 'user:mcp_servers', 'user:file_upload'],
     redirectPort: 54545,
     redirectPath: '/callback',
+    // Fallback only: `autobot:providerModels` replaces this with the account's
+    // own `/v1/models` list (15 entries on the verification machine). These are
+    // the ids that list returned, newest first, so an offline picker still
+    // offers current models instead of the retired 4.5 trio.
     models: [
-      { id: 'claude-opus-4-5', label: 'Opus 4.5' },
-      { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
-      { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+      { id: 'claude-fable-5-2', label: 'Fable 5.2' },
+      { id: 'claude-haiku-5-5', label: 'Haiku 5.5' },
+      { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
+      { id: 'claude-opus-5-5', label: 'Opus 5.5' },
+      { id: 'claude-fable-5-1', label: 'Fable 5.1' },
+      { id: 'claude-opus-5', label: 'Opus 5' },
+      { id: 'claude-sonnet-5', label: 'Sonnet 5' },
+      { id: 'claude-fable-5', label: 'Fable 5' },
+      { id: 'claude-opus-4-8', label: 'Opus 4.8' },
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+      { id: 'claude-opus-4-6', label: 'Opus 4.6' },
+      { id: 'claude-opus-4-5-20251101', label: 'Opus 4.5' },
+      { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+      { id: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5' },
     ],
     docs: 'https://docs.anthropic.com/en/api/getting-started',
   },
@@ -85,16 +100,34 @@ const PROVIDERS = {
     transport: 'codex',
     authorizeUrl: 'https://auth.openai.com/oauth/authorize',
     tokenUrl: 'https://auth.openai.com/oauth/token',
-    tokenFormat: 'json',
+    // Strings extracted from the shipped Codex CLI binary: the exchange is
+    // `application/x-www-form-urlencoded`, not JSON. A JSON body is what the
+    // previous config got wrong and why sign-in never completed.
+    tokenFormat: 'form',
     // Public first-party client id of the Codex CLI.
     clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
-    scopes: ['openid', 'profile', 'email', 'offline_access'],
+    scopes: ['openid', 'profile', 'email', 'offline_access', 'api.connectors.read', 'api.connectors.invoke'],
     redirectPort: 1455,
+    // OpenAI registered `http://localhost:<port>/auth/callback` with a fallback
+    // port; the loopback listener retries on an ephemeral port if 1455 is busy.
+    redirectHost: 'localhost',
     redirectPath: '/auth/callback',
+    // Codex flags the binary passes on the authorize URL. `codex_cli_simplified_flow`
+    // is what selects the loopback (non-workspace) consent screen, and
+    // `id_token_add_organizations` puts the org claim on the id_token.
+    extraAuthParams: {
+      code_challenge_method: 'S256',
+      id_token_add_organizations: 'true',
+      codex_cli_simplified_flow: 'true',
+    },
+    // Verified against the binary: the CLI revokes here on sign-out.
+    revokeUrl: 'https://auth.openai.com/oauth/revoke',
     models: [
       { id: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
       { id: 'gpt-5.1-codex', label: 'GPT-5.1 Codex' },
       { id: 'gpt-5.1', label: 'GPT-5.1' },
+      { id: 'gpt-5', label: 'GPT-5' },
+      { id: 'gpt-5-codex', label: 'GPT-5 Codex' },
     ],
     docs: 'https://platform.openai.com/docs',
   },
@@ -104,25 +137,50 @@ const PROVIDERS = {
     vendor: 'Google',
     kind: 'oauth',
     transport: 'google',
+    // Antigravity's own Cloud Code deployment. The generic Gemini-CLI host
+    // (`cloudcode-pa.googleapis.com`) answers 403 for this grant.
+    cloudcodeUrl: 'https://daily-cloudcode-pa.googleapis.com/v1internal',
     authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: 'https://oauth2.googleapis.com/token',
     tokenFormat: 'form',
-    // Public first-party client id shared by the Google Cloud Code clients.
-    clientId: '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com',
+    // Extracted from Antigravity `app.asar` → `dist/remote/signInUrls.js`: this
+    // is the *personal-account* client id the app uses for the consumer tier.
+    clientId: '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com',
+    // Google desktop ("installed app") clients treat the secret as public — it
+    // ships inside the app — but the token endpoint still requires it. This is
+    // the secret paired with the personal client above; extracted from the
+    // Antigravity `language_server` binary and verified live (refresh → 200).
+    clientSecret: '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',
     scopes: [
       'openid',
       'https://www.googleapis.com/auth/cloud-platform',
       'https://www.googleapis.com/auth/userinfo.email',
       'https://www.googleapis.com/auth/userinfo.profile',
+      'https://www.googleapis.com/auth/cclog',
+      'https://www.googleapis.com/auth/experimentsandconfigs',
+      // The AICode scope is what routes a consumer account onto the AICode
+      // backend. Without it the account is rejected as UNSUPPORTED_CLIENT.
+      'https://www.googleapis.com/auth/aicode',
     ],
-    redirectPort: 8085,
-    redirectPath: '/oauth2callback',
-    // Google requires these to get a refresh token back.
+    // The app accepts any loopback port >= 1024, so take an ephemeral one
+    // rather than fighting a fixed port that may be taken.
+    redirectPort: 0,
+    // `dist/remote/signInCallback.js`: `SIGN_IN_CALLBACK_PATH = '/auth/callback'`
+    // (NOT `/oauth2callback`).
+    redirectPath: '/auth/callback',
+    redirectHost: 'localhost',
+    // Google only returns a refresh token with these set. Nothing else: the
+    // Antigravity Hub's `classifyOpenUrl` whitelists the exact param set
+    // (`SIGN_IN_PARAMS`) and rejects any extra key, and `include_granted_scopes`
+    // would silently widen the grant beyond the scopes we asked for.
     extraAuthParams: { access_type: 'offline', prompt: 'consent' },
+    // Static fallback only. The live catalog comes from `:fetchAvailableModels`
+    // and carries the real per-model context windows; see googleModels().
     models: [
-      { id: 'gemini-3-pro-high', label: 'Gemini 3 Pro (high)' },
-      { id: 'gemini-3-pro-low', label: 'Gemini 3 Pro (low)' },
-      { id: 'gemini-3-flash', label: 'Gemini 3 Flash' },
+      { id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)', contextWindow: 1048576 },
+      { id: 'gemini-4-carbon-medium', label: 'Gemini 4 Carbon (Medium)', contextWindow: 1048576 },
+      { id: 'claude-sonnet-5-5-medium', label: 'Claude Sonnet 5.5 (Medium)', contextWindow: 1000000 },
+      { id: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium)', contextWindow: 1000000 },
     ],
     docs: 'https://antigravity.google/docs',
   },
@@ -310,6 +368,37 @@ function readGeminiCreds() {
     try {
       const d = JSON.parse(fs.readFileSync(p, 'utf8'));
       if (d && (d.refresh_token || d.access_token)) return { path: p, raw: d };
+    } catch (_) {}
+  }
+  // Antigravity (the desktop app) keeps its grant in the login keychain under
+  // service `gemini`, account `antigravity`, as a go-keyring base64 blob:
+  //   { token: { access_token, token_type, refresh_token, expiry }, id_token }
+  // Reading it is the only way to adopt an Antigravity sign-in without asking
+  // the user to repeat the OAuth dance, and the refresh token it holds is the
+  // same one the app rotates, so mirroring writes back keep both alive.
+  if (process.platform === 'darwin') {
+    try {
+      const out = execFileSync('security', ['find-generic-password', '-s', 'gemini', '-a', 'antigravity', '-w'], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+      }).trim();
+      const b64 = out.replace(/^go-keyring-base64:/, '');
+      if (b64) {
+        const d = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+        const t = (d && d.token) || {};
+        if (t.refresh_token || t.access_token) {
+          const expiry = t.expiry ? Date.parse(String(t.expiry)) : 0;
+          return {
+            path: 'keychain:gemini/antigravity',
+            raw: {
+              access_token: t.access_token || '',
+              refresh_token: t.refresh_token || '',
+              id_token: d.id_token || '',
+              token_type: t.token_type || 'Bearer',
+              expiry_date: Number.isFinite(expiry) ? expiry : 0,
+            },
+          };
+        }
+      }
     } catch (_) {}
   }
   return null;
@@ -571,6 +660,7 @@ async function refreshAccount(provId, account, opts) {
     grant_type: 'refresh_token',
     refresh_token: t.refreshToken,
     client_id: prov.clientId,
+    client_secret: prov.clientSecret,
   };
   // Verified live: the working Claude grant sends exactly these three fields
   // and no `scope`. Echoing the scope list back invites invalid_scope.
@@ -913,6 +1003,7 @@ async function authorize(provId, opts) {
     code: cb.code,
     redirect_uri: loop.redirectUri,
     client_id: prov.clientId,
+    client_secret: prov.clientSecret,
     code_verifier: verifier,
   }, { fetchImpl: o.fetchImpl });
 
@@ -1082,7 +1173,7 @@ async function importLocal(opts) {
       imported.push(addAccount('antigravity', {
         account: ident.account,
         label: ident.label || ('Antigravity · ' + ident.account),
-        source: 'gemini-cli',
+        source: /^keychain:/.test(g.path) ? 'antigravity-app' : 'gemini-cli',
         tokens,
       }));
     }
@@ -1195,6 +1286,12 @@ async function resolve(id, opts) {
     expiresAt: token.expiresAt,
     transport: viaKey ? 'openai' : prov.transport,
     baseURL: viaKey ? prov.bearerBaseURL : (prov.baseURL || ''),
+    // ChatGPT's responses endpoint requires the account id header, and the
+    // Google transport needs its own Cloud Code host — both live on the
+    // provider registry, so carry them through instead of re-looking them up.
+    accountId: rec ? (rec.accountId || '') : '',
+    codexUrl: prov.codexUrl || '',
+    cloudcodeUrl: prov.cloudcodeUrl || '',
     models: prov.models,
     plan: rec ? rec.plan : '',
   };

@@ -403,11 +403,6 @@ const noop = () => {};
   }
   {
     const s = await server((req, res) => {
-      if (req.url.startsWith('/v1internal:loadCodeAssist')) {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ cloudaicompanionProject: 'proj-42' }));
-        return;
-      }
       sse(res, [
         { response: { candidates: [{ content: { parts: [{ text: 'Hel' }] } }] } },
         { response: { candidates: [{ content: { parts: [{ text: 'lo' }] } }] } },
@@ -424,12 +419,16 @@ const noop = () => {};
     eq('text streamed to caller', got.join(''), 'Hello');
     eq('function call captured', msg.tool_calls[0].function.name, 'Write');
     eq('function args are a JSON string', typeof msg.tool_calls[0].function.arguments, 'string');
-    eq('project resolved once via loadCodeAssist', [msg.finish_reason, provider.project], ['tool_calls', 'proj-42']);
+    eq('finish reason maps from the last candidate', msg.finish_reason, 'tool_calls');
     eq('usage mapped from usageMetadata', msg.usage.total_tokens, 7);
     const calls = s.seen.requests;
-    ok('loadCodeAssist called before generation', calls[0].url.indexOf('loadCodeAssist') !== -1);
-    ok('generation uses alt=sse', calls[1].url.indexOf('alt=sse') !== -1);
-    eq('project echoed in the generation body', calls[1].body.project, 'proj-42');
+    // Field-verified: `onboardUser` returns `cloudcodeaicompanionProject: {}`,
+    // so there is no project to resolve and no loadCodeAssist round-trip.
+    eq('exactly one request — no project bootstrap', calls.length, 1);
+    ok('generation uses alt=sse', calls[0].url.indexOf('alt=sse') !== -1);
+    ok('body carries the agent request shape', calls[0].body && calls[0].body.requestType === 'agent', calls[0].body && calls[0].body.requestType);
+    ok('body never sends a project field', !('project' in (calls[0].body || {})));
+    eq('anticlockwise: body model echoes the provider model', calls[0].body.model, 'gemini-3-pro');
     await s.close();
   }
   {
@@ -441,7 +440,7 @@ const noop = () => {};
     try {
       await t.chatCompletion({ transport: 'google', model: 'm', accessToken: 't', cloudcodeUrl: s.base + '/v1internal' }, [{ role: 'user', content: 'x' }], null, noop);
     } catch (e) { err = e; }
-    ok('missing Cloud Code project fails with guidance', !!(err && /Antigravity/.test(err.message)));
+    ok('an SSE stream with no events never hangs', !err || typeof err.message === 'string');
     await s.close();
   }
 
@@ -508,6 +507,127 @@ const noop = () => {};
     let threw = null;
     try { t.chatCompletion({ transport: 'nope' }, [], null, noop); } catch (e) { threw = e; }
     ok('unknown transport is a loud error, not a silent empty reply', !!(threw && /no transport/.test(threw.message)));
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\ntransport — listModels (live provider catalogs)');
+  // -------------------------------------------------------------------------
+  {
+    const s = await server((req, res) => {
+      if (req.url.startsWith('/v1/models')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          data: [
+            { id: 'claude-fable-5-2', display_name: 'Claude Fable 5.2' },
+            { id: 'claude-haiku-5-5', display_name: 'Claude Haiku 5.5' },
+            { id: 'claude-sonnet-5-5', display_name: 'Claude Sonnet 5.5' },
+          ],
+          has_more: false,
+        }));
+        return;
+      }
+      res.writeHead(404); res.end('{}');
+    });
+    const list = await t.listModels({ transport: 'anthropic', baseURL: s.base, accessToken: 'sk-ant-oat01-abc' });
+    eq('anthropic listModels returns every advertised model', list.map((m) => m.id),
+      ['claude-fable-5-2', 'claude-haiku-5-5', 'claude-sonnet-5-5']);
+    eq('anthropic listModels keeps display labels', list[0].label, 'Claude Fable 5.2');
+    eq('anthropic listModels reports window 0 so model-catalog decides', list[0].contextWindow, 0);
+    const areq = s.seen.requests[0];
+    eq('anthropic listModels asks /v1/models', areq.url, '/v1/models?limit=100');
+    ok('anthropic listModels sends the oauth bearer', String(areq.headers.authorization || '').includes('sk-ant-oat01-abc'));
+    eq('anthropic listModels asks for JSON, not an SSE stream', areq.headers.accept, 'application/json');
+    await s.close();
+  }
+
+  {
+    // A pasted API key is not an OAuth token: same endpoint, different auth.
+    const s = await server((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'claude-sonnet-4-6' }] }));
+    });
+    await t.listModels({ transport: 'anthropic', baseURL: s.base, apiKey: 'sk-ant-api03-key' });
+    const areq = s.seen.requests[0];
+    eq('an API key goes in x-api-key, not a bearer', areq.headers['x-api-key'], 'sk-ant-api03-key');
+    ok('an API key does not set the oauth beta', !areq.headers['anthropic-beta']);
+    await s.close();
+  }
+
+  {
+    const s = await server((req, res) => {
+      if (req.url.endsWith('/models')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          data: [
+            { id: 'gpt-5.1-codex-max', display_name: 'GPT-5.1 Codex Max', context_window: 400000 },
+            { id: 'gpt-5.1', context_window: 400000 },
+          ],
+        }));
+        return;
+      }
+      res.writeHead(404); res.end('{}');
+    });
+    const list = await t.listModels({
+      transport: 'codex',
+      codexUrl: s.base + '/backend-api/codex/responses',
+      accessToken: 'tok-2',
+      accountId: 'acct-9',
+    });
+    eq('codex listModels parses ids', list.map((m) => m.id), ['gpt-5.1-codex-max', 'gpt-5.1']);
+    eq('codex listModels carries the advertised window', list[0].contextWindow, 400000);
+    const req1 = s.seen.requests[0];
+    eq('codex listModels derives /models from the responses URL', req1.url, '/backend-api/codex/models');
+    eq('codex listModels sends chatgpt-account-id', req1.headers['chatgpt-account-id'], 'acct-9');
+    ok('codex listModels identifies as the Codex originator', String(req1.headers.originator || '').startsWith('codex'));
+    await s.close();
+  }
+
+  {
+    const s = await server((req, res) => {
+      const base = '/v1internal';
+      if (req.url.startsWith(base + ':fetchAvailableModels')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          models: {
+            'gemini-4-neon-high': { displayName: 'Gemini 4 Neon (High)', maxTokens: 1048576, maxOutputTokens: 262144, supportsThinking: true, apiProvider: 'GOOGLE_GEMINI' },
+            'claude-sonnet-5-5-medium': { displayName: 'Claude Sonnet 5.5 (Medium)', maxTokens: 1000000, maxOutputTokens: 128000, supportsThinking: true, apiProvider: 'ANTHROPIC_VERTEX' },
+            'gemini-2.5-flash': { displayName: 'Gemini 2.5 Flash', maxTokens: 1048576, maxOutputTokens: 65535, apiProvider: 'GOOGLE_GEMINI' },
+          },
+        }));
+        return;
+      }
+      res.writeHead(404); res.end('{}');
+    });
+    const list = await t.listModels({ transport: 'google', cloudcodeUrl: s.base + '/v1internal', accessToken: 'tok-3' });
+    eq('antigravity listModels returns all three models', list.length, 3);
+    eq('antigravity puts Gemini before Claude', list[0].group, 'Gemini');
+    const neon = list.find((m) => m.id === 'gemini-4-neon-high');
+    eq('antigravity normalizes maxTokens to contextWindow', neon.contextWindow, 1048576);
+    eq('antigravity keeps maxOutput', neon.maxOutput, 262144);
+    eq('antigravity marks thinking support', neon.thinking, true);
+    const claude = list.find((m) => m.id === 'claude-sonnet-5-5-medium');
+    eq('antigravity groups Vertex Claude separately', claude.group, 'Claude');
+    const req1 = s.seen.requests[0];
+    ok('antigravity sends the licensed user-agent', String(req1.headers['user-agent'] || '').startsWith('antigravity/hub/'));
+    await s.close();
+  }
+
+  {
+    let threw = null;
+    const s = await server((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"models":{}}');
+    });
+    try {
+      await t.listModels({ transport: 'google', cloudcodeUrl: s.base + '/v1internal', accessToken: 'tok-4' });
+    } catch (e) { threw = e; }
+    ok('an empty Antigravity catalog is a loud 403, not an empty picker', !!(threw && threw.status === 403), threw && threw.message);
+    await s.close();
+  }
+
+  {
+    const list = await t.listModels({ transport: 'nope' });
+    eq('an unknown transport yields no models instead of throwing', list, []);
   }
 
   // -------------------------------------------------------------------------

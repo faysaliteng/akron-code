@@ -17,6 +17,7 @@ const scheduler = require('./scheduler');
 const providerStatus = require('./providerstatus');
 const providerOauth = require('./provider-oauth');
 const providertransport = require('./providertransport');
+const modelCatalog = require('./model-catalog');
 const workspace = require('./workspace');
 const paths = require('./paths');
 const mindmap = require('./mindmap');
@@ -30,6 +31,7 @@ const mcpoauth = require('./mcpoauth');
 const computeruse = require('./computeruse');
 const windowstate = require('./windowstate');
 const freellm = require('./freellm');
+const { createRuntimes } = require('./runtimes');
 
 // ---------------------------------------------------------------------------
 // Rebrand migration: user data used to live under "Helio Bot".
@@ -756,6 +758,11 @@ async function hydrateProvider(provider) {
     transport: r.transport,
     accessToken: r.accessToken,
     account: r.account,
+    // `chatgpt-account-id` is mandatory on the Codex responses endpoint; without
+    // it the request is rejected even with a perfectly valid bearer token.
+    accountId: r.accountId || provider.accountId || '',
+    codexUrl: r.codexUrl || provider.codexUrl || '',
+    cloudcodeUrl: r.cloudcodeUrl || provider.cloudcodeUrl || '',
     oauth: true,
     model: provider.model || (r.models && r.models[0] && r.models[0].id) || '',
   });
@@ -1128,6 +1135,67 @@ ipcMain.handle('autobot:providerStatus', () => {
   try { return { ok: true, status: providerOauth.status() }; } catch (e) { return { ok: false, error: oneLine(e) }; }
 });
 
+// The live model inventory of one subscription (Claude Max / ChatGPT /
+// Antigravity / Grok). The renderer's picker used to hardcode a few ids; the
+// real accounts expose 5–40 and they change, so ask the account itself.
+// Returns the resolved context window per model, which is what the picker
+// labels and what the auto-compact budget is derived from.
+ipcMain.handle('autobot:providerModels', async (event, id) => {
+  try {
+    const raw = String(id || '');
+    const provId = raw.split(':')[0];
+    if (!provId) return { ok: false, error: 'which provider?' };
+    const prov = providerOauth.provider(provId);
+    if (!prov) return { ok: false, error: 'unknown provider' };
+
+    let live = [];
+    let warning = '';
+    try {
+      const r = await providerOauth.resolve(raw);
+      live = await providertransport.listModels({
+        transport: r.transport,
+        accessToken: r.accessToken,
+        apiKey: r.accessToken,
+        accountId: r.accountId,
+        codexUrl: r.codexUrl,
+        cloudcodeUrl: r.cloudcodeUrl,
+        baseURL: r.baseURL,
+        model: '',
+      });
+    } catch (e) {
+      // A provider whose token is dead still has a documented catalog: fall
+      // through to the registry list instead of returning an empty picker.
+      warning = oneLine(e);
+    }
+    if (live.length) modelCatalog.register(provId, live);
+
+    const entries = live.length
+      ? live
+      : (prov.models || []).map((m) => ({ id: m.id, label: m.label, contextWindow: 0, thinking: !!m.thinking }));
+    const models = entries.map((m) => {
+      const win = modelCatalog.contextWindowFor(m.id, provId, m.contextWindow);
+      return {
+        id: m.id,
+        label: m.label || m.id,
+        contextWindow: win,
+        windowLabel: modelCatalog.fmtWindow(win),
+        thinking: !!m.thinking,
+        group: m.group || '',
+      };
+    });
+    return {
+      ok: true,
+      providerId: provId,
+      live: live.length > 0,
+      count: models.length,
+      models,
+      warning: warning || undefined,
+    };
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
 ipcMain.handle('autobot:providerSignIn', async (event, id) => {
   try {
     const rec = await providerOauth.authorize(String(id || ''), { openExternal: (url) => shell.openExternal(url) });
@@ -1172,6 +1240,124 @@ ipcMain.handle('autobot:providerSetActive', (event, id, account) => {
   } catch (e) {
     return { ok: false, error: oneLine(e) };
   }
+});
+
+// ---------------------------------------------------------------------------
+// Bundled agent runtimes (Claude Code / Codex / Grok CLI) + self-update.
+// ---------------------------------------------------------------------------
+// Resolution is userData (self-updated) → Resources (shipped in the DMG) → PATH.
+// Whatever wins is prepended to process.env.PATH so the Bash tool, git, and
+// MCP servers all see the same binaries the Settings panel reports.
+let runtimesHandle = null;
+
+function bundledRuntimeDir() {
+  const candidates = [];
+  try { if (process.resourcesPath) candidates.push(path.join(process.resourcesPath, 'runtimes')); } catch (_) {}
+  // Dev runs: everything lives in the repo, not inside an .app bundle.
+  candidates.push(path.join(__dirname, '..', 'vendor', 'runtimes'));
+  for (const dir of candidates) {
+    try { if (fs.existsSync(dir)) return dir; } catch (_) {}
+  }
+  return '';
+}
+
+function getRuntimes() {
+  if (!runtimesHandle) {
+    runtimesHandle = createRuntimes({
+      userDir: app.getPath('userData'),
+      bundledDir: bundledRuntimeDir(),
+      onEvent: (ev) => broadcast({ type: 'runtime', ...ev }),
+    });
+  }
+  return runtimesHandle;
+}
+
+/** Prepended PATH entries for a child process env. */
+async function runtimePathPrefix() {
+  try {
+    const dirs = String(await getRuntimes().envPath()).split(path.delimiter).filter(Boolean);
+    return dirs.join(path.delimiter);
+  } catch (_) { return ''; }
+}
+
+async function startRuntimes() {
+  try {
+    const rt = getRuntimes();
+    const prefix = await runtimePathPrefix();
+    if (prefix) {
+      const cur = String(process.env.PATH || '');
+      const have = new Set(cur.split(path.delimiter));
+      const add = prefix.split(path.delimiter).filter((d) => d && !have.has(d));
+      if (add.length) process.env.PATH = add.join(path.delimiter) + path.delimiter + cur;
+    }
+    const state = await rt.loadState();
+    // Ship-version check on boot. Deferred and non-blocking: a 400 MB download
+    // must never delay first paint, and offline is a normal condition.
+    if (state.autoUpdate !== false) {
+      const t = setTimeout(() => {
+        rt.updateAll()
+          .then((res) => {
+            const done = (res.results || []).filter((r) => r.ok);
+            if (done.length) {
+              broadcast({ type: 'runtimes-updated', results: done });
+              // New binaries mean a new PATH; refresh the inherited env.
+              runtimePathPrefix().then((p) => {
+                if (!p) return;
+                const cur = String(process.env.PATH || '');
+                const have = new Set(cur.split(path.delimiter));
+                const add = p.split(path.delimiter).filter((d) => d && !have.has(d));
+                if (add.length) process.env.PATH = add.join(path.delimiter) + path.delimiter + cur;
+              }).catch(() => {});
+            }
+          })
+          .catch((e) => console.error('runtime auto-update skipped:', oneLine(e)));
+      }, 20000);
+      if (t && typeof t.unref === 'function') t.unref();
+    }
+  } catch (e) {
+    console.error('runtimes init failed:', oneLine(e));
+  }
+}
+
+ipcMain.handle('autobot:runtimes', async () => {
+  try { return { ok: true, runtimes: await getRuntimes().list(), bundledDir: bundledRuntimeDir() }; }
+  catch (e) { return { ok: false, error: oneLine(e) }; }
+});
+
+ipcMain.handle('autobot:runtimesCheck', async () => {
+  try { return await getRuntimes().checkAll(); }
+  catch (e) { return { ok: false, error: oneLine(e) }; }
+});
+
+ipcMain.handle('autobot:runtimesUpdate', async (event, id, force) => {
+  try {
+    const rt = getRuntimes();
+    const res = id ? await rt.install(String(id), undefined, { force: !!force }) : await rt.updateAll();
+    const out = { ok: true, ...res, runtimes: await rt.list() };
+    // A freshly installed runtime changes PATH for later children.
+    const p = await runtimePathPrefix();
+    if (p) {
+      const cur = String(process.env.PATH || '');
+      const have = new Set(cur.split(path.delimiter));
+      const add = p.split(path.delimiter).filter((d) => d && !have.has(d));
+      if (add.length) process.env.PATH = add.join(path.delimiter) + path.delimiter + cur;
+    }
+    return out;
+  } catch (e) {
+    return { ok: false, error: oneLine(e), runtimes: await getRuntimes().list().catch(() => []) };
+  }
+});
+
+ipcMain.handle('autobot:runtimesRollback', async (event, id) => {
+  try { return { ok: true, ...(await getRuntimes().rollback(String(id))), runtimes: await getRuntimes().list() }; }
+  catch (e) { return { ok: false, error: oneLine(e) }; }
+});
+
+ipcMain.handle('autobot:runtimesAutoUpdate', async (event, on) => {
+  try {
+    await getRuntimes().setAutoUpdate(!!on);
+    return { ok: true, autoUpdate: !!on };
+  } catch (e) { return { ok: false, error: oneLine(e) }; }
 });
 
 ipcMain.handle('autobot:freellmStatus', () => {
@@ -1756,7 +1942,13 @@ ipcMain.handle('autobot:saveNotebook', (e, name, cells) => store.writeNotebook(n
 ipcMain.handle('autobot:deleteNotebook', (e, name) => store.deleteNotebook(name));
 
 // Background shells / terminal
-ipcMain.handle('autobot:shellStart', (e, opts) => shells.start(opts || {}));
+ipcMain.handle('autobot:shellStart', async (e, opts) => {
+  // Interactive shells re-run rc files, so hand them the runtime dirs to
+  // re-prepend once that has happened.
+  let pathPrefix = '';
+  try { pathPrefix = await runtimePathPrefix(); } catch (_) { /* ignore */ }
+  return shells.start({ ...(opts || {}), pathPrefix });
+});
 ipcMain.handle('autobot:shellRun', async (e, id, command, opts) => {
   try { return { ok: true, output: await shells.run(id, command, opts || {}) }; }
   catch (err) { return { ok: false, error: err.message }; }
@@ -2264,6 +2456,9 @@ app.whenReady().then(() => {
   // OpenAI-compatible endpoint. Non-fatal — a missing config or a busy port must
   // never stop the app from booting.
   startFreeLLM();
+  // Bundled agent runtimes: PATH injection first (so the Bash tool works
+  // immediately), then a deferred auto-update pass.
+  startRuntimes();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
