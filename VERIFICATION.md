@@ -140,7 +140,7 @@ remain on disk; the `-mac.zip`, blockmaps, and `mac-arm64/` staging dir were rem
 |---|---|
 | Headless E2E (`node test/e2e.test.js`) | ✅ **111 passed, 0 failed** |
 | Registry integrity | ✅ **141 tool definitions**, every plugins/mcp-registry/scheduled-tasks/custom-skill tool resolves to an executor or inline handler |
-| Plugins catalog | ✅ 406 curated connectors / 50 plugins / 31 categories (+444 live MCP registry = 850 pool); search("stripe")→`stripe`; install→auto-connect→state→uninstall round-trip (`test/live/plugins-live.cjs`, 21 checks) |
+| Plugins catalog | ✅ 467 curated connectors / 50 plugins / 31 categories (+444 live MCP registry = 911 pool / 961 rows); search("stripe")→`stripe`; install→auto-connect→state→uninstall round-trip (`test/live/plugins-live.cjs`, 21 checks) |
 | MCP registry tools | ✅ list / search / suggest / directory_stats / refresh_registry wired to the merged catalog |
 | Scheduler lifecycle | ✅ create → list → update → runNow → remove; `computeNext`/`describe` correct; `runCount`/`lastResult` persisted |
 | Custom skills | ✅ `addCustomSkill` → discovered with `source:'custom'` + parsed frontmatter → `deleteCustomSkill` removes only custom |

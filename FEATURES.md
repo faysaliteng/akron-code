@@ -148,7 +148,7 @@ toggle:
 Example Desktop's sidebar now maps 1:1 onto working local features — not stubs.
 
 ### 5.1 Plugins & connectors
-- Curated catalog: **406 connectors / 50 plugins / 31 categories**
+- Curated catalog: **467 connectors / 50 plugins / 31 categories**
   (`electron/connector-catalog.js`) mirroring the Example app's connector directory —
   Google Drive, GitHub, Slack, Notion, Linear, Jira, Figma, Postgres, Snowflake, Stripe,
   Salesforce, Zendesk, Datadog, AWS, GCP, Azure, Okta, Workday, DocuSign, … plus local
@@ -157,7 +157,8 @@ Example Desktop's sidebar now maps 1:1 onto working local features — not stubs
 - Live registry layer: `electron/mcpregistry.js` syncs
   `registry.modelcontextprotocol.io` (paginated, 24 h TTL, versioned disk cache
   `~/.autobot/mcp-registry.json`), categorises by keyword hints, and degrades silently
-  offline. Merged pool at runtime: **850 connectors** (406 curated + 444 live).
+  offline. Merged pool at runtime: **911 connectors** (467 curated + 444 live),
+  50 plugins, 33 categories, 451 entries with a live MCP endpoint.
 - Ranking search (name > tag > description) + `suggest()` relevance across both layers.
 - Install state persisted in `~/.autobot/plugins.json`; `install` / `uninstall` /
   `markConnected` / `setConfig`. Installing an entry that carries a transport

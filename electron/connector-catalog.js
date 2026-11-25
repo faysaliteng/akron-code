@@ -472,6 +472,71 @@ const CONNECTOR_ROWS = [
   ['tray', 'Tray.ai', 'Automation', 'apikey', 'Read workflows, runs and connectors.', ['list_workflows', 'list_runs']],
   ['retool-automation', 'Retool Workflows', 'Automation', 'apikey', 'Read workflow definitions and run history.', ['list_workflows', 'get_runs']],
   ['twilio-automation', 'Twilio Studio', 'Automation', 'apikey', 'Read Studio flows, executions and steps.', ['list_flows', 'get_execution']],
+  // ===== Second wave: observability, growth, billing, identity, databases =====
+  ['prometheus', 'Prometheus', 'Analytics', 'none', 'Run PromQL range and instant queries against a Prometheus server and read active alerts.', ['query', 'query_range', 'list_alerts', 'list_targets']],
+  ['braze', 'Braze', 'Marketing', 'apikey', 'Read campaign and Canvas performance, segments and message engagement.', ['list_campaigns', 'get_analytics', 'list_segments']],
+  ['typeform', 'Typeform', 'Research', 'apikey', 'Read form definitions and responses, including hidden fields and answers.', ['list_forms', 'get_form', 'list_responses']],
+  ['surveymonkey', 'SurveyMonkey', 'Research', 'oauth', 'Read surveys, questions and collected responses with collector metadata.', ['list_surveys', 'get_survey', 'list_responses']],
+  ['snyk', 'Snyk', 'Security', 'apikey', 'Read projects, vulnerability findings and remediation advice across orgs.', ['list_projects', 'list_issues', 'get_issue']],
+  ['sumo-logic', 'Sumo Logic', 'Analytics', 'apikey', 'Run log searches over Sumo Logic and export result sets.', ['search_jobs', 'get_messages', 'list_sources']],
+  ['storyblok', 'Storyblok', 'Content', 'apikey', 'Read stories, components and assets from a Storyblok space.', ['list_stories', 'get_story', 'list_components']],
+  ['squarespace', 'Squarespace', 'Commerce', 'apikey', 'Read commerce orders, products and blog posts from a Squarespace site.', ['list_orders', 'list_products', 'list_posts']],
+  ['wix', 'Wix', 'Commerce', 'apikey', 'Read Wix site data: products, orders, contacts and CMS collections.', ['list_products', 'list_orders', 'query_collection']],
+  ['mailgun', 'Mailgun', 'Email', 'apikey', 'Read sending domains, message events and suppression lists.', ['list_events', 'list_domains', 'list_suppressions']],
+  ['postmark', 'Postmark', 'Email', 'apikey', 'Read message events, bounces and templates from Postmark.', ['list_messages', 'get_bounces', 'list_templates']],
+  ['resend', 'Resend', 'Email', 'apikey', 'Inspect sent emails, delivery events and audiences.', ['list_emails', 'get_email', 'list_audiences']],
+  ['courier', 'Courier', 'Communication', 'apikey', 'Read notification templates, send logs and message history.', ['list_templates', 'get_message', 'list_logs']],
+  ['klarna', 'Klarna', 'Finance', 'apikey', 'Read Klarna orders, settlements and payouts.', ['list_orders', 'get_settlement', 'list_payouts']],
+  ['revolut', 'Revolut Business', 'Finance', 'oauth', 'Read business accounts, transactions and payment drafts.', ['list_accounts', 'list_transactions', 'get_payment']],
+  ['monzo', 'Monzo', 'Finance', 'oauth', 'Read pots, transactions and balance from a Monzo account.', ['list_accounts', 'list_transactions', 'get_balance']],
+  ['billcom', 'BILL', 'Finance', 'apikey', 'Read bills, invoices, vendors and payment status from BILL.', ['list_bills', 'list_invoices', 'list_vendors']],
+  ['hellosign', 'Dropbox Sign', 'Legal', 'apikey', 'Read signature requests, documents and completion status.', ['list_requests', 'get_request', 'list_templates']],
+  ['legalzoom', 'LegalZoom', 'Legal', 'oauth', 'Read business formation documents and compliance filings.', ['list_documents', 'get_filing']],
+  ['carta', 'Carta', 'Finance', 'apikey', 'Read cap-table holdings, option grants and 409A valuations.', ['get_cap_table', 'list_grants', 'list_valuations']],
+  ['dnb', 'Dun & Bradstreet', 'Sales', 'apikey', 'Look up company firmographics, hierarchies and risk scores.', ['search_companies', 'get_company', 'get_hierarchy']],
+  ['clari', 'Clari', 'Sales', 'apikey', 'Read pipeline coverage, forecast calls and deal risk signals.', ['get_forecast', 'list_deals', 'get_deal']],
+  ['people-ai', 'People.ai', 'Sales', 'apikey', 'Read activity capture, account engagement and rep coverage.', ['list_accounts', 'list_activities', 'get_engagement']],
+  ['6sense', '6sense', 'Sales', 'apikey', 'Read buying-stage intent and account scores for target segments.', ['list_accounts', 'get_intent', 'list_segments']],
+  ['demandbase', 'Demandbase', 'Sales', 'apikey', 'Read account identification, intent topics and campaign attribution.', ['search_accounts', 'get_intent', 'list_campaigns']],
+  ['drift', 'Drift', 'Sales', 'apikey', 'Read conversations, playbooks and meeting bookings from Drift.', ['list_conversations', 'get_conversation', 'list_playbooks']],
+  ['qualified', 'Qualified', 'Sales', 'apikey', 'Read website visitor sessions, Pi sessions and routed meetings.', ['list_sessions', 'get_session', 'list_meetings']],
+  ['podium', 'Podium', 'Support', 'apikey', 'Read reviews, messages and contact conversations.', ['list_reviews', 'list_conversations', 'get_contact']],
+  ['blameless', 'Blameless', 'Support', 'apikey', 'Read incidents, retrospectives and postmortem action items.', ['list_incidents', 'get_incident', 'list_retrospectives']],
+  ['dynatrace', 'Dynatrace', 'Analytics', 'apikey', 'Query Grail logs and metrics, and read problems and entities.', ['query_logs', 'query_metrics', 'list_problems']],
+  ['appdynamics', 'AppDynamics', 'Analytics', 'apikey', 'Read application performance metrics, business transactions and health rules.', ['list_applications', 'get_metrics', 'list_violations']],
+  ['lightstep', 'ServiceNow Cloud Observability', 'Analytics', 'apikey', 'Run stream queries over traces and metrics and read service health.', ['query_traces', 'query_metrics', 'list_services']],
+  ['chronosphere', 'Chronosphere', 'Analytics', 'apikey', 'Query metrics and monitor coverage with Chronosphere APIs.', ['query_metrics', 'list_monitors', 'get_service']],
+  ['victoriametrics', 'VictoriaMetrics', 'Analytics', 'none', 'Run MetricsQL queries against a VictoriaMetrics endpoint.', ['query', 'query_range', 'list_series']],
+  ['optimizely', 'Optimizely', 'Marketing', 'apikey', 'Read experiments, variations, results and feature flags.', ['list_experiments', 'get_results', 'list_flags']],
+  ['split-io', 'Split', 'Engineering', 'apikey', 'Read feature flags, splits, environments and impression metrics.', ['list_splits', 'get_split', 'list_metrics']],
+  ['statsig', 'Statsig', 'Engineering', 'apikey', 'Read gates, experiments, dynamic configs and exposure results.', ['list_gates', 'list_experiments', 'get_results']],
+  ['unleash', 'Unleash', 'Engineering', 'apikey', 'Read feature toggles, strategies, environments and change history.', ['list_toggles', 'get_toggle', 'list_projects']],
+  ['growthbook', 'GrowthBook', 'Engineering', 'apikey', 'Read experiments, features, metrics and analysis results.', ['list_experiments', 'list_features', 'get_results']],
+  ['auth0', 'Auth0', 'Security', 'apikey', 'Read users, clients, connections and recent authentication logs.', ['list_users', 'get_user', 'list_logs']],
+  ['okta', 'Okta', 'Security', 'apikey', 'Read users, groups, apps and system log events from an Okta org.', ['list_users', 'list_groups', 'list_logs']],
+  ['ping-identity', 'Ping Identity', 'Security', 'apikey', 'Read populations, applications and sign-on activity.', ['list_populations', 'list_applications', 'list_audit']],
+  ['jumpcloud', 'JumpCloud', 'Security', 'apikey', 'Read directory users, systems, groups and command results.', ['list_users', 'list_systems', 'list_groups']],
+  ['onelogin', 'OneLogin', 'Security', 'apikey', 'Read users, roles, apps and event logs from OneLogin.', ['list_users', 'list_roles', 'list_events']],
+  ['fastly', 'Fastly', 'Cloud', 'apikey', 'Read services, versions, backends and real-time CDN stats.', ['list_services', 'get_service', 'get_stats']],
+  ['koyeb', 'Koyeb', 'Cloud', 'apikey', 'Read apps, services, deployments and instance metrics.', ['list_apps', 'list_services', 'list_deployments']],
+  ['northflank', 'Northflank', 'Cloud', 'apikey', 'Read projects, services, builds and deployment logs.', ['list_projects', 'list_services', 'get_logs']],
+  ['turso', 'Turso', 'Data', 'apikey', 'List databases, inspect schemas and run read-only SQL against libSQL.', ['list_databases', 'get_schema', 'query']],
+  ['singlestore', 'SingleStore', 'Data', 'apikey', 'Read workspaces, databases and run analytical SQL queries.', ['list_databases', 'get_schema', 'query']],
+  ['influxdb', 'InfluxDB', 'Data', 'apikey', 'Run Flux queries over time-series buckets and read tasks.', ['query_flux', 'list_buckets', 'list_tasks']],
+  ['questdb', 'QuestDB', 'Data', 'none', 'Run SQL over QuestDB time-series tables and inspect partitions.', ['query', 'list_tables', 'get_partitions']],
+  ['milvus', 'Milvus', 'AI', 'apikey', 'Inspect collections, indexes and vector search results.', ['list_collections', 'describe_collection', 'search']],
+  ['modal', 'Modal', 'AI', 'apikey', 'Read apps, functions, deployments and container logs.', ['list_apps', 'list_functions', 'get_logs']],
+  ['runpod', 'RunPod', 'AI', 'apikey', 'Read GPU pods, templates, endpoints and billing usage.', ['list_pods', 'list_templates', 'get_usage']],
+  ['perplexity', 'Perplexity', 'AI', 'apikey', 'Run grounded web searches with citations and follow-up queries.', ['search', 'ask', 'get_citations']],
+  ['speechmatics', 'Speechmatics', 'AI', 'apikey', 'Transcribe audio jobs and read diarised, timestamped transcripts.', ['create_job', 'get_transcript', 'list_jobs']],
+
+  // ===== Third wave: search, observability, flags, service desk =====
+  ['kibana', 'Kibana', 'Analytics', 'apikey', 'Query Elasticsearch/Kibana indices, saved objects and aggregations over HTTP.', ['search', 'get_mapping', 'list_saved_objects']],
+  ['algolia', 'Algolia', 'Data', 'apikey', 'Search indices, inspect records, settings and analytics for an Algolia app.', ['search', 'get_record', 'list_indices']],
+  ['honeycomb', 'Honeycomb', 'Analytics', 'apikey', 'Run queries over traces and metrics, and read SLOs and triggers.', ['run_query', 'get_results', 'list_slos']],
+  ['launchdarkly', 'LaunchDarkly', 'Engineering', 'apikey', 'Read feature flags, targeting rules, environments and flag status.', ['list_flags', 'get_flag', 'list_environments']],
+  ['jira-service-management', 'Jira Service Management', 'Support', 'oauth', 'Read service-desk requests, queues, SLAs and approvals with Atlassian sign-in.', ['list_requests', 'get_request', 'list_queues']],
+
 ];
 
 // ---------------------------------------------------------------------------
@@ -531,10 +596,72 @@ const PLUGIN_ROWS = [
   ['plugin-data-viz', 'Data Visualizer', 'Picks the right chart, renders it and explains the takeaway.', ['code_execution', 'artifact'], 'Data'],
 ];
 
+
+// ---------------------------------------------------------------------------
+// Verified hosted MCP endpoints (each answered a JSON-RPC `initialize` with
+// 200 or 401 — i.e. a real server, possibly auth-gated — in Nov 2026).
+// Rows keep any endpoint declared above; these fill in the rest.
+// ---------------------------------------------------------------------------
+const HOSTED_ENDPOINTS = {
+  sentry: ['http', 'https://mcp.sentry.dev/mcp'],
+  stripe: ['http', 'https://mcp.stripe.com'],
+  paypal: ['http', 'https://mcp.paypal.com/mcp'],
+  plaid: ['http', 'https://mcp.plaid.com/mcp'],
+  intercom: ['http', 'https://mcp.intercom.com/mcp'],
+  figma: ['http', 'https://mcp.figma.com/mcp'],
+  canva: ['http', 'https://mcp.canva.com/mcp'],
+  notion: ['http', 'https://mcp.notion.com/mcp'],
+  'github-official': ['http', 'https://api.githubcopilot.com/mcp/'],
+  asana: ['http', 'https://mcp.asana.com/v2/mcp'],
+  linear: ['http', 'https://mcp.linear.app/mcp'],
+  jira: ['sse', 'https://mcp.atlassian.com/v1/sse'],
+  confluence: ['sse', 'https://mcp.atlassian.com/v1/sse'],
+  slack: ['http', 'https://mcp.slack.com/mcp'],
+  discord: ['http', 'https://mcp.discord.com/mcp'],
+  zendesk: ['http', 'https://mcp.zendesk.com/mcp'],
+  freshdesk: ['http', 'https://mcp.freshdesk.com/mcp'],
+  docusign: ['http', 'https://mcp.docusign.com/mcp'],
+  xero: ['http', 'https://mcp.xero.com/mcp'],
+  square: ['http', 'https://mcp.squareup.com/mcp'],
+  klaviyo: ['http', 'https://mcp.klaviyo.com/mcp'],
+  mixpanel: ['http', 'https://mcp.mixpanel.com/mcp'],
+  amplitude: ['http', 'https://mcp.amplitude.com/mcp'],
+  cloudflare: ['http', 'https://mcp.cloudflare.com/mcp'],
+  airtable: ['http', 'https://mcp.airtable.com/mcp'],
+  make: ['http', 'https://mcp.make.com/mcp'],
+  twilio: ['http', 'https://mcp.twilio.com/mcp'],
+  pagerduty: ['http', 'https://mcp.pagerduty.com/mcp'],
+  grafana: ['http', 'https://mcp.grafana.com/mcp'],
+  posthog: ['http', 'https://mcp.posthog.com/mcp'],
+  sanity: ['http', 'https://mcp.sanity.io/mcp'],
+  contentful: ['http', 'https://mcp.contentful.com/mcp'],
+  webflow: ['http', 'https://mcp.webflow.com/mcp'],
+  algolia: ['http', 'https://mcp.algolia.com/mcp'],
+  launchdarkly: ['http', 'https://mcp.launchdarkly.com/mcp'],
+  mongodb: ['http', 'https://mcp.mongodb.com/mcp'],
+  neon: ['http', 'https://mcp.neon.tech/mcp'],
+  supabase: ['http', 'https://mcp.supabase.com/mcp'],
+  vercel: ['http', 'https://mcp.vercel.com'],
+  huggingface: ['http', 'https://huggingface.co/mcp'],
+  dropbox: ['http', 'https://mcp.dropbox.com/mcp'],
+  box: ['http', 'https://mcp.box.com'],
+  monday: ['sse', 'https://mcp.monday.com/sse'],
+  clickup: ['http', 'https://mcp.clickup.com/mcp'],
+  postman: ['http', 'https://mcp.postman.com/mcp'],
+  honeycomb: ['http', 'https://mcp.honeycomb.io/mcp'],
+};
+// Retired or unverified endpoints: drop them so install never chases a dead host.
+const DEAD_ENDPOINTS = new Set(['calendly', 'readwise']);
+
 const BY_ID = new Map();
 for (const r of CONNECTOR_ROWS) {
   const [id, name, category, auth, description, tools, endpoint] = r;
-  BY_ID.set(id, { id, name, type: 'connector', category, auth, description, tools: tools || [], ...(endpoint ? { endpoint } : {}) });
+  const live = HOSTED_ENDPOINTS[id] ? { type: HOSTED_ENDPOINTS[id][0], url: HOSTED_ENDPOINTS[id][1] } : undefined;
+  BY_ID.set(id, { id, name, type: 'connector', category, auth, description, tools: tools || [], ...(live || endpoint ? { endpoint: live || endpoint } : {}) });
+}
+for (const id of DEAD_ENDPOINTS) {
+  const e = BY_ID.get(id);
+  if (e) delete e.endpoint;
 }
 for (const r of PLUGIN_ROWS) {
   const [id, name, description, provides, category] = r;

@@ -477,7 +477,7 @@ The four remaining *product-surface* gaps from the Example Desktop sidebar are n
 tool-wired, and verified in the running app (CDP, port 9333) and in the headless suite.
 
 ### K1 — Plugins & connectors catalog (`electron/connector-catalog.js` + `electron/plugins.js`)
-- **406 curated connectors / 50 plugins / 31 categories** (`electron/connector-catalog.js`)
+- **467 curated connectors / 50 plugins / 31 categories** (`electron/connector-catalog.js`)
   mirroring the Example app's connector directory — Productivity, PM, Communication,
   Email, Calendar, Engineering/DevOps, Analytics, Data/DBs, Cloud, Storage, Finance,
   Sales/CRM, Support/Incident, Design, HR, Legal, Education, Research, Media/Social,
@@ -486,7 +486,7 @@ tool-wired, and verified in the running app (CDP, port 9333) and in the headless
 - **Live registry layer** (`electron/mcpregistry.js`): paginated sync of
   `registry.modelcontextprotocol.io`, 24 h TTL, versioned disk cache
   (`~/.autobot/mcp-registry.json`), keyword-based categorisation, silent offline
-  degradation. Runtime pool = **850 connectors** (406 curated + 444 live).
+  degradation. Runtime pool = **911 connectors** (467 curated + 444 live), 961 rows total.
 - **Scoring search** (name > tag > description) and `suggest(query)` relevance ranking
   across the merged pool.
 - **Install state** persisted to `~/.autobot/plugins.json`; `install` / `uninstall` /
