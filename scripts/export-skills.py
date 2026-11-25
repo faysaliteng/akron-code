@@ -107,9 +107,16 @@ def main():
            "Each `.md` is self-contained: original frontmatter + body, with "
            "any bundled scripts/references inlined in an appendix section.", "",
            "## Re-import", "",
-           "Drop any file into a project's `.claude/skills/<name>/SKILL.md` "
-           "(or point Helio Bot at this folder) and it is discovered on "
-           "next start. Frontmatter `name`/`description` drive listing.", "",
+           "Any of these works — the frontmatter `name`/`description` drive listing:", "",
+           "1. **In-app Upload** — Skills panel -> *Upload .md* picks the file, parses the",
+           "   frontmatter and saves it as a custom skill.",
+           "2. **Custom skills folder** — copy to `~/.autobot/skills/<name>.md`. Flat `.md`",
+           "   files are discovered directly, no wrapping folder needed.",
+           "3. **Example Code skills** — `~/.claude/skills/<name>/SKILL.md`.",
+           "4. **Project scope** — `<project>/.claude/skills/<name>/SKILL.md`.",
+           "",
+           "Each file is self-contained: bundled scripts and references are inlined in",
+           "an appendix section, so nothing breaks when it is copied on its own.", "",
            "## Skills", "",
            "| # | file | bundled files |", "|---|---|---|"]
     for i, (name, has_aux) in enumerate(written, 1):

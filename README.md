@@ -114,3 +114,12 @@ autobot/
 
 Runtime data lives in `~/.autobot/` (`memory.json`, `settings.json`, `skills/`,
 `orchestrator.json`, `features.json`).
+
+### Skill library export / import
+
+`python3 scripts/export-skills.py` writes every installed skill (bundled +
+`~/.config/opencode/skill` + `~/.claude/skills`) to `~/Example Skills/` as one
+self-contained `.md` per skill — original frontmatter, body, and any bundled
+scripts/references inlined in an appendix — plus an `INDEX.md`. To bring a file
+back in, use **Skills panel → Upload .md**, or drop it in `~/.autobot/skills/`
+(flat `.md` files are discovered directly).
