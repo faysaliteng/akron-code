@@ -315,7 +315,10 @@ async function main() {
     const mock = await startMock([{ content: 'ok' }]);
     const events = [];
     await runAgent({
-      provider: { baseURL: `http://127.0.0.1:${mock.port}/v1`, apiKey: '', model: 'test', temperature: 0, maxTokens: 200 },
+      // The window is per model now, so pin a small one instead of relying on a
+      // global character ceiling: 32k tokens ≈ 70.7k chars, well under the 331k
+      // this conversation carries.
+      provider: { baseURL: `http://127.0.0.1:${mock.port}/v1`, apiKey: '', model: 'test', temperature: 0, maxTokens: 200, contextWindow: 32000 },
       messages,
       cwd: process.cwd(),
       emit: (evt) => events.push(evt),
@@ -324,7 +327,7 @@ async function main() {
     mock.server.close();
     const note = events.find((e) => e.type === 'notice');
     assert.ok(note, 'compaction must tell the user');
-    assert.match(String(note.text), /Compacted \d+ earlier turns/);
+    assert.match(String(note.text), /Compacted \d+ earlier turns to fit .+ 32K context window/);
   });
 
   await test('a hung tool call cannot freeze the run forever', async () => {
@@ -430,9 +433,13 @@ async function main() {
       });
       assert.ok(mock.calls() >= 2, 'the truncated turn was retried');
       assert.match(msgs[msgs.length - 1].content, /recovered with a full answer/);
+      // The retry must be visible, but as prose a user can act on — the raw
+      // provider phrase "token limit reached" is gone.
+      const cutNotice = events.find((e) => e.type === 'thinking' && /output limit/i.test(String(e.text)));
+      assert.ok(cutNotice, 'the retry is visible to the user');
       assert.ok(
-        events.some((e) => e.type === 'thinking' && /token limit reached/.test(String(e.text))),
-        'the retry is visible to the user',
+        !events.some((e) => /token limit reached/i.test(String(e.text || ''))),
+        'no raw "token limit reached" wording',
       );
       assert.ok(!events.some((e) => e.type === 'tool' && e.name === 'Bash'), 'a broken call is never executed');
     } finally {

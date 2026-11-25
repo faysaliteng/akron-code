@@ -965,3 +965,172 @@ live-verified" gap at the *config* level. A completed ChatGPT turn still needs a
 real account (none on this machine: `~/.codex/auth.json` absent, `accounts: []`),
 and Grok's browser round-trip needs a real tab, which `auth.x.ai` refuses to
 serve to a non-browser.
+
+## 28. Never stuck: live compaction, logo animation, and “can it actually work?” (2026-11-25)
+
+Four user-visible promises were still unproven by test alone, so each now has a
+**live, CDP-driven probe** that drives the real renderer against the real
+provider account and asserts on the DOM.
+
+### 28.1 A prompt larger than the model's window is fitted, not failed
+
+`build/probe-compact2.cjs` types a ~30 000-character prompt at a model whose
+*real* window is 16K and waits for the answer token. It also installs a
+`MutationObserver` on `.noticebar` **before** sending, so a notice that appears
+for a second is still recorded.
+
+```
+$ node build/probe-compact2.cjs 9333 tab_flash_lite_preview antigravity:6969loavbal-gmail-com google 30000
+{
+  "pass": true,
+  "sentChars": 30211,
+  "liveNotices": [
+    "This message was longer than tab_flash_lite_preview's 16K context window, so its middle was trimmed — the beginning and your latest request were kept, and the full text stays in the chat."
+  ],
+  "gotToken": true,
+  "noticeIsProse": true,
+  "claimsZeroTurns": false,
+  "rawLimitLeak": false,
+  "error": null
+}
+```
+
+What each assertion rules out:
+
+| Field | Meaning |
+|---|---|
+| `gotToken: true` | the turn completed — no stall, no error bar |
+| `liveNotices.length > 0` | the user is told what happened, in prose |
+| `claimsZeroTurns: false` | no “Compacted 0 earlier turns” lie |
+| `rawLimitLeak: false` | no vendor wording (`prompt is too long`, `context_length_exceeded`, …) reached the UI |
+| `noticeIsProse: true` | the notice contains no HTML/markup |
+
+**This probe failed before the fix, and the way it failed is the interesting
+part.** The budget is `budgetForModel(model, providerId, provider.contextWindow)`.
+With no live catalog registered, `contextWindowFor('tab_flash_lite_preview')` fell
+back to the documented Antigravity default (128K → 364 480 chars), so 30 211
+chars looked harmless and nothing was trimmed: `gotToken: true` but
+`liveNotices: []`. The provider then accepted the oversized request anyway, so the
+bug was invisible unless you measured the notice. The first `probe-compact2` run
+recorded exactly that (`liveNotices: []`, `bar: null`).
+
+Fix, two parts:
+
+1. `electron/main.js` refactored the IPC body into `fetchProviderModels(id)` and
+   added **`warmModelCatalogs()`** — every signed-in account's live catalog is
+   registered once, deferred 3 s after `whenReady()` (past first paint, off the
+   boot path) and re-run after `autobot:providerSignIn` and
+   `autobot:providerImport`. A turn sent seconds after launch now compacts
+   against the model's *actual* window instead of a documented default.
+2. `electron/llm.js` `sanitizeHistory()` trims the **head and tail** of a single
+   oversized message around a middle marker (≥500 head / ≥700 tail chars kept,
+   `size()` recomputed per trim) instead of dropping nothing; `compactTo` /
+   `shrinkLargest` keep 40 % head + 40 % tail for the same reason. The notice is
+   emitted only when something really left the working set (`dropped > 0` or
+   `truncated > 0`).
+
+Evidence that the window really is per-model and data-driven, read from the live
+catalog via `window.autobot.providerModels('antigravity:…')`:
+
+```
+tab_flash_lite_preview        16384     16K
+tab_jump_flash_lite_preview   16384     16K
+gemini-3.1-flash-image        65536     66K
+gemini-3-flash              1048576      1M      (38 models total)
+```
+
+`node -e "…budgetForModel('tab_flash_lite_preview','antigravity')"` →
+`{"window":16384,"usableTokens":8000,"maxChars":27200,"compactAt":24480}` **after**
+registration, versus `{"window":128000,"maxChars":364480}` before it.
+
+Unit coverage: `node test/llm-context.test.js` → **6 passed / 0 failed**, including
+`sanitizeHistory keeps the head and tail of one oversized message` and
+`a single oversized message is trimmed (not amputated) and the turn completes`
+(asserts the first request is shorter than the paste, both `AAA-BEGIN` and
+`ENDMAGIC` reach the model, the notice is prose, and no error event fires).
+
+### 28.2 The logo animates only while work is happening
+
+`build/probe-logo.cjs` samples the mark every 100 ms during a live streaming turn
+and compares against idle.
+
+```
+{
+  "reducedMotion": false,
+  "idle":     { "cls": "logo", "anim": "none" },
+  "idleStable": true,
+  "streamingSamples": 62,
+  "streamingAnim": "logo-spin",
+  "coreAnim": "logo-pulse",
+  "transformMoved": true,
+  "rest":     { "cls": "logo", "anim": "none" }
+}
+```
+
+`active` is threaded through `Logo` / `CompactMark` / `FullMark` to
+`.logo-live`; rays rotate on `logo-spin` (3.2 s), the core pulses on
+`logo-pulse` (1.3 s), and the glow breathes. `prefers-reduced-motion` disables all
+three, and idle/rest return to `anim: none` so a static screenshot of the app is
+never mid-spin.
+
+### 28.3 Every capable model can code, run a shell, and open a browser
+
+`build/probe-capability.cjs` asks the model — in one turn — to write a file, read
+it back with a shell command, and open a page in the built-in browser.
+
+| Provider / model | Write | Shell | Browser | Verdict |
+|---|---|---|---|---|
+| antigravity `gemini-3-flash` | `Writing:toolcap.txt` | `Running:cat toolcap.txt` → `RUN=TOOLCAP-OK` | `Browsing:https://example.com` → `Example Domain` | **PASS** (`pass: true`, no markup leak) |
+| claude `claude-opus-4-5` (first run, earlier today) | same | same | same | **PASS** (recorded; re-run today is quota-blocked — see 28.5) |
+| grok `grok-4.7` | — | — | — | blocked by account allowance (100 % used, resets 2026-12-01) |
+| chatgpt | — | — | — | no account on this machine |
+
+`build/probe-capability.cjs` reads the friendly tool cards (`.tool-name` verb +
+`.tool-args` target), never the raw tool id, so it measures what a user sees.
+
+### 28.4 PC control (Computer Use) works when the model has it
+
+`build/probe-computer.cjs` on antigravity:
+
+```
+"pass": true,
+"consentPrompts": 1,
+"consentLabel": "Allow Computer Use? … computer_screen_size …",
+"toolCard": "screen_size",
+"answer": "SCREEN=1280x832",
+"executor": "Screen: 1280x832"
+```
+
+Computer Use is advertised under the `mcp__computer__*` names (not the executor
+names), which is what the probe drives; a mutating computer tool raises exactly
+one consent modal and the model answers with the real screen size, so the loop is
+closed end to end.
+
+### 28.5 What is still blocked, and why
+
+Honesty beats a green table:
+
+| Item | Status |
+|---|---|
+| claude live turn today | **429 rate_limit_error** straight from `api.anthropic.com` (`req_011ChQAKJgag…`, account rate limit, not our identity gate). Verified with a direct `fetch` outside the app, so it is the account, not the app |
+| claude compaction path, live | same 429 window — proven in unit tests only |
+| claude Computer Use | same 429 window; write/shell/browser passed earlier today when quota was available |
+| grok live turn | SuperGrok weekly pool 100 % used until 2026-12-01; UI prints allowance prose, no markup |
+| chatgpt live turn | no account on this machine (`~/.codex/auth.json` absent, `accounts: []`); config validated in §27 |
+| window maximize/restore via CDP | `-32601` (method not implemented) and `osascript` lacks assistive access, so interactive PC-control proofs stop at screen size/screenshot |
+
+### Gate after §28
+
+| Check | Result |
+|---|---|
+| `for f in test/*.test.js` | **24/24 exit 0**, `failing=0` |
+| `node test/e2e.test.js` | **112 passed / 0 failed** |
+| `node test/llm-context.test.js` | **6 passed / 0 failed** |
+| `node test/model-catalog.test.js` | **17 assertion groups passed** |
+| `node scripts/parity-audit.js` | **EXIT 0** — `DEFS: 141`, `subsystems incomplete: 0` |
+| `npx vite build` | OK (chunk-size warning only) |
+| `build/probe-compact2.cjs` | **`pass: true`** |
+| `build/probe-logo.cjs` | **EXIT 0**, `streamingSamples: 62` |
+| `build/probe-picker.cjs` | **14 checks passed** |
+| `build/probe-capability.cjs` (antigravity) | **`pass: true`** |
+| `build/probe-computer.cjs` (antigravity) | **`pass: true`**, `SCREEN=1280x832` |

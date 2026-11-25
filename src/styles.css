@@ -382,6 +382,34 @@ button { font-family: inherit; letter-spacing: inherit; }
 
 .welcome { text-align: center; margin-top: 14vh; color: var(--text-000); }
 .welcome .logo { display: inline-block; margin-bottom: 16px; filter: drop-shadow(0 0 18px rgba(16,185,129,.4)); }
+
+/* ── Live brand mark ──────────────────────────────────────────────
+   The mark spins its rays and pulses its core while the agent is
+   working, so "is it doing anything?" is answerable at a glance.
+   Percentages resolve against the SVG viewBox (100 or 400), so one
+   rule covers both the compact and the full mark. */
+.logo-live .logo-rays {
+  transform-box: view-box; transform-origin: 50% 50%;
+  animation: logo-spin 3.2s linear infinite;
+}
+.logo-live .logo-core {
+  transform-box: fill-box; transform-origin: center;
+  animation: logo-pulse 1.3s ease-in-out infinite;
+}
+.logo-live { animation: logo-glow 1.6s ease-in-out infinite; }
+@keyframes logo-spin { to { transform: rotate(360deg); } }
+@keyframes logo-pulse {
+  0%, 100% { transform: scale(1); opacity: .55; }
+  50% { transform: scale(1.35); opacity: .95; }
+}
+@keyframes logo-glow {
+  0%, 100% { filter: drop-shadow(0 0 4px rgba(16,185,129,.35)); }
+  50% { filter: drop-shadow(0 0 12px rgba(16,185,129,.75)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .logo-live, .logo-live .logo-rays, .logo-live .logo-core { animation: none; }
+  .logo-live { filter: drop-shadow(0 0 8px rgba(16,185,129,.6)); }
+}
 .welcome h1 {
   font-family: var(--serif); font-size: 34px; font-weight: 600;
   color: var(--text-000); margin: 0 0 10px; letter-spacing: -0.02em;

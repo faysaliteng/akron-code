@@ -2119,7 +2119,7 @@ export default function App() {
 
   return (
     <div className="app" data-theme={settings.theme} dir={localeDir(settings.locale)} lang={settings.locale}>
-      <div className="titlebar"><Logo size={16} /><span className="brand">Akron Bot</span><span className="sub">{T('brand.sub')}</span></div>
+      <div className="titlebar"><Logo size={16} active={streaming} /><span className="brand">Akron Bot</span><span className="sub">{T('brand.sub')}</span></div>
 
       <div className="layout">
         {/* Sidebar — Example parity: wordmark / search / collapse, New chat, Recents, Tools, account+settings */}
@@ -2350,7 +2350,7 @@ function RunActivity({ live, thinking, startedAt }) {
   const elapsed = startedAt ? Math.max(0, now - startedAt) : 0;
   return (
     <div className="activity" role="status" aria-live="polite">
-      <span className="activity-spin"><Icon name="Spinner" size={13} /></span>
+      <span className="activity-spin"><Logo size={15} active /></span>
       <span className="activity-text">{label}</span>
       {target ? <span className="activity-target">{target}</span> : null}
       {elapsed ? <span className="activity-time">{fmtElapsed(elapsed)}</span> : null}
@@ -2374,16 +2374,16 @@ const MARK = '#10B981';
 const MARK_GLOW = '#A7F3D0';
 const COMPACT_RAYS = [0, 45, 90, 135, 180, 225, 270, 315];
 
-function CompactMark({ size }) {
+function CompactMark({ size, active }) {
   return (
-    <svg className="logo" width={size} height={size} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Bot">
-      <g fill={MARK}>
-        <circle cx="50" cy="50" r="17" />
+    <svg className={'logo' + (active ? ' logo-live' : '')} width={size} height={size} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Bot">
+      <g fill={MARK} className="logo-rays">
+        <circle cx="50" cy="50" r="17" className="logo-core" />
         {COMPACT_RAYS.map((deg) => (
           <rect key={deg} x="43.5" y="5" width="13" height="31" rx="6.5" transform={`rotate(${deg} 50 50)`} />
         ))}
       </g>
-      <circle cx="50" cy="50" r="7.5" fill={MARK_GLOW} opacity="0.55" />
+      <circle className="logo-core" cx="50" cy="50" r="7.5" fill={MARK_GLOW} opacity="0.55" />
     </svg>
   );
 }
@@ -2391,7 +2391,7 @@ function CompactMark({ size }) {
 // Full mark: 12 radial rays in two counter-breathing groups, a pulsing core and
 // six orbiting tendril circles, all through a gooey filter (the "symbiote"
 // look). Animation is CSS/SMIL inside the SVG and honours reduced-motion.
-function FullMark({ size }) {
+function FullMark({ size, active }) {
   const raysA = [
     [191, 76, 18, 96, 9, 0], [192, 88, 16, 84, 8, 32], [190, 72, 20, 102, 10, 64],
     [192, 92, 16, 80, 8, 95], [191, 74, 18, 98, 9, 128], [192, 86, 16, 86, 8, 158],
@@ -2402,7 +2402,7 @@ function FullMark({ size }) {
   ];
   const glowSpokes = [[0, 96, 58], [64, 94, 62], [128, 96, 58], [188, 94, 62], [248, 92, 64], [306, 96, 58]];
   return (
-    <svg className="logo" width={size} height={size} viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Bot">
+    <svg className={'logo' + (active ? ' logo-live' : '')} width={size} height={size} viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Bot">
       <defs>
         <filter id="akGooMark" x="-30%" y="-30%" width="160%" height="160%">
           <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur" />
@@ -2481,8 +2481,8 @@ function FullMark({ size }) {
   );
 }
 
-function Logo({ size = 20 }) {
-  return size < 30 ? <CompactMark size={size} /> : <FullMark size={size} />;
+function Logo({ size = 20, active = false }) {
+  return size < 30 ? <CompactMark size={size} active={active} /> : <FullMark size={size} active={active} />;
 }
 
 // ---------- Conversation export / share ----------

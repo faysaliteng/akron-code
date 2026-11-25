@@ -181,6 +181,10 @@ function normalizeProvider(p) {
     // mid-thinking (finish_reason "length"), so the website/code never appears.
     // Default higher; runAgent also retries with a bigger budget on truncation.
     maxTokens: p.maxTokens != null ? Number(p.maxTokens) : 32000,
+    // A caller that already knows the selected model's window (the picker does,
+    // and orchestrator entries may) pins it here. Dropping it made budgetForModel
+    // resolve the model's *name* instead of the window the user saw in the UI.
+    contextWindow: Number(p.contextWindow) > 0 ? Number(p.contextWindow) : 0,
     // Reasoning / thinking level: 'auto' (provider default) | 'low' | 'medium'
     // | 'high'. Only mapped to the OpenAI-style `reasoning_effort` request param
     // when NOT 'auto', so providers that reject it are never sent an unknown field.
@@ -238,18 +242,27 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   // budget we asked for. Claude Code always sends a large output budget, so when
   // a provider says "too large" we step down rather than killing the run — a
   // hard failure here looked to the user like the agent simply stopped.
+  let rejectedText = '';
+  let bodyRead = false;
   for (let attempt = 0; attempt < 4 && !res.ok && (res.status === 400 || res.status === 422); attempt++) {
-    const rejected = await res.text().catch(() => '');
+    rejectedText = await res.text().catch(() => '');
+    bodyRead = true;
+    // "Prompt is too long" cannot be fixed by dropping a request field — every
+    // retry sends the same history. Break out (keeping the prose for
+    // isContextOverflow) so the agent loop compacts instead of quadrupling the
+    // doomed round trip and then losing the message to an already-read body.
+    if (isContextOverflow({ message: rejectedText })) break;
     let changed = false;
     if (req.reasoning_effort) {
       delete req.reasoning_effort;
       changed = true;
-    } else if (req.max_tokens && /max_tokens|max_completion_tokens|maximum|too large|exceed/i.test(rejected)) {
+    } else if (req.max_tokens && /max_tokens|max_completion_tokens|maximum|too large|exceed/i.test(rejectedText)) {
       const next = Math.floor(Number(req.max_tokens) / 2);
       if (next >= 1024) { req.max_tokens = next; changed = true; }
     }
     if (!changed) break;
     res = await doFetch(req);
+    bodyRead = false;
   }
   // Remember what this provider accepted, so we don't pay the failed-request
   // round trip on every single turn of the run.
@@ -260,7 +273,7 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   // Keep the caller's object in sync when we silently dropped a field.
   if (!req.reasoning_effort) delete body.reasoning_effort;
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
+    const text = bodyRead ? rejectedText : await res.text().catch(() => '');
     const err = new Error(`LLM ${res.status}: ${text.slice(0, 400)}`);
     err.status = res.status;
     // Respect Retry-After when the provider tells us how long to wait.
@@ -378,6 +391,21 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
 // transcript verbatim as "LLM 502: <html><head><title>502 Bad Gateway".
 // 4xx stays fatal: retrying a rejected request just burns the user's time.
 const RETRY_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 529]);
+
+// Providers report "your prompt is bigger than my window" in prose, not with a
+// status code: OpenAI-compatible 400s, Anthropic's "prompt is too long: N tokens
+// > M maximum", Gemini's "input token count exceeds", DeepSeek's "context length
+// exceeded". Those used to fall through to `isRateLimitError()` (it matches
+// /exceeded|limit reached/), which made the loop back off five rounds — ~37 s of
+// waiting — and then die with "provider error 400" while the history was never
+// actually compacted. Classify it separately so the agent loop can shrink the
+// prompt and carry on.
+function isContextOverflow(e) {
+  const msg = String((e && e.message) || e || '');
+  if (!msg) return false;
+  if (!/context|prompt|input|messages|token|length|request/i.test(msg)) return false;
+  return /context[_ -]?length|maximum context|context window(?: is| size)?|prompt is too long|too many tokens|input is too long|input token count|token count exceeds|exceeds? (?:the )?(?:model'?s? )?(?:maximum|context|limit)|reduce the length|too long for (?:this )?model|request (?:is )?too large|larger than (?:the )?(?:model|context)/i.test(msg);
+}
 
 // True when an error is TRANSIENT — rate limit / quota / gateway blip / dropped
 // socket — so the run should back off and retry (and possibly fail over) instead
@@ -499,6 +527,10 @@ async function chatWithFailover(opts) {
         return await chatCompletion(p, messages, tools, onDelta, signal, maxTokens);
       } catch (e) {
         if (signal && signal.aborted) throw e;
+        // An oversized prompt is not transient: re-sending the identical history
+        // five times only stalls for ~37 s and then blames the provider. Hand it
+        // back to the agent loop, which compacts or chunks the input.
+        if (isContextOverflow(e)) throw e;
         if (isRateLimitError(e)) {
           lastErr = e;
           rateLimited = true;
@@ -644,6 +676,29 @@ function autoCaptureArtifacts(content, cwd, emit) {
  *   - a long conversation can exceed a smaller model's context window.
  * This normalizes all of that so any model can continue the same conversation.
  */
+/**
+ * Split text into chunks of at most `max` characters, preferring paragraph,
+ * then line, then word boundaries — so an oversized prompt can be processed in
+ * order instead of being amputated. Never returns an empty chunk.
+ */
+function chunkText(text, max) {
+  const s = String(text == null ? '' : text);
+  const limit = Math.max(2000, Math.round(Number(max) || 2000));
+  if (s.length <= limit) return s ? [s] : [''];
+  const parts = [];
+  let rest = s;
+  while (rest.length > limit) {
+    let cut = rest.lastIndexOf('\n\n', limit);
+    if (cut < limit * 0.5) cut = rest.lastIndexOf('\n', limit);
+    if (cut < limit * 0.5) cut = rest.lastIndexOf(' ', limit);
+    if (cut < limit * 0.25) cut = limit;
+    parts.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest) parts.push(rest);
+  return parts.length ? parts : [s];
+}
+
 function sanitizeHistory(messages, opts = {}) {
   const supportsTools = opts.supportsTools !== false;
   const maxChars = opts.maxChars || 220000; // ≈ 55k tokens of history
@@ -750,6 +805,11 @@ function sanitizeHistory(messages, opts = {}) {
         out.splice(dropFrom, 1);
       }
     }
+    // A single huge message (a pasted document, a giant diff) cannot be
+    // "dropped": the newest turn IS the request, and dropping it would leave the
+    // model answering nothing. Trimmed below, after the digest note is inserted,
+    // so the note itself counts against the budget.
+    let truncatedChars = 0;
     // Example compacts instead of just amputating: give the model a digest of
     // what left the window so it can keep working on the same task.
     const asks = [];
@@ -773,9 +833,41 @@ function sanitizeHistory(messages, opts = {}) {
       toolsSeen.size ? 'Tools used: ' + [...toolsSeen].slice(0, 24).join(', ') : '',
     ].filter(Boolean).join('\n');
     const note = `[Compacted ${dropped.length} earlier turns to fit this model's context window. The full transcript stays in this chat, and the project mindmap above has the current file state.${digest ? '\n' + digest : ''}\n]`;
-    out.splice(i + 1, 0, { role: 'user', content: note });
-    if (typeof opts.onCompact === 'function') {
-      try { opts.onCompact({ dropped: dropped.length, digest }); } catch (_) {}
+    // Only announce a compaction when something actually left the window. With
+    // a single oversized message the loop above drops nothing; saying
+    // "Compacted 0 earlier turns" was user-visible nonsense.
+    if (dropped.length) out.splice(i + 1, 0, { role: 'user', content: note });
+
+    // Now trim the middle of whatever is still too big. This is what makes a
+    // single oversized paste work: the newest message IS the request, so it can
+    // never be dropped — but its head and tail (where the instruction lives)
+    // fit. Without this the over-budget bytes were re-sent on every retry and
+    // the turn looked permanently stuck on "token limit reached".
+    total = size();
+    if (total > maxChars) {
+      const trimOrder = out
+        .map((m) => m)
+        .filter((m) => m.role !== 'system')
+        .sort((a, b) => str(b.content).length - str(a.content).length);
+      for (const m of trimOrder) {
+        if (total <= maxChars) break;
+        const content = str(m.content);
+        const over = total - maxChars;
+        const keep = Math.max(1600, content.length - over - 300);
+        if (keep >= content.length) continue;
+        const headLen = Math.max(500, Math.round(keep * 0.35));
+        const tailLen = Math.max(700, keep - headLen);
+        const cut = content.length - (headLen + tailLen);
+        if (cut <= 0) continue;
+        const marker = `\n\n…[${cut} characters from the middle of this message were omitted to fit this model's context window; the beginning and the end — including your latest request — are kept]…\n\n`;
+        m.content = content.slice(0, headLen) + marker + content.slice(content.length - tailLen);
+        truncatedChars += content.length - str(m.content).length;
+        total = size();
+      }
+    }
+
+    if ((dropped.length || truncatedChars) && typeof opts.onCompact === 'function') {
+      try { opts.onCompact({ dropped: dropped.length, truncated: truncatedChars, digest }); } catch (_) {}
     }
   }
   return out;
@@ -851,6 +943,62 @@ async function runAgent(opts) {
   const getIndex = () => activeIndex % providerList.length;
   const setIndex = (i) => { activeIndex = i % providerList.length; };
   const provider = providerList[getIndex()];
+
+  // ── Oversized single input → sequential chunks ──────────────────────────
+  // sanitizeHistory only drops *earlier* turns, so one pasted document larger
+  // than the window used to be amputated: the model never saw most of the prompt
+  // and the turn looked stuck. Split it, run the parts in order, merge the
+  // answers — the turn always completes instead of stalling on a 400.
+  if (opts._chunked !== true) {
+    const pid = String(provider.oauthProvider || '').split(':')[0] || provider.transport || '';
+    const win = modelCatalog.contextWindowFor(provider.model, pid, provider.contextWindow);
+    const per = Math.max(8000, Math.round(modelCatalog.budgetFor(win).maxChars * 0.6));
+    let lastUserIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i] && messages[i].role === 'user') { lastUserIdx = i; break; }
+    const body = lastUserIdx >= 0 && typeof messages[lastUserIdx].content === 'string' ? messages[lastUserIdx].content : '';
+    if (body.length > per * 2) {
+      // Never make an absurd number of round-trips: widen the slices instead.
+      const size = Math.max(per, Math.ceil(body.length / 40));
+      const parts = chunkText(body, size);
+      const total = parts.length;
+      emit({ type: 'notice', text: `Your message is larger than ${provider.model}'s context window, so it is being handled in ${total} parts.` });
+      const prefix = messages.slice(0, lastUserIdx).filter((m) => m.role !== 'system').map((m) => ({ ...m }));
+      // Sub-runs stream deltas/thinking/usage but must NOT emit `done` — the
+      // renderer would close the turn after part 1.
+      const usageSum = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0, model: provider.model };
+      const partEmit = (ev) => {
+        if (!ev) return;
+        if (ev.type === 'done') {
+          const u = ev.usage || {};
+          for (const k of ['prompt_tokens', 'completion_tokens', 'total_tokens', 'calls']) usageSum[k] += Number(u[k]) || 0;
+          return;
+        }
+        if (ev.type === 'limit') return;
+        emit(ev);
+      };
+      let merged = '';
+      for (let k = 0; k < total; k++) {
+        if (opts.signal && opts.signal.aborted) throw new Error('aborted');
+        if (k > 0) emit({ type: 'delta', text: `\n\n— part ${k + 1}/${total} —\n\n` });
+        const subMessages = prefix.map((m) => ({ ...m }));
+        if (merged.trim()) subMessages.push({ role: 'assistant', content: merged });
+        subMessages.push({
+          role: 'user',
+          content: `[Part ${k + 1}/${total} of one long message]\n${parts[k]}\n\n[Work through only this part now. Keep any artifact/file work going; a later part will finish the job.]`,
+        });
+        const partMsgs = await runAgent({ ...opts, messages: subMessages, _chunked: true, turnStart: false, emit: partEmit });
+        const last = [...partMsgs].reverse().find((m) => m.role === 'assistant');
+        const text = last && typeof last.content === 'string' ? last.content : '';
+        if (text.trim()) merged = merged ? `${merged}\n\n${text}` : text;
+      }
+      const out = prefix.concat([
+        { role: 'user', content: body },
+        { role: 'assistant', content: merged },
+      ]);
+      emit({ type: 'done', messages: out, usage: usageSum });
+      return out;
+    }
+  }
 
   // Merge built-in tools + MCP tools (if any) + custom extraTools. A sub-agent
   // definition can restrict the tool surface (`tools:` frontmatter), which is
@@ -1020,10 +1168,16 @@ async function runAgent(opts) {
   // is not amputated at 55k tokens while a small model still fits.
   const providerId = String(provider.oauthProvider || '').split(':')[0] || provider.transport || '';
   const modelBudget = modelCatalog.budgetForModel(provider.model, providerId, provider.contextWindow);
+  // The character budget actually enforced this turn. It starts at the model's
+  // own window-derived figure and shrinks on demand: a provider can still reject
+  // the prompt as too long (tokeniser drift, tool schemas, image parts), and
+  // re-sending the identical history only stalls. Compacting and retrying keeps
+  // the turn alive, exactly like the Claude app.
+  let historyBudget = modelBudget.maxChars;
   messages = sanitizeHistory(messages, {
     supportsTools: toolMode,
-    maxChars: modelBudget.maxChars,
-    onCompact: ({ dropped }) => {
+    maxChars: historyBudget,
+    onCompact: ({ dropped = 0, truncated = 0 } = {}) => {
       // PreCompact/PostCompact fire around the compaction itself. They run
       // fire-and-forget: compaction is synchronous and must not block on I/O.
       const payload = { trigger: 'auto', dropped };
@@ -1034,14 +1188,77 @@ async function runAgent(opts) {
           return hooks.runEvent('PostCompact', payload, { cwd: currentCwd, config: getHookConfig() });
         })
         .catch(() => {});
-      emit({
-        type: 'notice',
-        text: `Compacted ${dropped} earlier turns to fit ${provider.model}'s ${modelCatalog.fmtWindow(modelBudget.window)} context window — the chat history and project files are unchanged.`,
-      });
+      // Say what actually happened. "Compacted 0 earlier turns" was nonsense for
+      // a single pasted document — there were no earlier turns to compact, so
+      // the message itself was shortened while its head and tail were kept.
+      const win = modelCatalog.fmtWindow(modelBudget.window);
+      let text;
+      if (dropped && truncated) {
+        text = `Fitted this conversation to ${provider.model}'s ${win} context window: ${dropped} earlier turn${dropped === 1 ? '' : 's'} left the working set and one very long message was shortened in the middle. The full transcript stays in this chat.`;
+      } else if (dropped) {
+        text = `Compacted ${dropped} earlier turn${dropped === 1 ? '' : 's'} to fit ${provider.model}'s ${win} context window — the chat history and project files are unchanged.`;
+      } else {
+        text = `This message was longer than ${provider.model}'s ${win} context window, so its middle was trimmed — the beginning and your latest request were kept, and the full text stays in the chat.`;
+      }
+      emit({ type: 'notice', text });
     },
   });
   const knownToolNames = new Set(tools.map((t) => t.function.name));
   if (textToolMode) messages[0].content += '\n\n' + TEXT_TOOL_PROTOCOL;
+
+  // ── Live compaction helpers ──────────────────────────────────────────────
+  // Compaction used to run once, before the first model call. A long tool loop
+  // then grew the history past the window mid-turn and the provider 400'd. These
+  // helpers let the loop re-compact on demand and, when dropping turns is not
+  // enough, shrink the single biggest message so the prompt always fits.
+  const msgChars = (m) => {
+    const c = m && m.content;
+    if (c == null) return 0;
+    if (typeof c === 'string') return c.length;
+    try { return JSON.stringify(c).length; } catch { return String(c).length; }
+  };
+  const historyChars = () => messages.reduce((n, m) => n + msgChars(m) + 64, 0);
+  const compactTo = (target) => {
+    const want = Math.max(24000, Math.round(target));
+    if (want >= historyBudget) return { dropped: 0, freed: 0 };
+    const beforeCount = messages.length;
+    const beforeChars = historyChars();
+    const compacted = sanitizeHistory(messages, { supportsTools: toolMode, maxChars: want });
+    const dropped = Math.max(0, beforeCount - compacted.length);
+    // sanitizeHistory returns a fresh array; keep the live reference so every
+    // closure (doChat, tool loop) sees the compacted history.
+    messages.length = 0;
+    messages.push(...compacted);
+    historyBudget = want;
+    return { dropped, freed: Math.max(0, beforeChars - historyChars()) };
+  };
+  // Last resort: the history is already minimal, so the overflow is one huge turn
+  // (a giant file read, a command dump, a pasted document). Halve it in place.
+  const shrinkLargest = () => {
+    let idx = -1;
+    let biggest = 0;
+    for (let i = 1; i < messages.length; i++) {
+      const len = msgChars(messages[i]);
+      if (len > biggest) { biggest = len; idx = i; }
+    }
+    if (idx < 0 || biggest < 2000) return false;
+    const c = messages[idx].content;
+    const flat = typeof c === 'string' ? c : (() => { try { return JSON.stringify(c); } catch { return String(c); } })();
+    // Keep the head AND the tail: a user turn's instruction almost always sits at
+    // the end of a long paste, so truncating only the tail silently deleted the
+    // actual request and the model answered the wrong question.
+    const headLen = Math.max(1000, Math.floor(flat.length * 0.4));
+    const tailLen = Math.max(1000, Math.floor(flat.length * 0.4));
+    const cut = flat.length - headLen - tailLen;
+    if (cut <= 0) return false;
+    messages[idx] = {
+      ...messages[idx],
+      content: flat.slice(0, headLen)
+        + `\n…[${cut} characters omitted to fit the model context window — the beginning and the end are kept; ask again for the rest if you need it]…\n`
+        + flat.slice(flat.length - tailLen),
+    };
+    return true;
+  };
 
   // Anti-thrash state. Weak tool-callers often repeat the exact same failing
   // call (or retry a broken Write) until the step budget runs out. Track it and
@@ -1225,6 +1442,19 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     // twice, once truncated.
     let turnChars = 0;
     let turnThink = 0;
+    // Mid-run compaction: a long tool loop keeps appending results, so re-check
+    // the live size every step and compact before the provider has to reject it.
+    if (step > 0) {
+      const liveCap = Math.round(historyBudget * 0.95);
+      if (historyChars() > liveCap) {
+        const c = compactTo(Math.round(historyBudget * 0.7));
+        if (c.dropped) {
+          emit({ type: 'notice', text: `Compacted ${c.dropped} earlier turn${c.dropped === 1 ? '' : 's'} mid-run to keep this tool loop inside ${provider.model}'s context window.` });
+        } else if (!shrinkLargest()) {
+          // Nothing left to shrink — the next call will decide (chatRound retries).
+        }
+      }
+    }
     const doChat = (withTools, maxTokens) => {
       turnChars = 0;
       turnThink = 0;
@@ -1252,20 +1482,43 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         return m;
       });
     };
+    // One chat round with automatic recovery for an oversized prompt. Providers
+    // report "prompt is too long" / "context length exceeded" in prose, not as a
+    // distinct status, so isContextOverflow() classifies it; we compact further
+    // (or trim the biggest result) and resend instead of dying mid-task.
+    const chatRound = async (withTools, maxTokens) => {
+      let tries = 0;
+      for (;;) {
+        try {
+          return await doChat(withTools, maxTokens);
+        } catch (e) {
+          if (!isContextOverflow(e) || (opts.signal && opts.signal.aborted)) throw e;
+          if (tries >= 5) throw e;
+          tries++;
+          const c = compactTo(Math.round(historyBudget * 0.55));
+          const shrunk = c.freed > 0 || shrinkLargest();
+          if (!shrunk) throw e;
+          emit({
+            type: 'notice',
+            text: `“${provider.model}” reported the prompt was over its context window — ${c.dropped ? `compacted ${c.dropped} earlier turn${c.dropped === 1 ? '' : 's'}` : 'trimmed the largest tool result'} and retrying.`,
+          });
+        }
+      }
+    };
     try {
-      message = await doChat(toolMode);
+      message = await chatRound(toolMode);
     } catch (e) {
-      if (toolMode && /tool|function|400|422|unknown/i.test(String(e.message)) && !/max_tokens|max_completion_tokens/i.test(String(e.message))) {
+      if (toolMode && !isContextOverflow(e) && /tool|function|400|422|unknown/i.test(String(e.message)) && !/max_tokens|max_completion_tokens/i.test(String(e.message))) {
         // provider doesn't support tools — fall back to plain chat + text protocol
         toolMode = false;
         if (!textToolMode) {
           textToolMode = true;
           // Re-normalize the history (earlier steps may already contain native
           // tool_calls / role:"tool" entries that this endpoint would reject).
-          messages = sanitizeHistory(messages, { supportsTools: false, maxChars: modelBudget.maxChars });
+          messages = sanitizeHistory(messages, { supportsTools: false, maxChars: historyBudget });
           if (messages[0] && messages[0].role === 'system') messages[0].content += '\n\n' + TEXT_TOOL_PROTOCOL;
         }
-        message = await doChat(false);
+        message = await chatRound(false);
       } else {
         throw e;
       }
@@ -1275,23 +1528,57 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     // on chain-of-thought BEFORE emitting the code/tool calls. When the stream is
     // cut at the token limit (finish_reason "length") the website/code silently
     // never appears — either no tool calls at all, or a call whose JSON arguments
-    // were sliced mid-string. Retry once with a doubled budget so the artifact
-    // actually gets created instead of handing the model an unparseable call.
+    // were sliced mid-string. Escalate the output budget; if the answer is STILL
+    // cut, continue it in place so a long file or explanation finishes instead of
+    // stopping at "…" (this is the Claude-app behaviour).
     if (message && message.finish_reason === 'length') {
-      const cutCalls = message.tool_calls || [];
-      const brokenArgs = cutCalls.some((tc) => {
+      const broken = (list) => (list || []).some((tc) => {
         const raw = tc.function && tc.function.arguments;
         if (!raw || !String(raw).trim()) return false; // no-arg tools are legal
         try { JSON.parse(String(raw)); return false; } catch { return true; }
       });
-      if (!cutCalls.length || brokenArgs) {
+      let cutCalls = message.tool_calls || [];
+      if (!cutCalls.length || broken(cutCalls)) {
         const base = provider.maxTokens || 16384;
-        const bumped = Math.min(Math.max(base * 2, base + 4096), 65536);
+        // Never exceed the room the window reserved for output, but never ask for
+        // less than we already did either.
+        const ceiling = Math.max(base, Math.min(65536, Math.max(8192, modelBudget.reserveOut * 2)));
+        const bumped = Math.min(Math.max(base * 2, base + 4096), ceiling);
         // Tell the UI to drop the cut-off attempt before the retry streams, then
         // show what is happening (no silent re-generation).
         emit({ type: 'retry', chars: turnChars, thinkingChars: turnThink });
-        emit({ type: 'thinking', text: ` (token limit reached — retrying with ${bumped} tokens)` });
-        message = await doChat(toolMode, bumped);
+        emit({ type: 'thinking', text: ' (the reply reached the output limit — regenerating with a larger budget)' });
+        message = await chatRound(toolMode, bumped);
+        cutCalls = message.tool_calls || [];
+        // A complete tool call wins. Otherwise merge continuation passes so the
+        // user gets the whole answer rather than a truncated one.
+        let part = 1;
+        while (message && message.finish_reason === 'length' && !(cutCalls.length && !broken(cutCalls)) && part <= 3) {
+          const partial = String(message.content || '');
+          if (!partial.trim()) break;
+          const partialMsg = { role: 'assistant', content: partial };
+          part++;
+          emit({ type: 'thinking', text: ` (composing a long reply — part ${part})` });
+          messages.push(partialMsg);
+          const continueAsk = { role: 'user', content: '[continue] Resume the reply exactly where it stopped. Output only the continuation — do not repeat earlier text and do not add a preamble.' };
+          messages.push(continueAsk);
+          let more;
+          try {
+            more = await chatRound(toolMode, bumped);
+          } finally {
+            // Remove by identity: compaction may have rebuilt the array mid-call.
+            for (const ref of [continueAsk, partialMsg]) {
+              const i = messages.lastIndexOf(ref);
+              if (i >= 0) messages.splice(i, 1);
+            }
+          }
+          const add = String((more && more.content) || '');
+          message = {
+            ...(more || message),
+            content: partial + (add && !partial.endsWith('\n') ? '\n' : '') + add,
+          };
+          cutCalls = (more && more.tool_calls) || [];
+        }
       }
     }
 
@@ -1708,4 +1995,4 @@ async function chatOnce({ provider, messages, maxTokens, signal, tools }) {
   return { content: String(content || ''), usage: (msg && msg.usage) || null, model: p.model };
 }
 
-module.exports = { runAgent, normalizeProvider, chatOnce, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, humanizeLLMError, isRateLimitError };
+module.exports = { runAgent, normalizeProvider, chatOnce, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, chunkText, humanizeLLMError, isRateLimitError, isContextOverflow };

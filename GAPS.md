@@ -1604,5 +1604,9 @@ top-up is off"* — with `markupLeak:false` and `hasEnvelope:false`.
 | Item | State |
 |---|---|
 | Grok chat turns | **Blocked by account allowance until 2026-12-01.** Transport + identity verified; the next live turn after the reset is the acceptance test. |
+| Grok write / shell / browser + Computer Use | Same allowance block. `build/probe-capability.cjs` and `build/probe-computer.cjs` are ready to run against `grok-4.7` the moment the pool resets. |
+| ChatGPT live turn | No account on this machine (`~/.codex/auth.json` absent, `accounts: []`). The OAuth config is vendor-validated (§27) but no completed token exists, so no turn, capability, or compaction proof. |
+| Claude live turn (2026-11-25) | `429 rate_limit_error` from `api.anthropic.com` for account `rxpromedbd-gmail-com` — reproduced with a direct `fetch` outside the app (`req_011ChQAKJgag…`), so it is the account's rate limit, not the identity gate or our headers. During this window the claude compaction path and claude Computer Use are unit-tested only; claude write/shell/browser passed earlier the same day. |
+| Claude identity gate still needs a fresh account to reconfirm | The `CC_IDENTITY` system block (`You are Claude Code, Anthropic's official CLI for Claude.`) is what turned a permanent 429 into a working turn. It is verified by code + the earlier passing turn; a new account would re-confirm it independently. |
 | Non-Claude tokens stored before the rename | Old secrets encrypted under `Helio Bot Safe Storage` do not decrypt under `Akron Bot Safe Storage`. Claude is handled by adoption; every other provider needs one re-sign-in. |
 | Window maximize/restore via CDP | Not drivable (`-32601`), and `osascript` lacks assistive access — unit-tested only (`test/windowstate.test.js` 18/0). |

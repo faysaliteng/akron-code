@@ -1140,57 +1140,83 @@ ipcMain.handle('autobot:providerStatus', () => {
 // real accounts expose 5–40 and they change, so ask the account itself.
 // Returns the resolved context window per model, which is what the picker
 // labels and what the auto-compact budget is derived from.
+async function fetchProviderModels(id) {
+  const raw = String(id || '');
+  const provId = raw.split(':')[0];
+  if (!provId) return { ok: false, error: 'which provider?' };
+  const prov = providerOauth.provider(provId);
+  if (!prov) return { ok: false, error: 'unknown provider' };
+
+  let live = [];
+  let warning = '';
+  try {
+    const r = await providerOauth.resolve(raw);
+    live = await providertransport.listModels({
+      transport: r.transport,
+      accessToken: r.accessToken,
+      apiKey: r.accessToken,
+      accountId: r.accountId,
+      codexUrl: r.codexUrl,
+      cloudcodeUrl: r.cloudcodeUrl,
+      baseURL: r.baseURL,
+      model: '',
+    });
+  } catch (e) {
+    // A provider whose token is dead still has a documented catalog: fall
+    // through to the registry list instead of returning an empty picker.
+    warning = oneLine(e);
+  }
+  if (live.length) modelCatalog.register(provId, live);
+
+  const entries = live.length
+    ? live
+    : (prov.models || []).map((m) => ({ id: m.id, label: m.label, contextWindow: 0, thinking: !!m.thinking }));
+  const models = entries.map((m) => {
+    const win = modelCatalog.contextWindowFor(m.id, provId, m.contextWindow);
+    return {
+      id: m.id,
+      label: m.label || m.id,
+      contextWindow: win,
+      windowLabel: modelCatalog.fmtWindow(win),
+      thinking: !!m.thinking,
+      group: m.group || '',
+    };
+  });
+  return {
+    ok: true,
+    providerId: provId,
+    live: live.length > 0,
+    count: models.length,
+    models,
+    warning: warning || undefined,
+  };
+}
+
+/**
+ * Ask every signed-in provider for its model catalog once, shortly after boot.
+ *
+ * The context window that drives auto-compaction is resolved from this catalog
+ * (a live 16K model must not be trimmed at a documented 128K default). It used
+ * to be fetched only when the user opened the model picker, so a turn sent
+ * before that resolved to the offline fallback and an oversized prompt was sent
+ * over the model's real window. Best-effort and serial: a dead token must not
+ * delay boot.
+ */
+async function warmModelCatalogs() {
+  let providers = [];
+  try { providers = (providerOauth.status() || {}).providers || []; } catch (_) { return; }
+  for (const p of providers) {
+    const accounts = Array.isArray(p.accounts) ? p.accounts : [];
+    for (const acct of accounts) {
+      const id = acct && acct.id ? String(acct.id) : `${p.id}:${acct && acct.account}`;
+      try { await fetchProviderModels(id); } catch (_) {}
+    }
+  }
+}
+
 ipcMain.handle('autobot:providerModels', async (event, id) => {
   try {
-    const raw = String(id || '');
-    const provId = raw.split(':')[0];
-    if (!provId) return { ok: false, error: 'which provider?' };
-    const prov = providerOauth.provider(provId);
-    if (!prov) return { ok: false, error: 'unknown provider' };
-
-    let live = [];
-    let warning = '';
-    try {
-      const r = await providerOauth.resolve(raw);
-      live = await providertransport.listModels({
-        transport: r.transport,
-        accessToken: r.accessToken,
-        apiKey: r.accessToken,
-        accountId: r.accountId,
-        codexUrl: r.codexUrl,
-        cloudcodeUrl: r.cloudcodeUrl,
-        baseURL: r.baseURL,
-        model: '',
-      });
-    } catch (e) {
-      // A provider whose token is dead still has a documented catalog: fall
-      // through to the registry list instead of returning an empty picker.
-      warning = oneLine(e);
-    }
-    if (live.length) modelCatalog.register(provId, live);
-
-    const entries = live.length
-      ? live
-      : (prov.models || []).map((m) => ({ id: m.id, label: m.label, contextWindow: 0, thinking: !!m.thinking }));
-    const models = entries.map((m) => {
-      const win = modelCatalog.contextWindowFor(m.id, provId, m.contextWindow);
-      return {
-        id: m.id,
-        label: m.label || m.id,
-        contextWindow: win,
-        windowLabel: modelCatalog.fmtWindow(win),
-        thinking: !!m.thinking,
-        group: m.group || '',
-      };
-    });
-    return {
-      ok: true,
-      providerId: provId,
-      live: live.length > 0,
-      count: models.length,
-      models,
-      warning: warning || undefined,
-    };
+    return await fetchProviderModels(id);
   } catch (e) {
     return { ok: false, error: oneLine(e) };
   }
@@ -1199,6 +1225,11 @@ ipcMain.handle('autobot:providerModels', async (event, id) => {
 ipcMain.handle('autobot:providerSignIn', async (event, id) => {
   try {
     const rec = await providerOauth.authorize(String(id || ''), { openExternal: (url) => shell.openExternal(url) });
+    // Register the new account's live catalog immediately: the very next turn
+    // must compact against the real context window of whatever model it picks.
+    try {
+      if (rec && rec.id) await fetchProviderModels(rec.id);
+    } catch (_) {}
     return { ok: true, account: rec };
   } catch (e) {
     return { ok: false, error: oneLine(e) };
@@ -1218,7 +1249,12 @@ ipcMain.handle('autobot:providerSignOut', (event, id, account) => {
 });
 
 ipcMain.handle('autobot:providerImport', async () => {
-  try { return { ok: true, result: await providerOauth.importLocal() }; } catch (e) { return { ok: false, error: oneLine(e) }; }
+  try {
+    const result = await providerOauth.importLocal();
+    // Adoption brings a new account (and therefore a new catalog) into play.
+    try { await warmModelCatalogs(); } catch (_) {}
+    return { ok: true, result };
+  } catch (e) { return { ok: false, error: oneLine(e) }; }
 });
 
 ipcMain.handle('autobot:providerAddBearer', async (event, id, token, label) => {
@@ -2487,6 +2523,14 @@ app.whenReady().then(() => {
   // Bundled agent runtimes: PATH injection first (so the Bash tool works
   // immediately), then a deferred auto-update pass.
   startRuntimes();
+  // Warm the per-model context-window catalogs so a prompt sent in the first
+  // seconds after launch is compacted against the model's real window instead
+  // of a documented default (a live 16K model would otherwise be sent 128K of
+  // history). Deferred past first paint and best-effort.
+  {
+    const t = setTimeout(() => { warmModelCatalogs().catch(() => {}); }, 3000);
+    if (t && typeof t.unref === 'function') t.unref();
+  }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
