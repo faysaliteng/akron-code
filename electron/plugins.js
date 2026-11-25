@@ -94,8 +94,11 @@ function score(entry, terms) {
   let s = 0;
   for (const t of terms) {
     if (!t) continue;
+    // Every term must appear somewhere: multi-word queries narrow the list
+    // instead of widening it (searching "linear issues" must return Linear).
+    if (!hay.includes(t)) return 0;
     if (entry.name.toLowerCase().includes(t)) s += 8;
-    if (hay.includes(t)) s += 3;
+    s += 3;
     if (hay.split(/\W+/).includes(t)) s += 2;
   }
   return s;

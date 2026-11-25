@@ -28,9 +28,12 @@ async function parseSSE(res) {
 }
 
 class MCPClient {
-  constructor() {
+  constructor(opts) {
     this.servers = new Map(); // serverId -> entry
     this.nextServerId = 1;
+    // async (url) => bearer token | null — supplied by main.js so OAuth-gated
+    // hosted servers authenticate without the caller passing a header.
+    this.authProvider = (opts && opts.authProvider) || null;
   }
 
   async connect(cfg) {
@@ -45,6 +48,14 @@ class MCPClient {
     const serverId = 'srv' + this.nextServerId++;
     const url = cfg.url;
     const headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(cfg.headers || {}) };
+    if (!headers.authorization && typeof this.authProvider === 'function') {
+      try {
+        const tok = await this.authProvider(url);
+        if (tok) headers.authorization = 'Bearer ' + tok;
+      } catch (_) { /* anonymous attempt; a 401 below can still trigger sign-in */ }
+    }
+    // Optional per-connector API key pasted in settings.
+    if (!headers.authorization && cfg.apiKey) headers.authorization = 'Bearer ' + cfg.apiKey;
     const entry = {
       type: 'http', url, headers, nextId: 1, tools: [], name: cfg.name || url,
       pending: new Map(), stderr: () => '', sessionId: null,
@@ -53,7 +64,12 @@ class MCPClient {
       const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
       if (!res.ok) {
         const t = await res.text().catch(() => '');
-        throw new Error(`MCP HTTP ${res.status}: ${t.slice(0, 200)}`);
+        const www = res.headers.get('www-authenticate') || '';
+        const err = new Error(`MCP HTTP ${res.status}: ${t.slice(0, 200)}`);
+        err.status = res.status;
+        err.wwwAuthenticate = www;
+        err.resourceMetadata = (www.match(/resource_metadata\s*=\s*"([^"]+)"/) || [])[1] || null;
+        throw err;
       }
       const sid = res.headers.get('mcp-session-id');
       if (sid) { entry.sessionId = sid; headers['mcp-session-id'] = sid; }

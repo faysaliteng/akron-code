@@ -1246,3 +1246,64 @@ copied.
 | Tool count | unchanged at **141** |
 | e2e | **112 passed / 0 failed** |
 | `parity-audit.js` | *NO ATOMIC GAPS*, EXIT 0 (now 26 subsystem rows — compliance, unfurl, artifact canvas, extension host added to the gate) |
+
+---
+
+## U. CONNECTOR OAUTH — THE `oauth:*` NAMESPACE WAS THE LAST REAL GAP (2026-11-25)
+
+Desktop's 8 `oauth:*` channels are Anthropic account plumbing
+(`tokenCache`, `tokenCacheV2`, `staleSessionLatch`, `everydayRevokeOwed`,
+`skerryBurdock`, `skerryBurdockSignOut`, `skerryBurdockUnreadSince`,
+`oauth:everydayRevokeOwedUnreadable`) — no standalone equivalent, so the
+*names* stay N/A. But the user-facing capability they front was missing:
+**~425 rows in the merged connector catalog advertise `auth: 'oauth'` and
+install only set a flag.** Every server that answered `401` was dead on
+arrival. That is no longer true.
+
+### U.1 What was built
+
+| Piece | Role |
+|---|---|
+| `electron/mcpoauth.js` | The whole OAuth 2.1 state machine, pure Node with injected `fetchImpl` / `openExternal` / `store`. 27 exports. |
+| `electron/mcp.js` | `MCPClient({ authProvider })` attaches `Authorization: Bearer` (falling back to `cfg.apiKey`); a 401 tags the error with `status`, `wwwAuthenticate` and `resourceMetadata`. |
+| `electron/main.js` | `authFlights` dedupe map, the `authProvider` hand-off, `needsAuth`/`resourceMetadataUrl` on install failure, and the `autobot:pluginAuthStatus` / `pluginSignOut` / `pluginAuthStart` handlers. Sign-in opens an in-app modal with a system-browser fallback, reconnects on success and reports failure through `describeAuthError`. |
+| `electron/preload.js` | `pluginAuthStart` / `pluginAuthStatus` / `pluginSignOut` on `window.autobot`. |
+| `src/App.jsx` | `PluginsView`: `authBusy`, `signIn`, `signOut`, the `needsAuth` install message, and **Sign in** / **Sign out** pills on the card foot. |
+| `src/styles.css` | `.plugin-auth`, `.plugin-auth.primary`, `:disabled`, plus the foot wrap/nowrap rules that keep the pill on one line. |
+
+Protocol coverage: RFC 9728 protected-resource discovery → RFC 8414
+authorization-server metadata (8 candidate URLs + conventional fallback) →
+RFC 7591 dynamic client registration (`token_endpoint_auth_method: 'none'`) →
+RFC 7636 PKCE S256 on an ephemeral `127.0.0.1` loopback redirect → RFC 8707
+`resource` on the authorize **and** token requests → refresh-token lifecycle.
+Tokens are stored through `secretstore` under `mcp-oauth:<host><path>`.
+
+### U.2 Two correctness details that are easy to get wrong
+
+1. **`registerClient(as, redirectUri, opts)` takes the redirect URI as a
+   string.** Passing an options object makes Linear answer
+   `redirect_uris are invalid` (400). The loopback listener must be started
+   *before* registration so the ephemeral port in the registered URI is exact.
+2. **`token_endpoint_auth_method: 'none'` means a public client.** The
+   `client_secret` must not appear in the token body — the PKCE verifier is
+   the only proof of possession. Sending one is both wrong and a leak.
+
+### U.3 Verification
+
+| Check | Result |
+|---|---|
+| `node test/mcpoauth.test.js` (new) | **146 passed / 0 failed** — discovery order, metadata fallback, DCR, PKCE, loopback (incl. `{error:'timeout'}` resolving rather than rejecting), token body for public clients, refresh/expiry, store keys, sign-out, and 7 envelope/`unwrapMessage` regression cases |
+| Live loopback integration (`oauth-live.cjs`, real HTTP AS on 127.0.0.1) | **12/12** — DCR, loopback redirect, RFC 8707 `resource`, discovery scopes, PKCE verifier ↔ challenge, `secret=false`, stored token reused by the transport |
+| Full UI loop (local MCP+OAuth server on 8791, CDP) | Install → **Sign in** → `authorized:true, connected:true, scope:"mcp.read mcp.write"` → **Sign out** → `false`; pills flip `Sign in` ↔ `Sign out` |
+| Error sanitizer | 18/18 hostile inputs produce **zero** HTML or envelope residue |
+| Real-provider DCR | `mcp.linear.app` and `mcp.notion.com` both return `client_id`s and full authorize URLs (`response_type,client_id,redirect_uri,code_challenge,code_challenge_method,state,scope,resource`) |
+| Parity gate | `scripts/parity-audit.js` → **27 subsystem rows**, *NO ATOMIC GAPS*, EXIT 0 |
+| Tool count | unchanged at **141** — no new definitions, swarm gate untouched |
+| e2e / search | **112 / 0** and **9 / 0** |
+
+### U.4 Why this was worth doing before the cosmetic items
+
+A dead `oauth` namespace would have been invisible in a screenshot but fatal
+in use: Linear, Notion, Sentry, Atlassian and most of the registry's hosted
+servers all require it. With sign-in real, the connector catalog is a working
+surface rather than a list.

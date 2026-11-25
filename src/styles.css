@@ -1153,7 +1153,13 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
 .plugin-card-head button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .plugin-card-head button:disabled { opacity: 0.55; }
 .plugin-card-desc { margin: 0; color: var(--text-400); font-size: var(--fs-footnote); line-height: 1.45; }
-.plugin-card-foot { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.plugin-card-foot { display: flex; align-items: center; gap: 8px; justify-content: flex-start; flex-wrap: wrap; }
+.plugin-card-foot .muted { white-space: nowrap; }
+.plugin-card-foot .badge { white-space: nowrap; }
+.plugin-card-foot .plugin-auth { margin-left: auto; }
+.plugin-auth { padding: 3px 10px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg-200); color: var(--text-100); font-size: var(--fs-caption); cursor: pointer; white-space: nowrap; }
+.plugin-auth.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.plugin-auth:disabled { opacity: 0.55; cursor: default; }
 .badge { font-size: 10px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border-strong); }
 .badge.ok { color: var(--accent-text); border-color: var(--accent); background: var(--accent-soft); }
 .badge.warn { color: #e0a44a; border-color: #e0a44a; background: rgba(224, 164, 74, 0.12); }

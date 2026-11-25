@@ -22,6 +22,7 @@ const artifactcanvas = require('./artifactcanvas');
 const extensionhost = require('./extensionhost');
 const unfurlMod = require('./unfurl');
 const compliance = require('./compliance');
+const mcpoauth = require('./mcpoauth');
 
 const windows = new Set(); // all open BrowserWindows (multi-window parity)
 // BrowserWindow.id -> extension id, for the hosting windows created by
@@ -36,7 +37,18 @@ protocol.registerSchemesAsPrivileged([{
   privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
 }]);
 const runs = new Map(); // runId -> AbortController
-const mcp = new MCPClient();
+// Connector id -> in-flight OAuth promise, so double-clicks join one flow.
+const authFlights = new Map();
+// OAuth-gated connectors get their bearer from the encrypted secret store, so
+// the MCP transport never has to know how the token was obtained.
+const mcp = new MCPClient({
+  authProvider: async (url) => {
+    try {
+      const secretstore = require('./secretstore');
+      return await mcpoauth.ensureAccessToken({ endpointUrl: url, store: secretstore });
+    } catch (_) { return null; }
+  },
+});
 
 // Turn MCP transport failures into one human-readable line: no raw JSON-RPC
 // envelopes, HTML error pages, or escaped newlines ever reach the UI.
@@ -934,7 +946,16 @@ ipcMain.handle('autobot:installPlugin', async (e, id) => {
     }
   } catch (err) {
     // Install intent is preserved; surface the transport error without failing.
-    return { ok: true, entry: r.entry, connectError: describeConnectError(err) };
+    const auth = entry.endpoint && entry.endpoint.url
+      ? mcpoauth.isAuthChallenge(err.status || (/MCP HTTP (\d+)/.exec(String(err.message || '')) || [])[1], { 'www-authenticate': err.wwwAuthenticate })
+      : { required: false };
+    const out = { ok: true, entry: r.entry, connectError: describeConnectError(err) };
+    if (auth.required) {
+      out.needsAuth = true;
+      out.resourceMetadataUrl = err.resourceMetadata || null;
+      out.connectError = 'this connector requires sign-in before its tools work';
+    }
+    return out;
   }
   return r;
 });
@@ -942,6 +963,123 @@ ipcMain.handle('autobot:uninstallPlugin', (e, id) => pluginsDir.uninstall(id));
 ipcMain.handle('autobot:pluginStats', () => pluginsDir.stats());
 ipcMain.handle('autobot:refreshRegistry', (e, opts) => pluginsDir.refreshRegistry(opts));
 ipcMain.handle('autobot:registryStatus', () => pluginsDir.registryStatus());
+
+// ---------------------------------------------------------------------------
+// Connector OAuth sign-in (Desktop `oauth:*` / `custom-3p` parity)
+// ---------------------------------------------------------------------------
+ipcMain.handle('autobot:pluginAuthStatus', (e, id) => {
+  const entry = pluginsDir.get(id);
+  if (!entry) return { ok: false, error: `Unknown plugin/connector id: ${id}` };
+  const url = entry.endpoint && entry.endpoint.url;
+  if (!url) return { ok: true, endpoint: false, authorized: false, auth: entry.auth };
+  const rec = mcpoauth.readRecord(url, secretstore);
+  return {
+    ok: true,
+    endpoint: url,
+    auth: entry.auth,
+    authorized: !!rec,
+    connected: !!(pluginsDir.getState().config[id] || {}).connected,
+    expiresAt: rec ? rec.expires_at || null : null,
+    scope: rec ? rec.scope || null : null,
+  };
+});
+
+ipcMain.handle('autobot:pluginSignOut', async (e, id) => {
+  const entry = pluginsDir.get(id);
+  if (!entry) return { ok: false, error: `Unknown plugin/connector id: ${id}` };
+  const url = entry.endpoint && entry.endpoint.url;
+  if (url) mcpoauth.signOut(url, secretstore);
+  for (const [sid, srv] of mcp.servers) {
+    if (srv && srv.url === url) { try { mcp.disconnect(sid); } catch (_) {} }
+  }
+  const upd = pluginsDir.setConfig(id, { connected: false, connectedAt: null });
+  return { ok: true, entry: upd };
+});
+
+ipcMain.handle('autobot:pluginAuthStart', async (e, id, opts) => {
+  const entry = pluginsDir.get(id);
+  if (!entry) return { ok: false, error: `Unknown plugin/connector id: ${id}` };
+  const url = entry.endpoint && entry.endpoint.url;
+  if (!url) return { ok: false, error: 'this connector has no hosted MCP endpoint to sign in to' };
+
+  // One window can be mid-flow per connector; a second click joins the first.
+  if (authFlights.has(id)) return authFlights.get(id);
+
+  const flight = (async () => {
+    const parent = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null;
+    try {
+      const res = await mcpoauth.authorize({
+        endpointUrl: url,
+        store: secretstore,
+        openExternal: async (authUrl) => {
+          // Prefer an in-app window so the flow is visible and the callback
+          // returns to the same session; fall back to the system browser.
+          if (parent && !parent.isDestroyed()) {
+            const w = new BrowserWindow({
+              parent, modal: false, width: 520, height: 720,
+              title: 'Sign in to ' + entry.name,
+              backgroundColor: '#F6F3EC',
+              webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+            });
+            w.setMenuBarVisibility(false);
+            w.loadURL(authUrl);
+            const closeOnReturn = (ev, target) => {
+              try {
+                const u = new URL(target);
+                if (u.hostname === mcpoauth.REDIRECT_HOST || u.pathname === mcpoauth.CALLBACK_PATH) {
+                  setTimeout(() => { try { w.close(); } catch (_) {} }, 900);
+                }
+              } catch (_) {}
+            };
+            w.webContents.on('will-navigate', closeOnReturn);
+            w.webContents.on('did-navigate', closeOnReturn);
+            w.webContents.setWindowOpenHandler(({ url: pop }) => {
+              try {
+                const p = new URL(pop);
+                if (p.protocol === 'https:' || p.protocol === 'http:') {
+                  w.loadURL(pop);
+                  return { action: 'deny' };
+                }
+              } catch (_) {}
+              return { action: 'deny' };
+            });
+            return;
+          }
+          await shell.openExternal(authUrl);
+        },
+        fetchImpl: globalThis.fetch,
+        scope: opts && opts.scope,
+        resourceMetadataUrl: opts && opts.resourceMetadataUrl,
+        clientId: opts && opts.clientId,
+        clientSecret: opts && opts.clientSecret,
+        tokenEndpointAuthMethod: opts && opts.tokenEndpointAuthMethod,
+      });
+
+      // Reconnect now that we hold a bearer token.
+      let tools = [];
+      let serverId = null;
+      try {
+        const info = await mcp.connect({ url, transport: entry.endpoint.type === 'sse' ? 'sse' : 'http', name: entry.name });
+        const srv = mcp.servers.get(info.serverId);
+        if (srv) srv.fullTools = info.tools || [];
+        tools = info.tools || [];
+        serverId = info.serverId;
+      } catch (err) {
+        const upd = pluginsDir.markConnected(id);
+        return { ok: true, entry: upd, connected: false, tools: [], connectError: describeConnectError(err) };
+      }
+      const upd = pluginsDir.markConnected(id);
+      return { ok: true, entry: upd, connected: true, tools, serverId };
+    } catch (err) {
+      return { ok: false, error: mcpoauth.describeAuthError(err), code: err && err.oauthError || null };
+    } finally {
+      authFlights.delete(id);
+    }
+  })();
+
+  authFlights.set(id, flight);
+  return flight;
+});
 
 // Scheduled tasks.
 ipcMain.handle('autobot:listScheduledTasks', () => scheduler.list());

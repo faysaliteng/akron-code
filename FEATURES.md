@@ -157,9 +157,11 @@ Example Desktop's sidebar now maps 1:1 onto working local features — not stubs
 - Live registry layer: `electron/mcpregistry.js` syncs
   `registry.modelcontextprotocol.io` (paginated, 24 h TTL, versioned disk cache
   `~/.autobot/mcp-registry.json`), categorises by keyword hints, and degrades silently
-  offline. Merged pool at runtime: **911 connectors** (467 curated + 444 live),
-  50 plugins, 33 categories, 451 entries with a live MCP endpoint.
+  offline. Merged pool at runtime: **963 rows** in the panel (467 curated connectors +
+  50 plugins + live MCP servers), 33 categories, 451 entries with a live MCP endpoint.
 - Ranking search (name > tag > description) + `suggest()` relevance across both layers.
+  Multi-word queries are **AND** — every term must match, so “linear issues” narrows to
+  Linear instead of widening.
 - Install state persisted in `~/.autobot/plugins.json`; `install` / `uninstall` /
   `markConnected` / `setConfig`. Installing an entry that carries a transport
   auto-connects it (`sse`/`http` URL or stdio `command`), stashes `tools/list`, and
@@ -168,6 +170,14 @@ Example Desktop's sidebar now maps 1:1 onto working local features — not stubs
 - Tools: `plugins__list_plugins`, `plugins__search_plugins`, `plugins__search_connectors`,
   `plugins__suggest_plugin_install`, `plugins__install`, `plugins__uninstall`,
   `plugins__directory_stats`, `plugins__refresh_registry`.
+- **Real OAuth 2.1 sign-in** for every connector that advertises it (≈425 catalog rows):
+  `electron/mcpoauth.js` does RFC 9728 protected-resource discovery → RFC 8414
+  authorization-server metadata → RFC 7591 dynamic client registration → RFC 7636 PKCE
+  S256 on an ephemeral `127.0.0.1` loopback redirect, carrying the RFC 8707 `resource`
+  parameter. Tokens live in `secretstore` under `mcp-oauth:<host><path>`; the MCP
+  transport attaches `Authorization: Bearer` and reconnects on success. Installed
+  connectors show **Sign in** / **Sign out** pills; a failed sign-in prints one human
+  line (HTML stripped, JSON-RPC envelopes unwrapped), never a raw error body.
 - Panel: **Plugins & Connectors** — search, type/category filters, installed-only toggle,
   Install/Remove per card, connected badge, directory stats line (built-in vs live MCP
   servers) and a **Refresh registry** button.

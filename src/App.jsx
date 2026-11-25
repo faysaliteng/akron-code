@@ -3043,6 +3043,7 @@ function PluginsView() {
   const [stats, setStats] = useState(null);
   const [shown, setShown] = useState(120);
   const [tab, setTab] = useState('directory');
+  const [authBusy, setAuthBusy] = useState(null);
 
   const refreshStats = useCallback(async () => {
     try {
@@ -3083,9 +3084,45 @@ function PluginsView() {
     try {
       const r = on ? await window.autobot.installPlugin(id) : await window.autobot.uninstallPlugin(id);
       if (r && r.ok === false) setErr(r.error);
-      else if (r && r.connectError) setErr('Installed, but could not connect: ' + r.connectError);
+      else if (r && r.needsAuth) {
+        // OAuth-gated connector: installation succeeded, the server wants a token.
+        setErr('Installed. Click “Sign in” on the card to authorize with the provider.');
+      } else if (r && r.connectError) setErr('Installed, but could not connect: ' + r.connectError);
     } finally {
       setBusy(false);
+      await refresh();
+      refreshStats();
+    }
+  };
+
+  // Browser sign-in for an OAuth-gated connector (MCP OAuth 2.1 + PKCE).
+  const signIn = async (id) => {
+    setErr('');
+    setAuthBusy(id);
+    try {
+      const r = await window.autobot.pluginAuthStart(id);
+      if (!r || r.ok === false) setErr((r && r.error) || 'sign-in failed');
+      else if (r.connected === false) setErr('Signed in, but the connector still refused: ' + (r.connectError || 'unknown error'));
+      else if (r.error) setErr(r.error);
+    } catch (e) {
+      setErr(e && e.message ? e.message : String(e));
+    } finally {
+      setAuthBusy(null);
+      await refresh();
+      refreshStats();
+    }
+  };
+
+  const signOut = async (id) => {
+    setErr('');
+    setAuthBusy(id);
+    try {
+      const r = await window.autobot.pluginSignOut(id);
+      if (r && r.ok === false) setErr(r.error);
+    } catch (e) {
+      setErr(e && e.message ? e.message : String(e));
+    } finally {
+      setAuthBusy(null);
       await refresh();
       refreshStats();
     }
@@ -3176,6 +3213,25 @@ function PluginsView() {
               {it.origin === 'registry' && <span className="badge">registry</span>}
               {it.installed && it.requiresSignIn && <span className="badge warn">needs sign-in</span>}
               {it.installed && !it.requiresSignIn && <span className="badge ok">installed</span>}
+              {it.installed && it.endpoint && it.auth !== 'none' && (
+                it.requiresSignIn
+                  ? <button
+                      className="plugin-auth primary"
+                      disabled={authBusy === it.id}
+                      onClick={() => signIn(it.id)}
+                    >
+                      {authBusy === it.id ? 'Signing in…' : 'Sign in'}
+                    </button>
+                  : it.auth === 'oauth'
+                    ? <button
+                        className="plugin-auth"
+                        disabled={authBusy === it.id}
+                        onClick={() => signOut(it.id)}
+                      >
+                        Sign out
+                      </button>
+                    : null
+              )}
             </div>
           </div>
         ))}

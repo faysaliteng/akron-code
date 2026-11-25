@@ -180,6 +180,7 @@ const SUBSYSTEMS = [
   ['link unfurl', 'electron/unfurl.js', ['unfurl', 'looksUnfurlable', 'cacheFile']],
   ['artifact canvas', 'electron/artifactcanvas.js', ['canvasHtml', 'parseDesign', 'parseSlides']],
   ['extension host', 'electron/extensionhost.js', ['CHANNELS', 'canonicalChannel', 'NAMESPACES']],
+  ['mcp oauth (custom-3p)', 'electron/mcpoauth.js', ['authorize', 'startLoopback', 'pkce', 'discoverProtectedResource', 'discoverAuthServer', 'registerClient', 'exchangeCode', 'ensureAccessToken', 'describeAuthError']],
 ];
 
 const subRows = [];

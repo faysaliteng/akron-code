@@ -38,6 +38,9 @@ contextBridge.exposeInMainWorld('autobot', {
   pluginStats: () => ipcRenderer.invoke('autobot:pluginStats'),
   refreshRegistry: (opts) => ipcRenderer.invoke('autobot:refreshRegistry', opts),
   registryStatus: () => ipcRenderer.invoke('autobot:registryStatus'),
+  pluginAuthStart: (id, opts) => ipcRenderer.invoke('autobot:pluginAuthStart', id, opts),
+  pluginAuthStatus: (id) => ipcRenderer.invoke('autobot:pluginAuthStatus', id),
+  pluginSignOut: (id) => ipcRenderer.invoke('autobot:pluginSignOut', id),
 
   listScheduledTasks: () => ipcRenderer.invoke('autobot:listScheduledTasks'),
   createScheduledTask: (input) => ipcRenderer.invoke('autobot:createScheduledTask', input),

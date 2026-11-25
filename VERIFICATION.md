@@ -588,3 +588,38 @@ profile the user owns; nothing is fetched from Anthropic.
 | Live UI | ✅ Settings → **Compliance**: `BLOCKED` badge (tone-blocked), 9 derived cells (Retention `marked`, HIPAA `regulated`, CMEK `not applicable`, Cloud & model moves `allowed`, MCP `local only · blocked from sync`, Session deletion `refused`, Product feedback `allowed`, Deployment `standard`, Chat `refused`), 15 capability code chips, 31 toggles, Reset |
 | No new tool definitions | ✅ stays at **141** defs; the swarm gate is untouched |
 | Regression gates | ✅ e2e **112 passed / 0 failed**; `parity-audit.js` → *NO ATOMIC GAPS* (141 defs, 26 subsystem rows incl. compliance), EXIT 0 |
+
+---
+
+## 19. Connector OAuth 2.1 — real sign-in, not a boolean (2026-11-25)
+
+Desktop's 8 `oauth:*` IPC channels (`tokenCache`, `tokenCacheV2`,
+`staleSessionLatch`, `everydayRevokeOwed`, `skerryBurdock*`) are Anthropic
+*account* plumbing and stay N/A. The capability they front — "sign in to this
+connector" — was genuinely missing: ~425 rows in the merged catalog advertise
+`auth: 'oauth'`, but install only flipped an `installed` flag, so any server
+answering `401` was unusable. `electron/mcpoauth.js` replaces the cosmetic
+connect with a standards-compliant OAuth 2.1 public client.
+
+| Check | Result |
+|---|---|
+| Protected-resource discovery | ✅ `WWW-Authenticate: Bearer resource_metadata="…"` parsed first, then `{origin}/.well-known/oauth-protected-resource{path}`, then the origin-level document (RFC 9728) |
+| AS metadata | ✅ 8 candidates in order: `{origin}/.well-known/oauth-authorization-server{path}`, `{path}/.well-known/oauth-authorization-server`, `{path}/.well-known/openid-configuration`, origin variants, then conventional `/authorize` `/token` `/register` with `fallback: true` (RFC 8414) |
+| Dynamic client registration | ✅ `registerClient(as, redirectUri, opts)` — redirect URI is a **string** argument, `token_endpoint_auth_method: 'none'` for public clients (RFC 7591) |
+| PKCE | ✅ S256 only, verifier ↔ challenge round-trip asserted in the unit suite (RFC 7636) |
+| Loopback redirect | ✅ ephemeral `127.0.0.1:<port>/callback` on `startLoopback`, started **before** DCR so the registered URI is exact; timeout **resolves** `{error:'timeout'}` instead of rejecting |
+| Resource indicator | ✅ RFC 8707 `resource` carried on both `/authorize` and the token request |
+| Public-client token body | ✅ for method `none` the `client_secret` is **never** sent — the PKCE verifier is the only proof (asserted) |
+| Token lifecycle | ✅ refresh-token grant, expiry skew, `normalizeTokens`, `ensureAccessToken`; tokens in `secretstore` under `mcp-oauth:<host><path>`; `signOut` deletes the record |
+| Transport wiring | ✅ `MCPClient({ authProvider })` attaches `Authorization: Bearer`, falls back to `cfg.apiKey`; 401s carry `err.status`, `err.wwwAuthenticate`, `err.resourceMetadata` |
+| Error surface | ✅ `describeAuthError` first unwraps a JSON/JSON-RPC envelope to `error_description`/`message`, then runs the human-phrase ladder; `jsonrpc`/`code:NNN` residue and bare numbers collapse to *“connector sign-in failed”*; `401`/`403`/`unauthorized`/`forbidden` → *“the connector rejected the sign-in — it may need a different account”* |
+| Hostile-input fuzz | ✅ 18/18 inputs produce zero HTML/markup — HTML stripped, `{"error":"invalid_client"}` → the account line, `{"status":500}` / `{"jsonrpc":…,"code":-32600}` / `42` → the generic line |
+| Install UX | ✅ installing an OAuth row returns `needsAuth: true` and the UI asks for a click instead of launching a browser unasked; concurrent starts deduped through the `authFlights` map |
+| Unit suite | ✅ `node test/mcpoauth.test.js` → **146 passed, 0 failed** (incl. a real loopback HTTP authorization server) |
+| Live loopback integration | ✅ `oauth-live.cjs` against a real HTTP AS on `127.0.0.1` → **12/12**: DCR native + loopback redirect, RFC 8707 `resource`, discovery scopes, PKCE verifier ↔ challenge, no `client_secret`, stored token reused by the transport |
+| Live UI end-to-end | ✅ local MCP+OAuth server (`127.0.0.1:8791`) driven through CDP: **Install → Sign in → connected → Sign out**. Wire log: `mcp 401 (auth=none)` → `discovery:protected-resource` → `discovery:authorization-server` → `register redirect_uris=["http://127.0.0.1:59053/callback"] method=none` → `authorize client_id=e2e-client resource=… scope="mcp.read mcp.write"` → `token grant=authorization_code pkce=match secret=false` → `mcp method=initialize` / `notifications/initialized` / `tools/list` |
+| Status transitions | ✅ `authorized:false` → `{authorized:true, connected:true, scope:"mcp.read mcp.write", expiresAt:<future>}` → back to `false` after Sign out; card pills flip **Sign in** ↔ **Sign out**; foot text `OAuth sign-in \| registry \| needs sign-in \| Sign in` |
+| Real-provider DCR | ✅ `mcp.linear.app` → `client_id eWjl8XdRzxG6Jzq0…`, `auth: none`; `mcp.notion.com` → `kbN-Ri-K5PkEjZXN…`; both authorize URLs carry `response_type,client_id,redirect_uri,code_challenge,code_challenge_method,state,scope,resource` |
+| Card foot layout | ✅ single-line label+badges group on row 1, action pill right-aligned on row 2 when the card is narrow; measured `footRight == pillRight == 590`, `.muted` never splits, badges nowrap |
+| Parity gate | ✅ `scripts/parity-audit.js` gained `mcp oauth (custom-3p)` (9 symbols) → **27 subsystem rows**, *NO ATOMIC GAPS*, EXIT 0 |
+| No new tool definitions | ✅ stays at **141** defs; the swarm gate is untouched |
