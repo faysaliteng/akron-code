@@ -13,8 +13,13 @@ const SKILLS_STATE_FILE = path.join(DATA_DIR, 'skills-state.json');
 const NOTEBOOKS_DIR = path.join(DATA_DIR, 'notebooks');
 // Bundled Example skills (extracted 1:1 from Claude.app v6.28899.6 bundled-skills).
 const BUNDLED_SKILLS_DIR = path.join(__dirname, '..', 'resources', 'skills');
-// External skill sources discovered on-disk (OpenCode + Example Code built-in skills).
-const OPENCODE_SKILLS_DIR = path.join(os.homedir(), '.config', 'opencode', 'skill');
+// External skill source discovered on-disk (Claude Code built-in skills).
+//
+// Note: the ~/.config/opencode/skill tree (236 offensive-security skills) was
+// deliberately removed from the in-app catalogue on 2026-11-25. Those skills
+// now live outside the app as plain Markdown under ~/Example Skills/ and are
+// no longer injected into prompts, because their volume drowned out the
+// project's own coding/build guidance. See `scripts/export-skills.py`.
 const CLAUDE_SKILLS_DIR = path.join(os.homedir(), '.claude', 'skills');
 
 function ensureDir(dir) {
@@ -119,7 +124,7 @@ function parseSkillFrontmatter(text) {
   return out;
 }
 
-// ---- Skill discovery (bundled + OpenCode + Example Code + custom) ----
+// ---- Skill discovery (bundled + Claude Code + custom) ----
 let _skillsCache = null;
 
 function addDirSkills(list, seen, dir, source) {
@@ -148,7 +153,7 @@ function discoverSkills() {
   const list = [];
   const seen = new Set();
 
-  // 1. Bundled Example Desktop skills (always present).
+  // 1. Bundled Helio Bot / Desktop skills (always present).
   for (const s of BUNDLED_SKILLS) {
     seen.add(s.name);
     list.push({
@@ -159,10 +164,7 @@ function discoverSkills() {
     });
   }
 
-  // 2. OpenCode built-in skills (~/.config/opencode/skill/*/SKILL.md).
-  addDirSkills(list, seen, OPENCODE_SKILLS_DIR, 'opencode');
-
-  // 3. Example Code skills (~/.claude/skills/*/SKILL.md).
+  // 2. Claude Code skills (~/.claude/skills/*/SKILL.md).
   addDirSkills(list, seen, CLAUDE_SKILLS_DIR, 'claude');
   // Example Code "synced" skills (~/.claude/skills/synced/<uuid>/*/SKILL.md).
   const synced = path.join(CLAUDE_SKILLS_DIR, 'synced');
@@ -172,7 +174,7 @@ function discoverSkills() {
     for (const sub of subs) addDirSkills(list, seen, path.join(synced, sub), 'claude');
   }
 
-  // 4. Custom user skills (~/.autobot/skills/<slug>.md and ~/.autobot/skills/<slug>/SKILL.md).
+  // 3. Custom user skills (~/.autobot/skills/<slug>.md and ~/.autobot/skills/<slug>/SKILL.md).
   ensureDir(SKILLS_DIR);
   addDirSkills(list, seen, SKILLS_DIR, 'custom');
   try {

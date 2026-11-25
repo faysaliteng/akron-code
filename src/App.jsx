@@ -8,6 +8,7 @@ import iconsMap from './icons.json';
 import { t as _t, LOCALES, localeDir } from './i18n.js';
 import { stripToolProtocol } from './textproto.mjs';
 import { normBase, LOCAL_BASE, KEY_STATUS_TTL, keySig, statusOf, presetStatus } from './providerstatus-ui.mjs';
+import ConnectorLogo from './ConnectorLogo.jsx';
 
 // ---------- Anthropicons (Example's icon font, PUA U+E000+) ----------
 const iconChar = (name) => {
@@ -2874,8 +2875,8 @@ function MemoryView({ memory, addMemory, clearMemory }) {
 }
 
 // ---------- Skills ----------
-const SKILL_SOURCE_LABELS = { bundled: 'Example', opencode: 'OpenCode', claude: 'Example Skills', custom: 'Custom' };
-const SKILL_SOURCE_ORDER = ['bundled', 'opencode', 'claude', 'custom'];
+const SKILL_SOURCE_LABELS = { bundled: 'Bundled', claude: 'Claude Code', custom: 'Custom' };
+const SKILL_SOURCE_ORDER = ['bundled', 'claude', 'custom'];
 
 function SkillsView({ skills, toggleSkill, setAllSkills, refreshSkills }) {
   const [q, setQ] = useState('');
@@ -3195,9 +3196,12 @@ function PluginsView() {
         {visible.map((it) => (
           <div key={it.id} className={'plugin-card' + (it.installed ? ' installed' : '')}>
             <div className="plugin-card-head">
-              <div>
-                <b>{it.name}</b>
-                <span className="skill-src">{it.category} · {it.type}</span>
+              <div className="plugin-card-id">
+                <ConnectorLogo id={it.id} name={it.name} url={it.endpoint && it.endpoint.url} type={it.type} />
+                <div className="plugin-card-meta">
+                  <b>{it.name}</b>
+                  <span className="skill-src">{it.category}</span>
+                </div>
               </div>
               <button
                 className={it.installed ? '' : 'primary'}
@@ -3210,6 +3214,7 @@ function PluginsView() {
             <p className="plugin-card-desc">{it.description}</p>
             <div className="plugin-card-foot">
               <span className="muted">{it.auth === 'none' ? 'No sign-in needed' : it.auth === 'oauth' ? 'OAuth sign-in' : 'API key'}</span>
+              <span className="badge">{it.type}</span>
               {it.origin === 'registry' && <span className="badge">registry</span>}
               {it.installed && it.requiresSignIn && <span className="badge warn">needs sign-in</span>}
               {it.installed && !it.requiresSignIn && <span className="badge ok">installed</span>}
