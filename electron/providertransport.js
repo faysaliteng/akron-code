@@ -615,15 +615,48 @@ function cloudcodeBase(provider) {
 // (`maxTokens`, verified live: 1 048 576 for Gemini, 1 000 000 for the Vertex
 // Claude models) and thinking capability flags. This is the authoritative
 // catalog — no hardcoded table needed, and it tracks new models automatically.
+// Antigravity's catalog is half marketing copy ("Gemini 4 Neon (High)") and
+// half bare slugs ("gemini-3.8-flash-tiered"), and it also enumerates the
+// editor's *internal* tab-completion models (`tab_*_preview`, 16K window).
+// A chat-model picker that shows those mixes two naming styles and offers
+// completion models as if they were chat models. Prettify the slug-only rows
+// and drop the internal ones.
+function prettyModelId(id) {
+  const s = String(id || '');
+  if (!s) return s;
+  // Tokens the vendor itself upper-cases; title-casing them reads as a typo.
+  const ABBR = { xhigh: 'XHigh', oss: 'OSS', gpt: 'GPT', api: 'API', agy: 'AGY', pro: 'Pro', xl: 'XL' };
+  return s
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((tok) => {
+      const low = tok.toLowerCase();
+      if (ABBR[low]) return ABBR[low];
+      if (/^[0-9]+(\.[0-9]+)*[a-z]*$/.test(tok)) return tok;
+      return tok.charAt(0).toUpperCase() + tok.slice(1);
+    })
+    .join(' ');
+}
+
+// Ids that exist only to serve the editor's inline completion, not chat.
+function isInternalAntigravityModel(id) {
+  return /^tab_/i.test(String(id || '')) || /_preview$/i.test(String(id || ''));
+}
+
 function googleModelList(json) {
   const models = (json && json.models) || {};
   const out = [];
   for (const [id, m] of Object.entries(models)) {
     if (!m || typeof m !== 'object') continue;
+    if (isInternalAntigravityModel(id)) continue;
     const prov = String(m.apiProvider || '');
+    const display = String(m.displayName || '').trim();
+    // A displayName that is byte-identical to the id is not a friendly name —
+    // fall back to the prettified slug so every row reads the same way.
+    const label = display && display !== id ? display : prettyModelId(id);
     out.push({
       id,
-      label: String(m.displayName || id),
+      label,
       contextWindow: num(m.maxTokens),
       maxOutput: num(m.maxOutputTokens),
       thinking: !!m.supportsThinking,
@@ -636,12 +669,19 @@ function googleModelList(json) {
       apiProvider: prov,
     });
   }
-  // Antigravity ships several models with an identical displayName (three are
-  // all "Gemini 3.5 Flash Lite"), so a raw catalog would render three
-  // indistinguishable rows. Disambiguate only where the vendor name collides.
+  // Antigravity ships several models with an identical displayName (four are
+  // all "Gemini 3.5 Flash Lite"), so a raw catalog would render
+  // indistinguishable rows. For a colliding name, drop the vendor name and use
+  // the prettified id as the label — it is the accurate name and reads the same
+  // as its neighbours. The exact id stays in the row title for reference.
   const seen = new Map();
   for (const m of out) seen.set(m.label, (seen.get(m.label) || 0) + 1);
-  for (const m of out) if (seen.get(m.label) > 1) m.label = m.label + ' · ' + m.id;
+  for (const m of out) if (seen.get(m.label) > 1) m.label = prettyModelId(m.id);
+  // Two ids can prettify to one label (separator-only differences); keep rows
+  // unique by falling back to the raw id for the stragglers.
+  const dup = new Map();
+  for (const m of out) dup.set(m.label, (dup.get(m.label) || 0) + 1);
+  for (const m of out) if (dup.get(m.label) > 1) m.label = m.label + ' · ' + m.id;
   const rank = (m) => (m.group === 'Gemini' ? 0 : 1);
   out.sort((a, b) => (rank(a) - rank(b)) || a.label.localeCompare(b.label, 'en'));
   return out;

@@ -1301,3 +1301,69 @@ fenced `Write` lands a file after the degrade; both shapes 402 → prose stop wi
 no thrown error, no `error` event, no raw "token limit" wording, closes < 10 s).
 Full suite `failing=0`; `scripts/parity-audit.js` → `DEFS: 141`,
 `subsystems incomplete: 0`.
+
+---
+
+## 31. Antigravity picker hygiene — one naming style, chat models only
+
+### 31.1 The two defects
+
+The picker pulled `fetchAvailableModels` straight into rows. That catalog is
+half marketing copy and half bare slugs, and it also enumerates the editor's
+**internal** tab-completion models:
+
+| Raw id | Raw displayName | Window | Problem |
+|---|---|---|---|
+| `gemini-3.8-flash-tiered` | *(none)* | 1 M | shown as a lowercase slug |
+| `gemini-4-hydrogen-sonar` | *(none)* | 1 M | shown as a lowercase slug |
+| `tab_flash_lite_preview` | `Tab Flash Lite Preview` | 16 K | completion model, not chat |
+| `tab_jump_flash_lite_preview` | `Tab Jump Flash Lite Preview` | 16 K | completion model, not chat |
+| `gemini-2.5-flash` ×4 | all `Gemini 3.5 Flash Lite` | 1 M | four identical rows |
+
+Rows therefore mixed Title Case with raw ids, and two of the 38 selectable
+"chat" models were autocomplete engines with a 16 K window.
+
+### 31.2 The rule
+
+1. `isInternalAntigravityModel(id)` — `/^tab_/i` or `/_preview$/i` → row is
+   dropped entirely. A chat picker never offers an inline-completion engine.
+2. `prettyModelId(id)` — split on `[-_]`, title-case each token, keep versions
+   (`3.8`, `120b`) verbatim, and restore the casing the vendor uses for known
+   abbreviations (`GPT`, `OSS`, `XHigh`, `Pro`, `XL`, `API`, `AGY`).
+3. Label = `displayName` when it differs from the id, else `prettyModelId(id)`.
+4. When a displayName collides across rows, **replace** it with the prettified
+   id (→ `Gemini 2.5 Flash`, `Gemini 2.5 Flash Lite`, `Gemini 3.5 Flash Lite`)
+   instead of appending a redundant tail (`Gemini 4 Hydrogen (High) · 4
+   Hydrogen High` was the first, wrong attempt).
+5. A second pass appends the raw id only if two ids still prettify to the same
+   label, so every row is unique.
+
+Groups, sort order and context windows are untouched, so the family grouping
+(`Gemini` / `Claude` / `OpenAI Vertex (API)`) and the `1M` / `65K` badges keep
+working.
+
+### 31.3 Live proof (`:9333`, real Antigravity account)
+
+```
+live true n 36                    ← was 38 (two tab_*_preview removed)
+Gemini | "Gemini 2.5 Flash"                | id=gemini-2.5-flash
+Gemini | "Gemini 2.5 Flash Lite"           | id=gemini-2.5-flash-lite
+Gemini | "Gemini 2.5 Flash Thinking"       | id=gemini-2.5-flash-thinking
+Gemini | "Gemini 3 Flash"                  | id=gemini-3-flash
+Gemini | "Gemini 3.5 Flash Lite"           | id=gemini-3.5-flash-lite
+Gemini | "Gemini 3.8 Flash Tiered"         | id=gemini-3.8-flash-tiered
+Gemini | "Gemini 4 Argon (High)"           | id=gemini-4-argon-high
+Gemini | "Gemini 4 Hydrogen (Orchestrator)"| id=gemini-flash-worker-agy
+```
+
+No lowercase slug survives, no `tab_*`, and the four former
+`Gemini 3.5 Flash Lite` rows are now four distinct, accurate names.
+
+### 31.4 Regression
+
+`node test/antigravity-catalog.test.js` → **8 / 8** (internal models dropped;
+slug prettified; vendor abbreviations keep casing; explicit displayName kept
+verbatim; colliding names fall back to the prettified id; all labels unique; no
+label looks like a raw slug; group + window survive). Full suite
+`failing=0`; `scripts/parity-audit.js` → `DEFS: 141`,
+`subsystems incomplete: 0`.
