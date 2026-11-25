@@ -12,9 +12,10 @@
     "dev": "vite --host 127.0.0.1",
     "vendor:runtimes": "node scripts/vendor-runtimes.js",
     "vendor:runtimes:check": "node scripts/vendor-runtimes.js --check",
+    "vendor:runtimes:sync": "node scripts/vendor-runtimes.js --download --stale",
     "prepack": "npm run vendor:runtimes",
     "pack": "npm run build && electron-builder --dir",
-    "predist": "npm run vendor:runtimes",
+    "predist": "node scripts/vendor-runtimes.js --download --stale || npm run vendor:runtimes",
     "dist": "npm run build && electron-builder --mac dmg zip",
     "freellm": "node scripts/freellm-server.js",
     "icons": "electron build/render_icon.cjs"

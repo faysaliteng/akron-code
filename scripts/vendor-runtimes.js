@@ -46,6 +46,12 @@ const opt = (name) => {
 const MODE = flag('download') ? 'download' : flag('check') ? 'check' : 'local';
 const ONLY = opt('id');
 const FORCE = flag('force');
+// `--stale` (download mode): keep an already-vendored copy only if upstream has
+// nothing newer. Without it a vendored tree is trusted forever, so a release
+// can ship a CLI old enough for the vendor to reject new models.
+const STALE = flag('stale');
+// `--dry-run` reports the decision (vendor / keep) and downloads nothing.
+const DRY = flag('dry-run');
 
 function die(msg) {
   console.error('vendor-runtimes: ' + msg);
@@ -216,6 +222,40 @@ async function vendorDownload(desc) {
   }
 }
 
+/** Ask upstream (npm / x.ai) for the newest version without downloading it. */
+async function upstreamLatest(desc) {
+  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'akron-latest-'));
+  try {
+    const rt = createRuntimes({
+      userDir: tmp,
+      bundledDir: '',
+      onEvent: () => {},
+    });
+    const st = await rt.status(desc.id, { force: true });
+    return { version: st.latest || '', error: st.error || '' };
+  } catch (e) {
+    return { version: '', error: String(e && e.message || e) };
+  } finally {
+    await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** `1.2.10` > `1.2.9`; prerelease sorts below the release. */
+function cmpVersion(a, b) {
+  const pa = parseVersion(a) || String(a || '');
+  const pb = parseVersion(b) || String(b || '');
+  if (pa === pb) return 0;
+  const [ma, mb] = [pa, pb].map((v) => v.split('-'));
+  const na = ma[0].split('.').map(Number);
+  const nb = mb[0].split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((na[i] || 0) !== (nb[i] || 0)) return (na[i] || 0) > (nb[i] || 0) ? 1 : -1;
+  }
+  if (ma[1] && !mb[1]) return -1;
+  if (!ma[1] && mb[1]) return 1;
+  return String(ma[1] || '').localeCompare(String(mb[1] || ''));
+}
+
 function human(n) {
   if (!n) return '0 B';
   const u = ['B', 'KB', 'MB', 'GB'];
@@ -262,8 +302,24 @@ async function main() {
   for (const d of targets) {
     const existing = await readVendored(d);
     if (existing && !FORCE) {
-      console.log('  ' + d.id.padEnd(12) + ' ' + existing.version + ' — already vendored (use --force to redo)');
-      continue;
+      if (MODE === 'download' && STALE) {
+        const { version: latest, error } = await upstreamLatest(d);
+        if (!latest) {
+          // Offline or a failed metadata lookup must not break a build.
+          console.log('  ' + d.id.padEnd(12) + ' ' + existing.version + ' — kept (' +
+            (error ? 'upstream lookup failed: ' + error.slice(0, 80) : 'no upstream version') + ')');
+          continue;
+        }
+        if (cmpVersion(latest, existing.version) <= 0) {
+          console.log('  ' + d.id.padEnd(12) + ' ' + existing.version + ' — current (upstream ' + latest + ')');
+          continue;
+        }
+        console.log('  ' + d.id.padEnd(12) + ' ' + existing.version + ' → ' + latest + '  (upstream is newer)' + (DRY ? ' [dry-run]' : ''));
+        if (DRY) continue;
+      } else {
+        console.log('  ' + d.id.padEnd(12) + ' ' + existing.version + ' — already vendored (use --force to redo)');
+        continue;
+      }
     }
     process.stdout.write('  ' + d.id.padEnd(12) + ' … ');
     try {
@@ -275,6 +331,7 @@ async function main() {
       failures.push({ id: d.id, error: String(e && e.message || e) });
     }
   }
+  if (DRY) { console.log('\ndry-run: nothing was downloaded.'); return; }
   if (failures.length) {
     console.error('\n' + failures.length + ' runtime(s) not vendored: ' + failures.map((f) => f.id).join(', '));
     process.exitCode = 1;
