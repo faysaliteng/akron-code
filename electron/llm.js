@@ -7,6 +7,7 @@ const hooks = require('./hooks');
 const budgetPool = require('./budget');
 const modelCatalog = require('./model-catalog');
 const providertransport = require('./providertransport');
+const mcpSchema = require('./mcp-schema');
 
 // Registry of live sub-agents (for TaskStop / ListAgents).
 const subagentControllers = new Map(); // name -> AbortController
@@ -1086,10 +1087,44 @@ async function runAgent(opts) {
     return false;
   };
   let tools = toolDefinitions.filter((t) => isAllowed(t.name)).map((t) => ({ type: 'function', function: t }));
+  let extraToolsDeferred = false;
   const extra = opts.extraTools || [];
-  for (const t of extra) {
-    if (!isAllowed(t.name)) continue;
-    tools.push({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema || { type: 'object', properties: {} } } });
+  // MCP servers publish verbose schemas; a big one (REA: 263 tools, ≈384 kB of
+  // JSON) would cost ≈113 k prompt tokens on every step. Compact the schemas,
+  // and when even the compacted surface is still too fat, defer it behind a
+  // single search tool. Nothing stops being callable either way — dispatch is
+  // by name — only the advertised text shrinks.
+  const mcpSurface = mcpSchema.buildSurface(extra, { budget: opts.mcpToolBudget });
+  if (mcpSurface.mode === 'deferred') {
+    const servers = [...new Set(extra.map((t) => (String(t.name).split('__')[1] || '')))].filter(Boolean);
+    // A tool-scoped sub-agent that never asked for MCP keeps its surface clean.
+    const allowIndex = !toolAllow || toolAllow.has('*') || toolAllow.has('mcp') || toolAllow.has('mcp__*') || toolAllow.has('mcp_find_tools');
+    if (allowIndex) {
+      tools.push({
+        type: 'function',
+        function: {
+          name: 'mcp_find_tools',
+          description:
+            `Search the ${extra.length} tools published by connected MCP servers (${servers.join(', ')}). `
+            + 'Their schemas are deferred to keep the prompt small. Call this with a keyword, then call the '
+            + 'returned tool by its exact mcp__<server>__<tool> name.',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'Keywords, e.g. "android jni", "browser capture", "decompile"' },
+              server: { type: 'string', description: 'Optional MCP server id to restrict the search' },
+            },
+            required: ['query'],
+          },
+        },
+      });
+      extraToolsDeferred = true;
+    }
+  } else {
+    for (const t of mcpSurface.tools) {
+      if (!isAllowed(t.name)) continue;
+      tools.push({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } });
+    }
   }
 
   // Always ensure the core system prompt is the first message. The renderer may
@@ -2078,7 +2113,13 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       if (WRITE_TOOLS.has(name)) takeCheckpoint(name, args);
       // Route virtual mcp__* names (built-in equivalents) to runTool first;
       // only unknown mcp__* (external MCP servers) go to callMcpTool.
-      if (name.startsWith('mcp__') && !localToolNames.has(name)) {
+      if (name === 'mcp_find_tools' && extraToolsDeferred) {
+        const hits = mcpSchema.searchMcpTools(extra, args.query || args.q || '', args.server);
+        result = hits.length
+          ? `MCP tools matching ${JSON.stringify(args.query || '')} — call by exact name:\n`
+            + hits.map((h) => `\n### ${h.name}\n${h.description}\n${JSON.stringify(h.inputSchema)}`).join('\n')
+          : `No MCP tool matched ${JSON.stringify(args.query || '')}. Try a broader keyword, or omit "server".`;
+      } else if (name.startsWith('mcp__') && !localToolNames.has(name)) {
         result = await opts.callMcpTool ? await opts.callMcpTool(name, args) : `MCP tool ${name} unavailable`;
       } else {
         const r = await runTool(name, args, ctx);
