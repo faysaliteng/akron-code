@@ -13,9 +13,18 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const cronexpr = require('./cronexpr');
 
 const DATA_DIR = path.join(os.homedir(), '.autobot');
 const TASKS_FILE = path.join(DATA_DIR, 'scheduled-tasks.json');
+// Claude Code keeps *durable* cron tasks in the project at
+// .claude/scheduled_tasks.json so they travel with the repo. Mirror ours there.
+const DURABLE_FILE = path.join(process.cwd(), '.claude', 'scheduled_tasks.json');
+
+// Sentinel prompt Claude uses for autonomous loops: when it fires, the schedule
+// is re-derived from the ACTUAL fire time instead of drifting behind.
+const AUTONOMOUS_SENTINEL = '<<autonomous-loop-dynamic>>';
+const DEFAULT_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // cron tasks auto-expire in 7 days
 
 function ensureDir(d) { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); }
 function readJSON(file, fallback) {
@@ -44,6 +53,10 @@ function nextId() {
 function computeNext(task, from) {
   const now = from || Date.now();
   const cadence = task.cadence || 'once';
+  if (cadence === 'cron') {
+    const nxt = cronexpr.next(task.cron, now);
+    return nxt == null ? null : nxt;
+  }
   if (cadence === 'once') {
     if (task.at) {
       const t = typeof task.at === 'number' ? task.at : Date.parse(task.at);
@@ -86,6 +99,7 @@ function computeNext(task, from) {
 
 function describe(task) {
   const c = task.cadence || 'once';
+  if (c === 'cron') return 'cron ' + task.cron + ' (' + cronexpr.describe(task.cron) + ')';
   if (c === 'once') return 'once at ' + (task.at ? new Date(task.at).toLocaleString() : 'soon');
   if (c === 'every') return 'every ' + (task.everyMinutes || 60) + ' min';
   if (c === 'hourly') return 'hourly' + (task.minute != null ? ' at :' + String(task.minute).padStart(2, '0') : '');
@@ -105,11 +119,20 @@ function list() {
 function create(input) {
   input = input || {};
   if (!input.prompt) return { ok: false, error: 'prompt required' };
+  if ((input.cadence === 'cron') || input.cron) {
+    const expr = String(input.cron || '').trim();
+    const v = cronexpr.validate(expr);
+    if (!v.ok) return { ok: false, error: 'invalid cron: ' + v.error };
+  }
   const task = {
     id: nextId(),
     name: input.name || String(input.prompt).slice(0, 48),
     prompt: String(input.prompt),
-    cadence: input.cadence || 'once',
+    cadence: input.cron ? 'cron' : (input.cadence || 'once'),
+    cron: input.cron || null,
+    durable: Boolean(input.durable),
+    sentinel: input.sentinel || null,
+    expiresAt: input.cron ? Date.now() + DEFAULT_EXPIRY_MS : null,
     at: input.at || null,
     everyMinutes: input.everyMinutes || null,
     minute: input.minute != null ? Number(input.minute) : null,
@@ -126,18 +149,66 @@ function create(input) {
   const s = load();
   s.tasks.push(task);
   save(s);
+  if (task.durable) mirrorDurable(s);
   return { ok: true, task: { ...task, schedule: describe(task) } };
+}
+
+// Durability: mirror the enabled tasks into .claude/scheduled_tasks.json so a
+// schedule survives moving the project to another machine (Claude's contract).
+function mirrorDurable(state) {
+  try {
+    const durable = (state.tasks || []).filter((t) => t.durable && t.enabled !== false);
+    ensureDir(path.dirname(DURABLE_FILE));
+    writeJSON(DURABLE_FILE, { tasks: durable });
+  } catch (_) {}
 }
 
 function update(id, patch) {
   const s = load();
   const t = s.tasks.find((x) => x.id === id);
   if (!t) return { ok: false, error: `Unknown task: ${id}` };
-  const allowed = ['name', 'prompt', 'cadence', 'at', 'everyMinutes', 'minute', 'time', 'dayOfWeek', 'enabled'];
+  const allowed = ['name', 'prompt', 'cadence', 'cron', 'durable', 'sentinel', 'at', 'everyMinutes', 'minute', 'time', 'dayOfWeek', 'enabled'];
   for (const k of allowed) if (patch && k in patch) t[k] = patch[k];
+  if (t.cron) { const v = cronexpr.validate(t.cron); if (!v.ok) return { ok: false, error: 'invalid cron: ' + v.error }; t.cadence = 'cron'; }
   t.nextRunAt = t.enabled === false ? null : computeNext(t);
   save(s);
+  if (t.durable) mirrorDurable(s);
   return { ok: true, task: { ...t, schedule: describe(t) } };
+}
+
+// CronCreate — a 5-field cron schedule. Durable tasks are mirrored to disk.
+function createCron(input = {}) {
+  const expr = String(input.cron || input.expression || '').trim();
+  const v = cronexpr.validate(expr);
+  if (!v.ok) return { ok: false, error: 'invalid cron: ' + v.error };
+  const recurring = input.recurring !== false;
+  return create({
+    prompt: input.prompt,
+    name: input.name || input.description,
+    cadence: 'cron',
+    cron: expr,
+    durable: Boolean(input.durable),
+    enabled: recurring,
+  });
+}
+
+// ScheduleWakeup — a single fire `delaySeconds` (60..3600) from now. When the
+// prompt is the autonomous-loop sentinel, the next schedule is re-derived from
+// the actual fire time so a loop never drifts.
+function createWakeup(input = {}) {
+  let delay = Number(input.delaySeconds || input.delay_seconds || input.delay || 300);
+  if (!Number.isFinite(delay)) delay = 300;
+  delay = Math.max(60, Math.min(3600, delay));
+  const prompt = String(input.prompt || input.reason || 'Continue the task.');
+  const r = create({
+    prompt,
+    name: input.reason || 'wakeup',
+    cadence: 'once',
+    at: Date.now() + delay * 1000,
+    sentinel: input.sentinel || null,
+  });
+  if (r.ok) r.delaySeconds = delay;
+  return r;
 }
 
 function remove(id) {
@@ -146,6 +217,7 @@ function remove(id) {
   if (i === -1) return { ok: false, error: `Unknown task: ${id}` };
   s.tasks.splice(i, 1);
   save(s);
+  mirrorDurable(s);
   return { ok: true, id };
 }
 
@@ -239,7 +311,10 @@ function stop() {
   if (_timer) { clearInterval(_timer); _timer = null; }
 }
 
-module.exports = { list, create, update, remove, runNow, tick, start, stop, computeNext, describe, formatList };
+module.exports = {
+  list, create, update, remove, runNow, tick, start, stop, computeNext, describe, formatList,
+  createCron, createWakeup, mirrorDurable, AUTONOMOUS_SENTINEL, DURABLE_FILE,
+};
 
 function formatList(tasks) {
   if (!tasks || !tasks.length) return 'SCHEDULED TASKS:\n(none)';

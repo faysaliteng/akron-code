@@ -39,6 +39,16 @@ contextBridge.exposeInMainWorld('autobot', {
   runScheduledTask: (id) => ipcRenderer.invoke('autobot:runScheduledTask', id),
   getSettings: () => ipcRenderer.invoke('autobot:getSettings'),
   setSettings: (patch) => ipcRenderer.invoke('autobot:setSettings', patch),
+
+  // Claude-parity config surface: the same `.claude/` files Claude Code reads.
+  listCommands: (cwd) => ipcRenderer.invoke('autobot:listCommands', cwd),
+  resolveCommand: (name, args, cwd) => ipcRenderer.invoke('autobot:resolveCommand', name, args, cwd),
+  listAgentDefs: (cwd) => ipcRenderer.invoke('autobot:listAgents', cwd),
+  getProjectMemory: (cwd) => ipcRenderer.invoke('autobot:getProjectMemory', cwd),
+  getPermissions: (cwd) => ipcRenderer.invoke('autobot:getPermissions', cwd),
+  checkPermission: (toolName, toolArgs, cwd, mode) => ipcRenderer.invoke('autobot:checkPermission', toolName, toolArgs, cwd, mode),
+  listCheckpoints: (convId) => ipcRenderer.invoke('autobot:listCheckpoints', convId),
+  rewind: (convId, checkpointId) => ipcRenderer.invoke('autobot:rewind', convId, checkpointId),
   getOrchestrator: () => ipcRenderer.invoke('autobot:getOrchestrator'),
   setOrchestrator: (patch) => ipcRenderer.invoke('autobot:setOrchestrator', patch),
   getFeatures: () => ipcRenderer.invoke('autobot:getFeatures'),
@@ -60,6 +70,8 @@ contextBridge.exposeInMainWorld('autobot', {
   mcpDisconnect: (serverId) => ipcRenderer.invoke('autobot:mcpDisconnect', serverId),
   mcpListResources: (serverId) => ipcRenderer.invoke('autobot:mcpListResources', serverId),
   mcpReadResource: (serverId, uri) => ipcRenderer.invoke('autobot:mcpReadResource', serverId, uri),
+  mcpStatus: () => ipcRenderer.invoke('autobot:mcpStatus'),
+  mcpConfig: (cwd) => ipcRenderer.invoke('autobot:mcpConfig', cwd),
 
   answerQuestion: (id, answer) => ipcRenderer.invoke('autobot:answerQuestion', id, answer),
   answerPermission: (id, allow) => ipcRenderer.invoke('autobot:answerPermission', id, allow),

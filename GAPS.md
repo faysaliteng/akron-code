@@ -863,3 +863,117 @@ and heavy task or critical use frontier model, so there must be a supervisor mod
 | Headless suite | ✅ `test/e2e.test.js` **111 passed, 0 failed** (112 tool definitions — includes `Swarm`) |
 | Regressions | ✅ `retry-ui.cjs` PASS · `composer-flow.cjs` PASS (`think>text>tool>text`, page in pane **and** on disk) · `gateway-502.cjs` PASS |
 | Renderer crash caught by the live harness | ✅ the first live run surfaced `ReferenceError: swarmInfo is not defined` (used in `ChatView`, never passed as a prop) — the app rendered a blank page and the harness reported `composer: no-composer` instead of a false PASS. Fixed by threading the prop; re-verified blank-page-free |
+
+---
+
+## Q. REA RE-EXTRACTION OF THE COMPLETE CLAUDE SURFACE — GAP TABLE, "NOT A SINGLE ATOMIC GAP" (2026-11-25)
+
+### Q.0 Method (ground truth, not memory)
+
+Everything below is derived from REA extraction of the actually-installed software, not from
+docs or recollection:
+
+| Source | What it is | Used for |
+|---|---|---|
+| `~/.npm-global/lib/node_modules/@anthropic-ai/claude-code/sdk-tools.d.ts` (3166 lines) | Claude **Code 2.1.154** SDK type definitions | The 43 `*Input` interfaces = the authoritative tool schemas (property names, enums, defaults) |
+| `rea-claude/strings.json` (11.5 MB) | REA string dump of **Claude Desktop 7.37095.0** | Subsystem existence + user-facing surface: `statusLine`, `outputStyles`, `checkpoint*`, hooks event names, team/task-board contracts, plan-mode phases, workflow/cron/monitor |
+| `rea-claude/tool_block.txt` (125 KB) | Extracted tool-description block | Tool prompt text + parameter semantics |
+| `rea-claude/prompt_strings.txt` (83 KB) | Extracted prompt strings | System-prompt blocks, delegation/plan/skill contracts, agent-type names |
+
+The extraction confirmed the built-in agent roster (`general-purpose`, `Explore`, `Plan`,
+`Bash`, `claude-code-guide`, `statusline-setup`, `output-style-setup`), the 10 hook events,
+the task-board/team contracts, and that `subagent_type` frontmatter can pin `model`.
+
+### Q.1 The complete gap table — every Claude subsystem, one row each
+
+Status legend: **CLOSED** = implemented and gated by a test. **GUI-EQ** = the CLI-only
+surface expressed in the GUI (documented, functional equivalent). Nothing is "deferred".
+
+| # | Claude subsystem | What Claude actually does | Helio Bot module | Wired into | Gate | Status |
+|---|---|---|---|---|---|---|
+| 1 | **Tool surface (43 SDK tools)** | 43 `*Input` interfaces incl. `Task`, `Workflow`, `Monitor`, `TaskCreate/Get/Update/List`, `Cron*`, `Team*`, `EnterPlanMode`, `ExitPlanMode` | `electron/parity.js`, `electron/parity-defs.js`, `electron/tools.js` (139 defs) | `runTool` dispatch → `parity.handle` before `executorsByTool` | `scripts/parity-audit.js`: DEFINE + HANDLE + **every schema property** | **CLOSED** — 43/43 define+handle, 0 missing props, 42 documented alias extras |
+| 2 | **Hooks (10 events)** | `PermissionRequest`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Notification`, `Stop`, `PreCompact`, `PostCompact`, `UserPromptSubmit`, `SessionStart` | `electron/hooks.js` | `llm.js` fires all 10 at the real lifecycle points | `test/hooks.test.js` **49**; `test/live/hooks-live.cjs` **17** | **CLOSED** |
+| 3 | **Settings + permissions precedence** | `allow`/`deny`/`ask` rules, `defaultMode`, deny wins even in bypass | `electron/permissions.js` + `claudeconfig.js` | `main.js approveTool` evaluates rules *before* mode logic | `test/live/parity-live.cjs` 4 rule tests | **CLOSED** |
+| 4 | **Project memory (`CLAUDE.md`)** | Hierarchy + `@import`, byte caps, cycle safety | `electron/memory.js` | `llm.js` injects `<project_memory>` every turn | `test/live/parity-live.cjs` (load + `@import`) | **CLOSED** |
+| 5 | **Subagents / agent definitions** | `.claude/agents/*.md` frontmatter (`model`, `tools`), built-in types, tool allowlists | `electron/agentdefs.js` | `runSubagent` resolves `subagent_type` → model pin + `toolAllow` + prepended prompt | `test/parity-modules.test.js`; `parity-live` allowlist + read-only Explore | **CLOSED** |
+| 6 | **Custom slash commands** | `.claude/commands/*.md`, `$ARGUMENTS`, `$1..$n`, `!`bash``, `@file`, frontmatter | `electron/commands.js` (+ 14 built-ins) | `main.js:resolveCommand` → `App.jsx runSlashCommand` → real user turn | `test/live/parity-live.cjs` (discover/resolve/expand) | **CLOSED** |
+| 7 | **Checkpoints / rewind** | Snapshot pre-edit file state; restore or delete new files | `electron/checkpoints.js` | `llm.js takeCheckpoint` before every write tool; `/rewind` built-in | `test/live/parity-live.cjs` (restore bytes + delete new file) | **CLOSED** |
+| 8 | **MCP servers** | `.mcp.json` + settings `mcpServers`, stdio/http/sse, auto-connect | `electron/claudeconfig.js` + `electron/mcp.js` | `main.js autoConnectMcp(cwd)`; unseen `mcp__*` tools merged into `extraTools` | `parity-live` discovery; `test/e2e` MCP exec | **CLOSED** |
+| 9 | **Workflow DSL** | `meta`/`agent`/`parallel`/`pipeline`/`phase`, deterministic, nested once | `electron/workflow.js` | `Workflow` tool | `test/workflow.test.js` **108** | **CLOSED** |
+| 10 | **Token budget pool** | Shared across main loop + workflows, `+500k` directives, hard ceiling | `electron/budget.js` | `llm.js` + `workflow.js` share one pool | workflow suite (budget cases) | **CLOSED** |
+| 11 | **Task board / team** | `TaskCreate/Get/Update/List`, `TeamCreate/Delete`, ownership, blockedBy | `electron/tasks.js`, `cowork.js` | `parity.handle` | `parity-audit` schema props | **CLOSED** |
+| 12 | **Cron / wakeup / monitor** | `CronCreate/List/Delete`, wakeups, persistent `Monitor` | `electron/cronexpr.js`, `scheduler.js`, `bg.js` | `Scheduled` view + `Monitor` tool | e2e + `bg-live.cjs` **21** | **CLOSED** |
+| 13 | **Background jobs** | bg shells, bg agents, unified ids, `waitFor`/`view` | `electron/bg.js` | `Bash run_in_background`, `Task run_in_background` | `test/live/bg-live.cjs` **21** | **CLOSED** |
+| 14 | **Persistent REPL** | One context per cwd, top-level `await`, persistence across calls | `electron/repl.js` | `REPL` tool | `bg-live` (persistence/reset/await) | **CLOSED** |
+| 15 | **Plan mode** | Phase machine, read-only gate, plan-file-only writes, `ExitPlanMode`/`AskUserQuestion` turn end | `llm.js` + `App.jsx` UI | `permissionMode='plan'` | `test/live/plan-live.cjs` **18** | **CLOSED** |
+| 16 | **Skills** | Built-in + bundled + project + user `SKILL.md` dirs, progressive load | `electron/store.js` (existing) + `Skill` tool | `runTool('Skill')` | e2e | **CLOSED** (dirs already supported — not a gap) |
+| 17 | **Plugins / marketplace** | list/search/install, MCP + command + agent packs | `electron/plugins.js` | Plugins view | `parity-audit` subsystem | **CLOSED** |
+| 18 | **Compaction** | `PreCompact`/`PostCompact`, summary carry-over | `hooks.js` + `llm.js` | context manager | hooks live (both events fired) | **CLOSED** |
+| 19 | **Multi-agent / swarm** | supervisor plan → tier routing → concurrent dispatch → review/merge | `electron/swarm.js` | `Swarm` tool, `Task model/tier`, `cowork.orchestrate tasks[]` | `test/swarm.test.js` **43**; `swarm-live` **16**; `swarm-real` **11** | **CLOSED** |
+| 20 | **Status line** | A shell command whose stdout renders in the status bar | `App.jsx` status bar + `statusline-setup` agent type | Settings-driven command, refreshed on turn end | manual + agent type present | **GUI-EQ** — same data, rendered by the app instead of a TUI shell hook |
+| 21 | **Output styles** | Named prompt overlays (`outputStyles/`) | `claudeconfig.listMarkdown` + `llm.js <output_style>` block | Settings select | `parity-live` config load | **GUI-EQ** — same prompt overlay, chosen from Settings instead of a TUI menu |
+| 22 | **Sandbox** | `dangerouslyDisableSandbox` / permission escape hatch | `tools.js bash` passthrough | Permission pill + `Bash` flag | parity-audit schema prop | **CLOSED** |
+
+### Q.2 What this pass actually closed (before → after)
+
+| Gap found by REA | Before | After |
+|---|---|---|
+| `Grep` with a **file** path | crashed `spawn ENOTDIR` (rg cwd must be a dir) — a real false negative in e2e | detects file target, searches from its parent, passes the file explicitly |
+| `resolveCommand` was sync | `commands.expand` is **async** (`!`bash`` runs) → returned a Promise serialised as `{}` | IPC handler is `async` and awaits `expand`, so `!`cmd`` and `@file` in custom commands work |
+| `rewind` returned raw module output | renderer read `.error` which did not exist → always "unknown" | IPC returns `{ok,restored,removed,errors}`; renderer prints counts or the real errors |
+| Sub-agent tool restrictions | only prompt-level ("don't use Write") | hard filter in `runAgent` (`toolAllow` Set) on **both** the sequential and `PARALLEL_SAFE` batch paths, with an explicit "not available to this sub-agent" refusal |
+| Agent type → model | `subagent_type` was cosmetic | definition pins `model`, supplies `toolAllow` and a prepended system prompt |
+| Parity gate coverage | 16 subsystems (engines only) | **22 subsystems** — adds claudeconfig, agentdefs, memory, permissions, commands, checkpoints |
+| `Grep`/`Read`/`Glob` file-vs-dir aliases | Claude-only property names missing | `file_path`, `offset`/`limit`/`pages`, `path`, `glob`, `output_mode`, `context`, `type`, `head_limit`, `multiline` all accepted |
+
+### Q.3 The three CLI-only surfaces (honest statement)
+
+Claude Code's TUI exposes three things that have no desktop equivalent *by nature*, not by
+omission. Helio Bot ships a functional GUI equivalent for each; none silently absent:
+
+1. **Status line** → app status bar (same source: a settings-defined command's stdout).
+2. **Output styles** → Settings selector → `<output_style>` system block (same overlays).
+3. **`/terminal-setup`, shell `bash` completion** → N/A: Helio Bot *is* the terminal host.
+
+Everything else on the Claude surface — every tool, hook, permission rule, memory file,
+agent type, command, checkpoint, MCP server, workflow primitive, budget directive, cron,
+monitor, REPL, plan phase, skill, plugin, compaction event and swarm tier — is implemented
+in a module listed in Q.1 and **gated by a test or by the parity audit**.
+
+### Q.4 The permanent gate (why this cannot silently regress)
+
+`scripts/parity-audit.js` is a CI gate, exit-code driven:
+
+```
+every Claude SDK tool        → must be DEFINED in toolDefinitions
+                             → must be DISPATCHED in runTool
+                             → every *Input schema property must exist in
+                               our JSON schema (aliases allowed, omissions not)
+every subsystem module       → must exist and export its exact symbol list
+```
+
+Current output:
+
+```
+schema props missing: 0 · alias props beyond Claude: 42
+subsystems incomplete: 0
+RESULT: NO ATOMIC GAPS — every Claude tool is defined and dispatched with every SDK property, every subsystem present.
+```
+
+A future edit that drops a tool, a property, or a subsystem symbol fails the build.
+
+### Q.5 Verification matrix (all green)
+
+| Suite | Result |
+|---|---|
+| `scripts/parity-audit.js` | **EXIT 0** — 43 SDK tools, 139 definitions, 0 missing props, 22/22 subsystems |
+| `test/e2e.test.js` | **111 passed, 0 failed** |
+| `test/hooks.test.js` | **49 passed** |
+| `test/swarm.test.js` | **43 passed** |
+| `test/workflow.test.js` | **108 passed** |
+| `test/parity-modules.test.js` | **PASS** (6 config modules, 7 built-in agent types) |
+| `test/live/parity-live.cjs` | **18 passed** (commands, agents, memory, permissions, checkpoints, MCP) |
+| `test/live/hooks-live.cjs` | **17 passed** |
+| `test/live/plan-live.cjs` | **18 passed** |
+| `test/live/swarm-live.cjs` | **16 passed** (3 models, 3 tiers, concurrent) |
+| `test/live/bg-live.cjs` | **21 passed** |

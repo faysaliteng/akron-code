@@ -346,6 +346,7 @@ export default function App() {
   const [voiceMode, setVoiceMode] = useState(false); // full-duplex conversational voice session
   const [permissions, setPermissions] = useState(() => loadJSON('autobot:permissions', 'auto')); // 'auto' | 'ask' (B8 Claude Code mode)
   const [permission, setPermission] = useState(null); // pending permission prompt { id, tool, args, summary }
+  const [planMode, setPlanMode] = useState(null); // active plan-mode banner { active, file }
 
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
@@ -596,6 +597,14 @@ export default function App() {
           break;
         case 'permission':
           setPermission({ id: evt.id, tool: evt.tool, args: evt.args || {}, summary: evt.summary || '' });
+          break;
+        case 'permissionMode':
+          // Plan mode (or any mode change) requested by the agent itself, e.g.
+          // EnterPlanMode / ExitPlanMode approval. Keep the pill in sync.
+          if (evt.mode) setPermissions(evt.mode);
+          break;
+        case 'planMode':
+          setPlanMode(evt.active ? { active: true, file: evt.file || 'PLAN.md' } : null);
           break;
         case 'subagent': {
           // One row per agent, keyed by id (falling back to name) so a worker
@@ -1101,12 +1110,23 @@ export default function App() {
     await refreshTerminal();
   };
 
-  // ---- Slash commands (client-side quick actions) ----
-  const runSlashCommand = (cmd) => {
+  // ---- Slash commands ----
+  // Built-ins are client-side; everything else is resolved against the SAME
+  // command files Claude Code reads (`.claude/commands/*.md`, bundled, user).
+  const runSlashCommand = async (raw) => {
+    const body = String(raw || '').replace(/^\//, '');
+    const [head, ...rest] = body.trim().split(/\s+/);
+    const cmd = (head || '').toLowerCase();
+    const argText = rest.join(' ');
     switch (cmd) {
-      case 'help':
-        appendAssistant('Slash commands:\n`/help` — this help\n`/clear` — clear current conversation\n`/compact` — summarize then clear\n`/model` — open provider settings\n`/review` — review note\n`/memory` — open memory panel\n`/reset` — clear memory + conversations\n`/status` — show provider/model/tool status\n`/notebooks` — open notebooks\n`/terminal` — open terminal');
+      case 'help': {
+        let custom = [];
+        try { custom = (await window.autobot.listCommands(cwd)) || []; } catch (_) {}
+        const builtins = '`/help` — this help\n`/clear` — clear current conversation\n`/compact` — summarize then clear\n`/model` — open provider settings\n`/review` — review note\n`/memory` — open memory panel\n`/agents` — list sub-agent definitions\n`/permissions` — show permission rules\n`/rewind` — restore files from a checkpoint\n`/reset` — clear memory + conversations\n`/status` — show provider/model/tool status\n`/notebooks` — open notebooks\n`/terminal` — open terminal';
+        const customList = custom.length ? '\n\n**Project commands**\n' + custom.map((c) => '`/' + c.name + '`' + (c.description ? ' — ' + c.description : '')).join('\n') : '';
+        appendAssistant('Slash commands:\n' + builtins + customList);
         break;
+      }
       case 'clear':
         clearActiveConversation();
         break;
@@ -1122,6 +1142,39 @@ export default function App() {
       case 'memory':
         setPanel('memory');
         break;
+      case 'agents': {
+        let list = [];
+        try { list = (await window.autobot.listAgentDefs(cwd)) || []; } catch (_) {}
+        appendAssistant(list.length
+          ? '**Sub-agent definitions**\n' + list.map((a) => '- `' + a.name + '`' + (a.model ? ' (`' + a.model + '`)' : '') + (a.description ? ' — ' + a.description : '')).join('\n')
+          : 'No sub-agent definitions found (`.claude/agents/*.md` or built-ins).');
+        break;
+      }
+      case 'permissions': {
+        let p = null;
+        try { p = await window.autobot.getPermissions(cwd); } catch (_) {}
+        if (!p) { appendAssistant('Permission rules unavailable.'); break; }
+        const fmt = (arr) => (arr && arr.length ? arr.map((r) => '`' + r + '`').join(', ') : '_(none)_');
+        appendAssistant('**Permission rules**\n- Default mode: `' + (p.defaultMode || 'auto') + '`\n- allow: ' + fmt(p.allow) + '\n- deny: ' + fmt(p.deny) + '\n- ask: ' + fmt(p.ask));
+        break;
+      }
+      case 'rewind': {
+        let cps = [];
+        try { cps = (await window.autobot.listCheckpoints(activeId)) || []; } catch (_) {}
+        if (!cps.length) { appendAssistant('No checkpoints for this conversation yet.'); break; }
+        const target = argText ? cps.find((c) => String(c.id) === argText || String(c.turnId) === argText) : cps[cps.length - 1];
+        if (!target) { appendAssistant('Checkpoint not found: `' + argText + '`\n\n' + cps.map((c) => '- `' + c.id + '`').join('\n')); break; }
+        const res = await window.autobot.rewind(activeId, target.id);
+        if (res && res.ok) {
+          const bits = [];
+          if (res.restored) bits.push(res.restored + ' file(s) restored');
+          if (res.removed) bits.push(res.removed + ' file(s) removed');
+          appendAssistant('✅ Rewound to checkpoint `' + target.id + '`' + (bits.length ? ' (' + bits.join(', ') + ').' : '.'));
+        } else {
+          appendAssistant('❌ Rewind failed: ' + (((res && res.errors) || []).join('; ') || 'unknown'));
+        }
+        break;
+      }
       case 'reset':
         clearMemory();
         setConvs([]);
@@ -1138,15 +1191,27 @@ export default function App() {
       case 'terminal':
         setPanel('terminal');
         break;
-      default:
-        appendAssistant('Unknown slash command: `/' + cmd + '`');
+      default: {
+        // Project / user command: expand its markdown body into a real prompt.
+        let hit = null;
+        try { hit = await window.autobot.resolveCommand(cmd, argText, cwd); } catch (_) {}
+        if (hit && hit.prompt) {
+          send(hit.prompt);
+        } else {
+          appendAssistant('Unknown slash command: `/' + cmd + '`');
+        }
+      }
     }
   };
 
   const appendAssistant = (content) => {
     const msg = { id: uid(), role: 'assistant', content, ts: Date.now() };
     const id = activeIdRef.current;
-    if (!id) {
+    // Self-heal: `activeId` can point at a conversation that no longer exists
+    // (deleted chat, or a stale id restored from localStorage). Without this the
+    // map() below matched nothing and the message vanished — /help looked dead.
+    const known = id && (convsRef.current || []).some((c) => c.id === id);
+    if (!known) {
       // No active conversation (e.g. /help on a fresh chat) — create one so the message is visible.
       const convId = uid();
       setActiveId(convId);
@@ -1230,7 +1295,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={subAgents} swarmInfo={swarmInfo} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} />}
+              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={subAgents} swarmInfo={swarmInfo} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} />}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
               {panel === 'skills' && <SkillsView skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills} />}
@@ -1486,9 +1551,14 @@ h1{font-size:22px;margin:0 0 4px} .meta{color:#888;font-size:12px;margin-bottom:
 }
 
 // ---------- Chat view ----------
-function ChatView({ messages, live, thinking, subAgents, swarmInfo, copyBlock, applyBlock, bottomRef, convId, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt }) {
+function ChatView({ messages, live, thinking, subAgents, swarmInfo, planMode, copyBlock, applyBlock, bottomRef, convId, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt }) {
   return (
     <div className="chat" onClick={(e) => { copyBlock(e); applyBlock(e); }}>
+      {planMode && planMode.active && (
+        <div className="planmode-banner" title={'The agent is read-only until you approve the plan. Plan file: ' + (planMode.file || 'PLAN.md')}>
+          <Icon name="Clipboard" size={13} /> Plan mode · read-only · writes go to {planMode.file || 'PLAN.md'}
+        </div>
+      )}
       {conv && (
         <div className="conv-toolbar">
           <div className="conv-toolbar-title">{conv.title || 'Untitled'}</div>
@@ -1522,7 +1592,8 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, copyBlock, a
               {' '}{a.name}
               {a.tier ? <em className="tier">{a.tier}</em> : null}
               {a.model ? <em className="model">{a.model}</em> : null}
-              {a.progress && a.status === 'running' && a.progress.chars ? <em className="model">{a.progress.chars > 999 ? (a.progress.chars / 1000).toFixed(1) + 'k' : a.progress.chars}</em> : null}
+              {a.progress && a.status === 'running' && a.progress.chars ? <em className="model prog">{a.progress.chars > 999 ? (a.progress.chars / 1000).toFixed(1) + 'k' : a.progress.chars}</em> : null}
+              {a.progress && a.status === 'running' && a.progress.tools ? <em className="model prog">{a.progress.tools} tools</em> : null}
               {a.progress && a.status !== 'running' && a.progress.tools ? <em className="model">{a.progress.tools} tools</em> : null}
             </span>
           ))}
@@ -3005,10 +3076,9 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
       e.preventDefault();
       const text = (inputRef.current?.value || '').trim();
       if (text.startsWith('/')) {
-        const cmd = text.slice(1).trim().toLowerCase().split(/\s+/)[0];
         inputRef.current.value = '';
         setHasText(false);
-        runSlashCommand(cmd);
+        runSlashCommand(text.slice(1));
       } else {
         send();
         setHasText(false);

@@ -100,8 +100,9 @@ function startStub(stub) {
       if (kind === 'plan') { await streamText(res, '```json\n' + JSON.stringify(PLAN) + '\n```', 'stop', 15); return finish(); }
       // 3. The supervisor merges.
       if (kind === 'merge') { await streamText(res, 'MERGED: all three agents reported in.', 'stop', 15); return finish(); }
-      // 4. A worker — streamed slowly so genuine overlap is observable.
-      if (kind === 'worker') { await streamText(res, `done on ${stub.model} :: ${(prompt.match(/YOUR SUBTASK[^\n]*/) || ['?'])[0]}`, 'stop', 45); return finish(); }
+      // 4. A worker — streamed slowly enough that the UI has to paint it as
+      //    running (Claude shows live agents for seconds, not milliseconds).
+      if (kind === 'worker') { await streamText(res, `done on ${stub.model} :: ${(prompt.match(/YOUR SUBTASK[^\n]*/) || ['?'])[0]}`, 'stop', 180); return finish(); }
       // 5. Outer agent after the tool returned.
       await streamText(res, 'Swarm verified.', 'stop', 10);
       return finish();
@@ -198,10 +199,13 @@ async function evaluate(ws, expression) {
         const live = Array.from(document.querySelectorAll('.msg.assistant .body')).pop();
         return JSON.stringify({
           running: running.length,
-          counters: running.some((e) => /\\d/.test((e.querySelector('.model') || {}).innerText || '')),
+          total: rows.length,
+          classes: rows.map((e) => e.className),
+          counters: running.some((e) => /\\d/.test(((e.querySelector('.prog') || {}).innerText) || '')),
           body: live ? live.innerText : '',
         });
       })()`).catch(() => '{}'));
+      if (i < 4 || (i % 40 === 0)) console.log('probe#' + i, JSON.stringify({ r: probe.running, t: probe.total, c: probe.classes }).slice(0, 400));
       maxRunningRows = Math.max(maxRunningRows, probe.running || 0);
       if (probe.counters) sawLiveCounters = true;
       // The workers stream `done on <model> :: …`; none of it may reach the parent.

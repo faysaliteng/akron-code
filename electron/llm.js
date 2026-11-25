@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const { toolDefinitions, runTool } = require('./tools');
 const swarm = require('./swarm');
+const hooks = require('./hooks');
+const budgetPool = require('./budget');
 
 // Registry of live sub-agents (for TaskStop / ListAgents).
 const subagentControllers = new Map(); // name -> AbortController
@@ -70,6 +72,39 @@ const SYSTEM_PROMPT = `You are Helio Bot, an agentic desktop coding assistant ru
 - Browser tools (browser_open / browser_navigate / browser_snapshot / browser_click / browser_type / browser_screenshot / browser_tabs) for web tasks the user can watch.
 - web_search / web_fetch for facts you are unsure about.
 - Shell, Read, Glob, Grep, memory and todo tools as needed.
+
+## Tone and style
+- Answer the question that was asked. Do not pad with restatements, apologies, or "Great question".
+- Use plain prose. No emoji unless the user uses them. No headers in a one-line answer.
+- When you reference code, name the file and the line: \`src/App.jsx:412\`. Never cite a line number you have not read.
+- Report outcomes honestly. If something is broken or untested, say so in one sentence and fix it or explain.
+
+## Tool usage policy
+- Prefer one accurate tool call to three speculative ones. Read before you write; Glob/Grep before you guess a path.
+- Run independent read-only calls (Read, Glob, Grep, LS, Search, WebFetch, WebSearch) **in the same turn** — they execute concurrently.
+- Mutating tools run one at a time, in order. Never batch Write + Bash expecting the shell to see the file.
+- Do not use Bash for file edits. Write/Edit/MultiEdit own file content; Bash runs programs, installs deps, and drives git.
+- Only mark a TodoWrite item completed when the tool result proves it.
+
+## Skills
+- A skill is a reusable instruction pack. Before answering a task that a skill covers, call \`Skill\` with the exact skill name (no leading slash).
+- Namespaced skills use \`plugin:skill\`. Pass arguments via \`args\` when the skill expects them.
+- If you used a skill, follow its instructions over your own default approach.
+
+## Plan mode
+- When plan mode is on you are read-only: research, design, and write ONE plan file. Do not mutate source.
+- Work the phases in order: **Explore** (read files, search, gather facts — the only phase that may read) → **Design** (write the plan) → **Review** (re-read your own plan for gaps, risky steps, missing verification) → then **Implement** and **Verify** once the user approves.
+- End the turn with \`ExitPlanMode\` {"plan": "<the plan>"} so the user can approve it. Use \`AskUserQuestion\` only for a genuine decision you cannot make yourself. Never ask for approval in plain prose.
+- After approval you are out of plan mode: implement, verify, and report.
+
+## Task board and teams
+- \`TaskCreate\` / \`TaskUpdate\` / \`TaskList\` / \`TaskGet\` are the durable work board. Use them instead of TodoWrite when work outlives one turn or is shared with teammates.
+- Teammates claim \`pending\` tasks that have no owner and no blockers, lowest id first, via \`TaskUpdate\` {owner}. Mark \`in_progress\` when you start and \`completed\` when the result is verified.
+- \`TeamCreate\` / \`SendMessage\` / \`TeamDelete\` coordinate named agents. Address a teammate by name; the lead is always "team-lead".
+
+## Automations
+- \`CronCreate\` schedules a recurring prompt (5-field local cron). \`ScheduleWakeup\` re-runs you after a delay (60–3600 s). \`Monitor\` watches a command's stdout and wakes you on a line.
+- \`Workflow\` runs a multi-phase script of \`agent()\` / \`parallel()\` / \`pipeline()\` calls — use it for a repeatable pipeline, not a one-off.
 
 You are a coding agent first. Files, not chat, are the deliverable.`;
 
@@ -263,6 +298,7 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
       if (payload === '[DONE]') continue;
       let json;
       try { json = JSON.parse(payload); } catch { continue; }
+      if (json.usage) message.usage = json.usage;
       const choice = json.choices && json.choices[0];
       if (!choice) continue;
       if (choice.finish_reason) message.finish_reason = choice.finish_reason;
@@ -718,6 +754,32 @@ async function runAgent(opts) {
   const maxSteps = Number(opts.maxSteps) > 0 ? Number(opts.maxSteps) : HARD_STEP_CAP;
   let currentCwd = opts.cwd || process.cwd();
 
+  // ── Lifecycle hooks (Claude Code parity) ────────────────────────────────
+  // The same ten events Claude Code fires, read from ~/.claude/settings.json,
+  // <cwd>/.claude/settings.json and ~/.autobot/hooks.json. A hook that crashes
+  // or times out degrades to "no verdict" — it can never kill the run.
+  let hookConfig = null;
+  const getHookConfig = () => {
+    if (!hookConfig) {
+      try { hookConfig = hooks.loadHookConfig(currentCwd); } catch (_) { hookConfig = {}; }
+    }
+    return hookConfig;
+  };
+  const runHook = async (event, payload = {}) => {
+    try {
+      if (!(getHookConfig()[event] || []).length) return null;
+      return await hooks.runEvent(event, payload, {
+        cwd: currentCwd,
+        sessionId: opts.sessionId,
+        emit,
+        config: getHookConfig(),
+        runPrompt: opts.hookPrompt,
+      });
+    } catch (_) {
+      return null;
+    }
+  };
+
   // Orchestrator: build the provider failover list. When enabled, iterate over
   // the user-selected providers; otherwise use the single active provider.
   const orch = opts.orchestrator || null;
@@ -731,10 +793,20 @@ async function runAgent(opts) {
   const setIndex = (i) => { activeIndex = i % providerList.length; };
   const provider = providerList[getIndex()];
 
-  // merge built-in tools + MCP tools (if any) + custom extraTools
-  let tools = toolDefinitions.map((t) => ({ type: 'function', function: t }));
+  // Merge built-in tools + MCP tools (if any) + custom extraTools. A sub-agent
+  // definition can restrict the tool surface (`tools:` frontmatter), which is
+  // Claude's read-only Explore / tool-scoped agent contract.
+  const toolAllow = opts.toolAllow instanceof Set ? opts.toolAllow : null;
+  const isAllowed = (name) => {
+    if (!toolAllow) return true;
+    if (toolAllow.has(name) || toolAllow.has('*')) return true;
+    if (name.startsWith('mcp__') && (toolAllow.has('mcp') || toolAllow.has('mcp__*'))) return true;
+    return false;
+  };
+  let tools = toolDefinitions.filter((t) => isAllowed(t.name)).map((t) => ({ type: 'function', function: t }));
   const extra = opts.extraTools || [];
   for (const t of extra) {
+    if (!isAllowed(t.name)) continue;
     tools.push({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema || { type: 'object', properties: {} } } });
   }
 
@@ -782,6 +854,15 @@ async function runAgent(opts) {
     if (mm) messages[0].content += `\n\n<project_mindmap>\n${mm}\n</project_mindmap>`;
   } catch (_) {}
 
+  // CLAUDE.md project memory hierarchy (global → ancestors → cwd → local),
+  // including @import expansion. This is what a project already checked into a
+  // Claude repo carries, so its standing instructions apply here too.
+  try {
+    const memory = require('./memory');
+    const memText = memory.loadMemoryText(currentCwd);
+    if (memText) messages[0].content += `\n\n<project_memory>\n${memText}\n</project_memory>`;
+  } catch (_) {}
+
   // Optionally inject memory into system prompt
   const { memoryAsText } = require('./store');
   if (opts.useMemory !== false) {
@@ -789,6 +870,80 @@ async function runAgent(opts) {
     if (mem !== '(no saved memory)') {
       messages[0].content += `\n\n<long_term_memory>\n${mem}\n</long_term_memory>`;
     }
+  }
+
+  // Custom output style (settings.outputStyle → ~/.claude/output-styles/<name>.md)
+  // and statusline config live in settings; the output style body is appended to
+  // the system prompt exactly like Claude Code does.
+  try {
+    const cc = require('./claudeconfig');
+    const { settings } = cc.loadSettings(currentCwd);
+    const styleName = settings && (settings.outputStyle || settings.output_style);
+    if (styleName && String(styleName).toLowerCase() !== 'default') {
+      const dirs = [path.join(cc.CONFIG_DIR, 'output-styles')];
+      if (currentCwd) dirs.push(path.join(currentCwd, '.claude', 'output-styles'));
+      dirs.push(path.join(cc.AUTOBOT_DIR, 'output-styles'));
+      let found = null;
+      for (const d of dirs) {
+        const f = path.join(d, `${styleName}.md`);
+        const txt = cc.readText(f);
+        if (txt != null) { found = txt; break; }
+      }
+      if (found) {
+        const { body } = cc.parseFrontmatter(found);
+        if (body && body.trim()) messages[0].content += `\n\n<output_style name="${styleName}">\n${body.trim()}\n</output_style>`;
+      }
+    }
+  } catch (_) {}
+
+  // Sub-agent definitions the model can dispatch to via `subagent_type`.
+  try {
+    const agentdefs = require('./agentdefs');
+    const defs = agentdefs.discover(currentCwd, { fresh: true });
+    if (defs.length) {
+      const roster = defs.map((d) => `- ${d.name}${d.model ? ` (model: ${d.model})` : ''}: ${d.description}`).join('\n');
+      messages[0].content += `\n\n<subagent_types>\nWhen calling Task or Agent you may set subagent_type to one of these to run it with that definition (prompt + tool restrictions + model):\n${roster}\n</subagent_types>`;
+    }
+  } catch (_) {}
+
+  // SessionStart + UserPromptSubmit. Claude Code fires both before the model
+  // ever sees the prompt, and both may inject context (or, for the prompt
+  // one, veto the turn outright).
+  {
+    const v = await runHook('SessionStart', { source: opts.continuation ? 'resume' : 'startup' });
+    if (v) {
+      if (v.additionalContext) messages[0].content += `\n\n<hook_context>\n${v.additionalContext}\n</hook_context>`;
+      for (const m of v.systemMessages || []) emit({ type: 'notice', text: m });
+    }
+  }
+  {
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+    const promptText = typeof (lastUser && lastUser.content) === 'string' ? lastUser.content : '';
+    const v = await runHook('UserPromptSubmit', { prompt: promptText, user_prompt: promptText });
+    if (v) {
+      if (v.blocked || v.stop) {
+        const why = v.reason || 'Blocked by UserPromptSubmit hook';
+        emit({ type: 'notice', text: `Prompt blocked: ${why}` });
+        emit({ type: 'done', messages, blocked: true });
+        return messages;
+      }
+      if (v.additionalContext) messages[0].content += `\n\n<hook_context>\n${v.additionalContext}\n</hook_context>`;
+      for (const m of v.systemMessages || []) emit({ type: 'notice', text: m });
+    }
+  }
+
+  // ── Token budget pool (Claude's workflow `budget` global) ────────────────
+  // A top-level turn (the main IPC handler sets `turnStart`) owns the pool: it
+  // resets the counter and reads a "+500k"/"+1.5m" directive out of the user's
+  // message. Sub-agents and workflow agents inherit the SAME pool, so the target
+  // really is a ceiling for everything this turn spends — exactly Claude's
+  // contract. Sub-runs never reset it (they would erase the parent's spend).
+  if (opts.turnStart) {
+    budgetPool.reset();
+    const firstUser = messages.find((m) => m.role === 'user');
+    const budgetText = typeof (firstUser && firstUser.content) === 'string' ? firstUser.content : '';
+    const target = budgetPool.applyDirective(budgetText);
+    if (target != null) emit({ type: 'notice', text: `Token budget for this turn: ${target.toLocaleString()} output tokens.` });
   }
 
   let toolMode = provider.supportsTools;
@@ -801,10 +956,22 @@ async function runAgent(opts) {
   // so. Do the same: keep the state, tell the user once, and carry on working.
   messages = sanitizeHistory(messages, {
     supportsTools: toolMode,
-    onCompact: ({ dropped }) => emit({
-      type: 'notice',
-      text: `Compacted ${dropped} earlier turns to fit ${provider.model}'s context window — the chat history and project files are unchanged.`,
-    }),
+    onCompact: ({ dropped }) => {
+      // PreCompact/PostCompact fire around the compaction itself. They run
+      // fire-and-forget: compaction is synchronous and must not block on I/O.
+      const payload = { trigger: 'auto', dropped };
+      Promise.resolve()
+        .then(() => hooks.runEvent('PreCompact', payload, { cwd: currentCwd, config: getHookConfig() }))
+        .then((v) => {
+          if (v && v.additionalContext) messages[0].content += `\n\n<hook_context>\n${v.additionalContext}\n</hook_context>`;
+          return hooks.runEvent('PostCompact', payload, { cwd: currentCwd, config: getHookConfig() });
+        })
+        .catch(() => {});
+      emit({
+        type: 'notice',
+        text: `Compacted ${dropped} earlier turns to fit ${provider.model}'s context window — the chat history and project files are unchanged.`,
+      });
+    },
   });
   const knownToolNames = new Set(tools.map((t) => t.function.name));
   if (textToolMode) messages[0].content += '\n\n' + TEXT_TOOL_PROTOCOL;
@@ -818,6 +985,149 @@ async function runAgent(opts) {
   let lastSig = '';
   let repeatCount = 0;
   let nudges = 0;
+  // Plan mode: track whether the turn already ended on ExitPlanMode/AskUserQuestion
+  // so a prose-only finish gets nudged back onto the contract.
+  let planEnded = false;
+  let planNudges = 0;
+
+  // Snapshot a file before a mutating tool touches it, so /rewind can restore
+  // the working tree to any earlier turn. Best-effort: never blocks the tool.
+  const checkpointTargets = (name, a) => {
+    if (!a) return [];
+    const out = [];
+    const push = (p) => { if (p) out.push(String(p)); };
+    if (name === 'Write' || name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') {
+      push(a.file_path || a.path || a.notebook_path || a.filePath);
+    } else if (name === 'mcp__workspace__write_file' || name === 'mcp__workspace__edit_file') {
+      push(a.path || a.file_path);
+    } else if (name === 'Artifact') {
+      // Artifact writes a file derived from name+language; snapshot it too.
+      const nm = a.name ? String(a.name) : 'artifact.txt';
+      push(nm);
+    }
+    return out;
+  };
+  const takeCheckpoint = (name, a) => {
+    if (!opts.convId) return;
+    let ck;
+    try { ck = require('./checkpoints'); } catch (_) { return; }
+    for (const p of checkpointTargets(name, a)) {
+      try {
+        const abs = path.isAbsolute(p) ? p : path.resolve(currentCwd || process.cwd(), p);
+        ck.snapshotFile(opts.convId, opts.turnId || 'turn', abs);
+      } catch (_) {}
+    }
+  };
+
+  // ── Plan mode ───────────────────────────────────────────────────────────
+  // Claude's plan mode is a phase machine, not a blanket "deny writes": the
+  // agent explores read-only, designs, self-reviews, writes ONE plan file, then
+  // ends the turn with ExitPlanMode. Only source mutations are refused, and the
+  // refusal tells the model exactly what to do instead (a bare denial made the
+  // agent retry the same Write until the turn died).
+  const PLAN_FILE_REL = String(opts.planFile || 'PLAN.md');
+  let permissionMode = String(opts.permissionMode || opts.permissions || 'auto');
+  let planPrevMode = 'auto';
+  const PLAN_SAFE = new Set([
+    'Read', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles',
+    'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion', 'ExitPlanMode',
+    'EnterPlanMode', 'Artifact', 'StructuredOutput', 'Monitor', 'TaskOutput',
+    'TaskList', 'TaskGet', 'TeamCreate', 'SendMessage', 'ListAgents', 'Skill',
+    'ListMcpResources', 'ReadMcpResource', 'Brief', 'SendUserFile',
+    'PushNotification', 'CronList', 'NotebookRead', 'Task', 'Agent', 'Swarm',
+  ]);
+  const planAbsPath = () => path.resolve(currentCwd, PLAN_FILE_REL);
+  const isPlanFileArg = (args) => {
+    const p = args && (args.path || args.file_path || args.filePath || args.file);
+    if (!p) return false;
+    try { return path.resolve(currentCwd, String(p)) === planAbsPath(); } catch (_) { return false; }
+  };
+  // Returns null when the call is allowed, or a directive message when it is not.
+  const planGate = (name, args) => {
+    if (permissionMode !== 'plan') return null;
+    if (name === 'Write' || name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') {
+      if (isPlanFileArg(args)) return null;
+      return `Plan mode: source files are read-only. Write the change you want into ${PLAN_FILE_REL} instead, then call ExitPlanMode {"plan": "..."} so the user can approve it before you touch source.`;
+    }
+    if (PLAN_SAFE.has(name) || /^browser_/.test(name)) return null;
+    if (/^mcp__[^_]+__.*(read|list|get|search|fetch|query|describe)/i.test(name)) return null;
+    return `Plan mode: "${name}" is unavailable until the user approves the plan. Keep researching with read-only tools, record the plan in ${PLAN_FILE_REL}, and finish the turn with ExitPlanMode (or AskUserQuestion for a decision you cannot make).`;
+  };
+  const planBlockText = () => `\n\n<plan-mode>
+PLAN MODE IS ACTIVE. You may read and research, but you must not modify source files.
+Work the phases in order:
+  1. Explore — read the relevant files, search, gather facts. Read-only.
+  2. Design — write the complete plan to ${PLAN_FILE_REL} (the only writable file).
+  3. Review — re-read your plan critically: missing files, risky steps, how you will verify.
+  4. Implement / Verify — these happen ONLY after the user approves the plan.
+Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve it. Never ask for approval in prose, and never edit source before approval.
+</plan-mode>`;
+  // Install/remove the plan-mode system block as the mode flips mid-run, so the
+  // model is never told "plan mode is active" after the user approved.
+  let planBlockInstalled = false;
+  const applyPlanBlock = (on) => {
+    if (!messages[0] || messages[0].role !== 'system') return;
+    if (on && !planBlockInstalled) { messages[0].content += planBlockText(); planBlockInstalled = true; }
+    else if (!on && planBlockInstalled) {
+      messages[0].content = String(messages[0].content).split(planBlockText()).join('');
+      planBlockInstalled = false;
+    }
+  };
+  const setPermissionMode = (mode) => {
+    const next = ['auto', 'ask', 'acceptEdits', 'plan', 'bypass'].includes(String(mode)) ? String(mode) : 'auto';
+    if (next === 'plan' && permissionMode !== 'plan') planPrevMode = permissionMode;
+    permissionMode = next;
+    applyPlanBlock(next === 'plan');
+    emit({ type: 'permissionMode', mode: next });
+    return next;
+  };
+  if (permissionMode === 'plan') {
+    // Same five phases Claude Code walks. Implement/Verify only run after the
+    // user approves, which is why the prompt says "once the user approves".
+    applyPlanBlock(true);
+    emit({ type: 'planMode', active: true, file: PLAN_FILE_REL });
+  }
+
+  // Hook wrappers around a single tool call. PreToolUse may block the call
+  // (exit 2 or permissionDecision "deny") or rewrite its arguments
+  // (updatedInput); PostToolUse/PostToolUseFailure may append context that the
+  // model then sees as part of the result.
+  const beforeTool = async (name, args) => {
+    // Plan mode is checked first: it is a product-level gate, not a user hook,
+    // and its message must read as guidance rather than as a hook denial.
+    const gate = planGate(name, args);
+    if (gate) return { blocked: true, reason: gate, args, planGate: true };
+    const v = await runHook('PreToolUse', { tool_name: name, tool_input: args });
+    if (!v) return { args };
+    for (const m of v.systemMessages || []) emit({ type: 'notice', text: m });
+    if (v.blocked) return { blocked: true, reason: v.reason || `Blocked by PreToolUse hook for ${name}`, args };
+    let effArgs = args;
+    if (v.updatedInput && typeof v.updatedInput === 'object') {
+      try {
+        effArgs = { ...args, ...v.updatedInput };
+        emit({ type: 'notice', text: `A PreToolUse hook rewrote the ${name} arguments.` });
+      } catch (_) {}
+    }
+    if (v.needsAsk && typeof opts.approveTool === 'function') {
+      let ok = false;
+      try { ok = await opts.approveTool(name, effArgs); } catch (_) { ok = false; }
+      if (!ok) return { blocked: true, reason: `Denied at permission prompt for ${name}`, args: effArgs };
+    }
+    return { args: effArgs, context: v.additionalContext || '' };
+  };
+  const afterTool = async (name, args, result, isError) => {
+    const v = await runHook(isError ? 'PostToolUseFailure' : 'PostToolUse', {
+      tool_name: name,
+      tool_input: args,
+      tool_response: result,
+      error: isError ? String(result) : undefined,
+    });
+    if (!v) return String(result);
+    let text = String(result);
+    if (v.additionalContext) text += `\n\n<hook_context>\n${v.additionalContext}\n</hook_context>`;
+    for (const m of v.systemMessages || []) emit({ type: 'notice', text: m });
+    return text;
+  };
 
   for (let step = 0; step < maxSteps; step++) {
     if (opts.signal && opts.signal.aborted) throw new Error('aborted');
@@ -843,6 +1153,14 @@ async function runAgent(opts) {
         emit,
         signal: opts.signal,
         maxTokens,
+      }).then((m) => {
+        // Record the output tokens this attempt produced into the shared pool.
+        // A discarded token-limit attempt still cost tokens, so it counts too.
+        if (m && m.usage) {
+          const out = Number(m.usage.completion_tokens != null ? m.usage.completion_tokens : m.usage.output_tokens);
+          if (Number.isFinite(out) && out > 0) budgetPool.addOutput(out);
+        }
+        return m;
       });
     };
     try {
@@ -904,6 +1222,31 @@ async function runAgent(opts) {
         if (created.length) extraNote = `\n\n(Saved ${created.join(', ')} to your project so it renders live.)`;
       }
       messages.push({ role: 'assistant', content: (message.content || '') + extraNote });
+      // Plan mode contract: the turn has to end on ExitPlanMode or
+      // AskUserQuestion, never on a prose "shall I proceed?". If the model just
+      // talked, push it back onto the tool instead of ending the turn.
+      if (permissionMode === 'plan' && !planEnded && planNudges < 3) {
+        planNudges++;
+        emit({ type: 'notice', text: 'Plan mode — the turn must end with ExitPlanMode or AskUserQuestion.' });
+        messages.push({ role: 'user', content: `[plan-mode] Do not ask for approval in prose. Write the plan to ${PLAN_FILE_REL} if you have not, then call ExitPlanMode {"plan": "<the plan>"} (or AskUserQuestion if you genuinely cannot decide).` });
+        continue;
+      }
+      // Stop hook: Claude Code fires this when the turn ends. It may add a
+      // system message, or `continue: false` to force the loop to keep going
+      // (a Stop hook that refuses to let the agent finish).
+      {
+        const v = await runHook('Stop', { stop_hook_active: false, transcript_length: messages.length });
+        if (v) {
+          for (const m of v.systemMessages || []) emit({ type: 'notice', text: m });
+          if (v.stop && nudges < 3) {
+            nudges++;
+            messages.push({ role: 'user', content: `[hook] ${v.reason || 'Continue — the Stop hook says the work is not finished.'}` });
+            continue;
+          }
+          if (v.additionalContext) messages.push({ role: 'user', content: `[hook] ${v.additionalContext}` });
+          if (v.additionalContext) continue;
+        }
+      }
       emit({ type: 'done', messages });
       return messages;
     }
@@ -930,11 +1273,26 @@ async function runAgent(opts) {
         if (opts.signal.aborted) onAbort();
         else opts.signal.addEventListener('abort', onAbort, { once: true });
       }
+      // A delegated task may pin a sub-agent DEFINITION (`subagent_type`), which
+      // carries its own system prompt, tool allowlist, and model — Claude's
+      // `.claude/agents/*.md` contract.
+      let def = null;
+      if (args.subagent_type || args.agent_type || args.type) {
+        try {
+          const agentdefs = require('./agentdefs');
+          def = agentdefs.resolve(args.subagent_type || args.agent_type || args.type, currentCwd);
+          if (!def) {
+            // Unknown type: fall back to general-purpose but tell the caller.
+            def = agentdefs.BUILTIN['general-purpose'];
+          }
+        } catch (_) {}
+      }
       // A delegated task may name the model it needs, or just its complexity
       // tier. Claude lets a subagent definition pin `model: sonnet|opus|haiku`;
       // here the same idea maps onto the configured provider pool so cheap work
       // runs on a cheap model and hard work lands on the frontier model.
-      const wantModel = args.model || args.model_id || null;
+      const defModel = def && def.model ? def.model : null;
+      const wantModel = args.model || args.model_id || defModel || null;
       const wantTier = args.tier || args.complexity || null;
       const pinned = Boolean(wantModel || wantTier);
       let subProvider = providerList[getIndex()];
@@ -944,10 +1302,20 @@ async function runAgent(opts) {
         subProvider = wantModel ? { ...base, model: String(wantModel) } : { ...base };
         tier = base.tier || swarm.normalizeTier(wantTier, 'heavy');
       }
-      subagentControllers.set(name, { controller: ac, status: 'running', started: Date.now(), model: subProvider && subProvider.model, tier });
-      emit({ type: 'subagent', id: name, name, status: 'started', role: 'worker', model: subProvider ? subProvider.model : null, tier });
+      // Tool allowlist from the definition, or read-only enforcement for the
+      // built-in Explore/Plan types even when they were not explicitly resolved.
+      let toolAllow = null;
+      if (def) {
+        try { toolAllow = require('./agentdefs').allowedToolSet(def); } catch (_) { toolAllow = null; }
+      }
+      const defPrompt = def && def.body ? require('./agentdefs').promptFor(def) : null;
+      subagentControllers.set(name, { controller: ac, status: 'running', started: Date.now(), model: subProvider && subProvider.model, tier, subagentType: def && def.name });
+      emit({ type: 'subagent', id: name, name, status: 'started', role: 'worker', model: subProvider ? subProvider.model : null, tier, subagentType: def && def.name });
       try {
-        const subMsgs = [{ role: 'user', content: args.prompt || args.description || '' }];
+        const userPrompt = args.prompt || args.description || '';
+        const subMsgs = defPrompt
+          ? [{ role: 'system', content: defPrompt }, { role: 'user', content: userPrompt }]
+          : [{ role: 'user', content: userPrompt }];
         const subResult = await runAgent({
           provider: subProvider,
           // A pinned provider must not be replaced by the parent's failover list.
@@ -966,6 +1334,12 @@ async function runAgent(opts) {
           shell: opts.shell,
           extraTools: opts.extraTools,
           signal: ac.signal,
+          toolAllow,
+          // A delegated agent inherits plan mode: Claude's Explore phase runs
+          // read-only sub-agents, so they must not be able to write source.
+          permissionMode,
+          convId: opts.convId,
+          turnId: opts.turnId,
         });
         const last = [...subResult].reverse().find((m) => m.role === 'assistant' && m.content);
         return last ? last.content : '(sub-agent completed)';
@@ -1054,6 +1428,7 @@ async function runAgent(opts) {
         mcpReadResource: opts.mcpReadResource,
         approveTool: opts.approveTool,
         extraTools: opts.extraTools,
+        permissionMode,
         ...subOpts,
       }),
       get provider() { return providerList[getIndex()]; },
@@ -1061,10 +1436,37 @@ async function runAgent(opts) {
       emit,
       agentRoster,
       askUser: opts.askUser,
-      exitPlanMode: opts.exitPlanMode,
+      // Plan approval flips plan mode off when the user approves, so the same
+      // run can go on to implement and verify — exactly Claude's behaviour.
+      exitPlanMode: async (p) => {
+        const text = opts.exitPlanMode
+          ? String(await opts.exitPlanMode(p) || '')
+          : '(plan approval unavailable — assume approved)';
+        const approved = /approved/i.test(text) && !/not approved|rejected/i.test(text);
+        if (approved) {
+          setPermissionMode(planPrevMode || 'auto');
+          emit({ type: 'planMode', active: false });
+          emit({ type: 'notice', text: 'Plan approved — plan mode is off, implementing now.' });
+        } else {
+          emit({ type: 'notice', text: 'Plan not approved yet — staying in plan mode. Revise the plan and try again.' });
+        }
+        return text;
+      },
       mcpListResources: opts.mcpListResources,
       mcpReadResource: opts.mcpReadResource,
-      approveTool: opts.approveTool,
+      setPermissionMode,
+      // PermissionRequest hooks run before the user is prompted, exactly as in
+      // Claude Code: an allow/deny hook saves the prompt entirely.
+      approveTool: async (toolName, toolArgs) => {
+        const v = await runHook('PermissionRequest', { tool_name: toolName, tool_input: toolArgs });
+        if (v && v.blocked) return false;
+        if (v && v.updatedInput && toolArgs && typeof toolArgs === 'object') {
+          try { Object.assign(toolArgs, v.updatedInput); } catch (_) {}
+        }
+        for (const m of (v && v.systemMessages) || []) emit({ type: 'notice', text: m });
+        if (!opts.approveTool) return true;
+        try { return await opts.approveTool(toolName, toolArgs); } catch (_) { return false; }
+      },
       listAgents,
       stopTask,
       sendUserMessage,
@@ -1076,17 +1478,20 @@ async function runAgent(opts) {
     // Claude runs independent read-only calls from the same turn concurrently
     // and shows all of the rows at once. Doing them one-by-one made a 4-file
     // read take 4 round trips of wall time and stacked rows progressively.
-    const PARALLEL_SAFE = new Set(['Read', 'Glob', 'Grep', 'LS', 'ListDir', 'ListFiles', 'WebFetch', 'WebSearch']);
+    const PARALLEL_SAFE = new Set(['Read', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles', 'WebFetch', 'WebSearch', 'TaskList', 'TaskGet', 'CronList', 'ListMcpResources']);
     if (!textCalls && calls.length > 1 && calls.every((tc) => PARALLEL_SAFE.has(tc.function.name))) {
       const batch = calls.map((tc) => ({ tc, name: tc.function.name, args: parseArgs(tc.function.arguments) }));
       batch.forEach((p) => emit({ type: 'tool', id: p.tc.id, name: p.name, args: p.args }));
       const results = await Promise.all(batch.map(async (p) => {
         try {
-          const r = await runTool(p.name, p.args, ctx);
+          if (toolAllow && !isAllowed(p.name)) return { content: `Tool "${p.name}" is not available to this sub-agent.`, isError: true };
+          const pre = await beforeTool(p.name, p.args);
+          if (pre.blocked) return { content: pre.planGate ? pre.reason : `Blocked by hook: ${pre.reason}`, isError: true };
+          const r = await runTool(p.name, pre.args, ctx);
           const content = typeof r === 'string' ? r : r.content;
           const isErr = (typeof r === 'object' && Boolean(r.isError))
             || /^(Error|Tool error)/i.test(String(content).trim());
-          return { content: String(content), isError: isErr };
+          return { content: await afterTool(p.name, pre.args, String(content), isErr), isError: isErr };
         } catch (e) {
           return { content: 'Error: ' + (e && e.message ? e.message : String(e)), isError: true };
         }
@@ -1100,7 +1505,7 @@ async function runAgent(opts) {
 
     for (const tc of calls) {
       const name = tc.function.name;
-      const args = parseArgs(tc.function.arguments);
+      let args = parseArgs(tc.function.arguments);
       emit({ type: 'tool', id: tc.id, name, args });
 
       // Loop detection: identical tool + identical args repeated back-to-back.
@@ -1110,6 +1515,29 @@ async function runAgent(opts) {
 
       let result;
       let isError = false;
+      // A sub-agent definition's `tools:` list is a hard allowlist — a model that
+      // tries a tool it was not granted gets a clear refusal, not a silent no-op.
+      if (toolAllow && !isAllowed(name)) {
+        result = `Tool "${name}" is not available to this sub-agent (its definition restricts tools).`;
+        isError = true;
+        emit({ type: 'toolResult', id: tc.id, name, result, isError });
+        if (textCalls) messages.push({ role: 'user', content: `TOOL RESULT ${tc.id} (${name}):\n${result}` });
+        else messages.push({ role: 'tool', tool_call_id: tc.id, name, content: result });
+        continue;
+      }
+      // Claude's PreToolUse hook can veto or rewrite the call before it runs.
+      const pre = await beforeTool(name, args);
+      if (pre.blocked) {
+        result = pre.planGate ? pre.reason : `Blocked by hook: ${pre.reason}`;
+        isError = true;
+        emit({ type: 'toolResult', id: tc.id, name, result, isError });
+        if (textCalls) messages.push({ role: 'user', content: `TOOL RESULT ${tc.id} (${name}):\n${result}` });
+        else messages.push({ role: 'tool', tool_call_id: tc.id, name, content: result });
+        continue;
+      }
+      args = pre.args;
+      // Record the pre-change state of any file this mutating tool will touch.
+      if (WRITE_TOOLS.has(name)) takeCheckpoint(name, args);
       // Route virtual mcp__* names (built-in equivalents) to runTool first;
       // only unknown mcp__* (external MCP servers) go to callMcpTool.
       if (name.startsWith('mcp__') && !localToolNames.has(name)) {
@@ -1147,10 +1575,11 @@ async function runAgent(opts) {
       }
 
       emit({ type: 'toolResult', id: tc.id, name, result: String(result), isError });
+      if (name === 'ExitPlanMode' || name === 'AskUserQuestion') planEnded = true;
       if (textCalls) {
-        messages.push({ role: 'user', content: `TOOL RESULT ${tc.id} (${name}):\n${String(result)}` });
+        messages.push({ role: 'user', content: `TOOL RESULT ${tc.id} (${name}):\n${await afterTool(name, args, result, isError)}` });
       } else {
-        messages.push({ role: 'tool', tool_call_id: tc.id, name, content: String(result) });
+        messages.push({ role: 'tool', tool_call_id: tc.id, name, content: await afterTool(name, args, result, isError) });
       }
     }
   }

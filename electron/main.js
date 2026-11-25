@@ -22,6 +22,47 @@ const mindmap = require('./mindmap');
 const windows = new Set(); // all open BrowserWindows (multi-window parity)
 const runs = new Map(); // runId -> AbortController
 const mcp = new MCPClient();
+
+// ── MCP auto-connect (Claude Code parity) ────────────────────────────────
+// Claude Code starts every server declared in `.mcp.json`, `~/.claude.json`
+// and its own config the moment a session begins. We do the same, once per
+// server name per cwd, and remember the id so tools land in `extraTools`.
+const autoMcp = new Map(); // `${cwd}::${name}` -> serverId
+const autoMcpTried = new Set(); // `${cwd}::${name}` that already failed once
+
+async function autoConnectMcp(cwd) {
+  let cfg;
+  try { cfg = require('./claudeconfig').loadMcpServers(cwd); } catch (_) { return; }
+  const entries = Object.entries((cfg && cfg.servers) || {});
+  for (const [name, def] of entries) {
+    const key = `${cwd || ''}::${name}`;
+    if (autoMcp.has(key) || autoMcpTried.has(key)) continue;
+    if (!def || typeof def !== 'object') continue;
+    // Skip servers the user disabled in the config (`"disabled": true`).
+    if (def.disabled) continue;
+    const transport = String(def.type || def.transport || (def.url ? 'http' : 'stdio')).toLowerCase();
+    const connectCfg = {
+      name,
+      transport,
+      ...(def.url ? { url: def.url, headers: def.headers || {} } : {}),
+      ...(def.command ? { command: def.command, args: def.args || [], env: { ...process.env, ...(def.env || {}) } } : {}),
+    };
+    if (!connectCfg.url && !connectCfg.command) continue;
+    try {
+      const info = await mcp.connect(connectCfg);
+      const entry = mcp.servers.get(info.serverId);
+      if (entry) entry.fullTools = info.tools || [];
+      autoMcp.set(key, info.serverId);
+    } catch (_) {
+      // A broken server must never block the run; try once per process.
+      autoMcpTried.add(key);
+    }
+  }
+}
+
+function mcpStatus() {
+  return [...mcp.servers.entries()].map(([id, e]) => ({ serverId: id, name: e.name, type: e.type, url: e.url || null, tools: (e.fullTools || []).map((t) => t.name) }));
+}
 const shells = new ShellManager();
 
 let tray = null;      // macOS menu-bar icon (Claude parity: system tray)
@@ -385,11 +426,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   // 'bypass' (allow everything with no prompts at all — equivalent to auto, kept
   // distinct so the UI can surface the elevated-trust state).
   const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'mcp__workspace__write_file', 'mcp__workspace__edit_file']);
-  const approveTool = async (toolName, toolArgs) => {
-    const mode = permissions || 'auto';
-    if (mode === 'auto' || mode === 'bypass') return true;
-    if (mode === 'plan') return false;
-    if (mode === 'acceptEdits' && EDIT_TOOLS.has(toolName)) return true;
+  const promptPermission = (toolName, toolArgs) => {
     const id = 'p' + nextPermissionId++;
     const summary = summarizeTool(toolName, toolArgs);
     const reply = new Promise((resolve) => {
@@ -402,7 +439,29 @@ ipcMain.handle('autobot:run', async (event, payload) => {
         }
       }, 300000);
     });
-    return await reply;
+    return reply;
+  };
+  const approveTool = async (toolName, toolArgs) => {
+    const mode = permissions || 'auto';
+    // settings.json `permissions.allow/deny/ask` rules run BEFORE the mode, the
+    // way Claude Code evaluates them: deny always wins (even in bypass), ask
+    // forces a prompt, allow skips it.
+    try {
+      const perms = require('./permissions').loadPermissions(runCwd);
+      const verdict = require('./permissions').decide(perms, toolName, toolArgs || {}, { cwd: runCwd, mode });
+      if (verdict.decision === 'deny') {
+        send({ type: 'notice', text: `Blocked: ${toolName} — ${verdict.reason}` });
+        return false;
+      }
+      if (verdict.decision === 'allow') return true;
+      // 'ask': fall through to a real prompt, but never auto-allow in a mode that
+      // would otherwise skip prompting.
+      if (verdict.rule) return await promptPermission(toolName, toolArgs);
+    } catch (_) {}
+    if (mode === 'auto' || mode === 'bypass') return true;
+    if (mode === 'plan') return false;
+    if (mode === 'acceptEdits' && EDIT_TOOLS.has(toolName)) return true;
+    return await promptPermission(toolName, toolArgs);
   };
 
   // The run must write where the conversation lives. If the renderer did not
@@ -410,6 +469,21 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   // the conversation itself instead of falling back to a shared scratch dir —
   // that mismatch is what made a generated site "disappear".
   const runCwd = cwd || (convId ? workspace.ensure(convId, title).dir : workspace.scratch());
+
+  // Bring up any `.mcp.json` / `~/.claude.json` servers declared for this
+  // project before the turn starts, and expose their tools to the model.
+  try {
+    const before = new Set(extraTools.map((t) => t.name));
+    await autoConnectMcp(runCwd);
+    for (const sid of [...mcp.servers.keys()]) {
+      const entry = mcp.servers.get(sid);
+      for (const t of entry.fullTools || []) {
+        const nm = `mcp__${sid}__${t.name}`;
+        if (before.has(nm)) continue;
+        extraTools.push({ name: nm, description: `[MCP ${entry.name}] ${t.description || ''}`, inputSchema: t.inputSchema });
+      }
+    }
+  } catch (_) {}
 
   try {
     send({ type: 'cwd', dir: runCwd });
@@ -430,6 +504,16 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       mcpListResources,
       mcpReadResource,
       approveTool,
+      // The 5-mode permission pill drives plan-mode enforcement inside the run
+      // loop (read-only + plan file only), not just the approval prompts.
+      permissionMode: permissions || 'auto',
+      planFile: 'PLAN.md',
+      // Checkpoints need the conversation id + a stable turn key so a rewind can
+      // restore exactly the files this turn touched.
+      convId,
+      turnId: 't' + Date.now(),
+      // This is the top-level user turn: it owns the token-budget pool.
+      turnStart: true,
     });
     send({ type: 'complete', messages: finalMessages });
     // Persist the project mindmap so a later model switch continues seamlessly.
@@ -580,6 +664,49 @@ ipcMain.handle('autobot:runScheduledTask', (e, id) => scheduler.runNow(id));
 
 ipcMain.handle('autobot:getSettings', () => store.getSettings());
 ipcMain.handle('autobot:setSettings', (e, patch) => store.setSettings(patch));
+
+// ── Claude-parity config surface (commands / agents / memory / permissions / rewind) ──
+// The renderer's slash menu and settings panes read the SAME `.claude/` files
+// Claude Code reads, so anything defined there shows up here too.
+const cwdFor = (cwd) => cwd || store.getSettings().lastCwd || require('./workspace').ROOT;
+
+ipcMain.handle('autobot:listCommands', (e, cwd) => {
+  try { return require('./commands').listForUi(cwdFor(cwd)); } catch (_) { return []; }
+});
+ipcMain.handle('autobot:resolveCommand', async (e, name, args, cwd) => {
+  try {
+    const cmds = require('./commands');
+    const dir = cwdFor(cwd);
+    const hit = cmds.resolve(name, dir);
+    if (!hit) return null;
+    return { name: hit.name, source: hit.source, prompt: await cmds.expand(hit, args || '', { cwd: dir }) };
+  } catch (_) { return null; }
+});
+ipcMain.handle('autobot:listAgents', (e, cwd) => {
+  try { return require('./agentdefs').discover(cwdFor(cwd)).map((d) => ({ name: d.name, description: d.description, model: d.model || null, tools: d.tools || null, source: d.source })); } catch (_) { return []; }
+});
+ipcMain.handle('autobot:getProjectMemory', (e, cwd) => {
+  try {
+    const mem = require('./memory');
+    return { files: mem.listMemory(cwdFor(cwd)), text: mem.loadMemoryText(cwdFor(cwd)) };
+  } catch (_) { return { files: [], text: '' }; }
+});
+ipcMain.handle('autobot:getPermissions', (e, cwd) => {
+  try { return require('./permissions').loadPermissions(cwdFor(cwd)); } catch (_) { return { allow: [], deny: [], ask: [], defaultMode: 'auto' }; }
+});
+ipcMain.handle('autobot:checkPermission', (e, toolName, toolArgs, cwd, mode) => {
+  try { return require('./permissions').decide(require('./permissions').loadPermissions(cwdFor(cwd)), toolName, toolArgs || {}, { cwd: cwdFor(cwd), mode: mode || store.getSettings().permissionMode || 'auto' }); } catch (_) { return { decision: 'ask' }; }
+});
+ipcMain.handle('autobot:listCheckpoints', (e, convId) => {
+  try { return require('./checkpoints').listCheckpoints(convId); } catch (_) { return []; }
+});
+ipcMain.handle('autobot:rewind', (e, convId, checkpointId) => {
+  try {
+    const r = require('./checkpoints').restore(convId, checkpointId);
+    const ok = (r.errors || []).length === 0;
+    return { ok, restored: (r.restored || []).length, removed: (r.removed || []).length, errors: r.errors || [] };
+  } catch (err) { return { ok: false, restored: 0, removed: 0, errors: [String(err && err.message || err)] }; }
+});
 ipcMain.handle('autobot:getOrchestrator', () => store.getOrchestrator());
 ipcMain.handle('autobot:setOrchestrator', (e, patch) => store.setOrchestrator(patch));
 ipcMain.handle('autobot:getFeatures', () => store.getFeatures());
@@ -721,6 +848,13 @@ ipcMain.handle('autobot:mcpCallTool', async (e, serverId, name, args) => {
   catch (err) { return { ok: false, error: err.message }; }
 });
 ipcMain.handle('autobot:mcpDisconnect', (e, serverId) => { mcp.disconnect(serverId); return { ok: true }; });
+ipcMain.handle('autobot:mcpStatus', () => mcpStatus());
+ipcMain.handle('autobot:mcpConfig', (e, cwd) => {
+  try {
+    const c = require('./claudeconfig').loadMcpServers(cwdFor(cwd));
+    return { servers: Object.keys(c.servers || {}), sources: c.sources || [], status: mcpStatus() };
+  } catch (_) { return { servers: [], sources: [], status: [] }; }
+});
 
 // MCP resources
 ipcMain.handle('autobot:mcpListResources', async (e, serverId) => {
@@ -939,6 +1073,8 @@ async function runScheduledPrompt({ task }) {
       if (evt && evt.type === 'delta' && evt.text) out += evt.text;
     },
     shell: shells,
+    // A scheduled prompt is its own top-level turn.
+    turnStart: true,
   });
   const last = finalMessages && finalMessages[finalMessages.length - 1];
   if (!out && last && typeof last.content === 'string') out = last.content;

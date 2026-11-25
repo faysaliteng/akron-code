@@ -11,9 +11,18 @@ const swarm = require('./swarm');
 const browser = require('./browser');
 const pluginsDir = require('./plugins');
 const scheduler = require('./scheduler');
+const parity = require('./parity');
+const bg = require('./bg');
+const replSession = require('./repl');
 const { expandPath } = require('./paths');
 
 const MAX_OUTPUT = 120000; // chars
+
+function clampReplTimeout(t) {
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0) return 30000;
+  return Math.min(Math.max(n, 1000), 600000);
+}
 
 function truncate(s) {
   if (!s) return s;
@@ -49,8 +58,16 @@ const SLASH_COMMANDS = {
 
 // ---------- executors ----------
 const executors = {
-  async bash({ command, cwd, timeout }) {
+  async bash({ command, cwd, timeout, description, run_in_background, dangerouslyDisableSandbox }) {
     if (!command) return 'Error: command required';
+    // Claude's Bash runs either to completion or detached. A detached job must
+    // outlive the tool call and be addressable by TaskOutput / KillShell.
+    if (run_in_background) {
+      const job = bg.startShell({ command, cwd: resolveDir(cwd) });
+      const label = description ? ` (${description})` : '';
+      return `Started background shell ${job.id}${label}.\nPoll: TaskOutput {"task_id":"${job.id}","block":true,"timeout":30000}\nStop:  KillShell {"shell_id":"${job.id}"}`;
+    }
+    if (dangerouslyDisableSandbox) { /* accepted: commands already run unsandboxed on macOS */ }
     const t = Math.min(Number(timeout) || 60, 120) * 1000;
     const dir = resolveDir(cwd);
     return new Promise((resolve) => {
@@ -76,27 +93,52 @@ const executors = {
     });
   },
 
-  async read_file({ path: p, cwd }) {
-    const fp = resolvePath(p, cwd);
+  async read_file({ path: p, file_path: _fp, cwd, offset, limit, pages }) {
+    const target = p || _fp;
+    if (!target) return 'Error: Read requires a "path" argument (alias: file_path).';
+    const fp = resolvePath(target, cwd);
+    // PDFs: extract text (optionally a page window) instead of mojibake.
+    if (/\.pdf$/i.test(fp) && pages) {
+      const a = String(pages).split('-');
+      const first = Math.max(1, parseInt(a[0], 10) || 1);
+      const last = Math.max(first, parseInt(a[1], 10) || first);
+      const out = await new Promise((resolve) => {
+        exec(`pdftotext -f ${first} -l ${last} -layout ${JSON.stringify(fp)} -`, { maxBuffer: 16 * 1024 * 1024 }, (e, so, se) => resolve(e ? `Error reading PDF: ${se || e.message}` : so));
+      });
+      return truncate(out || '(empty PDF page range)');
+    }
     try {
       const raw = fs.readFileSync(fp, 'utf8');
       const lines = raw.split('\n');
-      const maxLines = 2000;
-      let out = lines.slice(0, maxLines).join('\n');
-      if (lines.length > maxLines) out += `\n…[${lines.length - maxLines} more lines]`;
+      const total = lines.length;
+      const perCall = 2000;
+      const start = Math.max(1, parseInt(offset, 10) || 1);
+      const count = limit === undefined || limit === null ? perCall : Math.max(1, Math.min(parseInt(limit, 10) || perCall, 50000));
+      if (start > total) {
+        return `(offset ${start} is past the end of ${fp} — the file has ${total} lines)`;
+      }
+      const slice = lines.slice(start - 1, start - 1 + count);
+      let out = slice.join('\n');
+      const endShown = start - 1 + slice.length;
+      if (total > endShown) {
+        out += `\n…[${total - endShown} more lines — call Read with offset ${endShown + 1} to continue]`;
+      } else if (start > 1 || count < total) {
+        out += `\n…[${fp} — lines ${start}–${endShown} of ${total}]`;
+      }
       return out || '(empty file)';
     } catch (e) {
       return 'Error reading file: ' + e.message;
     }
   },
 
-  async write_file({ path: p, content, cwd }) {
-    if (!p) return 'Error: Write requires a "path" argument, e.g. {"path":"index.html","content":"..."}. Point the file at the project folder with a relative path.';
+  async write_file({ path: p, file_path: _fp, content, cwd }) {
+    const target = p || _fp;
+    if (!target) return 'Error: Write requires a "path" argument, e.g. {"path":"index.html","content":"..."}. Point the file at the project folder with a relative path.';
     if (content === undefined || content === null) {
       return 'Error: Write requires a "content" argument with the COMPLETE file contents. For an empty file pass content: "".';
     }
     let fp;
-    try { fp = resolvePath(p, cwd); } catch (e) { return 'Error writing file: ' + e.message; }
+    try { fp = resolvePath(target, cwd); } catch (e) { return 'Error writing file: ' + e.message; }
     try {
       fs.mkdirSync(path.dirname(fp), { recursive: true });
       const body = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
@@ -113,10 +155,11 @@ const executors = {
     }
   },
 
-  async edit_file({ path: p, old_string, new_string, cwd, replace_all }) {
-    if (!p) return 'Error: Edit requires a "path" argument.';
+  async edit_file({ path: p, file_path: _fp, old_string, new_string, cwd, replace_all }) {
+    const target = p || _fp;
+    if (!target) return 'Error: Edit requires a "path" argument (alias: file_path).';
     let fp;
-    try { fp = resolvePath(p, cwd); } catch (e) { return 'Error editing file: ' + e.message; }
+    try { fp = resolvePath(target, cwd); } catch (e) { return 'Error editing file: ' + e.message; }
     try {
       let raw;
       try { raw = fs.readFileSync(fp, 'utf8'); }
@@ -153,10 +196,11 @@ const executors = {
     }
   },
 
-  async multi_edit({ path: p, edits, cwd }) {
-    if (!p) return 'Error: MultiEdit requires a "path" argument.';
+  async multi_edit({ path: p, file_path: _fp, edits, cwd }) {
+    const target = p || _fp;
+    if (!target) return 'Error: MultiEdit requires a "path" argument (alias: file_path).';
     let fp;
-    try { fp = resolvePath(p, cwd); } catch (e) { return 'Error multi-editing file: ' + e.message; }
+    try { fp = resolvePath(target, cwd); } catch (e) { return 'Error multi-editing file: ' + e.message; }
     try {
       if (!Array.isArray(edits) || !edits.length) {
         return 'Error: MultiEdit requires a non-empty "edits" array of {old_string, new_string} pairs.';
@@ -185,10 +229,11 @@ const executors = {
     }
   },
 
-  async glob({ pattern, cwd }) {
-    const base = resolveDir(cwd);
+  async glob({ pattern, path: basePath, cwd }) {
+    if (!pattern) return 'Error: Glob requires a "pattern".';
+    const base = basePath ? resolvePath(basePath, cwd) : resolveDir(cwd);
     const results = [];
-    const reStr = '^' + pattern
+    const reStr = '^' + String(pattern)
       .split(path.sep).join('/')
       .replace(/[.+^${}()|[\]\\]/g, '\\$&')
       .replace(/\*\*/g, '\u0000')
@@ -208,22 +253,65 @@ const executors = {
         if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') walk(full, depth + 1);
       }
     };
+    if (!fs.existsSync(base)) return `Error: path does not exist: ${base}`;
     walk(base, 0);
     return results.length ? results.slice(0, 2000).join('\n') : '(no matches)';
   },
 
-  async grep({ pattern, path: p, cwd }) {
+  async grep({ pattern, path: p, cwd, glob: g, output_mode = 'content', context, type, head_limit = 250, offset = 0, multiline }) {
+    if (!pattern) return 'Error: Grep requires a "pattern".';
     const target = p ? resolvePath(p, cwd) : resolveDir(cwd);
-    return new Promise((resolve) => {
-      const args = ['-n', '--', pattern || '', target];
-      exec('rg ' + args.map((a) => JSON.stringify(a)).join(' '), { maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
-        if (!err && stdout) return resolve(truncate(stdout));
-        const gargs = ['-rIn', '--', pattern || '', target];
-        exec('grep ' + gargs.map((a) => JSON.stringify(a)).join(' '), { maxBuffer: 8 * 1024 * 1024 }, (e2, out2) => {
-          resolve(truncate(out2) || '(no matches)');
-        });
-      });
+    // `path` may be a FILE (Claude accepts either). rg's cwd must be a real
+    // directory, so search from the file's parent and match just that file.
+    let searchCwd = target;
+    let onlyFile = null;
+    try {
+      if (fs.existsSync(target) && fs.statSync(target).isFile()) {
+        searchCwd = path.dirname(target);
+        onlyFile = target;
+      }
+    } catch (_) {}
+    const mode = ['content', 'files_with_matches', 'count'].includes(output_mode) ? output_mode : 'content';
+    const args = ['-n', '--no-heading', '--color', 'never'];
+    if (multiline) args.push('-U');
+    if (mode === 'files_with_matches') args.push('--files-with-matches');
+    if (mode === 'count') args.push('--count');
+    if (context) args.push('-C', String(Math.max(0, parseInt(context, 10) || 0)));
+    if (g) args.push('-g', String(g));
+    if (type) args.push('-t', String(type));
+    args.push('--', String(pattern), onlyFile || target);
+    const runRg = () => new Promise((resolve) => {
+      let out = '';
+      let child;
+      try {
+        child = spawn('rg', args, { cwd: searchCwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (_) { resolve(null); return; }
+      child.stdout.on('data', (d) => { if (out.length < 8 * 1024 * 1024) out += d.toString(); });
+      child.on('error', () => resolve(null));
+      child.on('close', (code) => resolve(code === 0 || code === 1 ? out : (out || null)));
     });
+    let out = await runRg();
+    if (out === null) {
+      // No ripgrep on PATH — same semantics with grep.
+      const gargs = ['-rIn'];
+      if (mode === 'files_with_matches') gargs.push('-l');
+      if (mode === 'count') gargs.push('-c');
+      if (context) gargs.push('-C', String(Math.max(0, parseInt(context, 10) || 0)));
+      if (g) gargs.push('--include', String(g));
+      gargs.push('--', String(pattern), target);
+      out = await new Promise((resolve) => {
+        exec('grep ' + gargs.map((a) => JSON.stringify(a)).join(' '), { maxBuffer: 8 * 1024 * 1024 }, (e, so) => resolve(so || ''));
+      });
+    }
+    const all = String(out || '').split('\n').filter(Boolean);
+    const skip = Math.max(0, parseInt(offset, 10) || 0);
+    const cap = Math.max(1, Math.min(parseInt(head_limit, 10) || 250, 10000));
+    const shown = all.slice(skip, skip + cap);
+    if (!shown.length) return all.length ? `(no results at offset ${skip}; ${all.length} total)` : '(no matches)';
+    let text = truncate(shown.join('\n'));
+    const rest = all.length - (skip + shown.length);
+    if (rest > 0) text += `\n…[${rest} more matches — increase head_limit or set offset ${skip + shown.length}]`;
+    return text;
   },
 
   async web_fetch({ url }) {
@@ -425,10 +513,20 @@ const executors = {
     return runCode('javascript', code, cwd, 60000);
   },
 
-  async repl({ language, code, cwd }) {
+  async repl({ language, code, cwd, description, timeout, reset }) {
     if (!code) return 'Error: code required';
     const lang = (language || 'javascript').toLowerCase();
-    return runCode(lang, code, cwd, 60000);
+    if (lang === 'javascript' || lang === 'js' || lang === 'node') {
+      const r = await replSession.evalJS({
+        code,
+        timeout,
+        cwd: resolveDir(cwd),
+        sessionId: resolveDir(cwd),
+        reset: reset === true,
+      });
+      return r.ok ? r.output : { content: r.output, isError: true };
+    }
+    return runCode(lang, code, cwd, clampReplTimeout(timeout));
   },
 
   // ---- Tool search ----
@@ -709,25 +807,25 @@ function runCode(lang, code, cwd, timeoutMs) {
 // ---------- tool definitions (OpenAI function-calling schema) ----------
 // Names/descriptions mirror Claude Code's tool surface 1:1 where applicable.
 const toolDefinitions = [
-  { name: 'Bash', description: 'Run a shell command in zsh (run code, git, install deps, list/inspect files). Do NOT create or edit files with heredocs, echo, tee or sed -i — use Write/Edit for file content.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'The command to execute' }, cwd: { type: 'string', description: 'Working directory' }, timeout: { type: 'number', description: 'Timeout in seconds (max 120)' } }, required: ['command'] } },
-  { name: 'Read', description: 'Read a text file from disk and return its contents (up to 2000 lines). Read a file before editing it.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias for path' }, cwd: { type: 'string' } }, required: ['path'] } },
+  { name: 'Bash', description: 'Run a shell command in zsh (run code, git, install deps, list/inspect files). Do NOT create or edit files with heredocs, echo, tee or sed -i — use Write/Edit for file content. Set run_in_background:true for long jobs (servers, builds, watches) and poll them with TaskOutput or stop them with KillShell.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'The command to execute' }, description: { type: 'string', description: 'Short human label shown in the UI (3–5 words)' }, cwd: { type: 'string', description: 'Working directory' }, timeout: { type: 'number', description: 'Timeout in ms (max 600000)' }, run_in_background: { type: 'boolean', description: 'Run detached; returns a shell id for TaskOutput/KillShell' }, dangerouslyDisableSandbox: { type: 'boolean', description: 'Accepted for parity; commands already run unsandboxed on macOS' } }, required: ['command'] } },
+  { name: 'Read', description: 'Read a text file from disk. Returns up to `limit` lines starting at 1-based `offset` (default 2000 lines per call). For PDFs, pass `pages` (e.g. "1-10") to extract a page range. Always Read a file before editing it.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias for path' }, offset: { type: 'number', description: '1-based line to start at' }, limit: { type: 'number', description: 'Max lines to return (default 2000)' }, pages: { type: 'string', description: 'PDF page range, e.g. "1-10"' }, cwd: { type: 'string' } }, required: ['path'] } },
   { name: 'Write', description: 'Create a new file or fully overwrite an existing one. Provide the COMPLETE final contents (no placeholders, no elisions). Relative paths resolve inside the project folder. This is the only correct way to create files — never use bash heredocs.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File path, relative to the project folder' }, file_path: { type: 'string', description: 'Alias for path' }, content: { type: 'string', description: 'The complete file contents' }, cwd: { type: 'string' } }, required: ['path', 'content'] } },
-  { name: 'Edit', description: 'Make a targeted change to an existing file: replace old_string with new_string (first match). Read the file first and copy old_string exactly, including indentation. Whitespace drift is tolerated.', parameters: { type: 'object', properties: { path: { type: 'string' }, old_string: { type: 'string', description: 'Exact text to replace (copy from Read output)' }, new_string: { type: 'string', description: 'Replacement text' }, replace_all: { type: 'boolean', description: 'Replace every occurrence' }, cwd: { type: 'string' } }, required: ['path', 'old_string', 'new_string'] } },
-  { name: 'MultiEdit', description: 'Apply several {old_string,new_string} replacements to one file in a single call (all-or-nothing). Use instead of many separate Edits.', parameters: { type: 'object', properties: { path: { type: 'string' }, edits: { type: 'array', items: { type: 'object', properties: { old_string: { type: 'string' }, new_string: { type: 'string' } }, required: ['old_string', 'new_string'] } }, cwd: { type: 'string' } }, required: ['path', 'edits'] } },
-  { name: 'Glob', description: 'Find files matching a glob pattern (supports **, *, ?).', parameters: { type: 'object', properties: { pattern: { type: 'string' }, cwd: { type: 'string' } }, required: ['pattern'] } },
-  { name: 'Grep', description: 'Search file contents for a regex pattern recursively.', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' }, cwd: { type: 'string' } }, required: ['pattern'] } },
-  { name: 'WebFetch', description: 'Fetch the contents of a URL and return readable text.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
-  { name: 'WebSearch', description: 'Search the web and return top results (titles + URLs).', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
+  { name: 'Edit', description: 'Make a targeted change to an existing file: replace old_string with new_string (first match). Read the file first and copy old_string exactly, including indentation. Whitespace drift is tolerated.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path (Claude-style)' }, old_string: { type: 'string', description: 'Exact text to replace (copy from Read output)' }, new_string: { type: 'string', description: 'Replacement text' }, replace_all: { type: 'boolean', description: 'Replace every occurrence' }, cwd: { type: 'string' } }, required: ['path', 'old_string', 'new_string'] } },
+  { name: 'MultiEdit', description: 'Apply several {old_string,new_string} replacements to one file in a single call (all-or-nothing). Use instead of many separate Edits.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path' }, edits: { type: 'array', items: { type: 'object', properties: { old_string: { type: 'string' }, new_string: { type: 'string' } }, required: ['old_string', 'new_string'] } }, cwd: { type: 'string' } }, required: ['path', 'edits'] } },
+  { name: 'Glob', description: 'Find files matching a glob pattern (supports **, *, ?). Use `path` to set the search root.', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string', description: 'Directory to search from (default: cwd)' }, cwd: { type: 'string' } }, required: ['pattern'] } },
+  { name: 'Grep', description: 'Search file contents for a regex pattern recursively. output_mode: content (default) | files_with_matches | count. Filter with glob/type, add context lines, and page results with offset/head_limit.', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string', description: 'File or directory to search' }, glob: { type: 'string', description: 'Only files matching this glob, e.g. "*.js"' }, type: { type: 'string', description: 'File type filter, e.g. js, py, rust' }, output_mode: { type: 'string', enum: ['content', 'files_with_matches', 'count'] }, context: { type: 'number', description: 'Lines of context around each match' }, head_limit: { type: 'number', description: 'Max results (default 250)' }, offset: { type: 'number', description: 'Skip first N results' }, multiline: { type: 'boolean', description: 'Allow patterns to span lines' }, '-i': { type: 'boolean', description: 'Case-insensitive' }, cwd: { type: 'string' } }, required: ['pattern'] } },
+  { name: 'WebFetch', description: 'Fetch the contents of a URL, convert the page to readable markdown, and then answer the given prompt about it. Prefer this over shelling out to curl when you need to understand a web page.', parameters: { type: 'object', properties: { url: { type: 'string', description: 'Absolute http(s) URL to fetch' }, prompt: { type: 'string', description: 'What to extract/answer from the page' } }, required: ['url', 'prompt'] } },
+  { name: 'WebSearch', description: 'Search the web and return top results (titles + URLs). Optionally restrict to or exclude specific domains.', parameters: { type: 'object', properties: { query: { type: 'string' }, allowed_domains: { type: 'array', items: { type: 'string' }, description: 'Only return results from these domains' }, blocked_domains: { type: 'array', items: { type: 'string' }, description: 'Exclude results from these domains' } }, required: ['query'] } },
   { name: 'TodoWrite', description: 'Create/update a structured todo list to track multi-step work.', parameters: { type: 'object', properties: { todos: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, content: { type: 'string' }, status: { type: 'string', enum: ['pending', 'completed'] } } } } }, required: ['todos'] } },
-  { name: 'Task', description: 'Spawn a sub-agent to complete a self-contained, multi-step task and return its result. Use for parallelizable or independent work. Optionally pin it to a model or complexity tier.', parameters: { type: 'object', properties: { description: { type: 'string', description: 'Short label for the task' }, prompt: { type: 'string', description: 'The full instructions for the sub-agent' }, model: { type: 'string', description: 'Optional model id to run this sub-agent on' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'], description: 'Optional complexity tier; picks the matching model from the provider pool' }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
-  { name: 'Agent', description: 'Spawn a sub-agent (alias of Task) to delegate a self-contained piece of work.', parameters: { type: 'object', properties: { description: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
+  { name: 'Task', description: 'Spawn a sub-agent to complete a self-contained, multi-step task and return its result. Use for parallelizable or independent work. Multiple Task/Agent blocks in one message run concurrently. Optionally pin it to a model or complexity tier, run it in the background, name it, or isolate it in a git worktree.', parameters: { type: 'object', properties: { description: { type: 'string', description: 'Short label (3–5 words)' }, prompt: { type: 'string', description: 'The full instructions for the sub-agent' }, subagent_type: { type: 'string', description: 'Agent type/persona, e.g. general-purpose, explore, plan' }, model: { type: 'string', description: 'Optional model id to run this sub-agent on' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'], description: 'Optional complexity tier; picks the matching model from the provider pool' }, run_in_background: { type: 'boolean', description: 'Run detached; returns an id for TaskOutput' }, name: { type: 'string', description: 'Teammate name for team coordination' }, team_name: { type: 'string', description: 'Team to join' }, mode: { type: 'string', description: 'Sub-agent permission mode' }, isolation: { type: 'string', enum: ['worktree'], description: 'Isolate in a git worktree' }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
+  { name: 'Agent', description: 'Spawn a sub-agent (alias of Task) to delegate a self-contained piece of work. Multiple Agent blocks in one message run concurrently.', parameters: { type: 'object', properties: { description: { type: 'string', description: 'Short label (3–5 words)' }, prompt: { type: 'string' }, subagent_type: { type: 'string' }, model: { type: 'string' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, run_in_background: { type: 'boolean', description: 'Run detached; returns an id for TaskOutput' }, name: { type: 'string' }, team_name: { type: 'string' }, mode: { type: 'string' }, isolation: { type: 'string', enum: ['worktree'] }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
   { name: 'Swarm', description: 'Run a supervisor-led multi-agent team. The supervisor decomposes the goal into subtasks, tags each with a complexity tier, every subtask runs CONCURRENTLY on the model that fits its tier (small/cheap for mechanical work, frontier for heavy or critical work), then the supervisor reviews and merges the results into one answer. Use for large builds or any task that splits into independent parts.', parameters: { type: 'object', properties: { goal: { type: 'string', description: 'The overall objective for the team' }, tasks: { type: 'array', description: 'Optional explicit subtasks; omit to let the supervisor plan', items: { type: 'object', properties: { title: { type: 'string' }, prompt: { type: 'string' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, model: { type: 'string' } } } }, concurrency: { type: 'number', description: 'Max subtasks running at once (default 4)' }, maxTasks: { type: 'number', description: 'Max subtasks the supervisor may create (default 6)' }, critique: { type: 'boolean', description: 'Run the supervisor review/merge step (default true)' }, cwd: { type: 'string' } }, required: ['goal'] } },
   { name: 'NotebookRead', description: 'Read the cells of a notebook by name.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
-  { name: 'NotebookEdit', description: 'Create or replace the cells of a notebook by name.', parameters: { type: 'object', properties: { name: { type: 'string' }, cells: { type: 'array', items: { type: 'object', properties: { language: { type: 'string' }, source: { type: 'string' } } } } }, required: ['name', 'cells'] } },
-  { name: 'AskUserQuestion', description: 'Ask the user a structured question and wait for their answer. Use when you need a decision, clarification, or choice before proceeding.', parameters: { type: 'object', properties: { question: { type: 'string' }, options: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, description: { type: 'string' } } } } }, required: ['question'] } },
-  { name: 'KillShell', description: 'Kill a running background shell by its id.', parameters: { type: 'object', properties: { shell_id: { type: 'string' } }, required: ['shell_id'] } },
+  { name: 'NotebookEdit', description: 'Edit a Jupyter notebook cell. Provide notebook_path and new_source. edit_mode: replace (default) | insert | delete. For insert, cell_id is the cell to insert AFTER (omit to insert at top); for delete, cell_id identifies the cell. Also accepts the legacy {name, cells} form to rewrite a stored notebook.', parameters: { type: 'object', properties: { notebook_path: { type: 'string', description: 'Path to the .ipynb file' }, cell_id: { type: 'string', description: 'Target cell id (for insert/replace/delete)' }, new_source: { type: 'string', description: 'New cell source' }, cell_type: { type: 'string', enum: ['code', 'markdown', 'raw'], description: 'Cell type (default code)' }, edit_mode: { type: 'string', enum: ['replace', 'insert', 'delete'], description: 'Default replace' }, name: { type: 'string', description: 'Legacy: stored notebook name' }, cells: { type: 'array', description: 'Legacy: full cell list', items: { type: 'object', properties: { language: { type: 'string' }, source: { type: 'string' } } } } }, required: ['notebook_path'] } },
+  { name: 'AskUserQuestion', description: 'Ask the user one or more structured questions and wait for the answers. Use when you need a decision, clarification, or choice before proceeding. Each question has a header and 2–4 options; the user may also type their own answer.', parameters: { type: 'object', properties: { questions: { type: 'array', description: 'Questions to ask', items: { type: 'object', properties: { question: { type: 'string' }, header: { type: 'string', description: 'Short label (max 12 chars)' }, options: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, description: { type: 'string' } } } }, multiSelect: { type: 'boolean' } } } }, answers: { type: 'object', description: 'Pre-filled answers keyed by question (optional)' }, annotations: { type: 'object', description: 'Arbitrary annotations returned alongside' }, metadata: { type: 'object', description: 'Free-form metadata' }, question: { type: 'string', description: 'Legacy: shorthand for a single question' }, options: { type: 'array', description: 'Legacy: shorthand options', items: { type: 'object', properties: { label: { type: 'string' }, description: { type: 'string' } } } } } } },
+  { name: 'KillShell', description: 'Kill a running background shell or job by its id (shell_id/task_id).', parameters: { type: 'object', properties: { shell_id: { type: 'string', description: 'Background shell/job id' }, task_id: { type: 'string', description: 'Alias for shell_id' } }, required: ['shell_id'] } },
   { name: 'SlashCommand', description: 'Invoke a slash command by name (e.g. /help, /clear, /compact, /model, /review).', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
-  { name: 'ExitPlanMode', description: 'Exit plan mode — present a plan for user approval before execution.', parameters: { type: 'object', properties: { plan: { type: 'string' } }, required: ['plan'] } },
+  { name: 'ExitPlanMode', description: 'Exit plan mode — present a plan for user approval before execution. Mark the tool call denied to stay in plan mode and refine the plan; approve it to leave plan mode and implement.', parameters: { type: 'object', properties: { plan: { type: 'string', description: 'The plan to execute, in markdown' }, allowedPrompts: { type: 'array', description: 'Prompt-based permissions the plan needs (e.g. run tests, install deps)', items: { type: 'object', properties: { tool: { type: 'string' }, prompt: { type: 'string' } } } } }, required: ['plan'] } },
   { name: 'Skill', description: 'Load the full instructions for a skill by name.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
   { name: 'ListMcpResources', description: 'List resources exposed by a connected MCP server.', parameters: { type: 'object', properties: { server: { type: 'string' } } } },
   { name: 'ReadMcpResource', description: 'Read a resource from a connected MCP server by URI.', parameters: { type: 'object', properties: { server: { type: 'string' }, uri: { type: 'string' } }, required: ['uri'] } },
@@ -737,10 +835,10 @@ const toolDefinitions = [
   { name: 'list_skills', description: 'List available skills.', parameters: { type: 'object', properties: {} } },
   { name: 'list_notebooks', description: 'List available notebooks.', parameters: { type: 'object', properties: {} } },
   { name: 'list_slash_commands', description: 'List available slash commands.', parameters: { type: 'object', properties: {} } },
-  { name: 'REPL', description: 'Run a snippet of code in a REPL-like session for the given language (javascript/node, python, or bash) and return the output.', parameters: { type: 'object', properties: { language: { type: 'string', description: 'Language: javascript, python, or bash' }, code: { type: 'string', description: 'The code to execute' }, cwd: { type: 'string' } }, required: ['code'] } },
+  { name: 'REPL', description: 'Run JavaScript in a persistent REPL session. Supports top-level await. State (variables, functions, imports) persists across calls within the session; `reset`/language may be set to start fresh.', parameters: { type: 'object', properties: { code: { type: 'string', description: 'JavaScript to evaluate (top-level await allowed)' }, description: { type: 'string', description: 'What this snippet does (3–5 words)' }, timeout: { type: 'number', description: 'Timeout in ms (default 30000, max 600000)' }, language: { type: 'string', description: 'Language: javascript (default), python, or bash' }, reset: { type: 'boolean', description: 'Start a fresh session' }, cwd: { type: 'string' } }, required: ['code'] } },
   { name: 'JavaScript', description: 'Execute a JavaScript snippet with Node.js and return its stdout/stderr.', parameters: { type: 'object', properties: { code: { type: 'string' }, cwd: { type: 'string' } }, required: ['code'] } },
   { name: 'Cd', description: 'Change the current working directory for subsequent Bash/Read/Write/Glob/Grep tools.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
-  { name: 'TaskStop', description: 'Stop a running sub-agent/task by its description label.', parameters: { type: 'object', properties: { name: { type: 'string', description: 'Sub-agent label to stop' } }, required: ['name'] } },
+  { name: 'TaskStop', description: 'Stop a running background task, sub-agent, monitor or shell by its id.', parameters: { type: 'object', properties: { task_id: { type: 'string', description: 'Id of the background task/agent to stop' }, shell_id: { type: 'string', description: 'Alias: id of a background shell to stop' }, name: { type: 'string', description: 'Legacy: sub-agent label to stop' } } } },
   { name: 'ListAgents', description: 'List currently running sub-agents/tasks.', parameters: { type: 'object', properties: {} } },
   { name: 'SendUserMessage', description: 'Send a message/notification to the user outside the normal assistant reply.', parameters: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] } },
   { name: 'SetGoal', description: 'Set or update the current task/goal being worked on.', parameters: { type: 'object', properties: { goal: { type: 'string' } }, required: ['goal'] } },
@@ -843,6 +941,9 @@ const toolDefinitions = [
   // ---- Custom skill authoring ----
   { name: 'create_skill', description: 'Create a new custom skill from Markdown content (the model writes a SKILL.md-style document with name/description frontmatter).', parameters: { type: 'object', properties: { name: { type: 'string' }, content: { type: 'string', description: 'Full Markdown skill document' } }, required: ['name', 'content'] } },
   { name: 'delete_skill', description: 'Delete a custom skill by name.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+
+  // ---- Claude-parity surface (see parity.js / parity-defs.js) ----
+  ...require('./parity-defs'),
 ];
 
 // Map tool name -> executor. Names are case-sensitive per above.
@@ -1015,6 +1116,10 @@ function normalizeFileArgs(args) {
 const LONG_RUNNING = new Set([
   'Task', 'Agent', 'Swarm', 'mcp__cowork__orchestrate', 'mcp__botbridge__register',
   'mcp__ccd_submit', 'mcp__bots__send', 'mcp__visualize__visualize',
+  // Claude's own long-lived tools: a Workflow script can run for minutes, a
+  // Monitor blocks up to an hour, TaskOutput waits on a background task, and a
+  // REPL evaluation can take 10 minutes.
+  'Workflow', 'Monitor', 'TaskOutput', 'REPL', 'RemoteTrigger',
 ]);
 function toolTimeoutMs(name, args) {
   if (LONG_RUNNING.has(name)) return 30 * 60 * 1000;
@@ -1070,6 +1175,19 @@ async function runTool(name, args, ctx) {
   // Special tools handled via context
   if (name === 'Task' || name === 'Agent') {
     if (!runSubagent) return 'Sub-agents unavailable (no subagent runner).';
+    // Claude's AgentInput.run_in_background: the agent keeps working after the
+    // tool call returns, and the model polls it with TaskOutput / stops it with
+    // TaskStop. Same job registry as background shells and monitors.
+    if (args && args.run_in_background) {
+      const label = args.description || args.name || 'sub-agent';
+      const job = bg.startAgent({
+        label,
+        description: args.description,
+        model: args.model || args.tier || null,
+        run: () => runSubagent({ ...args, run_in_background: false }),
+      });
+      return `Started background agent "${label}" (${job.id}). Poll it with TaskOutput({task_id:"${job.id}"}) (optionally block:true) or stop it with TaskStop({task_id:"${job.id}"}).`;
+    }
     return await runSubagent(args);
   }
   if (name === 'Swarm') {
@@ -1106,8 +1224,12 @@ async function runTool(name, args, ctx) {
     return await exitPlanMode(args);
   }
   if (name === 'KillShell') {
+    const id = args.shell_id || args.task_id || args.id;
+    if (bg && id && bg.getJob(id)) {
+      const ok = bg.stopJob(id);
+      return ok ? `Killed background shell ${id}.` : `Could not kill background shell ${id}.`;
+    }
     if (!shell) return 'Error: no shell manager.';
-    const id = args.shell_id || args.id;
     return shell.kill(id) ? `Killed shell ${id}.` : `No shell with id "${id}".`;
   }
   if (name === 'ListMcpResources') {
@@ -1130,8 +1252,13 @@ async function runTool(name, args, ctx) {
     return `Changed working directory to ${newCwd}`;
   }
   if (name === 'TaskStop' || name === 'StopTask') {
+    const want = args.task_id || args.shell_id || args.id || args.name || args.description || '';
+    if (bg && want && bg.getJob(want)) {
+      const ok = bg.stopJob(want);
+      return ok ? `Stopped background task ${want}.` : `Could not stop background task ${want}.`;
+    }
     if (!stopTask) return 'Task stopping unavailable.';
-    return stopTask(args.name || args.description || '');
+    return stopTask(args.name || args.description || want);
   }
   if (name === 'ListAgents') {
     if (!listAgents) return '(no agents running)';
@@ -1154,6 +1281,14 @@ async function runTool(name, args, ctx) {
   if (name === 'mcp__secrets__request_secret') {
     if (!requestSecret) return 'No secrets store configured. Ask the user to provide the secret directly.';
     return await requestSecret(args.name || '');
+  }
+
+  // ---- Claude-parity tools (parity.js owns LS/Search/task board/teams/
+  // Workflow/plan mode/worktrees/Mcp/cron/monitor/notify/etc). Returns null
+  // when the name is not one of ours, so normal dispatch continues.
+  {
+    const handled = await parity.handle(name, args, ctx);
+    if (handled != null) return handled;
   }
 
   // ---- Virtual terminal MCP namespace (mirrors Claude Code's mcp__terminal__*) ----
