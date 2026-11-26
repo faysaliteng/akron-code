@@ -3166,6 +3166,49 @@ ipcMain.handle('autobot:proactiveSuggest', (e, payload = {}) => {
 ipcMain.handle('autobot:setQuietHours', (e, patch = {}) => {
   try { return { ok: true, state: require('./proactivity').setQuietHours(patch) }; } catch (err) { return { ok: false, error: oneLine(err) }; }
 });
+ipcMain.handle('autobot:getCuratedMemory', () => {
+  try { return require('./memory-curator').loadState(); } catch (_) { return { enabled: false, autoCurate: false, entries: [] }; }
+});
+ipcMain.handle('autobot:setMemoryAutoCurate', (e, enabled) => {
+  try { return { ok: true, state: require('./memory-curator').setAutoCurate(Boolean(enabled)) }; } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:curateMemory', async (e, payload = {}) => {
+  try {
+    let p = payload.provider || store.getSettings().provider || null;
+    if (p) { try { p = await hydrateProvider(p); } catch (_) { p = null; } }
+    const { chatOnce } = require('./llm');
+    return await require('./memory-curator').curateFromConversations({
+      convs: payload.convs || [],
+      provider: p,
+      chatFn: p ? chatOnce : null,
+    });
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+ipcMain.handle('autobot:updateCuratedMemory', (e, payload = {}) => {
+  try { return require('./memory-curator').updateCuratedEntry(payload.id, payload.patch || {}); } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:deleteCuratedMemory', (e, id) => {
+  try { return require('./memory-curator').deleteCuratedEntry(id); } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:learnSkill', async (e, payload = {}) => {
+  try {
+    let p = payload.provider || store.getSettings().provider || null;
+    if (p) { try { p = await hydrateProvider(p); } catch (_) { p = null; } }
+    const { chatOnce } = require('./llm');
+    return await require('./skill-extractor').extractLearnedSkill({
+      name: payload.name || '',
+      messages: payload.messages || [],
+      cwd: payload.cwd || workspace.ROOT,
+      extraNames: payload.extraNames || [],
+      provider: p,
+      chatFn: p ? chatOnce : null,
+    });
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
 ipcMain.handle('autobot:extBridgeStatus', () => {
   try { return require('./extbridge').status(); } catch (e) { return { running: false, error: e.message, tabs: [] }; }
 });

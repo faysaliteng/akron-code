@@ -2319,6 +2319,27 @@ export default function App() {
     refreshMemory();
   };
   const clearMemory = async () => { await window.autobot.clearMemory(); refreshMemory(); };
+  const learnCurrentSession = async (skillName = '') => {
+    if (!window.autobot || !window.autobot.learnSkill) return null;
+    try {
+      const res = await window.autobot.learnSkill({
+        name: skillName || '',
+        messages: (active && active.messages) || [],
+        cwd,
+        provider,
+      });
+      if (res && res.ok) {
+        try { await refreshSkills(); } catch (_) {}
+        setNotice(`Learned PII-scrubbed skill: ${res.filePath}`);
+      } else {
+        setError((res && res.error) || 'Failed to extract skill');
+      }
+      return res;
+    } catch (e) {
+      setError((e && e.message) || 'Failed to extract skill');
+      return null;
+    }
+  };
 
   const connectMcp = async () => {
     setError('');
@@ -2903,6 +2924,15 @@ export default function App() {
         if (!cfg) { note('MCP config unavailable.'); break; }
         const st = (cfg.status || []).map((s) => '- `' + (s.id || s.name) + '` — ' + (s.status || s.state || 'configured'));
         note('**MCP servers**\n' + (cfg.servers && cfg.servers.length ? cfg.servers.join(', ') : '_(none configured)_') + (st.length ? '\n\n**Status**\n' + st.join('\n') : ''));
+        break;
+      }
+      case 'learn': {
+        const res = await learnCurrentSession(arg);
+        if (res && res.ok) {
+          note(`✅ **Learned PII-scrubbed skill** (\`/${res.slug}\`)\nSaved cleanly to \`${res.filePath}\` with personal names, emails, keys, paths, and IDs redacted.`);
+        } else {
+          note('❌ Could not extract skill: ' + ((res && res.error) || 'unknown error'));
+        }
         break;
       }
       case 'skills':
@@ -3580,7 +3610,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
+              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} initialTab={searchTab} provider={provider} onOpenSessionLink={openSessionDeepLink} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'mission' && (
                 <MissionControlPane
@@ -3605,7 +3635,7 @@ export default function App() {
                 />
               )}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
-              {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
+              {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} convs={convs} provider={provider} onJumpToMessage={(cid, mid) => { if (cid) selectConv(cid); if (mid) setPendingScroll(mid); }} />}
               {panel === 'skills' && <SkillsView skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills} />}
               {panel === 'notebooks' && <NotebooksView notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells} openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook} />}
               {panel === 'mcp' && <McpView mcpServers={mcpServers} mcpForm={mcpForm} setMcpForm={setMcpForm} connectMcp={connectMcp} disconnectMcp={disconnectMcp} />}
@@ -3770,7 +3800,8 @@ export default function App() {
           initialSection={settingsInitialSection}
           skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills}
           mcpServers={mcpServers} mcpForm={mcpForm} setMcpForm={setMcpForm} connectMcp={connectMcp} disconnectMcp={disconnectMcp}
-          memory={memory} addMemory={addMemory} clearMemory={clearMemory}
+          memory={memory} addMemory={addMemory} clearMemory={clearMemory} convs={convs}
+          onJumpToMessage={(cid, mid) => { if (cid) selectConv(cid); if (mid) setPendingScroll(mid); setShowSettings(false); }}
           notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells}
           openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook}
           cwd={cwd} setCwd={setCwd} activeId={activeId}
@@ -4679,7 +4710,7 @@ function RunLogPanel({ convId }) {
 }
 
 // ---------- Chat view ----------
-function ChatView({ messages, live, thinking, paused, onScrollAway, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError }) {
+function ChatView({ messages, live, thinking, paused, onScrollAway, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onLearnSkill, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [subExpanded, setSubExpanded] = useState(false);
@@ -4820,6 +4851,9 @@ function ChatView({ messages, live, thinking, paused, onScrollAway, subAgents, s
                 <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onOpenPlugins && onOpenPlugins(); }}>
                   <Icon name="Plugin" size={14} /> <span>Plugins</span>
                   <Icon name="CaretRight" size={12} className="conv-pop-chev" />
+                </button>
+                <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onLearnSkill && onLearnSkill(); }}>
+                  <Icon name="Lightbulb" size={14} /> <span>Learn Skill (/learn)</span>
                 </button>
                 <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onToggleEnv && onToggleEnv(); }}>
                   <Icon name="Settings" size={14} /> <span>Environment</span>
@@ -10868,7 +10902,7 @@ function SettingsModal({
   pendingPreset, clearPendingPreset, initialSection = 'providers',
   skills = [], toggleSkill, setAllSkills, refreshSkills,
   mcpServers = [], mcpForm, setMcpForm, connectMcp, disconnectMcp,
-  memory = [], addMemory, clearMemory,
+  memory = [], addMemory, clearMemory, convs = [], onJumpToMessage,
   notebooks = [], activeNotebook, notebookCells = [], setNotebookCells, openNotebook, newNotebook, saveActiveNotebook, deleteActiveNotebook,
   cwd, setCwd, activeId,
   onOpenGdrive, gdriveState,
@@ -11641,7 +11675,7 @@ function SettingsModal({
               <>
                 <div className="settings-card">
                   <h3><Icon name="Memory" size={14} /> Long-Term Memory</h3>
-                  <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />
+                  <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} convs={convs} provider={provider} onJumpToMessage={onJumpToMessage} />
                 </div>
                 <div className="settings-card">
                   <h3><Icon name="Book" size={14} /> Notebooks</h3>

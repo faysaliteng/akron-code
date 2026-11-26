@@ -92,7 +92,7 @@ const EXTRA_CASES = new Set([
   'terminal', 'bashes', 'plugins', 'commands', 'fast', 'code-review', 'sandbox',
   'alias', 'bug', 'pr-comments', 'exit', 'quit', 'cwd', 'search',
   'swarm', 'subagents', 'gdrive', 'note', 'worktrees',
-  'mission', 'ask-history',
+  'mission', 'ask-history', 'learn',
 ]);
 const registryNames = new Set(registry.map((r) => r.name.toLowerCase()));
 const unknownCases = [...caseLabels]

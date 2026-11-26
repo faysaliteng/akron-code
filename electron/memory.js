@@ -107,7 +107,17 @@ function loadMemoryText(cwd, { header = true } = {}) {
     }
     blocks.push(`# Memory: ${file}\n${body}`);
   }
-  if (!blocks.length) return '';
+  if (!blocks.length) {
+    try {
+      const curatorBlock = require('./memory-curator').formatCuratedPromptBlock();
+      if (curatorBlock) return (header ? 'The following is curated user memory:\n' : '') + curatorBlock;
+    } catch (_) {}
+    return '';
+  }
+  try {
+    const curatorBlock = require('./memory-curator').formatCuratedPromptBlock();
+    if (curatorBlock) blocks.push(curatorBlock);
+  } catch (_) {}
   const head = header
     ? 'The following is project/user memory (CLAUDE.md). Treat it as standing instructions that apply for the whole session:\n'
     : '';

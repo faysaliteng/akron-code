@@ -3,16 +3,124 @@ import { Icon } from '../components/Icon.jsx';
 
 const makeUid = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
 
-export function MemoryView({ memory, addMemory, clearMemory }) {
+export function MemoryView({ memory, addMemory, clearMemory, convs = [], provider = null, onJumpToMessage }) {
+  const [curated, setCurated] = React.useState({ autoCurate: false, entries: [] });
+  const [areaFilter, setAreaFilter] = React.useState('all');
+  const [editingId, setEditingId] = React.useState(null);
+  const [editDraft, setEditDraft] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState('');
+
+  const refreshCurated = React.useCallback(async () => {
+    try {
+      if (window.autobot && window.autobot.getCuratedMemory) {
+        const st = await window.autobot.getCuratedMemory();
+        if (st && Array.isArray(st.entries)) setCurated(st);
+      }
+    } catch (_) {}
+  }, []);
+
+  React.useEffect(() => { refreshCurated(); }, [refreshCurated]);
+
+  const toggleAuto = async () => {
+    if (!window.autobot || !window.autobot.setMemoryAutoCurate) return;
+    const r = await window.autobot.setMemoryAutoCurate(!curated.autoCurate);
+    if (r && r.state) setCurated(r.state);
+  };
+
+  const runCurate = async () => {
+    if (!window.autobot || !window.autobot.curateMemory) return;
+    setBusy(true); setMsg('');
+    try {
+      const r = await window.autobot.curateMemory({ convs, provider });
+      if (r && r.state) setCurated(r.state);
+      if (r && r.ok) setMsg(`Curated ${r.added || 0} new note(s), archived ${r.archived || 0}, rejected ${r.rejected || 0} unverified.`);
+    } finally { setBusy(false); }
+  };
+
+  const saveEdit = async (id) => {
+    if (!window.autobot || !window.autobot.updateCuratedMemory) return;
+    const r = await window.autobot.updateCuratedMemory({ id, patch: { content: editDraft } });
+    if (r && r.ok === false) { setMsg(r.error || 'Could not update note'); return; }
+    setEditingId(null); setEditDraft('');
+    await refreshCurated();
+  };
+
+  const forgetEntry = async (id) => {
+    if (!window.autobot || !window.autobot.deleteCuratedMemory) return;
+    await window.autobot.deleteCuratedMemory(id);
+    await refreshCurated();
+  };
+
+  const activeCurated = (curated.entries || []).filter((e) => !e.archived && (areaFilter === 'all' || e.area === areaFilter));
+
   return (
     <div className="panel">
       <div className="panel-head"><h2>Long-term memory</h2>
-        <div><button onClick={addMemory}>+ Add</button> <button onClick={clearMemory}>Clear</button></div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button type="button" className="btn-mini primary" disabled={busy} onClick={runCurate}>{busy ? 'Curating…' : 'Curate Now'}</button>
+          <button type="button" className="btn-mini" onClick={addMemory}>+ Add Manual</button>
+          <button type="button" className="btn-mini" onClick={clearMemory}>Clear Manual</button>
+        </div>
       </div>
-      {memory.length === 0 && <p className="muted">Memory is empty. Use the &quot;memory_add&quot; tool in chat, or add a note here.</p>}
+
+      <div className="oc-row" style={{ marginBottom: 10 }}>
+        <div className="oc-row-meta">
+          <div className="oc-row-title">Auto-Curate from My Messages (opt-in)</div>
+          <div className="oc-row-sub">Reads only your own messages (ignores external tool/web output) and requires a verbatim quote for every fact.</div>
+        </div>
+        <div className="oc-row-ctrl">
+          <button type="button" role="switch" aria-checked={!!curated.autoCurate} className={'oc-switch' + (curated.autoCurate ? ' on' : '')} onClick={toggleAuto}>
+            <span className="oc-switch-knob" />
+          </button>
+        </div>
+      </div>
+
+      <div className="mc-filters" style={{ marginBottom: 10 }}>
+        {['all', 'about', 'preferences', 'people', 'routines', 'lessons'].map((a) => (
+          <button key={a} type="button" className={'mc-filter-pill' + (areaFilter === a ? ' on' : '')} onClick={() => setAreaFilter(a)}>
+            {a === 'all' ? 'All Areas' : a}
+          </button>
+        ))}
+      </div>
+
+      {msg && <p className="muted" style={{ margin: '0 0 8px' }}>{msg}</p>}
+
+      {activeCurated.map((e) => (
+        <div key={e.id} className="memitem">
+          <div className="mem-ts" style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+            <span><strong>[{e.area}]</strong> · {new Date(e.ts || Date.now()).toLocaleString()}</span>
+            <span style={{ display: 'inline-flex', gap: 6 }}>
+              {e.convId && onJumpToMessage && (
+                <button type="button" className="btn-mini" onClick={() => onJumpToMessage(e.convId, e.sourceMsgId)}>Jump</button>
+              )}
+              <button type="button" className="btn-mini" onClick={() => { setEditingId(e.id); setEditDraft(e.content); }}>Edit</button>
+              <button type="button" className="btn-mini" onClick={() => forgetEntry(e.id)}>Forget</button>
+            </span>
+          </div>
+          {editingId === e.id ? (
+            <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+              <input value={editDraft} onChange={(ev) => setEditDraft(ev.target.value)} style={{ flex: 1 }} />
+              <button type="button" className="btn-mini primary" onClick={() => saveEdit(e.id)}>Save</button>
+              <button type="button" className="btn-mini" onClick={() => setEditingId(null)}>Cancel</button>
+            </div>
+          ) : (
+            <div style={{ marginTop: 4 }}>{e.content}</div>
+          )}
+          {e.quote && (
+            <div className="muted" style={{ fontSize: 11, marginTop: 4, fontStyle: 'italic' }}>
+              Quote: &ldquo;{e.quote}&rdquo;
+            </div>
+          )}
+        </div>
+      ))}
+
+      {activeCurated.length === 0 && memory.length === 0 && (
+        <p className="muted">Memory is empty. Click &ldquo;Curate Now&rdquo; to extract quote-verified facts from your messages, or add a note manually.</p>
+      )}
       {memory.map((e, i) => (
-        <div key={i} className="memitem">
-          <div className="mem-ts">{new Date(e.ts).toLocaleString()}{e.category ? ` · ${e.category}` : ''}</div>
+        <div key={'legacy-' + i} className="memitem">
+          <div className="mem-ts">{new Date(e.ts).toLocaleString()}{e.category ? ` · ${e.category}` : ' · manual'}</div>
           <div>{e.content}</div>
         </div>
       ))}
