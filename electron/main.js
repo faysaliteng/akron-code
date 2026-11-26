@@ -3521,6 +3521,30 @@ ipcMain.handle('autobot:devServerStart', (e, cwd) => devserver.start(cwd));
 // ---- Secondary-window / chrome IPC (Claude Desktop parity surfaces) ----
 ipcMain.handle('autobot:openAbout', () => { createAboutWindow(); return { ok: true }; });
 ipcMain.handle('autobot:brandStatus', () => brandGuard.verifyBrandIntegrity());
+ipcMain.handle('autobot:getLegalDocs', () => {
+  const root = path.join(__dirname, '..');
+  const readDoc = (name) => {
+    try {
+      const p = path.join(root, name);
+      return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+    } catch (_) {
+      return '';
+    }
+  };
+  return {
+    ok: true,
+    license: readDoc('LICENSE.md'),
+    trademarks: readDoc('TRADEMARKS.md'),
+    copyright: 'Copyright (c) 2026 AkronLogic (https://akronlogic.com). All rights reserved.',
+  };
+});
+ipcMain.handle('autobot:openLegalDoc', (_e, which) => {
+  const file = which === 'trademarks' ? 'TRADEMARKS.md' : 'LICENSE.md';
+  const p = path.join(__dirname, '..', file);
+  if (!fs.existsSync(p)) return { ok: false, error: `${file} not found` };
+  shell.openPath(p);
+  return { ok: true, path: p };
+});
 ipcMain.handle('autobot:openQuickEntry', () => { createQuickWindow(); return { ok: true }; });
 ipcMain.handle('autobot:openArtifactWindow', (e, payload) => createArtifactWindow(payload || {}));
 ipcMain.handle('autobot:printToPdf', (e, payload) => printToPdf(e, payload || {}));

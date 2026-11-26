@@ -3307,7 +3307,8 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
 .settings-nav-btn.on { background: var(--bg-200); border-color: var(--border-strong); color: var(--text-000); font-weight: 600; }
 .settings-nav-pill { margin-left: auto; flex: 0 0 auto; white-space: nowrap; font-size: 10.5px; font-family: var(--micro); color: var(--text-400); padding: 1px 7px; border-radius: 999px; background: var(--bg-300); }
 .settings-nav-btn.on .settings-nav-pill { color: var(--accent-text); background: var(--accent-soft); }
-.settings-side-foot { margin-top: 10px; padding: 10px 8px 2px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-400); display: flex; justify-content: space-between; }
+.settings-side-foot { width: 100%; margin-top: 10px; padding: 10px 8px 2px; border: 0; border-top: 1px solid var(--border); background: transparent; font-size: 11px; color: var(--text-400); display: flex; justify-content: space-between; cursor: pointer; text-align: left; }
+.settings-side-foot:hover { color: var(--text-100); }
 
 .settings-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg-000); }
 .settings-head {
@@ -3379,3 +3380,84 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
   padding: 0; max-width: none; height: auto; min-height: 0; overflow: visible; flex: none;
 }
 .settings-body .page > h1:first-child { display: none; }
+
+
+/* ---------- About & License Settings Section ---------- */
+.about-hero { display: flex; flex-direction: column; gap: 18px; }
+.about-lockup-wrap {
+  display: flex; align-items: center; justify-content: flex-start;
+  padding: 16px 18px; border-radius: 12px;
+  border: 1px solid var(--border); background: var(--bg-000);
+}
+.about-lockup-svg { width: 100%; max-width: 440px; height: auto; display: block; }
+.about-hero-meta { display: flex; flex-direction: column; gap: 14px; }
+.about-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.about-product-name { margin: 0; font-size: 18px; font-weight: 700; color: var(--text-000); letter-spacing: -0.02em; }
+.about-product-sub { margin: 3px 0 0; font-size: 13px; color: var(--text-300); }
+.about-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.about-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--border-strong); background: var(--bg-200);
+  color: var(--text-100); font-size: 11.5px; font-weight: 500;
+}
+.about-badge.ok {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+[data-theme="light"] .about-badge.ok { color: #065f46; }
+.about-badge.warn { border-color: rgba(245, 158, 11, 0.35); color: #fbbf24; }
+.about-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.about-feature-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px; margin-top: 12px;
+}
+.about-feature-item {
+  padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg-000);
+}
+.about-feature-title { font-size: 13px; font-weight: 600; color: var(--text-000); margin-bottom: 4px; }
+.about-feature-desc { font-size: 12px; color: var(--text-300); line-height: 1.5; }
+
+.about-meta-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.about-meta-cell {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 10px 12px; border-radius: 9px;
+  border: 1px solid var(--border); background: var(--bg-000);
+}
+.about-meta-cell > span { font-size: 11px; color: var(--text-400); text-transform: uppercase; letter-spacing: 0.04em; }
+.about-meta-cell > strong { font-size: 12.5px; font-weight: 600; color: var(--text-000); font-family: var(--mono); word-break: break-word; }
+
+.about-license-split {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px; margin-bottom: 16px;
+}
+.about-license-box {
+  padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg-000);
+}
+.about-license-head { font-size: 12.5px; font-weight: 600; color: var(--text-000); margin-bottom: 6px; }
+.about-license-box ul { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-300); line-height: 1.45; }
+
+.about-legal-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap; margin-bottom: 10px;
+}
+.about-legal-tabs, .about-legal-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.about-legal-doc {
+  margin: 0; padding: 14px 16px; max-height: 260px; overflow: auto;
+  border-radius: 10px; border: 1px solid var(--border); background: var(--bg-300);
+  color: var(--text-200); font-family: var(--mono); font-size: 11.5px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+@media (max-width: 720px) {
+  .about-feature-grid, .about-meta-grid, .about-license-split {
+    grid-template-columns: 1fr;
+  }
+}

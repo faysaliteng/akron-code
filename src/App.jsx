@@ -14,6 +14,7 @@ import ConnectorLogo from './ConnectorLogo.jsx';
 import { useVoiceDictation } from './voice';
 import { LiveChecklistCard, LiveToolActivityCard, StickyLiveToolBar, FilesChangedBar, summarizeChangedFiles } from './components/LiveProgress.jsx';
 import { CodeReviewPane } from './components/CodeReviewPane.jsx';
+import { AboutSection } from './components/AboutSection.jsx';
 import { deriveSubAgents } from './review-helpers.mjs';
 import { IdeWorkbench } from './ide/IdeWorkbench.jsx';
 import { shortcutLabels } from './ide/shortcuts';
@@ -10632,6 +10633,7 @@ const SETTINGS_SECTIONS = [
   { id: 'runtimes', group: 'system', label: 'Runtimes & Updates', icon: 'Refresh', sub: 'Built-in IDE dependencies, optional LSP installers, bundled CLIs & app auto-updater.', keys: 'runtimes updates auto-update github release lsp dependencies repair' },
   { id: 'security', group: 'system', label: 'Permissions & Security', icon: 'LockShield', sub: 'Tool consent rules, Computer Use, Chrome CDP, bridges, and compliance.', keys: 'permission security computer use chrome cdp bridge compliance trusted folders' },
   { id: 'system', group: 'system', label: 'Appearance & System', icon: 'Palette', sub: 'Theme, language locale, memory injection, launch behavior, and runtimes.', keys: 'theme dark light locale language memory login quick entry runtime' },
+  { id: 'about', group: 'system', label: 'About & License', icon: 'Info', sub: 'Akron Code details, AkronLogic brand identity, runtime diagnostics, license & trademarks.', keys: 'about akronlogic logo version license trademarks copyright legal brand seal info' },
 ];
 
 function SettingsModal({
@@ -10829,6 +10831,7 @@ function SettingsModal({
     if (id === 'voice') return settings.voiceEngine === 'local' ? 'Whisper' : 'Auto';
     if (id === 'security') return permissions;
     if (id === 'system') return settings.theme || 'dark';
+    if (id === 'about') return 'v1.0';
     return '';
   };
 
@@ -10868,10 +10871,15 @@ function SettingsModal({
               );
             })}
           </nav>
-          <div className="settings-side-foot">
+          <button
+            type="button"
+            className="settings-side-foot"
+            onClick={() => setSection('about')}
+            title="Open About & License"
+          >
             <span>Akron Code v1.0</span>
             <span>{settings.theme === 'light' ? 'Light' : 'Dark'}</span>
-          </div>
+          </button>
         </aside>
 
         <section className="settings-main">
@@ -11561,6 +11569,10 @@ function SettingsModal({
                   <RuntimesSection />
                 </div>
               </>
+            )}
+
+            {section === 'about' && (
+              <AboutSection theme={settings.theme || 'dark'} setNotice={setNotice} />
             )}
             </div>
           </div>

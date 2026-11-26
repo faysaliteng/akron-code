@@ -245,6 +245,8 @@ contextBridge.exposeInMainWorld('autobot', {
 
   openAbout: () => ipcRenderer.invoke('autobot:openAbout'),
   brandStatus: () => ipcRenderer.invoke('autobot:brandStatus'),
+  getLegalDocs: () => ipcRenderer.invoke('autobot:getLegalDocs'),
+  openLegalDoc: (which) => ipcRenderer.invoke('autobot:openLegalDoc', which),
   openQuickEntry: () => ipcRenderer.invoke('autobot:openQuickEntry'),
   quickSubmit: (payload) => ipcRenderer.invoke('autobot:quickSubmit', payload),
   openArtifactWindow: (payload) => ipcRenderer.invoke('autobot:openArtifactWindow', payload),
