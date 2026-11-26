@@ -1,6 +1,8 @@
 // Prove the brand mark animates while a turn is running and rests when idle.
 // Usage: node build/probe-logo.cjs [port] [model]
 const WebSocket = require('../node_modules/ws');
+const preserveProvider = require('./lib/preserve-provider.cjs');
+let preserve = null;
 
 const port = Number(process.argv[2] || 9333);
 const MODEL = process.argv[3] || 'auto';
@@ -89,6 +91,8 @@ const SAMPLE = `(() => {
   const cdp = await connect(page.webSocketDebuggerUrl);
   await cdp.send('Page.enable');
   await cdp.send('Runtime.enable');
+  preserve = preserveProvider(ev, cdp, { keys: ["autobot:activeId"] });
+  await preserve.snapshot();
 
   await ev(cdp, `localStorage.setItem('autobot:provider', JSON.stringify({
       name: 'FreeLLMAPI', baseURL: 'http://localhost:3001/v1', model: ${JSON.stringify(MODEL)},
@@ -171,6 +175,7 @@ const SAMPLE = `(() => {
   };
   const pass = liveSamples > 0 && moved && /none/.test(out.idle.anim || 'none');
   console.log(JSON.stringify({ pass, ...out }, null, 2));
+  await preserve.restore();
   cdp.close();
   process.exit(pass ? 0 : 1);
-})().catch((e) => { console.error('LOGO PROBE FAILED:', e.message); process.exit(1); });
+})().catch(async (e) => { console.error('LOGO PROBE FAILED:', e.message); if (preserve) await preserve.restore(); process.exit(1); });

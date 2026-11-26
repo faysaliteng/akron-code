@@ -94,8 +94,21 @@ const noticeInfo = (page) => page.evalJS(`(() => {
   });
 })()`);
 
+let restoreRef = null;
 (async () => {
   const page = await connect();
+  // The probe seeds a synthetic usage record to drive the toast. That record is
+  // the user's last real turn — snapshot it and put it back before exiting, or
+  // a smoke run leaves a fake 90 % window behind.
+  const prevUsageRaw = await page.evalJS(`localStorage.getItem('autobot:lastUsage')`);
+  const restoreState = async () => {
+    try {
+      if (prevUsageRaw === null || prevUsageRaw === undefined) await page.evalJS(`localStorage.removeItem('autobot:lastUsage'); 'cleared'`);
+      else await page.evalJS(`localStorage.setItem('autobot:lastUsage', ${JSON.stringify(prevUsageRaw)}); 'restored'`);
+      await page.reload();
+    } catch (e) { console.error('state restore failed: ' + (e && e.message)); }
+  };
+  restoreRef = restoreState;
 
   // ---------------------------------------------------------------- A. toast
   // 1M-window model (gemini-4 → 1,048,576 by the offline rule), so 78 % of the
@@ -227,5 +240,6 @@ const noticeInfo = (page) => page.evalJS(`(() => {
     console.log((r.c ? 'PASS ' : 'FAIL ') + r.n + (r.d ? '  — ' + r.d : ''));
   }
   console.log(bad ? `\n${bad} FAILED of ${results.length}` : `\nall ${results.length} checks passed`);
+  await restoreState();
   process.exit(bad ? 1 : 0);
-})().catch((e) => { console.error('probe crashed:', (e && e.stack) || e); process.exit(2); });
+})().catch(async (e) => { console.error('probe crashed:', (e && e.stack) || e); if (restoreRef) await restoreRef(); process.exit(2); });

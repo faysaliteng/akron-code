@@ -93,12 +93,17 @@ function readIf(p) {
   try { return fs.readFileSync(p, 'utf8'); } catch (_) { return null; }
 }
 
+const preserveProvider = require('./lib/preserve-provider.cjs');
+let preserve = null;
+
 (async () => {
   const startedAt = Date.now() - 5000;
   const page = await findPage();
   const cdp = await connect(page.webSocketDebuggerUrl);
   await cdp.send('Page.enable');
   await cdp.send('Runtime.enable');
+  preserve = preserveProvider(ev, cdp, {});
+  await preserve.snapshot();
 
   // Same two shapes probe-capability uses: a bare OpenAI-compatible gateway, or
   // an in-app OAuth account (Claude/ChatGPT/Grok/Antigravity). Passing an
@@ -187,7 +192,14 @@ function readIf(p) {
   const gridTarget = !!((html && /id="[^"]*(grid|products|store)[^"]*"/i.test(html)) || (js && /(grid|products)\b/i.test(js)));
   const hasGrid = htmlProductNodes >= 1 || (jsProductList && gridTarget);
   const hasPrice = !!(html && /[$৳€£]|\bprice\b/i.test(html)) || jsProductList;
-  const hasCartLogic = !!(js && /cart/i.test(js) && /(addToCart|add_to_cart|addItem|push\()/i.test(js));
+  // A cart can be named (addToCart/addItem), pushed to, or mutated in place
+  // (`cart[id] = q`, the shape the last run actually produced). Only requiring
+  // the named forms failed a working cart whose arithmetic lives in update().
+  const cartMutation = /(addToCart|add_to_cart|addItem|removeFromCart|setQuantity|updateItem|updateCart)/i.test(js)
+    || /cart[^\n;]{0,30}\.push\s*\(/i.test(js)
+    || /cart\s*\[[^\]]+\]\s*(?:=|\+=|-=|\+\+|--)/i.test(js)
+    || /localStorage\.setItem\([^)]*cart/i.test(js);
+  const hasCartLogic = !!(js && /cart/i.test(js) && cartMutation);
   const hasTotal = !!(js && /(total|sum|reduce)/i.test(js));
   const hasLocalStorage = !!(js && /localStorage/i.test(js));
   const hasCss = !!(css && css.length > 200);
@@ -216,9 +228,11 @@ function readIf(p) {
     result.checks.filesListed && !result.markupLeak && !result.error
   );
   console.log(JSON.stringify(result, null, 2));
+  await preserve.restore();
   cdp.close();
   process.exit(result.pass ? 0 : 1);
-})().catch((e) => {
+})().catch(async (e) => {
   console.error('APP BUILD PROBE FAILED:', e.message);
+  if (preserve) await preserve.restore();
   process.exit(1);
 });

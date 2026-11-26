@@ -2268,3 +2268,51 @@ in it to 0600 — legacy files are normalised instead of waiting to be rewritten
 
 Verified: `drwx------ ~/.autobot`, and `stat -f '%Sp %N' ~/.autobot/*.json` shows
 no non-0600 file. `test/e2e.test.js`: **112 passed, 0 failed**.
+
+## 44. The smoke matrix left the app on a test profile (2026-11-26)
+
+§42 fixed the pool, but the composer was still being consumed by the matrix. Each
+probe points the chat at the model it is testing, and the rewrite is written
+straight into `localStorage['autobot:provider']` and mirrored to main:
+
+```js
+localStorage.setItem('autobot:provider', JSON.stringify({
+  baseURL: 'http://127.0.0.1:3001/v1', apiKey: '', model: 'claude-opus-4-5', … }));  // probe-build-app
+```
+
+Nothing put it back, so after a green 9/9 run the app's saved provider had become a
+**keyless** `127.0.0.1:3001` + `claude-opus-4-5` — the user's `localhost:3001` +
+`auto:fast` + key was only preserved inside `autobot:providerKeys`, which the app
+does not read back into the active profile. `probe-logo` additionally nulls
+`autobot:activeId` (the open conversation), and `probe-notices-toast` seeds a
+synthetic `autobot:lastUsage` record, which is what the context toast measures.
+
+**Fix, per probe.** One shared helper, `build/lib/preserve-provider.cjs`, snapshots
+the listed `localStorage` keys *and* `getSettings().provider`, then writes both back
+and reloads. Every rewriting probe (`probe-build-app`, `probe-capability`,
+`probe-logo` with `autobot:activeId`, `probe-notices-toast` with
+`autobot:lastUsage`) arms it before its first write and calls `restore()` on the
+success path and in `.catch()`.
+
+**Fix, per run.** Per-probe restore cannot cover a probe that crashes before it
+arms, or one added later, so the matrix itself is wrapped.
+`build/lib/matrix-state.cjs save|restore|show` snapshots `autobot:provider`,
+`autobot:providerKeys`, `autobot:activeId`, `autobot:lastUsage`, main
+`settings.provider` and the whole orchestrator document to a 0600 file inside a
+0700 log dir (it holds a key), and `build/run-package-matrix.sh` restores it after
+the last probe. Restore re-reads both sides and compares base URL, model and key
+length; a mismatch is a matrix failure, not a log line.
+
+**False negative, also fixed.** `probe-build-app` failed a working storefront
+because `hasCartLogic` accepted only named helpers (`addToCart`, `push(`). The
+generated cart mutated in place (`cart[id] = q` inside `update(id, delta)`), so the
+check now also accepts in-place cart mutation and `localStorage.setItem(…cart…)`.
+
+| proof | result |
+| --- | --- |
+| `build/run-package-matrix.sh 9444` on the rebuilt artifact | **9/9 probes**, plus `state restored http://localhost:3001/v1 / auto:fast / key 59 pool 3 OK` |
+| matrix snapshot line | `state saved http://localhost:3001/v1 / auto:fast / key 59 pool 3` |
+| `build/lib/matrix-state.cjs show 9444` after the run | renderer **and** main both `http://localhost:3001/v1 / auto:fast / key 59`; pool `enabled:true` × 3 |
+| `node build/probe-freellm-key.cjs 9444 … auto:fast` (packaged) | **12/12**, `orchestrator pool restored: 3 rows, enabled=true`, turn `WIRED-MWX0XNB7` (one 502 retry, 9 s) |
+| `~/.autobot` after two matrix runs and a keyed proof | `700`, 19 `*.json` files, none group/world-readable; `orchestrator.preprobe.json` 0600 |
+| `node test/e2e.test.js` | **112 passed, 0 failed** |

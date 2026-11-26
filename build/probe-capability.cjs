@@ -2,6 +2,8 @@
 // command, and OPEN the built-in browser when asked? (live, CDP)
 // Usage: node build/probe-capability.cjs [port] [model] [account] [transport]
 const WebSocket = require('../node_modules/ws');
+const preserveProvider = require('./lib/preserve-provider.cjs');
+let preserve = null;
 
 const port = Number(process.argv[2] || 9333);
 const MODEL = process.argv[3] || 'claude-opus-4-5';
@@ -70,6 +72,8 @@ const PROMPT = [
   const cdp = await connect(page.webSocketDebuggerUrl);
   await cdp.send('Page.enable');
   await cdp.send('Runtime.enable');
+  preserve = preserveProvider(ev, cdp, {});
+  await preserve.snapshot();
 
   const models = await ev(cdp, `(async () => {
     const r = await window.autobot.providerModels(${JSON.stringify(ACCOUNT)});
@@ -169,6 +173,7 @@ const PROMPT = [
   };
   result.pass = !!(result.wroteFile && result.ranShell && result.answerHasOk && !result.markupLeak && !result.error);
   console.log(JSON.stringify({ pass: result.pass, ...result }, null, 2));
+  await preserve.restore();
   cdp.close();
   process.exit(result.pass ? 0 : 1);
-})().catch((e) => { console.error('CAPABILITY PROBE FAILED:', e.message); process.exit(1); });
+})().catch(async (e) => { console.error('CAPABILITY PROBE FAILED:', e.message); if (preserve) await preserve.restore(); process.exit(1); });
