@@ -143,6 +143,17 @@ const BUILTIN = {
       'Prioritize findings (Critical / High / Medium / Low) with exact file:line citations and concrete fix recommendations.',
     ].join('\n'),
   },
+  CodebaseInvestigator: {
+    name: 'CodebaseInvestigator',
+    description: 'Read-only semantic and symbol codebase explorer for navigating large repositories rapidly via CodebaseSearch, Grep, Glob, and Read.',
+    model: 'haiku',
+    role: 'planner',
+    tools: ['CodebaseSearch', 'Read', 'Glob', 'Grep', 'LS', 'Search'],
+    body: [
+      'You are a read-only CodebaseInvestigator specialist. Map architecture, symbol definitions, call paths, and module dependencies quickly using CodebaseSearch, Grep, Glob, and Read.',
+      'Never modify files. Always cite exact file paths and line numbers for every finding.',
+    ].join('\n'),
+  },
 };
 
 function normalizeName(n) {

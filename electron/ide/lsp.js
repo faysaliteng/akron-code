@@ -191,6 +191,24 @@ class LspClient {
 }
 
 const activeClients = new Map(); // `${cwd}|${serverKey}` -> LspClient
+const latestDiagnostics = new Map(); // resolved filePath -> diagnostics[]
+
+function recordDiagnostics(filePath, diags) {
+  if (!filePath) return;
+  try {
+    const abs = path.resolve(String(filePath));
+    latestDiagnostics.set(abs, Array.isArray(diags) ? diags.slice(0, 50) : []);
+  } catch (_) {}
+}
+
+function getDiagnosticsForFile(filePath) {
+  if (!filePath) return [];
+  try {
+    return latestDiagnostics.get(path.resolve(String(filePath))) || [];
+  } catch (_) {
+    return [];
+  }
+}
 
 function lspStatus(cwd) {
   const out = {};
@@ -238,7 +256,10 @@ async function lspEnsure(cwd, language, onDiagnostics, customCommand) {
   if (!cmd) {
     return { ok: true, available: false, language, reason: `${(def && def.bins[0]) || language} not found on PATH` };
   }
-  const client = new LspClient(key, cmd, args, root, onDiagnostics);
+  const client = new LspClient(key, cmd, args, root, (evt) => {
+    if (evt && evt.file) recordDiagnostics(evt.file, evt.diagnostics);
+    if (typeof onDiagnostics === 'function') onDiagnostics(evt);
+  });
   activeClients.set(key, client);
   try {
     await client.start();
@@ -287,4 +308,6 @@ module.exports = {
   lspNotify,
   lspRequest,
   lspStopAll,
+  recordDiagnostics,
+  getDiagnosticsForFile,
 };

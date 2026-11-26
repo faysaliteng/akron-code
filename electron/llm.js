@@ -18,7 +18,8 @@ const loopGuardMod = require('./loop-guard');
 
 const LEAN_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'Bash', 'LS', 'TodoWrite', 'WebFetch', 'WebSearch', 'ToolSearch']);
 const STANDARD_TOOLS = new Set([
-  'Bash', 'Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'LS', 'Search', 'TodoWrite', 'WebFetch', 'WebSearch',
+  'Bash', 'Read', 'Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'ShadowCheck', 'CodebaseSearch', 'RunToolScript',
+  'Glob', 'Grep', 'LS', 'Search', 'TodoWrite', 'WebFetch', 'WebSearch',
   'Task', 'Agent', 'TaskOutput', 'TaskStop', 'ListAgents', 'Swarm', 'Workflow', 'ToolSearch', 'find_mcp_tools', 'Skill', 'list_skills',
   'TeamCreate', 'TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate', 'SendMessage',
   'CreateCustomTool', 'ListCustomTools', 'DeleteCustomTool', 'ext_browser', 'rea',
@@ -1427,6 +1428,21 @@ function sanitizeHistory(messages, opts = {}) {
     // "Compacted 0 earlier turns" was user-visible nonsense.
     if (dropped.length) out.splice(i + 1, 0, { role: 'user', content: note });
 
+    // If inserting the digest note itself nudged total over maxChars, drop the next
+    // oldest middle turns before resorting to middle-truncating kept messages.
+    total = size();
+    if (dropped.length && total > maxChars) {
+      const afterNote = i + 2;
+      while (total > maxChars && afterNote < out.length - 2) {
+        total -= str(out[afterNote].content).length + 64;
+        out.splice(afterNote, 1);
+        while (out[afterNote] && out[afterNote].role === 'tool') {
+          total -= str(out[afterNote].content).length + 64;
+          out.splice(afterNote, 1);
+        }
+      }
+    }
+
     // Now trim the middle of whatever is still too big. This is what makes a
     // single oversized paste work: the newest message IS the request, so it can
     // never be dropped — but its head and tail (where the instruction lives)
@@ -2017,7 +2033,7 @@ async function runAgent(opts) {
   // Anti-thrash state. Weak tool-callers often repeat the exact same failing
   // call (or retry a broken Write) until the step budget runs out. Track it and
   // steer them back on course instead of silently burning tokens.
-  const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'mcp__workspace__write_file', 'mcp__workspace__edit_file', 'Artifact']);
+  const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'NotebookEdit', 'mcp__workspace__write_file', 'mcp__workspace__edit_file', 'Artifact']);
   let wroteSomething = false;
   let lastPreview = null;
   let lastSig = '';
@@ -3131,7 +3147,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     // Example runs independent read-only / agent calls concurrently in waves,
     // while keeping mutating calls strictly ordered between waves.
     const PARALLEL_SAFE = new Set([
-      'Read', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles',
+      'Read', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles', 'CodebaseSearch',
       'WebFetch', 'WebSearch', 'TodoWrite', 'TaskList', 'TaskGet', 'CronList',
       'ListMcpResources', 'find_mcp_tools', 'ToolSearch', 'list_skills', 'Skill',
       'ListAgents', 'ListCustomTools', 'list_notebooks', 'list_slash_commands', 'memory_list',

@@ -18,6 +18,10 @@ const replSession = require('./repl');
 const { expandPath } = require('./paths');
 const sandbox = require('./sandbox');
 const customtools = require('./customtools');
+const editGuard = require('./ide/edit-guard');
+const applyPatchMod = require('./apply-patch');
+const codebaseIndex = require('./ide/codebase-index');
+const codemode = require('./codemode');
 
 const MAX_OUTPUT = 120000; // chars
 
@@ -535,7 +539,7 @@ const executors = {
           ? formatNumbered(fifoRes.content, fp, offset, limit, '(empty FIFO)')
           : fifoRes.error;
       }
-      if (_readMtimes instanceof Map) _readMtimes.set(fp, Math.floor(st.mtimeMs));
+      editGuard.recordFileRead(_readMtimes, fp, null, st);
       if (IMAGE_EXT.test(fp)) {
         const ext = path.extname(fp).toLowerCase();
         const mime = RASTER_IMAGE_MIME[ext];
@@ -549,6 +553,7 @@ const executors = {
         return `Image file: ${fp} (${st.size} bytes, ${ext.slice(1)}). Image contents cannot be shown as text.`;
       }
       const buf = fs.readFileSync(fp);
+      editGuard.recordFileRead(_readMtimes, fp, buf, st);
       if (isBinaryBuffer(buf)) {
         return `Binary file: ${fp} (${buf.length} bytes) — not shown. Use Bash (e.g. \`file\`, \`xxd | head\`) to inspect it.`;
       }
@@ -581,12 +586,12 @@ const executors = {
       // only contains a placeholder is worse than no file at all.
       fs.writeFileSync(fp, body, 'utf8');
       const st = fs.statSync(fp);
-      if (_readMtimes instanceof Map) _readMtimes.set(fp, Math.floor(st.mtimeMs));
+      editGuard.recordFileRead(_readMtimes, fp, body, st);
       const size = st.size;
       const warn = /(\/\/\s*rest of (the )?(code|file)|\.\.\.\s*(rest|omitted)|<placeholder>)/i.test(body)
         ? ' WARNING: content contains a placeholder — rewrite the file with its COMPLETE contents.'
         : '';
-      const diag = quickSyntaxDiagnostic(fp);
+      const diag = quickSyntaxDiagnostic(fp) || editGuard.collectPostEditDiagnostics(fp, cwd);
       return `Wrote ${size} bytes to ${fp}.${warn}${diag}`;
     } catch (e) {
       return 'Error writing file (path=' + (p || '?') + '): ' + e.message;
@@ -601,15 +606,8 @@ const executors = {
     const we = sandbox.isWriteAllowed(fp);
     if (we !== true) return 'Error: ' + we.reason;
     try {
-      if (_readMtimes instanceof Map && _readMtimes.has(fp)) {
-        try {
-          const curMtime = Math.floor(fs.statSync(fp).mtimeMs);
-          const seenMtime = _readMtimes.get(fp);
-          if (curMtime > seenMtime + 5) {
-            return `Error: ${fp} was modified on disk since you last Read it (by another agent or command). Call Read on ${fp} first to inspect the latest contents before editing.`;
-          }
-        } catch (_) {}
-      }
+      const stale = editGuard.checkStaleRead(_readMtimes, fp);
+      if (!stale.ok) return stale.error;
       let raw;
       try { raw = fs.readFileSync(fp, 'utf8'); }
       catch (e) {
@@ -617,8 +615,8 @@ const executors = {
         if (e.code === 'ENOENT' && old_string === '' && new_string != null) {
           fs.mkdirSync(path.dirname(fp), { recursive: true });
           fs.writeFileSync(fp, String(new_string), 'utf8');
-          if (_readMtimes instanceof Map) { try { _readMtimes.set(fp, Math.floor(fs.statSync(fp).mtimeMs)); } catch (_) {} }
-          return `Created ${fp}${quickSyntaxDiagnostic(fp)}`;
+          editGuard.recordFileRead(_readMtimes, fp, String(new_string));
+          return `Created ${fp}${quickSyntaxDiagnostic(fp) || editGuard.collectPostEditDiagnostics(fp, cwd)}`;
         }
         return `Error editing file: cannot read ${fp} (${e.code || e.message}). Use the Write tool to create it first.`;
       }
@@ -628,8 +626,8 @@ const executors = {
       const r = applyEdit(raw, String(old_string), new_string, !!replace_all);
       if (r.error) return editErrorText(r, fp, raw);
       fs.writeFileSync(fp, r.raw, 'utf8');
-      if (_readMtimes instanceof Map) { try { _readMtimes.set(fp, Math.floor(fs.statSync(fp).mtimeMs)); } catch (_) {} }
-      const diag = quickSyntaxDiagnostic(fp);
+      editGuard.recordFileRead(_readMtimes, fp, r.raw);
+      const diag = quickSyntaxDiagnostic(fp) || editGuard.collectPostEditDiagnostics(fp, cwd);
       if (replace_all) return `Replaced ${r.count} occurrence${r.count === 1 ? '' : 's'} in ${fp}${diag}`;
       return (r.fuzzy
         ? `Replaced 1 occurrence in ${fp} (matched after ignoring whitespace differences).`
@@ -650,15 +648,8 @@ const executors = {
       if (!Array.isArray(edits) || !edits.length) {
         return 'Error: MultiEdit requires a non-empty "edits" array of {old_string, new_string} pairs.';
       }
-      if (_readMtimes instanceof Map && _readMtimes.has(fp)) {
-        try {
-          const curMtime = Math.floor(fs.statSync(fp).mtimeMs);
-          const seenMtime = _readMtimes.get(fp);
-          if (curMtime > seenMtime + 5) {
-            return `Error: ${fp} was modified on disk since you last Read it (by another agent or command). Call Read on ${fp} first to inspect the latest contents before editing.`;
-          }
-        } catch (_) {}
-      }
+      const stale = editGuard.checkStaleRead(_readMtimes, fp);
+      if (!stale.ok) return stale.error;
       let raw;
       try { raw = fs.readFileSync(fp, 'utf8'); }
       catch (e) {
@@ -682,8 +673,8 @@ const executors = {
         raw = r.raw;
       }
       fs.writeFileSync(fp, raw, 'utf8');
-      if (_readMtimes instanceof Map) { try { _readMtimes.set(fp, Math.floor(fs.statSync(fp).mtimeMs)); } catch (_) {} }
-      return `Applied ${edits.length} edit${edits.length === 1 ? '' : 's'} to ${fp}${quickSyntaxDiagnostic(fp)}`;
+      editGuard.recordFileRead(_readMtimes, fp, raw);
+      return `Applied ${edits.length} edit${edits.length === 1 ? '' : 's'} to ${fp}${quickSyntaxDiagnostic(fp) || editGuard.collectPostEditDiagnostics(fp, cwd)}`;
     } catch (e) {
       return 'Error multi-editing file: ' + e.message;
     }
@@ -1291,6 +1282,63 @@ const executors = {
     }
     return `Unknown action "${action}". Use list, new, switch, or close.`;
   },
+
+  async apply_patch({ patch, input, cwd, _readMtimes, _takeCheckpoint }) {
+    const res = applyPatchMod.applyPatchToWorkspace({
+      patch: patch || input || '',
+      cwd: resolveDir(cwd),
+      resolvePath: (p, d) => resolvePath(p, d),
+      readMtimes: _readMtimes || null,
+      sandboxMod: sandbox,
+      editGuard,
+      takeCheckpoint: _takeCheckpoint || null,
+    });
+    if (!res.ok) return { content: 'Error: ' + res.error, isError: true };
+    return res.content;
+  },
+
+  async shadow_check({ cwd, timeout }) {
+    const res = await editGuard.runShadowCheck(resolveDir(cwd), { timeoutMs: timeout || 30000 });
+    if (!res.ok) return { content: res.summary, isError: true };
+    return res.summary;
+  },
+
+  async codebase_search({ query, limit, cwd }) {
+    const res = await codebaseIndex.searchCodebase(resolveDir(cwd), query, { limit: limit || 12 });
+    if (!res.ok) return { content: 'CodebaseSearch error: ' + (res.error || 'unknown'), isError: true };
+    if (!res.hits || !res.hits.length) return 'No matches in codebase index.';
+    return res.hits.map((h) => {
+      const syms = h.symbols && h.symbols.length ? ' [' + h.symbols.map((s) => `${s.kind}:${s.name}`).join(', ') + ']' : '';
+      return `${h.file}:${h.startLine}-${h.endLine} (score ${h.score})${syms}\n${h.snippet}`;
+    }).join('\n---\n');
+  },
+
+  async run_tool_script({ code, timeout, cwd, _ctx }) {
+    const baseCtx = _ctx || { cwd };
+    const callHostTool = async (method, mArgs) => {
+      const a = { ...(mArgs || {}), cwd: (mArgs && mArgs.cwd) || cwd };
+      const map = {
+        read: 'Read',
+        glob: 'Glob',
+        grep: 'Grep',
+        codebaseSearch: 'CodebaseSearch',
+        write: 'Write',
+        edit: 'Edit',
+      };
+      const toolName = map[method];
+      if (!toolName) throw new Error('Disallowed bridge method: ' + method);
+      const out = await runTool(toolName, a, baseCtx);
+      return out && out.content != null ? out.content : String(out || '');
+    };
+    const res = await codemode.runToolScript({
+      code,
+      cwd: resolveDir(cwd),
+      timeoutMs: timeout || 15000,
+      callHostTool,
+    });
+    if (!res.ok) return { content: res.error, isError: true };
+    return truncate(res.output);
+  },
 };
 
 // Run a snippet of code in a language via a local runtime and return output.
@@ -1328,6 +1376,10 @@ const toolDefinitions = [
   { name: 'Write', description: 'Create a new file or fully overwrite an existing one. Provide the COMPLETE final contents (no placeholders, no elisions). Relative paths resolve inside the project folder. This is the only correct way to create files — never use bash heredocs.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File path, relative to the project folder' }, file_path: { type: 'string', description: 'Alias for path' }, content: { type: 'string', description: 'The complete file contents' }, cwd: { type: 'string' } }, required: ['path', 'content'] } },
   { name: 'Edit', description: 'Make a targeted change to an existing file: replace old_string with new_string. old_string must match exactly ONE place in the file (include surrounding lines to make it unique) unless replace_all is true. Read the file first and copy old_string exactly, including indentation (without the Read line-number prefix).', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path (Example-style)' }, old_string: { type: 'string', description: 'Exact text to replace (copy from Read output)' }, new_string: { type: 'string', description: 'Replacement text' }, replace_all: { type: 'boolean', description: 'Replace every occurrence' }, cwd: { type: 'string' } }, required: ['path', 'old_string', 'new_string'] } },
   { name: 'MultiEdit', description: 'Apply several {old_string,new_string} replacements to one file in a single call, in order (each sees the previous result), all-or-nothing. Each old_string must be unique unless that edit sets replace_all. Use instead of many separate Edits.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path' }, edits: { type: 'array', items: { type: 'object', properties: { old_string: { type: 'string' }, new_string: { type: 'string' }, replace_all: { type: 'boolean' } }, required: ['old_string', 'new_string'] } }, cwd: { type: 'string' } }, required: ['path', 'edits'] } },
+  { name: 'ApplyPatch', description: 'Atomically apply multi-file Add/Update/Delete changes in Codex V4A patch format (`*** Begin Patch` ... `*** End Patch`, with fuzzy line matching and post-edit diagnostics).', parameters: { type: 'object', properties: { patch: { type: 'string', description: 'Patch text starting with *** Begin Patch and ending with *** End Patch' }, input: { type: 'string', description: 'Alias for patch' }, cwd: { type: 'string' } }, required: ['patch'] } },
+  { name: 'ShadowCheck', description: 'Run fast background typecheck/lint/syntax verification on the workspace before finishing a coding turn.', parameters: { type: 'object', properties: { cwd: { type: 'string' }, timeout: { type: 'number' } } } },
+  { name: 'CodebaseSearch', description: 'Hybrid symbol + BM25 + semantic trigram search over the incremental SQLite/Merkle workspace index (respects .gitignore and .akronignore).', parameters: { type: 'object', properties: { query: { type: 'string', description: 'Symbol name, concept, or natural-language code query' }, limit: { type: 'number', description: 'Max ranked hits (default 12)' }, cwd: { type: 'string' } }, required: ['query'] } },
+  { name: 'RunToolScript', description: 'Execute an isolated async JavaScript batching script (`tools.read`, `tools.glob`, `tools.grep`, `tools.codebaseSearch`, `tools.write`, `tools.edit`) to combine multi-file reads/searches/edits in 1 turn.', parameters: { type: 'object', properties: { code: { type: 'string', description: 'Async JS body using `await tools.*` and `return`' }, timeout: { type: 'number', description: 'Timeout in ms (default 15000, max 60000)' }, cwd: { type: 'string' } }, required: ['code'] } },
   { name: 'Glob', description: 'Find files matching a glob pattern (supports **, *, ?, [abc], {a,b}), e.g. "**/*.{ts,tsx}". Results are sorted by modification time (newest first); node_modules and .git are skipped. Use `path` to set the search root.', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string', description: 'Directory to search from (default: cwd)' }, cwd: { type: 'string' } }, required: ['pattern'] } },
   { name: 'Grep', description: 'Search file contents for a regex pattern recursively. output_mode: content (default) | files_with_matches | count. Filter with glob/type, add context lines, and page results with offset/head_limit.', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string', description: 'File or directory to search' }, glob: { type: 'string', description: 'Only files matching this glob, e.g. "*.js"' }, type: { type: 'string', description: 'File type filter, e.g. js, py, rust' }, output_mode: { type: 'string', enum: ['content', 'files_with_matches', 'count'] }, context: { type: 'number', description: 'Lines of context around each match' }, head_limit: { type: 'number', description: 'Max results (default 250)' }, offset: { type: 'number', description: 'Skip first N results' }, multiline: { type: 'boolean', description: 'Allow patterns to span lines' }, '-i': { type: 'boolean', description: 'Case-insensitive' }, cwd: { type: 'string' } }, required: ['pattern'] } },
   { name: 'WebFetch', description: 'Fetch the contents of a URL, convert the page to readable markdown, and then answer the given prompt about it. Prefer this over shelling out to curl when you need to understand a web page.', parameters: { type: 'object', properties: { url: { type: 'string', description: 'Absolute http(s) URL to fetch' }, prompt: { type: 'string', description: 'What to extract/answer from the page' } }, required: ['url', 'prompt'] } },
@@ -1533,6 +1585,10 @@ const executorsByTool = {
   list_slash_commands: 'list_slash_commands',
   JavaScript: 'javascript',
   REPL: 'repl',
+  ApplyPatch: 'apply_patch',
+  ShadowCheck: 'shadow_check',
+  CodebaseSearch: 'codebase_search',
+  RunToolScript: 'run_tool_script',
   ToolSearch: 'tool_search',
   Jira: 'jira',
   Linear: 'linear',
@@ -1720,7 +1776,7 @@ async function runToolInner(name, args, ctx) {
 
   // B8 Claude Code mode: require user approval before mutating tools.
   const MUTATING = new Set([
-    'Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'JavaScript', 'REPL',
+    'Bash', 'Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'RunToolScript', 'NotebookEdit', 'JavaScript', 'REPL',
     'KillShell', 'Jira', 'Linear', 'POST', 'CreateCustomTool', 'DeleteCustomTool',
     'mcp__workspace__write_file', 'mcp__workspace__edit_file',
     'mcp__terminal__run_in_terminal', 'mcp__terminal__open_terminal_tab',
@@ -2158,6 +2214,11 @@ async function runToolInner(name, args, ctx) {
       if (ctx.allowRichRead) finalArgs._allowRichRead = true;
     }
     if (!finalArgs.cwd && ctx.cwd) finalArgs.cwd = ctx.cwd;
+    if (execName === 'apply_patch') {
+      if (ctx.readMtimes instanceof Map) finalArgs._readMtimes = ctx.readMtimes;
+      if (typeof ctx.takeCheckpoint === 'function') finalArgs._takeCheckpoint = ctx.takeCheckpoint;
+    }
+    if (execName === 'run_tool_script') finalArgs._ctx = ctx;
     if (!(ctx && ctx.forceLocal) && ['bash', 'read_file', 'write_file', 'edit_file', 'multi_edit', 'glob', 'grep'].includes(execName)) {
       try {
         const environments = require('./environments');
