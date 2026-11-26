@@ -18,6 +18,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
       - run: npm run brand:check
       - run: |
           failed=0
@@ -64,6 +66,8 @@ jobs:
           node scripts/vendor-runtimes.js --download --stale || true
       - name: Package ${{ matrix.platform }} installer
         run: ${{ matrix.cmd }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
       - name: Verify Electron Fuses & clean cold boot (macOS)
         if: matrix.platform == 'mac'
         shell: bash
