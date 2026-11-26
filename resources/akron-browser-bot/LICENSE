@@ -1,0 +1,40 @@
+Akron Browser Bot
+Copyright (c) 2026 akronlogic.com. All rights reserved.
+
+1. What you may do
+
+   You may install and use unmodified copies of this software, for yourself or
+   inside your own organisation, with your own AI provider API keys.
+
+2. What you may not do without written permission from akronlogic.com
+
+   a. Change, remove or hide the name "Akron Browser Bot", the short name
+      "Akron", the maker name "akronlogic.com", the logo, the icons, or any
+      copyright or trademark notice, or switch off or work around the check
+      that protects them (shared/brand.js, shared/brand-seal.js,
+      background/brand-guard.js).
+   b. Give, sell, publish or host a modified copy of this software, or a
+      product built from it, under any name.
+   c. Use the name, the logo or a confusingly similar name or logo for another
+      product or service.
+   d. Present this software, or work derived from it, as your own product.
+
+3. Third-party components
+
+   Files in this repository that come from other projects (for example
+   offscreen/transformers.min.js and the files in offscreen/ort/) remain under
+   the licences of those projects. This licence does not change them.
+
+4. No warranty
+
+   The software is provided "as is", without warranty of any kind, express or
+   implied. To the extent the law allows, akronlogic.com is not liable for any
+   claim, damage or other liability arising from the software or its use. You
+   are responsible for what the software does in your browser and for the cost
+   of the API keys you use with it.
+
+5. Ending
+
+   These permissions end automatically if you break any of the terms above.
+
+Requests for other permissions: akronlogic.com

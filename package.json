@@ -17,6 +17,8 @@
     "pack": "npm run build && electron-builder --dir",
     "predist": "node scripts/vendor-runtimes.js --download --stale || npm run vendor:runtimes",
     "dist": "npm run build && electron-builder --mac dmg zip",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip",
+    "dist:win": "npm run build && electron-builder --win nsis portable",
     "freellm": "node scripts/freellm-server.js",
     "icons": "electron build/render_icon.cjs"
   },
@@ -51,6 +53,10 @@
       {
         "from": "vendor/runtimes",
         "to": "runtimes"
+      },
+      {
+        "from": "resources/akron-browser-bot",
+        "to": "akron-browser-bot"
       }
     ],
     "directories": {
@@ -82,6 +88,37 @@
           "path": "/Applications"
         }
       ]
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "AkronBot-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development"
     }
   },
   "allowScripts": {

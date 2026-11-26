@@ -86,10 +86,15 @@ function makeExecutor(spec) {
     const payload = JSON.stringify(args || {});
     let cmd, argv;
     if (spec.runtime === 'bash') {
-      cmd = '/bin/zsh';
-      argv = ['-c', spec.script];
+      if (process.platform === 'win32') {
+        cmd = 'powershell.exe';
+        argv = ['-NoLogo', '-NoProfile', '-Command', spec.script];
+      } else {
+        cmd = '/bin/zsh';
+        argv = ['-c', spec.script];
+      }
     } else if (spec.runtime === 'python3') {
-      cmd = 'python3';
+      cmd = process.platform === 'win32' ? 'python' : 'python3';
       argv = ['-c', spec.script];
     } else {
       cmd = process.execPath;

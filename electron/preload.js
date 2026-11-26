@@ -124,6 +124,10 @@ contextBridge.exposeInMainWorld('autobot', {
   checkPermission: (toolName, toolArgs, cwd, mode) => ipcRenderer.invoke('autobot:checkPermission', toolName, toolArgs, cwd, mode),
   listCheckpoints: (convId) => ipcRenderer.invoke('autobot:listCheckpoints', convId),
   rewind: (convId, checkpointId) => ipcRenderer.invoke('autobot:rewind', convId, checkpointId),
+  turnDiffs: (convId, checkpointId, cwd) => ipcRenderer.invoke('autobot:turnDiffs', convId, checkpointId, cwd),
+  extBridgeStatus: () => ipcRenderer.invoke('autobot:extBridgeStatus'),
+  extBridgeOpenFolder: () => ipcRenderer.invoke('autobot:extBridgeOpenFolder'),
+  transcribeAudio: (payload) => ipcRenderer.invoke('autobot:transcribeAudio', payload),
   getOrchestrator: () => ipcRenderer.invoke('autobot:getOrchestrator'),
   setOrchestrator: (patch) => ipcRenderer.invoke('autobot:setOrchestrator', patch),
   // FreeLLMAPI role-pool preset ({ enabled, gateway, roles }) for Settings → Role pools.

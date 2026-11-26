@@ -11,6 +11,9 @@ import { normBase, LOCAL_BASE, KEY_STATUS_TTL, keySig, statusOf, presetStatus } 
 import { hydrateProvider, endpointKey } from './providerhydrate.mjs';
 import { ctxToastState } from './ctx-toast.mjs';
 import ConnectorLogo from './ConnectorLogo.jsx';
+import { useVoiceDictation } from './voice';
+import { LiveChecklistCard, FilesChangedBar, summarizeChangedFiles } from './components/LiveProgress.jsx';
+import { CodeReviewPane } from './components/CodeReviewPane.jsx';
 
 // ---------- Anthropicons (Example's icon font, PUA U+E000+) ----------
 const iconChar = (name) => {
@@ -650,7 +653,8 @@ export default function App() {
   const [dictating, setDictating] = useState(false);
   const [projects, setProjects] = useState(() => loadJSON('autobot:projects', [])); // { id, name, instructions }
   const [activeProject, setActiveProject] = useState(() => loadJSON('autobot:activeProject', null));
-  const [sessionPane, setSessionPane] = useState({ type: null, width: 460 }); // type: null | 'browser' | 'files' | 'terminal' | 'diff'
+  const [sessionPane, setSessionPane] = useState({ type: null, width: 460 }); // type: null | 'browser' | 'env' | 'runlog' | 'review' | 'subagents' | 'files' | 'terminal'
+  const [reviewTarget, setReviewTarget] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null); // file the browser pane should show (generated site)
   const [voiceMode, setVoiceMode] = useState(false); // full-duplex conversational voice session
   const [permissions, setPermissions] = useState(() => loadJSON('autobot:permissions', 'auto')); // 'auto' | 'ask' (B8 Claude Code mode)
@@ -674,6 +678,12 @@ export default function App() {
   const toggleSessionPane = useCallback((type) => {
     setSessionPane((p) => (p.type === type ? { ...p, type: null } : { ...p, type }));
     // Opening a session pane always returns the main area to the chat context
+    setPanel('chats');
+  }, []);
+
+  const openReview = useCallback((target = null) => {
+    setReviewTarget(target);
+    setSessionPane((p) => ({ ...p, type: 'review', width: Math.max(Number(p.width) || 540, 520) }));
     setPanel('chats');
   }, []);
 
@@ -874,6 +884,11 @@ export default function App() {
       // permission, consent, plan) or surface UI (artifact, preview, nested
       // subagent/swarm rows), which still flow to the shared handlers below.
       const subTag = evt.subagent != null ? String(evt.subagent) : (evt.agentId != null ? String(evt.agentId) : '');
+      if (subTag && evt.type === 'checkpoint') {
+        const cp = { id: evt.id || 'turn', path: evt.path || '', existed: !!evt.existed, at: evt.at || Date.now() };
+        setLiveSync((l) => (l ? { ...l, checkpointId: cp.id, checkpoints: [...(l.checkpoints || []), cp] } : l));
+        return;
+      }
       if (subTag && !/^(question|plan|permission|computerUseConsent|permissionMode|planMode|artifact|preview|subagent|swarm|cwd|deeplink|compliance)$/.test(evt.type)) {
         const agentKey = evt.agentId != null ? String(evt.agentId) : '';
         const normHandle = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
@@ -1042,6 +1057,14 @@ export default function App() {
         case 'orchestrator':
           setLiveSync((l) => (l ? { ...l, failover: { from: evt.from, to: evt.to, reason: evt.reason } } : l));
           break;
+        case 'checkpoint': {
+          const cp = { id: evt.id || 'turn', path: evt.path || '', existed: !!evt.existed, at: evt.at || Date.now() };
+          setLiveSync((l) => {
+            const base = l || { content: '', tools: [], segments: [], checkpoints: [] };
+            return { ...base, checkpointId: cp.id, checkpoints: [...(base.checkpoints || []), cp] };
+          });
+          break;
+        }
         case 'subagent': {
           const key = String(evt.id || evt.name || 'agent');
           const status = evt.status === 'started' || evt.status === 'running' ? 'running'
@@ -1275,10 +1298,20 @@ export default function App() {
     // Calling setConvs inside a setLive updater double-appended under StrictMode.
     const l = liveRef.current;
     setLiveSync(null);
-    if (l && (l.content || (l.tools && l.tools.length))) {
+    if (l && (l.content || (l.tools && l.tools.length) || (l.checkpoints && l.checkpoints.length))) {
       // Bind the reply to the conversation the run was started from — the user
       // may have switched chats while it streamed.
-      const msg = { id: uid(), role: 'assistant', content: l.content, tools: l.tools || [], segments: l.segments, ts: Date.now(), durationMs: startedAt ? Date.now() - startedAt : 0 };
+      const msg = {
+        id: uid(),
+        role: 'assistant',
+        content: l.content || '',
+        tools: l.tools || [],
+        segments: l.segments,
+        checkpoints: l.checkpoints || [],
+        checkpointId: l.checkpointId || null,
+        ts: Date.now(),
+        durationMs: startedAt ? Date.now() - startedAt : 0,
+      };
       setConvs((cs) => cs.map((c) => (c.id === target ? { ...c, messages: [...c.messages, msg] } : c)));
     }
   }, [setLiveSync]);
@@ -1404,6 +1437,17 @@ export default function App() {
   }, [streaming, queued, send]);
 
   const unqueue = useCallback((id) => setQueued((q) => q.filter((x) => x.id !== id)), []);
+  const editQueued = useCallback((id) => {
+    const item = queued.find((x) => x.id === id);
+    if (!item) return;
+    setQueued((q) => q.filter((x) => x.id !== id));
+    if (inputRef.current) {
+      inputRef.current.value = item.text || '';
+      inputRef.current.dispatchEvent(new Event('input', { bubbles: true }));
+      inputRef.current.focus();
+    }
+    if (item.atts && item.atts.length) setAttachments((a) => [...a, ...item.atts]);
+  }, [queued]);
   // Stop the live run so the queued message goes out immediately.
   const sendQueuedNow = useCallback(() => {
     if (runIdRef.current) window.autobot.cancel(runIdRef.current);
@@ -1524,6 +1568,23 @@ export default function App() {
     }
     setConvs((cs) => cs.filter((c) => c.id !== id));
     if (activeId === id) setActiveId(null);
+  };
+  const renameConv = (id, title) => {
+    const clean = String(title || '').trim();
+    if (!clean) return;
+    setConvs((cs) => cs.map((c) => (c.id === id ? { ...c, title: clean } : c)));
+  };
+  const pinConv = (id) => {
+    setConvs((cs) => cs.map((c) => (c.id === id ? { ...c, pinned: !c.pinned } : c)));
+  };
+  const splitConv = (id) => {
+    const src = convsRef.current.find((c) => c.id === id);
+    if (!src) return;
+    const copyId = uid();
+    const copy = { ...src, id: copyId, title: (src.title || 'Untitled') + ' (split)', pinned: false, ts: Date.now() };
+    setConvs((cs) => [copy, ...cs]);
+    setActiveId(copyId);
+    setPanel('chats');
   };
 
   const copyMessage = (m) => { navigator.clipboard?.writeText(m.content || '').catch(() => {}); };
@@ -2490,8 +2551,9 @@ export default function App() {
           <div className="sidebar-scroll">
             <div className="section-label">{T('sidebar.recents')}</div>
             <div className="convlist">
-              {convs.map((c) => (
+              {[...convs].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)).map((c) => (
                 <div key={c.id} className={'conv ' + (c.id === activeId && panel === 'chats' ? 'on' : '')} onClick={() => selectConv(c.id)}>
+                  {c.pinned && <span className="conv-pin" title="Pinned"><Icon name="Pin" size={12} /></span>}
                   <Icon name="Chat" size={15} className="conv-ico" />
                   <div className="conv-title">{c.title || 'Untitled'}</div>
                   <button className="conv-del" onClick={(e) => { e.stopPropagation(); deleteConv(c.id); }}><Icon name="Trash" size={13} /></button>
@@ -2533,7 +2595,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={teamConvRef.current === activeId ? subAgents : []} swarmInfo={teamConvRef.current === activeId ? swarmInfo : null} swarmBoard={teamConvRef.current === activeId ? swarmBoard : []} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => toggleSessionPane('runlog')} />}
+              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={teamConvRef.current === activeId ? subAgents : []} swarmInfo={teamConvRef.current === activeId ? swarmInfo : null} swarmBoard={teamConvRef.current === activeId ? swarmBoard : []} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => toggleSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} onOpenReview={openReview} onTogglePane={toggleSessionPane} onOpenPlugins={() => setPanel('plugins')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onSplitConv={() => active && splitConv(active.id)} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
@@ -2568,6 +2630,35 @@ export default function App() {
                 <RunLogPanel convId={activeId} />
               </SessionPane>
             )}
+            {sessionPane.type === 'review' && (
+              <SessionPane icon="GitDiff" title="Review" width={Math.max(sessionPane.width || 540, 500)} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
+                <CodeReviewPane
+                  convId={activeId}
+                  cwd={cwd}
+                  target={reviewTarget}
+                  allTools={messages.flatMap((m) => m.tools || []).concat(liveForActive?.tools || [])}
+                  onSendComment={(txt) => send(txt)}
+                  onRewindDone={(r) => setError(`✅ Rewound: restored ${(r && r.restored) || 0}, removed ${(r && r.removed) || 0}.`)}
+                  voiceOpts={{ engine: settings.voiceEngine || 'auto', lang: settings.voiceLang || 'en-US' }}
+                  Icon={Icon}
+                />
+              </SessionPane>
+            )}
+            {sessionPane.type === 'subagents' && (
+              <SessionPane icon="AgentsSimple" title="Subagents" width={sessionPane.width} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
+                <MissionControl subAgents={teamConvRef.current === activeId ? subAgents : []} swarmInfo={teamConvRef.current === activeId ? swarmInfo : null} swarmBoard={teamConvRef.current === activeId ? swarmBoard : []} />
+              </SessionPane>
+            )}
+            {sessionPane.type === 'files' && (
+              <SessionPane icon="Files" title="Workspace Files" width={sessionPane.width} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
+                <CodeView cwd={cwd} setCwd={setCwd} permissions={permissions} setPermissions={setPermissions} T={T} />
+              </SessionPane>
+            )}
+            {sessionPane.type === 'terminal' && (
+              <SessionPane icon="CommandLine" title="Terminal" width={sessionPane.width} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
+                <TerminalView terminal={terminal} setTerminal={setTerminal} startTerminal={startTerminal} runInTerminal={runInTerminal} writeTerminal={writeTerminal} killTerminal={killTerminal} />
+              </SessionPane>
+            )}
           </div>
 
           {error && <div className="errorbar">{error}</div>}
@@ -2575,7 +2666,8 @@ export default function App() {
 
           <InputBar
             streaming={streaming} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
-            queued={queued.filter((q) => q.convId === activeId)} unqueue={unqueue} sendQueuedNow={sendQueuedNow}
+            queued={queued.filter((q) => q.convId === activeId)} unqueue={unqueue} editQueued={editQueued} sendQueuedNow={sendQueuedNow}
+            settings={settings} onVoiceError={setError}
             provider={provider} setProvider={setProvider} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); setShowSettings(true); }}
             providerKeys={providerKeys} setProviderKeys={setProviderKeys}
             attachments={attachments} setAttachments={setAttachments}
@@ -3342,8 +3434,8 @@ function RunLogPanel({ convId }) {
     setRewindMsg('');
     try {
       const r = await window.autobot.rewind(convId, id);
-      const rest = (r && r.restored && r.restored.length) || 0;
-      const rem = (r && r.removed && r.removed.length) || 0;
+      const rest = Array.isArray(r && r.restored) ? r.restored.length : (Number(r && r.restored) || 0);
+      const rem = Array.isArray(r && r.removed) ? r.removed.length : (Number(r && r.removed) || 0);
       setRewindMsg(`Rewound: restored ${rest} file${rest === 1 ? '' : 's'}, removed ${rem}.`);
     } catch (e) { setRewindMsg('Rewind failed: ' + String((e && e.message) || e)); }
   };
@@ -3443,7 +3535,27 @@ function RunLogPanel({ convId }) {
 }
 
 // ---------- Chat view ----------
-function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen }) {
+function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, onOpenReview, onTogglePane, onOpenPlugins, onRenameConv, onPinConv, onSplitConv, onDeleteConv, setError }) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [overviewOpen, setOverviewOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameVal, setRenameVal] = useState('');
+  const moreRef = useRef(null);
+  const overviewRef = useRef(null);
+  useDismiss(moreOpen, [moreRef], () => setMoreOpen(false));
+  useDismiss(overviewOpen, [overviewRef], () => setOverviewOpen(false));
+
+  const allTools = useMemo(
+    () => (messages || []).flatMap((m) => m.tools || []).concat((live && live.tools) || []),
+    [messages, live]
+  );
+  const allCheckpoints = useMemo(
+    () => (messages || []).flatMap((m) => m.checkpoints || []).concat((live && live.checkpoints) || []),
+    [messages, live]
+  );
+  const changedSummary = useMemo(() => summarizeChangedFiles(allTools, allCheckpoints), [allTools, allCheckpoints]);
+  const overviewBadge = (subAgents && subAgents.length) || changedSummary.files.length || 0;
+
   return (
     <div className="chat" onClick={(e) => { copyBlock(e); applyBlock(e); }}>
       {planMode && planMode.active && (
@@ -3453,7 +3565,24 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
       )}
       {conv && (
         <div className="conv-toolbar">
-          <div className="conv-toolbar-title">{conv.title || 'Untitled'}</div>
+          {renaming ? (
+            <input
+              className="conv-rename-in"
+              value={renameVal}
+              autoFocus
+              onChange={(e) => setRenameVal(e.target.value)}
+              onBlur={() => { if (onRenameConv && renameVal.trim()) onRenameConv(renameVal.trim()); setRenaming(false); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { if (onRenameConv && renameVal.trim()) onRenameConv(renameVal.trim()); setRenaming(false); }
+                if (e.key === 'Escape') setRenaming(false);
+              }}
+            />
+          ) : (
+            <div className="conv-toolbar-title">
+              {conv.pinned && <Icon name="Pin" size={13} style={{ marginRight: 5, color: 'var(--accent-text)' }} />}
+              {conv.title || 'Untitled'}
+            </div>
+          )}
           <div className="conv-toolbar-right">
             <ExportMenu conv={conv} exportConv={exportConv} T={T} />
             <button
@@ -3472,6 +3601,77 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
             >
               <Icon name="DotsHorizontal" size={15} />
             </button>
+
+            <div className="conv-pop-wrap" ref={overviewRef}>
+              <button
+                type="button"
+                className={'icon-btn conv-env-btn conv-overview-btn' + ((overviewOpen || reviewOpen) ? ' active' : '')}
+                title="Overview — Review, Files, Terminal, Plugins, Subagents"
+                onClick={(e) => { e.stopPropagation(); setMoreOpen(false); setOverviewOpen((v) => !v); }}
+              >
+                <Icon name="SidebarRight" size={15} />
+                {overviewBadge > 0 && <span className="conv-overview-badge">{overviewBadge}</span>}
+              </button>
+              {overviewOpen && (
+                <div className="conv-popover" onClick={(e) => e.stopPropagation()}>
+                  <div className="conv-pop-head">Overview</div>
+                  <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onOpenReview && onOpenReview({ tools: allTools, checkpoints: allCheckpoints, checkpointId: (live && live.checkpointId) || 'latest' }); }}>
+                    <Icon name="GitDiff" size={14} /> <span>Review</span>
+                    {changedSummary.files.length > 0 && <span className="conv-pop-count">{changedSummary.files.length}</span>}
+                  </button>
+                  <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onTogglePane && onTogglePane('files'); }}>
+                    <Icon name="Files" size={14} /> <span>Files</span>
+                  </button>
+                  <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onTogglePane && onTogglePane('terminal'); }}>
+                    <Icon name="CommandLine" size={14} /> <span>Terminal</span>
+                  </button>
+                  <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onOpenPlugins && onOpenPlugins(); }}>
+                    <Icon name="Plugin" size={14} /> <span>Plugins</span>
+                  </button>
+                  <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onTogglePane && onTogglePane('subagents'); }}>
+                    <Icon name="AgentsSimple" size={14} /> <span>Subagents</span>
+                    {subAgents && subAgents.length > 0 && <span className="conv-pop-count">{subAgents.length}</span>}
+                  </button>
+                  <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onToggleRunLog && onToggleRunLog(); }}>
+                    <Icon name="Activity" size={14} /> <span>Background Tasks</span>
+                    {allCheckpoints.length > 0 && <span className="conv-pop-count">{allCheckpoints.length}</span>}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="conv-pop-wrap" ref={moreRef}>
+              <button
+                type="button"
+                className={'icon-btn conv-env-btn' + (moreOpen ? ' active' : '')}
+                title="Conversation actions — Rename, Pin, Split, Copy"
+                onClick={(e) => { e.stopPropagation(); setOverviewOpen(false); setMoreOpen((v) => !v); }}
+              >
+                <Icon name="DotsVertical" size={15} />
+              </button>
+              {moreOpen && (
+                <div className="conv-popover" onClick={(e) => e.stopPropagation()}>
+                  <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); setRenameVal(conv.title || ''); setRenaming(true); }}>
+                    <Icon name="Edit" size={14} /> <span>Rename</span>
+                  </button>
+                  <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onPinConv && onPinConv(); }}>
+                    <Icon name="Pin" size={14} /> <span>{conv.pinned ? 'Unpin' : 'Pin'}</span>
+                  </button>
+                  <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onSplitConv && onSplitConv(); }}>
+                    <Icon name="ArrowSplitRight" size={14} /> <span>Split conversation</span>
+                  </button>
+                  <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); navigator.clipboard?.writeText(convToMarkdown(conv)).catch(() => {}); setError && setError('✅ Conversation Markdown copied.'); }}>
+                    <Icon name="Copy" size={14} /> <span>Copy Markdown</span>
+                  </button>
+                  <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onOpenPlugins && onOpenPlugins(); }}>
+                    <Icon name="Plugin" size={14} /> <span>Plugins</span>
+                  </button>
+                  <button type="button" className="conv-pop-item danger" onClick={() => { setMoreOpen(false); onDeleteConv && onDeleteConv(); }}>
+                    <Icon name="Trash" size={14} /> <span>Delete</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -3482,7 +3682,7 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
           <p className="muted">{T('welcome.prompt')}</p>
         </div>
       )}
-      {messages.map((m, i) => <Message key={m.id} m={m} convId={convId} idx={i} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} />)}
+      {messages.map((m, i) => <Message key={m.id} m={m} convId={convId} idx={i} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} onOpenReview={onOpenReview} />)}
       {(subAgents.length > 0 || swarmInfo) && (
         <MissionControl subAgents={subAgents} swarmInfo={swarmInfo} swarmBoard={swarmBoard} />
       )}
@@ -3490,6 +3690,7 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
         <div className="avatar avatar-assistant"><Logo size={20} /></div>
         <div className="body">
           <RunActivity live={live} thinking={thinking} startedAt={runStartedAt} />
+          <LiveChecklistCard tools={live.tools} subAgents={subAgents} swarmInfo={swarmInfo} streaming Icon={Icon} />
           {live.segments && live.segments.length > 0 ? (
             <SegmentView segments={live.segments} tools={live.tools} streaming />
           ) : (
@@ -3502,6 +3703,7 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
               {live.content ? <div className="md streaming" dangerouslySetInnerHTML={{ __html: renderMarkdown(live.content) + '<span class="cursor">▍</span>' }} /> : null}
             </>
           )}
+          <FilesChangedBar tools={live.tools} checkpoints={live.checkpoints} checkpointId={live.checkpointId} convId={convId} onOpenReview={onOpenReview} streaming Icon={Icon} />
           {live.content === '' && live.tools.length === 0 && !thinking && <span className="cursor">▍</span>}
         </div>
       </div>}
@@ -3554,7 +3756,7 @@ function SegmentView({ segments, tools, streaming }) {
   });
 }
 
-function Message({ m, convId, idx, copyMessage, editMessage, deleteMessage, retryMessage }) {
+function Message({ m, convId, idx, copyMessage, editMessage, deleteMessage, retryMessage, onOpenReview }) {
   const [copied, setCopied] = useState(false);
   const doCopy = () => { copyMessage(m); setCopied(true); setTimeout(() => setCopied(false), 1200); };
   const images = (m.attachments || []).filter((a) => a.isImage && a.dataUrl);
@@ -3596,6 +3798,12 @@ function Message({ m, convId, idx, copyMessage, editMessage, deleteMessage, retr
             <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
             <LinkPreviews text={m.content} />
           </>
+        )}
+        {m.role === 'assistant' && m.tools && m.tools.some((t) => t && t.name === 'TodoWrite') && (
+          <LiveChecklistCard tools={m.tools} durationMs={m.durationMs} streaming={false} Icon={Icon} />
+        )}
+        {m.role === 'assistant' && (
+          <FilesChangedBar tools={m.tools} checkpoints={m.checkpoints} checkpointId={m.checkpointId} convId={convId} onOpenReview={onOpenReview} streaming={false} Icon={Icon} />
         )}
         {m.role === 'assistant' && m.durationMs > 800 && (
           <div className="worked-for"><Icon name="Clock" size={12} /> Worked for {fmtElapsed(m.durationMs)}</div>
@@ -5802,11 +6010,27 @@ const PERM_MODES = [
 ];
 const PERM_SHORT = { auto: 'perm.auto', ask: 'perm.manual', acceptEdits: 'perm.acceptEdits', plan: 'perm.plan', bypass: 'perm.bypass' };
 
-function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, sendQueuedNow, lastUsage, T }) {
+function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, editQueued, sendQueuedNow, lastUsage, settings, onVoiceError, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [permOpen, setPermOpen] = useState(false);
+  const voice = useVoiceDictation({
+    engine: (settings && settings.voiceEngine) || 'auto',
+    lang: (settings && settings.voiceLang) || 'en-US',
+    onTranscript: (transcript) => {
+      if (inputRef.current) {
+        const el = inputRef.current;
+        el.value = el.value ? el.value + ' ' + transcript : transcript;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        setHasText(!!el.value.trim());
+      }
+    },
+    onError: (msg) => { if (onVoiceError) onVoiceError(msg); },
+  });
+  useEffect(() => {
+    setDictating(voice.state !== 'idle');
+  }, [voice.state, setDictating]);
   // Tracks whether the composer holds text so that, while a reply is streaming,
   // the send arrow can appear alongside the stop button (Example parity: type a
   // follow-up mid-stream and the arrow queues it instead of being lost).
@@ -6313,7 +6537,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
       {queued && queued.length > 0 && (
         <div className="queue-bar">
           <div className="queue-head">
-            <span className="queue-label"><Icon name="Clock" size={12} /> Queued · {queued.length}</span>
+            <span className="queue-label"><Icon name="Clock" size={12} /> Queued Messages · {queued.length} <span className="muted" style={{ fontWeight: 400 }}>· Sends after agent finishes</span></span>
             <button className="queue-sendnow" onClick={sendQueuedNow}>Send now</button>
           </div>
           <div className="queue-list">
@@ -6323,7 +6547,10 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                 <div key={q.id} className="queue-chip" title={label}>
                   <span className="queue-text">{label.slice(0, 120)}</span>
                   {q.atts && q.atts.length ? <span className="queue-count">{q.atts.length} file{q.atts.length > 1 ? 's' : ''}</span> : null}
-                  <button className="queue-x" onClick={() => unqueue(q.id)} title="Remove queued message"><Icon name="X" size={11} /></button>
+                  <span className="queue-chip-actions">
+                    {editQueued && <button className="queue-x" onClick={() => editQueued(q.id)} title="Edit in composer"><Icon name="Edit" size={11} /></button>}
+                    <button className="queue-x" onClick={() => unqueue(q.id)} title="Remove queued message"><Icon name="Trash" size={11} /></button>
+                  </span>
                 </div>
               );
             })}
@@ -6426,10 +6653,12 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                     <span className="tools-row-label">Browser</span>
                     <span className={'tools-state' + (sessionPane && sessionPane.type === 'browser' ? ' on' : '')}>{sessionPane && sessionPane.type === 'browser' ? 'Open' : 'Closed'}</span>
                   </button>
-                  <button type="button" role="menuitemcheckbox" aria-checked={!!dictating} className="tools-row" onClick={() => toggleDictation(inputRef, setDictating)}>
-                    <Icon name="Microphone" size={15} />
-                    <span className="tools-row-label">Dictate</span>
-                    <span className={'tools-state' + (dictating ? ' on' : '')}>{dictating ? 'Listening' : 'Off'}</span>
+                  <button type="button" role="menuitemcheckbox" aria-checked={voice.state !== 'idle'} className="tools-row" onClick={() => voice.toggle()}>
+                    <Icon name={voice.state === 'transcribing' ? 'Spinner' : 'Microphone'} size={15} className={voice.state === 'transcribing' ? 'spin' : ''} />
+                    <span className="tools-row-label">Dictate (Built-in Whisper)</span>
+                    <span className={'tools-state' + (voice.state !== 'idle' ? ' on' : '')}>
+                      {voice.state === 'recording' ? `Listening ${voice.seconds}s` : (voice.state === 'transcribing' ? 'Transcribing…' : 'Off')}
+                    </span>
                   </button>
                   <button type="button" role="menuitemcheckbox" aria-checked={!!voiceMode} className="tools-row" onClick={() => (voiceMode ? stopVoiceMode() : startVoiceMode())}>
                     <Icon name="Voice" size={15} />
@@ -6717,6 +6946,16 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                 </div>
               )}
             </div>
+
+            <button
+              type="button"
+              className={'mic-btn' + (voice.state !== 'idle' ? ' ' + voice.state : '')}
+              onClick={voice.toggle}
+              title={voice.statusNote || (voice.state === 'recording' ? 'Stop recording and transcribe (Whisper)' : (voice.state === 'transcribing' ? 'Transcribing speech…' : 'Voice type with built-in Whisper model'))}
+            >
+              <Icon name={voice.state === 'transcribing' ? 'Spinner' : 'Microphone'} size={15} className={voice.state === 'transcribing' ? 'spin' : ''} />
+              {voice.state === 'recording' && <span className="mic-time">{Math.floor(voice.seconds / 60)}:{String(voice.seconds % 60).padStart(2, '0')}</span>}
+            </button>
 
             {streaming && <button className="send stop" onClick={stop} title="Stop"><Icon name="Stop" size={16} /></button>}
             {(!streaming || hasText) && (
@@ -7925,7 +8164,20 @@ function RolePoolsEditor({ orchestrator, saveOrch }) {
   );
 }
 
+const SETTINGS_SECTIONS = [
+  { id: 'providers', label: 'Models & Providers', icon: 'Sparkles', sub: 'Primary endpoints, presets, local Ollama, and subscription sign-in.', keys: 'model provider ollama api key preset subscription oauth temperature token' },
+  { id: 'orchestrator', label: 'Orchestrator & Pools', icon: 'Orbit', sub: 'Multi-model failover tiers and FreeLLMAPI role pools with live pool health.', keys: 'orchestrator pool planner coder vision fast longctx failover swarm' },
+  { id: 'harness', label: 'Harness & Custom Tools', icon: 'AgentsSimple', sub: 'Creator Mode runtime tools, developer features, and agent capabilities.', keys: 'creator custom tool harness developer extension buddy remote control' },
+  { id: 'browser', label: 'Browser Extension', icon: 'Globe', sub: 'Zero-key Chrome extension bridge for live browser control & shared desktop models.', keys: 'chrome extension akron browser bot bridge websocket tabs 8766' },
+  { id: 'voice', label: 'Voice & Dictation', icon: 'Microphone', sub: 'Built-in offline ONNX Whisper speech model & fast gateway transcription.', keys: 'voice dictation whisper microphone speech audio language' },
+  { id: 'security', label: 'Permissions & Security', icon: 'LockShield', sub: 'Tool consent rules, Computer Use, Chrome CDP, bridges, and compliance.', keys: 'permission security computer use chrome cdp bridge compliance trusted folders' },
+  { id: 'system', label: 'Appearance & System', icon: 'Palette', sub: 'Theme, language locale, memory injection, launch behavior, and runtimes.', keys: 'theme dark light locale language memory login quick entry runtime' },
+];
+
 function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator, features, setFeatures, testProvider, onClose, T, permissions, setPermissions, compliance, setCompliance, pendingPreset, clearPendingPreset }) {
+  const [section, setSection] = useState('providers');
+  const [navFilter, setNavFilter] = useState('');
+
   // Editing an endpoint/model by hand means this is no longer a signed-in
   // subscription selection — drop the OAuth binding so the gateway path wins.
   const set = (k) => (e) => setProvider({ ...provider, [k]: e.target.value, ...(k === 'baseURL' || k === 'apiKey' ? { oauthProvider: '', transport: '', accessToken: '', oauth: false } : {}) });
@@ -7946,6 +8198,7 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
   const [stage, setStage] = useState(() => (pendingPreset ? { baseURL: pendingPreset.baseURL || '', model: pendingPreset.model || '', apiKey: keyForEntry(pendingPreset.baseURL) } : null));
   useEffect(() => {
     setStage(pendingPreset ? { baseURL: pendingPreset.baseURL || '', model: pendingPreset.model || '', apiKey: keyForEntry(pendingPreset.baseURL) } : null);
+    if (pendingPreset) setSection('providers');
   }, [pendingPreset]); // eslint-disable-line react-hooks/exhaustive-deps
   const stageNeedsKey = !!(stage && !LOCAL_BASE.test(normBase(stage.baseURL)));
   const stageReady = !!(stage && normBase(stage.baseURL) && stage.model && (!stageNeedsKey || String(stage.apiKey || '').trim()));
@@ -7958,8 +8211,7 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
     if (clearPendingPreset) clearPendingPreset();
   };
 
-  // Local Ollama — list only the models this machine actually has, and offer to
-  // start the server if it is not running.
+  // Local Ollama
   const [ollama, setOllama] = useState({ ok: false, base: '', models: [], detail: '' });
   const [ollamaBusy, setOllamaBusy] = useState(false);
   const applyOllamaModel = (name) => {
@@ -7991,172 +8243,449 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
       .catch(() => {});
   }, []);
 
+  // Custom runtime tools (Creator Mode)
+  const [customTools, setCustomTools] = useState([]);
+  const [ctDraft, setCtDraft] = useState({ name: '', description: '', runtime: 'node', script: 'const args = JSON.parse(process.env.TOOL_ARGS_JSON || "{}");\nconsole.log("ok", args);' });
+  const [ctMsg, setCtMsg] = useState('');
+  const refreshCustomTools = useCallback(async () => {
+    if (!window.autobot || !window.autobot.customToolList) return;
+    try {
+      const list = await window.autobot.customToolList();
+      setCustomTools(Array.isArray(list) ? list : []);
+    } catch (_) {}
+  }, []);
+  useEffect(() => { refreshCustomTools(); }, [refreshCustomTools]);
+
+  // Browser extension bridge status
+  const [extStatus, setExtStatus] = useState(null);
+  const refreshExtStatus = useCallback(async () => {
+    if (!window.autobot || !window.autobot.extBridgeStatus) return;
+    try {
+      const res = await window.autobot.extBridgeStatus();
+      if (res) setExtStatus(res);
+    } catch (_) {}
+  }, []);
+  useEffect(() => {
+    refreshExtStatus();
+    if (section !== 'browser') return undefined;
+    const id = setInterval(refreshExtStatus, 3000);
+    return () => clearInterval(id);
+  }, [section, refreshExtStatus]);
+
+  // Voice tester inside Voice settings tab
+  const [voiceTestOut, setVoiceTestOut] = useState('');
+  const [voiceTestErr, setVoiceTestErr] = useState('');
+  const testVoice = useVoiceDictation({
+    engine: settings.voiceEngine || 'auto',
+    lang: settings.voiceLang || 'en-US',
+    onTranscript: (t) => setVoiceTestOut(t),
+    onError: (e) => setVoiceTestErr(e),
+  });
+
+  const q = navFilter.trim().toLowerCase();
+  const visibleSections = q
+    ? SETTINGS_SECTIONS.filter((s) => s.label.toLowerCase().includes(q) || s.keys.includes(q) || s.sub.toLowerCase().includes(q))
+    : SETTINGS_SECTIONS;
+  const activeMeta = SETTINGS_SECTIONS.find((s) => s.id === section) || SETTINGS_SECTIONS[0];
+
+  const badgeFor = (id) => {
+    if (id === 'providers') return (provider.model || '').split('/').pop().slice(0, 14) || 'Setup';
+    if (id === 'orchestrator') return (orchestrator.pools && orchestrator.pools.enabled) ? 'Pools on' : (orchestrator.enabled ? 'On' : 'Off');
+    if (id === 'harness') return customTools.length ? `${customTools.length} tool${customTools.length === 1 ? '' : 's'}` : '';
+    if (id === 'browser') return extStatus && extStatus.extensionConnected ? 'Live' : '8766';
+    if (id === 'voice') return settings.voiceEngine === 'local' ? 'Whisper' : 'Auto';
+    if (id === 'security') return permissions;
+    if (id === 'system') return settings.theme || 'dark';
+    return '';
+  };
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>{T('settings.title')}</h2>
-
-        <h3>{T('settings.provider')}</h3>
-        {stage && (
-          <div className="stage-key">
-            <div className="stage-key-head">
-              <Icon name="Lock" size={13} /> Set up <b>{(pendingPreset && pendingPreset.name) || 'provider'}</b>
-              <span className="muted"> — your current model stays active until you save.</span>
-            </div>
-            <div className="row">
-              <label>Base URL<input value={stage.baseURL} onChange={(e) => setStage({ ...stage, baseURL: e.target.value })} placeholder="https://api.example.com/v1" /></label>
-              <label>Model<input value={stage.model} onChange={(e) => setStage({ ...stage, model: e.target.value })} placeholder="model-id" /></label>
-            </div>
-            <label>API key{stageNeedsKey ? '' : ' (optional for a local endpoint)'}
-              <input type="password" autoFocus value={stage.apiKey} onChange={(e) => setStage({ ...stage, apiKey: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') commitStage(); }} placeholder="sk-…" />
-            </label>
-            <div className="stage-key-actions">
-              <button type="button" className="btn-mini" onClick={() => { if (clearPendingPreset) clearPendingPreset(); }}>Cancel</button>
-              <button type="button" className="btn-mini primary" disabled={!stageReady} onClick={commitStage}>Save key &amp; use</button>
-            </div>
+      <div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
+        <aside className="settings-sidebar" aria-label="Settings categories">
+          <div className="settings-brand">
+            <Logo size={18} />
+            <span>{T('settings.title')}</span>
           </div>
-        )}
-        <div className="presets">
-          {PRESETS.map((p) => (
-            <button key={p.name} className={provider.baseURL === p.baseURL && provider.model === p.model ? 'on' : ''} onClick={() => { const k = p.apiKey || keyForEntry(p.baseURL); setProvider((v) => ({ ...v, baseURL: p.baseURL, model: p.model, apiKey: k, supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto', oauthProvider: '', transport: '', accessToken: '', oauth: false })); if (k) setKeyForEntry(p.baseURL, k); }}>{p.name}</button>
-          ))}
-        </div>
-        <div className="ollama-box">
-          <div className="ollama-head">
-            <span><Icon name="Plug" size={13} /> Ollama (local)</span>
-            <span className="ollama-actions">
-              <button type="button" className="btn-mini" disabled={ollamaBusy} onClick={() => connectOllama(false)}>
-                <Icon name="Refresh" size={12} /> Scan
-              </button>
-              <button type="button" className="btn-mini primary" disabled={ollamaBusy} onClick={() => connectOllama(true)}>
-                {ollamaBusy ? 'Connecting…' : (ollama.ok ? 'Start / reconnect' : 'Connect')}
-              </button>
-            </span>
-          </div>
-          <div className="ollama-detail">
-            {ollama.ok
-              ? (ollama.detail || (ollama.models.length + ' models installed'))
-              : (ollama.detail && ollama.detail !== 'Unreachable' ? ollama.detail : 'Not running — press Connect to launch ollama serve')}
-          </div>
-          {ollama.ok && ollama.models.length > 0 && (
-            <div className="ollama-models">
-              {ollama.models.map((m) => (
-                <button
-                  type="button"
-                  key={m.name}
-                  className={'ollama-model' + (provider.model === m.name ? ' on' : '')}
-                  title={m.family ? m.family : m.name}
-                  onClick={() => applyOllamaModel(m.name)}
-                >
-                  {m.name}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        <label>Base URL<input value={provider.baseURL} onChange={set('baseURL')} placeholder="http://localhost:11434/v1" /></label>
-        <label>API Key (optional)<input value={provider.apiKey} onChange={(e) => { const v = e.target.value; setProvider({ ...provider, apiKey: v }); setKeyForEntry(provider.baseURL, v); }} placeholder="sk-…" /></label>
-        <label>Model<input value={provider.model} onChange={set('model')} placeholder="llama3.1" /></label>
-        <div className="row">
-          <label>Temperature<input type="number" step="0.1" value={provider.temperature} onChange={set('temperature')} /></label>
-          <label>Max tokens<input type="number" value={provider.maxTokens} onChange={set('maxTokens')} /></label>
-        </div>
-        <label>Reasoning / thinking level
-          <select value={provider.reasoningLevel || 'auto'} onChange={(e) => setProvider({ ...provider, reasoningLevel: e.target.value })}>
-            <option value="auto">Auto (provider default)</option>
-            <option value="low">Low — fast, minimal thinking</option>
-            <option value="medium">Medium — balanced</option>
-            <option value="high">High — deep, thorough reasoning</option>
-          </select>
-        </label>
-        <p className="muted" style={{ marginTop: -6 }}>Sent to OpenAI-compatible APIs as <code>reasoning_effort</code>; providers that reject it auto-retry without it.</p>
-        <label className="check"><input type="checkbox" checked={provider.supportsTools} onChange={(e) => setProvider({ ...provider, supportsTools: e.target.checked })} /> Function calling / tools</label>
-
-        <h3><Icon name="Settings" size={14} /> {T('settings.orchestrator')}</h3>
-        <label className="check"><input type="checkbox" checked={!!orchestrator.enabled} onChange={(e) => saveOrch({ ...orchestrator, enabled: e.target.checked })} /> Enable — multi-model pool for failover AND swarm tier routing</label>
-        {orchestrator.enabled && (
-          <>
-            <p className="muted" style={{ marginTop: -4 }}>
-              Tick the models this pool may use — the list is everything this machine has loaded
-              (signed-in subscription accounts and the local/API gateway). <b>Tier</b> decides which
-              model a supervisor-assigned subtask runs on: <b>small</b> = cheap/mechanical work,
-              <b> heavy</b> = real implementation, <b>critical</b> = architecture/security/review
-              (also the supervisor's own model). <b>start</b> marks the first model failover tries.
-            </p>
-            <OrchModelChecklist
-              orchestrator={orchestrator}
-              provider={provider}
-              localModels={ollama.ok ? ollama.models : []}
-              localBase={ollama.base}
-              saveOrch={saveOrch}
+          <div className="settings-filter">
+            <Icon name="Search" size={13} />
+            <input
+              value={navFilter}
+              onChange={(e) => setNavFilter(e.target.value)}
+              placeholder="Filter settings…"
             />
-          </>
-        )}
-
-        <h3><Icon name="Users" size={14} /> Role pools</h3>
-        <RolePoolsEditor orchestrator={orchestrator} saveOrch={saveOrch} />
-
-        <h3><Icon name="Lightbulb" size={14} /> {T('settings.features')}</h3>
-        <label className="check"><input type="checkbox" checked={!!features.computerUse} onChange={(e) => saveFeat({ ...features, computerUse: e.target.checked })} /> Computer Use (screen + mouse/keyboard via macOS automation)</label>
-        <label className="check"><input type="checkbox" checked={!!features.chrome} onChange={(e) => saveFeat({ ...features, chrome: e.target.checked })} /> Chrome control (CDP)</label>
-        {features.chrome && (
-          <div className="row">
-            <label>Chrome host<input value={features.chromeHost} onChange={(e) => saveFeat({ ...features, chromeHost: e.target.value })} /></label>
-            <label>Chrome port<input type="number" value={features.chromePort} onChange={(e) => saveFeat({ ...features, chromePort: Number(e.target.value) })} /></label>
           </div>
-        )}
-        <label className="check"><input type="checkbox" checked={!!features.bridges} onChange={(e) => saveFeat({ ...features, bridges: e.target.checked })} /> Bot bridges (webhook server for hearthbot/slackbot/teamsbot/webagent)</label>
-        <label className="check"><input type="checkbox" checked={!!features.quickEntry} onChange={(e) => saveFeat({ ...features, quickEntry: e.target.checked })} /> Quick Entry (global hotkey CmdOrCtrl+Shift+Space)</label>
-        <label className="check"><input type="checkbox" checked={!!features.computerUseTeach} onChange={(e) => saveFeat({ ...features, computerUseTeach: e.target.checked })} /> Computer Use — teach & watch/record</label>
+          <nav className="settings-nav">
+            {visibleSections.map((s) => {
+              const badge = badgeFor(s.id);
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  className={'settings-nav-btn' + (section === s.id ? ' on' : '')}
+                  onClick={() => setSection(s.id)}
+                >
+                  <Icon name={s.icon} size={15} />
+                  <span>{s.label}</span>
+                  {badge && <span className="settings-nav-pill">{badge}</span>}
+                </button>
+              );
+            })}
+          </nav>
+          <div className="settings-side-foot">
+            <span>Akron Bot v1.0</span>
+            <span>{settings.theme === 'light' ? 'Light' : 'Dark'}</span>
+          </div>
+        </aside>
 
-        <h3><Icon name="Users" size={14} /> Buddy & Remote Control</h3>
-        <label className="check"><input type="checkbox" checked={!!features.buddy} onChange={(e) => saveFeat({ ...features, buddy: e.target.checked })} /> Buddy (pair-hunting co-pilot)</label>
-        <label className="check"><input type="checkbox" checked={!!features.remoteControl} onChange={(e) => saveFeat({ ...features, remoteControl: e.target.checked })} /> Remote Control (Drive / co-browsing session)</label>
+        <section className="settings-main">
+          <header className="settings-head">
+            <div>
+              <h2>{activeMeta.label}</h2>
+              <p className="settings-head-sub">{activeMeta.sub}</p>
+            </div>
+            <button type="button" className="icon-btn" onClick={onClose} title="Close settings">
+              <Icon name="X" size={16} />
+            </button>
+          </header>
 
-        <h3><Icon name="Code" size={14} /> Developer</h3>
-        <label className="check"><input type="checkbox" checked={!!features.extensions} onChange={(e) => saveFeat({ ...features, extensions: e.target.checked })} /> Extensions (custom tools / MCP servers)</label>
-        <label className="check"><input type="checkbox" checked={!!features.developerMode} onChange={(e) => saveFeat({ ...features, developerMode: e.target.checked })} /> Developer mode (debug tools + local exec consent)</label>
-        <label className="check"><input type="checkbox" checked={!!features.trustedFolders} onChange={(e) => saveFeat({ ...features, trustedFolders: e.target.checked })} /> Trusted folders (pre-approve shell exec in these dirs)</label>
+          <div className="settings-body">
+            {section === 'providers' && (
+              <>
+                {stage && (
+                  <div className="stage-key">
+                    <div className="stage-key-head">
+                      <Icon name="Lock" size={13} /> Set up <b>{(pendingPreset && pendingPreset.name) || 'provider'}</b>
+                      <span className="muted"> — your current model stays active until you save.</span>
+                    </div>
+                    <div className="row">
+                      <label>Base URL<input value={stage.baseURL} onChange={(e) => setStage({ ...stage, baseURL: e.target.value })} placeholder="https://api.example.com/v1" /></label>
+                      <label>Model<input value={stage.model} onChange={(e) => setStage({ ...stage, model: e.target.value })} placeholder="model-id" /></label>
+                    </div>
+                    <label>API key{stageNeedsKey ? '' : ' (optional for a local endpoint)'}
+                      <input type="password" autoFocus value={stage.apiKey} onChange={(e) => setStage({ ...stage, apiKey: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') commitStage(); }} placeholder="sk-…" />
+                    </label>
+                    <div className="stage-key-actions">
+                      <button type="button" className="btn-mini" onClick={() => { if (clearPendingPreset) clearPendingPreset(); }}>Cancel</button>
+                      <button type="button" className="btn-mini primary" disabled={!stageReady} onClick={commitStage}>Save key &amp; use</button>
+                    </div>
+                  </div>
+                )}
 
-        <h3>{T('settings.behavior')}</h3>
-        <div className="row">
-          <label>{T('code.permissions')}
-            <select value={permissions} onChange={(e) => setPermissions(e.target.value)}>
-              <option value="auto">{T('code.permissions.auto')}</option>
-              <option value="ask">{T('code.permissions.ask')}</option>
-              <option value="acceptEdits">{T('code.permissions.acceptEdits')}</option>
-              <option value="plan">{T('code.permissions.plan')}</option>
-              <option value="bypass">{T('perm.bypass')}</option>
-            </select>
-          </label>
-        </div>
-        <p className="muted">{T('code.permissions.hint')}</p>
-        <label className="check"><input type="checkbox" checked={settings.useMemory} onChange={(e) => setSettings({ ...settings, useMemory: e.target.checked })} /> Inject long-term memory into prompts</label>
-        <label className="check"><input type="checkbox" checked={!!settings.launchAtLogin} onChange={(e) => setSettings({ ...settings, launchAtLogin: e.target.checked })} /> Launch Akron Bot at login</label>
-        <div className="row">
-          <label>{T('settings.theme')}
-            <select value={settings.theme} onChange={(e) => setSettings({ ...settings, theme: e.target.value })}>
-              <option value="dark">{T('settings.theme.dark')}</option>
-              <option value="light">{T('settings.theme.light')}</option>
-            </select>
-          </label>
-          <label>{T('settings.locale')}
-            <select value={settings.locale || 'en'} onChange={(e) => setSettings({ ...settings, locale: e.target.value })}>
-              {LOCALES.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
-            </select>
-          </label>
-        </div>
+                <div className="settings-card">
+                  <h3>{T('settings.provider')}</h3>
+                  <div className="presets">
+                    {PRESETS.map((p) => (
+                      <button key={p.name} className={provider.baseURL === p.baseURL && provider.model === p.model ? 'on' : ''} onClick={() => { const k = p.apiKey || keyForEntry(p.baseURL); setProvider((v) => ({ ...v, baseURL: p.baseURL, model: p.model, apiKey: k, supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto', oauthProvider: '', transport: '', accessToken: '', oauth: false })); if (k) setKeyForEntry(p.baseURL, k); }}>{p.name}</button>
+                    ))}
+                  </div>
+                  <div className="ollama-box">
+                    <div className="ollama-head">
+                      <span><Icon name="Plug" size={13} /> Ollama (local)</span>
+                      <span className="ollama-actions">
+                        <button type="button" className="btn-mini" disabled={ollamaBusy} onClick={() => connectOllama(false)}>
+                          <Icon name="Refresh" size={12} /> Scan
+                        </button>
+                        <button type="button" className="btn-mini primary" disabled={ollamaBusy} onClick={() => connectOllama(true)}>
+                          {ollamaBusy ? 'Connecting…' : (ollama.ok ? 'Start / reconnect' : 'Connect')}
+                        </button>
+                      </span>
+                    </div>
+                    <div className="ollama-detail">
+                      {ollama.ok
+                        ? (ollama.detail || (ollama.models.length + ' models installed'))
+                        : (ollama.detail && ollama.detail !== 'Unreachable' ? ollama.detail : 'Not running — press Connect to launch ollama serve')}
+                    </div>
+                    {ollama.ok && ollama.models.length > 0 && (
+                      <div className="ollama-models">
+                        {ollama.models.map((m) => (
+                          <button type="button" key={m.name} className={'ollama-model' + (provider.model === m.name ? ' on' : '')} title={m.family ? m.family : m.name} onClick={() => applyOllamaModel(m.name)}>
+                            {m.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <label>Base URL<input value={provider.baseURL} onChange={set('baseURL')} placeholder="http://localhost:11434/v1" /></label>
+                  <label>API Key (optional)<input value={provider.apiKey} onChange={(e) => { const v = e.target.value; setProvider({ ...provider, apiKey: v }); setKeyForEntry(provider.baseURL, v); }} placeholder="sk-…" /></label>
+                  <label>Model<input value={provider.model} onChange={set('model')} placeholder="llama3.1" /></label>
+                  <div className="row">
+                    <label>Temperature<input type="number" step="0.1" value={provider.temperature} onChange={set('temperature')} /></label>
+                    <label>Max tokens<input type="number" value={provider.maxTokens} onChange={set('maxTokens')} /></label>
+                  </div>
+                  <label>Reasoning / thinking level
+                    <select value={provider.reasoningLevel || 'auto'} onChange={(e) => setProvider({ ...provider, reasoningLevel: e.target.value })}>
+                      <option value="auto">Auto (provider default)</option>
+                      <option value="low">Low — fast, minimal thinking</option>
+                      <option value="medium">Medium — balanced</option>
+                      <option value="high">High — deep, thorough reasoning</option>
+                    </select>
+                  </label>
+                  <p className="muted" style={{ marginTop: -6 }}>Sent to OpenAI-compatible APIs as <code>reasoning_effort</code>; providers that reject it auto-retry without it.</p>
+                  <label className="check"><input type="checkbox" checked={provider.supportsTools} onChange={(e) => setProvider({ ...provider, supportsTools: e.target.checked })} /> Function calling / tools</label>
+                </div>
 
-        <RuntimesSection />
+                <div className="settings-card">
+                  <AccountSection T={T} provider={provider} setProvider={setProvider} />
+                </div>
+              </>
+            )}
 
-        <ComplianceSection compliance={compliance} setCompliance={setCompliance} />
+            {section === 'orchestrator' && (
+              <>
+                <div className="settings-card">
+                  <h3><Icon name="Settings" size={14} /> {T('settings.orchestrator')}</h3>
+                  <label className="check"><input type="checkbox" checked={!!orchestrator.enabled} onChange={(e) => saveOrch({ ...orchestrator, enabled: e.target.checked })} /> Enable — multi-model pool for failover AND swarm tier routing</label>
+                  {orchestrator.enabled && (
+                    <>
+                      <p className="muted" style={{ marginTop: -4 }}>
+                        Tick the models this pool may use — the list is everything this machine has loaded
+                        (signed-in subscription accounts and the local/API gateway). <b>Tier</b> decides which
+                        model a supervisor-assigned subtask runs on: <b>small</b> = cheap/mechanical work,
+                        <b> heavy</b> = real implementation, <b>critical</b> = architecture/security/review
+                        (also the supervisor's own model). <b>start</b> marks the first model failover tries.
+                      </p>
+                      <OrchModelChecklist
+                        orchestrator={orchestrator}
+                        provider={provider}
+                        localModels={ollama.ok ? ollama.models : []}
+                        localBase={ollama.base}
+                        saveOrch={saveOrch}
+                      />
+                    </>
+                  )}
+                </div>
 
-        <AccountSection T={T} provider={provider} setProvider={setProvider} />
+                <div className="settings-card">
+                  <h3><Icon name="Users" size={14} /> Role pools</h3>
+                  <RolePoolsEditor orchestrator={orchestrator} saveOrch={saveOrch} />
+                </div>
+              </>
+            )}
 
-        <div className="modal-actions">
-          <button onClick={testProvider}>Test connection</button>
-          <button className="primary" onClick={onClose}>{T('settings.done')}</button>
-        </div>
+            {section === 'harness' && (
+              <>
+                <div className="settings-card">
+                  <h3><Icon name="Wrench" size={14} /> Creator Mode · Custom Runtime Tools</h3>
+                  <p className="muted" style={{ marginTop: 0 }}>
+                    Hot-swappable tools authored by you or the agent (<code>CreateCustomTool</code>). Saved under <code>~/.autobot/custom-tools/</code> and runnable immediately on Node, Bash/PowerShell, or Python.
+                  </p>
+                  <div className="row">
+                    <label>Tool identifier<input value={ctDraft.name} onChange={(e) => setCtDraft({ ...ctDraft, name: e.target.value })} placeholder="repo_health_check" /></label>
+                    <label>Runtime
+                      <select value={ctDraft.runtime} onChange={(e) => setCtDraft({ ...ctDraft, runtime: e.target.value })}>
+                        <option value="node">Node.js</option>
+                        <option value="bash">Shell (zsh / PowerShell)</option>
+                        <option value="python3">Python 3</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label>Description<input value={ctDraft.description} onChange={(e) => setCtDraft({ ...ctDraft, description: e.target.value })} placeholder="Check git & lint status in one command" /></label>
+                  <label>Script (receives JSON args in <code>process.env.TOOL_ARGS_JSON</code> &amp; stdin)
+                    <textarea rows={4} style={{ width: '100%', marginTop: 5, fontFamily: 'var(--mono)', fontSize: 12, padding: 8, background: 'var(--bg-000)', color: 'var(--text-000)', border: '1px solid var(--border-strong)', borderRadius: 8 }} value={ctDraft.script} onChange={(e) => setCtDraft({ ...ctDraft, script: e.target.value })} />
+                  </label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <button
+                      type="button"
+                      className="btn-mini primary"
+                      onClick={async () => {
+                        setCtMsg('');
+                        try {
+                          await window.autobot.customToolSave(ctDraft);
+                          setCtMsg(`Saved tool "${ctDraft.name}".`);
+                          setCtDraft({ name: '', description: '', runtime: 'node', script: 'const args = JSON.parse(process.env.TOOL_ARGS_JSON || "{}");\nconsole.log("ok", args);' });
+                          refreshCustomTools();
+                        } catch (e) { setCtMsg('Error: ' + String(e?.message || e)); }
+                      }}
+                    >
+                      Save custom tool
+                    </button>
+                    {ctMsg && <span className="muted" style={{ margin: 0 }}>{ctMsg}</span>}
+                  </div>
+                  {customTools.length > 0 && (
+                    <div className="ct-list">
+                      {customTools.map((ct) => (
+                        <div key={ct.name} className="ct-row">
+                          <div>
+                            <b>{ct.name}</b> <span className="muted">({ct.runtime})</span>
+                            <div className="muted" style={{ margin: 0 }}>{ct.description}</div>
+                          </div>
+                          <button type="button" className="btn-mini" onClick={async () => { await window.autobot.customToolDelete(ct.name); refreshCustomTools(); }}>Delete</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="settings-card">
+                  <h3><Icon name="Code" size={14} /> Developer &amp; Agent Capabilities</h3>
+                  <label className="check"><input type="checkbox" checked={!!features.extensions} onChange={(e) => saveFeat({ ...features, extensions: e.target.checked })} /> Extensions (custom tools / MCP servers)</label>
+                  <label className="check"><input type="checkbox" checked={!!features.developerMode} onChange={(e) => saveFeat({ ...features, developerMode: e.target.checked })} /> Developer mode (debug tools + local exec consent)</label>
+                  <label className="check"><input type="checkbox" checked={!!features.buddy} onChange={(e) => saveFeat({ ...features, buddy: e.target.checked })} /> Buddy (pair-hunting co-pilot)</label>
+                  <label className="check"><input type="checkbox" checked={!!features.remoteControl} onChange={(e) => saveFeat({ ...features, remoteControl: e.target.checked })} /> Remote Control (Drive / co-browsing session)</label>
+                </div>
+              </>
+            )}
+
+            {section === 'browser' && (
+              <>
+                <div className="settings-card">
+                  <h3><Icon name="Globe" size={14} /> Akron Browser Bot · External Browser Bridge</h3>
+                  <div className="ext-card-status">
+                    <div>
+                      <span className={'ext-dot' + (extStatus && extStatus.extensionConnected ? ' on' : '')} />
+                      <b>{extStatus && extStatus.extensionConnected ? `Connected (v${extStatus.extensionVersion || '1.6.7'})` : 'Listening for extension on ws://127.0.0.1:8766'}</b>
+                      <p className="muted" style={{ margin: '4px 0 0' }}>
+                        All models configured in Akron Bot Desktop are automatically shared with Akron Browser Bot at <code>http://127.0.0.1:8766/v1</code> — zero separate API keys required.
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button type="button" className="btn-mini" onClick={refreshExtStatus}><Icon name="Refresh" size={12} /> Refresh</button>
+                      <button type="button" className="btn-mini primary" onClick={() => window.autobot.extBridgeOpenFolder && window.autobot.extBridgeOpenFolder()}>
+                        <Icon name="Folder" size={12} /> Open Extension Folder
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settings-card">
+                  <h3>Setup in Chrome / Brave / Edge (1 minute)</h3>
+                  <ol className="muted" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.65 }}>
+                    <li>Click <b>Open Extension Folder</b> above (points to <code>{(extStatus && extStatus.extensionDir) || 'resources/akron-browser-bot'}</code>).</li>
+                    <li>Open <code>chrome://extensions</code>, enable <b>Developer mode</b>, click <b>Load unpacked</b>, and select that folder.</li>
+                    <li>Open the Akron Browser Bot side panel — it connects automatically with access to <code>akron-default</code>, <code>akron-planner</code>, <code>akron-coder</code>, <code>akron-vision</code>, <code>akron-fast</code>, and <code>akron-longctx</code>, and Desktop agents can drive tabs via <code>ext_browser</code>.</li>
+                  </ol>
+                  {extStatus && Array.isArray(extStatus.tabs) && extStatus.tabs.length > 0 && (
+                    <div className="ct-list" style={{ marginTop: 12 }}>
+                      {extStatus.tabs.slice(0, 6).map((t) => (
+                        <div key={t.id} className="ct-row">
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.active ? '● ' : ''}{t.title || t.url}</span>
+                          <span className="muted" style={{ margin: 0 }}>tab #{t.id}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {section === 'voice' && (
+              <>
+                <div className="settings-card">
+                  <h3><Icon name="Microphone" size={14} /> Built-In Voice Model &amp; Dictation</h3>
+                  <p className="muted" style={{ marginTop: 0 }}>
+                    Speak directly into the composer or Code Review comments using the built-in ONNX Whisper speech model (offline) or fast gateway Whisper transcription when available.
+                  </p>
+                  <div className="row">
+                    <label>Voice recognition engine
+                      <select value={settings.voiceEngine || 'auto'} onChange={(e) => setSettings({ ...settings, voiceEngine: e.target.value })}>
+                        <option value="auto">Auto (Gateway Whisper → Built-in Offline Whisper)</option>
+                        <option value="local">Built-in Whisper (Offline ONNX)</option>
+                        <option value="gateway">Gateway Whisper only</option>
+                      </select>
+                    </label>
+                    <label>Dictation language
+                      <select value={settings.voiceLang || 'en-US'} onChange={(e) => setSettings({ ...settings, voiceLang: e.target.value })}>
+                        <option value="en-US">English (US)</option>
+                        <option value="en-GB">English (UK)</option>
+                        <option value="pl-PL">Polish</option>
+                        <option value="de-DE">German</option>
+                        <option value="es-ES">Spanish</option>
+                        <option value="fr-FR">French</option>
+                        <option value="ja-JP">Japanese</option>
+                        <option value="zh-CN">Chinese</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6 }}>
+                    <button type="button" className={'btn-mini ' + (testVoice.state !== 'idle' ? 'primary' : '')} onClick={testVoice.toggle}>
+                      <Icon name={testVoice.state === 'transcribing' ? 'Spinner' : 'Microphone'} size={13} className={testVoice.state === 'transcribing' ? 'spin' : ''} />
+                      {testVoice.state === 'recording' ? ` Stop recording (${testVoice.seconds}s)` : (testVoice.state === 'transcribing' ? ' Transcribing…' : ' Test Microphone')}
+                    </button>
+                    {testVoice.statusNote && <span className="muted" style={{ margin: 0 }}>{testVoice.statusNote}</span>}
+                    {voiceTestErr && <span style={{ color: '#f87171', fontSize: 12 }}>{voiceTestErr}</span>}
+                  </div>
+                  {voiceTestOut && (
+                    <div className="ct-row" style={{ marginTop: 10 }}>
+                      <span>Heard: <b>{voiceTestOut}</b></span>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {section === 'security' && (
+              <>
+                <div className="settings-card">
+                  <h3><Icon name="LockShield" size={14} /> Permissions &amp; Automation</h3>
+                  <div className="row">
+                    <label>{T('code.permissions')}
+                      <select value={permissions} onChange={(e) => setPermissions(e.target.value)}>
+                        <option value="auto">{T('code.permissions.auto')}</option>
+                        <option value="ask">{T('code.permissions.ask')}</option>
+                        <option value="acceptEdits">{T('code.permissions.acceptEdits')}</option>
+                        <option value="plan">{T('code.permissions.plan')}</option>
+                        <option value="bypass">{T('perm.bypass')}</option>
+                      </select>
+                    </label>
+                  </div>
+                  <p className="muted">{T('code.permissions.hint')}</p>
+                  <label className="check"><input type="checkbox" checked={!!features.trustedFolders} onChange={(e) => saveFeat({ ...features, trustedFolders: e.target.checked })} /> Trusted folders (pre-approve shell exec in these dirs)</label>
+                  <label className="check"><input type="checkbox" checked={!!features.computerUse} onChange={(e) => saveFeat({ ...features, computerUse: e.target.checked })} /> Computer Use (screen + mouse/keyboard via OS automation)</label>
+                  <label className="check"><input type="checkbox" checked={!!features.computerUseTeach} onChange={(e) => saveFeat({ ...features, computerUseTeach: e.target.checked })} /> Computer Use — teach &amp; watch/record</label>
+                  <label className="check"><input type="checkbox" checked={!!features.chrome} onChange={(e) => saveFeat({ ...features, chrome: e.target.checked })} /> Chrome control (CDP)</label>
+                  {features.chrome && (
+                    <div className="row">
+                      <label>Chrome host<input value={features.chromeHost} onChange={(e) => saveFeat({ ...features, chromeHost: e.target.value })} /></label>
+                      <label>Chrome port<input type="number" value={features.chromePort} onChange={(e) => saveFeat({ ...features, chromePort: Number(e.target.value) })} /></label>
+                    </div>
+                  )}
+                  <label className="check"><input type="checkbox" checked={!!features.bridges} onChange={(e) => saveFeat({ ...features, bridges: e.target.checked })} /> Bot bridges (webhook server for hearthbot/slackbot/teamsbot/webagent)</label>
+                </div>
+
+                <div className="settings-card">
+                  <ComplianceSection compliance={compliance} setCompliance={setCompliance} />
+                </div>
+              </>
+            )}
+
+            {section === 'system' && (
+              <>
+                <div className="settings-card">
+                  <h3>{T('settings.behavior')}</h3>
+                  <div className="row">
+                    <label>{T('settings.theme')}
+                      <select value={settings.theme} onChange={(e) => setSettings({ ...settings, theme: e.target.value })}>
+                        <option value="dark">{T('settings.theme.dark')}</option>
+                        <option value="light">{T('settings.theme.light')}</option>
+                      </select>
+                    </label>
+                    <label>{T('settings.locale')}
+                      <select value={settings.locale || 'en'} onChange={(e) => setSettings({ ...settings, locale: e.target.value })}>
+                        {LOCALES.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                  <label className="check"><input type="checkbox" checked={settings.useMemory} onChange={(e) => setSettings({ ...settings, useMemory: e.target.checked })} /> Inject long-term memory into prompts</label>
+                  <label className="check"><input type="checkbox" checked={!!settings.launchAtLogin} onChange={(e) => setSettings({ ...settings, launchAtLogin: e.target.checked })} /> Launch Akron Bot at login</label>
+                  <label className="check"><input type="checkbox" checked={!!features.quickEntry} onChange={(e) => saveFeat({ ...features, quickEntry: e.target.checked })} /> Quick Entry (global hotkey CmdOrCtrl+Shift+Space)</label>
+                </div>
+
+                <div className="settings-card">
+                  <RuntimesSection />
+                </div>
+              </>
+            )}
+          </div>
+
+          <footer className="settings-foot">
+            <span className="muted" style={{ margin: 0 }}>{provider.model ? `Active model: ${provider.model}` : 'Configure a provider to begin'}</span>
+            <div className="modal-actions">
+              <button onClick={testProvider}>Test connection</button>
+              <button className="primary" onClick={onClose}>{T('settings.done')}</button>
+            </div>
+          </footer>
+        </section>
       </div>
     </div>
   );

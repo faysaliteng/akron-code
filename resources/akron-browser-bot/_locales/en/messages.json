@@ -1,0 +1,18 @@
+{
+  "appName": {
+    "message": "Akron Browser Bot",
+    "description": "Extension name"
+  },
+  "appDesc": {
+    "message": "A bring-your-own-key AI browser agent. Works like Claude in Chrome, but you plug in any provider API key.",
+    "description": "Extension description"
+  },
+  "actionTitle": {
+    "message": "Open Akron Browser Bot",
+    "description": "Toolbar button tooltip"
+  },
+  "commandToggle": {
+    "message": "Toggle the Akron Browser Bot side panel",
+    "description": "Keyboard shortcut description"
+  }
+}

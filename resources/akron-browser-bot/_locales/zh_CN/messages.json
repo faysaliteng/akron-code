@@ -1,0 +1,6 @@
+{
+  "appName": { "message": "Akron Browser Bot" },
+  "appDesc": { "message": "自带 API 密钥的 AI 浏览器助手。用法类似 Claude in Chrome，但支持任意服务商。" },
+  "actionTitle": { "message": "打开 Akron Browser Bot" },
+  "commandToggle": { "message": "切换 Akron Browser Bot 侧边栏" }
+}

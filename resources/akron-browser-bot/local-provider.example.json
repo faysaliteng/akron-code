@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "free-groq",
+      "name": "Groq (free)",
+      "type": "openai-compatible",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "apiKey": "PASTE_YOUR_GROQ_KEY_HERE",
+      "models": ["openai/gpt-oss-120b"],
+      "defaultModel": "openai/gpt-oss-120b"
+    },
+    {
+      "id": "free-nvidia",
+      "name": "NVIDIA NIM (free)",
+      "type": "openai-compatible",
+      "baseUrl": "https://integrate.api.nvidia.com/v1",
+      "apiKey": "PASTE_YOUR_NVIDIA_KEY_HERE",
+      "models": ["nvidia/nemotron-3-ultra-550b-a55b"],
+      "defaultModel": "nvidia/nemotron-3-ultra-550b-a55b"
+    }
+  ],
+  "orchestrator": {
+    "enabled": true,
+    "endpoints": [
+      { "providerId": "free-groq", "model": "openai/gpt-oss-120b" },
+      { "providerId": "free-nvidia", "model": "nvidia/nemotron-3-ultra-550b-a55b" }
+    ]
+  }
+}

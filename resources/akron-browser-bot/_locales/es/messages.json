@@ -1,0 +1,6 @@
+{
+  "appName": { "message": "Akron Browser Bot" },
+  "appDesc": { "message": "Un agente de navegador con IA y tu propia clave API. Funciona como Claude en Chrome, pero con cualquier proveedor." },
+  "actionTitle": { "message": "Abrir Akron Browser Bot" },
+  "commandToggle": { "message": "Mostrar u ocultar el panel lateral de Akron Browser Bot" }
+}

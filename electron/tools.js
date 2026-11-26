@@ -1335,6 +1335,27 @@ const toolDefinitions = [
   { name: 'ListCustomTools', description: 'List all saved custom runtime tools.', parameters: { type: 'object', properties: {} } },
   { name: 'DeleteCustomTool', description: 'Delete a saved custom runtime tool by name.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
 
+  // ---- External Browser Control (Akron Browser Bot Chrome Extension) ----
+  {
+    name: 'ext_browser',
+    description: 'Control the user\'s live external Chrome/Brave/Edge browser via the Akron Browser Bot extension (list_tabs, navigate, read_page, read_text, find, click, type, press_key, scroll, form_input, screenshot, read_console_messages, read_network_requests, execute_javascript).',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', description: 'Extension tool name, e.g. list_tabs, navigate, read_page, read_text, find, click, type, press_key, scroll, form_input, screenshot, execute_javascript' },
+        tabId: { type: 'number', description: 'Optional Chrome tab id' },
+        args: { type: 'object', description: 'Optional arguments object passed to the extension tool' },
+        url: { type: 'string' },
+        ref: { type: 'string' },
+        selector: { type: 'string' },
+        text: { type: 'string' },
+        key: { type: 'string' },
+        expression: { type: 'string' },
+      },
+      required: ['action'],
+    },
+  },
+
   // ---- Example-parity surface (see parity.js / parity-defs.js) ----
   ...require('./parity-defs'),
 ];
@@ -1859,6 +1880,22 @@ async function runToolInner(name, args, ctx) {
     const text = args.message || args.text || '';
     if (sendUserMessage) sendUserMessage(`${bot && bot !== 'user' ? '[' + bot + '] ' : ''}${text}`);
     return `Message sent to ${bot}.`;
+  }
+
+  if (name === 'ext_browser') {
+    try {
+      const bridge = require('./extbridge');
+      const action = String((args && (args.action || args.tool)) || '').trim();
+      if (!action) return { content: 'ext_browser requires `action` (e.g. list_tabs, navigate, read_page, read_text, click, type).', isError: true };
+      const { action: _a, tool: _t, tabId: rawTab, args: nested, cwd: _c, ...rest } = args || {};
+      const mergedArgs = { ...(nested && typeof nested === 'object' ? nested : {}), ...rest };
+      const tabId = Number.isInteger(rawTab) ? rawTab : undefined;
+      const out = await bridge.callTool(action, mergedArgs, tabId);
+      if (out && typeof out === 'object' && typeof out.text === 'string') return out.text;
+      return typeof out === 'string' ? out : JSON.stringify(out, null, 2);
+    } catch (e) {
+      return { content: 'External browser error: ' + String((e && e.message) || e), isError: true };
+    }
   }
 
   const execName = executorsByTool[name] || name;

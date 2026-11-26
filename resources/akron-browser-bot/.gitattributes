@@ -1,0 +1,5 @@
+# Store and check out every file byte for byte, on every system.
+# The logo fingerprints in shared/brand-seal.js are taken from the files'
+# bytes: a converted line ending in icons/logo.svg would make the extension
+# refuse to run tasks (see TRADEMARK.md).
+* -text

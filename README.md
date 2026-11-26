@@ -304,3 +304,16 @@ self-contained `.md` per skill — original frontmatter, body, and any bundled
 scripts/references inlined in an appendix — plus an `INDEX.md`. To bring a file
 back in, use **Skills panel → Upload .md**, or drop it in `~/.autobot/skills/`
 (flat `.md` files are discovered directly).
+
+
+## Enterprise UI, Code Review, Voice & Browser Extension
+
+- **Live Step Checklists & Checkpoints**: Active runs stream an inline step progress card (`TodoWrite` or live milestones), live `checkpoint` notifications, and a `Files changed` summary bar with 1-click **Review** and **Rewind** actions.
+- **Side-Pane Code Review**: Inspect line-numbered file diffs (`For Turn` vs `All Changes`), search across hunks (`Aa` / `.*`), expand context blocks, hover `+` to add inline review comments (with built-in Whisper voice typing), and send all comments back to the active agent.
+- **Built-In Voice Dictation**: Offline ONNX Whisper (`public/whisper/whisper-worker.js`) plus fast gateway Whisper fallback is wired directly into the Composer and Code Review comment boxes.
+- **Zero-Key External Browser Control (`Akron Browser Bot`)**: Load `resources/akron-browser-bot` as an unpacked Chrome extension (`chrome://extensions`). It connects to `ws://127.0.0.1:8766` automatically, shares all configured Desktop models at `http://127.0.0.1:8766/v1` with zero extra API keys, and lets Desktop agents drive live browser tabs via `ext_browser`.
+
+## Building Installers (macOS & Windows)
+
+- **macOS (`.dmg` + `.zip`)**: `npm run dist:mac` (outputs to `release/AkronBot-1.0.0-arm64.dmg`)
+- **Windows (`NSIS .exe` + `Portable .exe`)**: `npm run dist:win` (or triggered automatically on every push/tag via [build-desktop.yml](.github/workflows/build-desktop.yml)).

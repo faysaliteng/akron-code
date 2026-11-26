@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Akron Browser Bot Settings</title>
+    <link rel="icon" type="image/png" href="../icons/icon48.png" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <header class="page-head">
+      <div class="brand">
+        <img class="logo" src="../icons/logo.svg" alt="Akron Browser Bot" />
+        <div>
+          <h1>Akron Browser Bot</h1>
+          <p class="tagline">by akronlogic.com — bring your own key</p>
+        </div>
+      </div>
+      <div class="head-note">
+        Keys are stored locally in this browser only. They are sent directly to the provider you choose.
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section id="permissions" class="card hidden">
+        <h2>Microphone</h2>
+        <p class="sub">The side panel cannot ask for the microphone itself. Allow it here, and choose “Allow while visiting the site” if Chrome asks. Akron then uses the browser’s speech-to-text.</p>
+        <button id="mic-grant" class="btn primary" type="button">Allow microphone access</button>
+        <p id="mic-status" class="sub"></p>
+      </section>
+      <!-- Providers -->
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>API keys &amp; providers</h2>
+            <p class="sub">Add any provider. One key per provider, many providers at once.</p>
+          </div>
+          <div class="add-row">
+            <select id="preset-select" aria-label="Provider preset"></select>
+            <button id="add-provider" class="btn primary">Add provider</button>
+          </div>
+        </div>
+
+        <div id="provider-list" class="provider-list"></div>
+        <div id="no-providers" class="empty-note">No providers yet. Choose one above and click “Add provider”.</div>
+
+        <!-- Editor -->
+        <form id="provider-form" class="editor hidden" autocomplete="off">
+          <h3 id="editor-title">Add provider</h3>
+          <input type="hidden" id="f-id" />
+
+          <div class="grid">
+            <label>
+              Display name
+              <input id="f-name" type="text" placeholder="My provider" required />
+            </label>
+
+            <label>
+              API style
+              <select id="f-type">
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="openai-compatible">OpenAI-compatible</option>
+              </select>
+            </label>
+
+            <label class="span-2">
+              Base URL
+              <input id="f-baseurl" type="text" placeholder="https://api.example.com/v1" />
+              <span class="hint" id="baseurl-hint"></span>
+            </label>
+
+            <label class="span-2">
+              API key
+              <div class="key-row">
+                <input id="f-apikey" type="password" placeholder="sk-..." />
+                <button type="button" id="toggle-key" class="btn ghost">Show</button>
+              </div>
+              <span class="hint" id="key-hint"></span>
+            </label>
+
+            <label class="span-2">
+              Extra API keys for orchestrator (one per line)
+              <textarea id="f-apikeys" rows="4" placeholder="sk-...&#10;sk-...&#10;sk-..."></textarea>
+              <span class="hint">
+                Optional. Orchestrator mode uses every key listed here (plus the primary key) as separate failover endpoints.
+              </span>
+            </label>
+
+            <label class="span-2">
+              Models (one per line)
+              <textarea id="f-models" rows="4" placeholder="model-name-1&#10;model-name-2"></textarea>
+              <button type="button" id="fetch-models" class="btn ghost small">Fetch models from provider</button>
+            </label>
+
+            <label>
+              Default model
+              <input id="f-default-model" type="text" list="model-options" placeholder="model-name" />
+              <datalist id="model-options"></datalist>
+            </label>
+
+            <label>
+              Max output tokens
+              <input id="f-maxtokens" type="number" min="256" max="32000" step="256" value="4096" />
+            </label>
+          </div>
+
+          <div class="form-actions">
+            <span id="test-result" class="test-result"></span>
+            <button type="button" id="test-provider" class="btn ghost">Test connection</button>
+            <button type="button" id="cancel-provider" class="btn ghost">Cancel</button>
+            <button type="submit" id="save-provider" class="btn primary">Save provider</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Agent settings -->
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Agent settings</h2>
+            <p class="sub">How Akron behaves when it runs.</p>
+          </div>
+        </div>
+
+        <div class="grid">
+          <label>
+            Active provider
+            <select id="s-provider"></select>
+          </label>
+
+          <label>
+            Active model
+            <input id="s-model" type="text" list="s-model-options" placeholder="model-name" />
+            <datalist id="s-model-options"></datalist>
+          </label>
+
+          <label class="span-2">
+            <span>Tasks keep running until the model stops calling tools. A step limit saved by an older version is ignored.</span>
+          </label>
+
+          <label>
+            Temperature
+            <input id="s-temperature" type="number" min="0" max="2" step="0.1" value="0.7" />
+          </label>
+
+          <label class="span-2 checkbox-row">
+            <input id="s-screenshots" type="checkbox" />
+            <span>Send screenshots to the model when it asks (uses vision models; costs more tokens)</span>
+          </label>
+
+          <label class="span-2 checkbox-row">
+            <input id="s-streaming" type="checkbox" />
+            <span>Stream replies as they are generated (falls back automatically if the provider does not support it)</span>
+          </label>
+
+          <label class="span-2 checkbox-row">
+            <input id="s-sound" type="checkbox" />
+            <span>Play a chime when a task finishes</span>
+          </label>
+
+          <label class="span-2 checkbox-row">
+            <input id="s-notify" type="checkbox" />
+            <span>Notify when a task finishes or needs you</span>
+          </label>
+
+          <label class="span-2 checkbox-row">
+            <input id="s-plan-approval" type="checkbox" />
+            <span>Ask me to approve Akron's plan before it starts a multi-step task (never asked in "Act without asking" mode)</span>
+          </label>
+
+          <label class="span-2 checkbox-row">
+            <input id="s-native" type="checkbox" />
+            <span>Connect the optional local tool host (install it with native/install-windows.ps1)</span>
+          </label>
+
+          <label class="span-2 checkbox-row">
+            <input id="s-bridge" type="checkbox" />
+            <span>Connect to the optional desktop bridge on this computer (start it with node native/bridge-client.mjs)</span>
+          </label>
+
+          <label class="span-2 checkbox-row">
+            <input id="s-speak" type="checkbox" />
+            <span>Read final replies aloud with the browser's speech synthesis</span>
+          </label>
+
+          <label>
+            <span>Voice</span>
+            <select id="s-voice-engine">
+              <option value="auto">Auto</option>
+              <option value="browser">Browser speech</option>
+              <option value="whisper">Local Whisper</option>
+              <option value="provider">Provider transcription</option>
+            </select>
+          </label>
+          <label>
+            <span>Voice language</span>
+            <input id="s-voice-lang" type="text" value="en-US" />
+          </label>
+
+          <label class="span-2">
+            <span>Permission mode</span>
+            <select id="s-permission-mode">
+              <option value="ask">Ask before acting</option>
+              <option value="skip">Act without asking</option>
+            </select>
+          </label>
+
+          <label class="span-2 checkbox-row">
+            <input id="s-confirm-sites" type="checkbox" />
+            <span>Ask before Akron touches a site it has not been approved for</span>
+          </label>
+
+          <label class="span-2 checkbox-row">
+            <input id="s-domain-change" type="checkbox" />
+            <span>Pause when a task navigates from one site to another</span>
+          </label>
+
+          <label class="span-2 checkbox-row">
+            <input id="s-autogroup" type="checkbox" />
+            <span>Group each chat's tabs into its own group (recommended, like Claude in Chrome)</span>
+          </label>
+
+          <label>
+            Tab group name
+            <input id="s-group-title" type="text" placeholder="Akron" />
+            <span class="hint">Created on the first message for a tab; shown in Chrome's tab strip.</span>
+          </label>
+
+          <label class="span-2">
+            Extra system prompt (optional)
+            <textarea id="s-extra" rows="3" placeholder="e.g. Always answer in Spanish. Prefer keyboard shortcuts."></textarea>
+          </label>
+        </div>
+
+        <div class="form-actions">
+          <span id="save-result" class="test-result"></span>
+          <button id="save-settings" class="btn primary">Save settings</button>
+        </div>
+      </section>
+
+      <!-- Orchestrator -->
+      <section class="card" id="orchestrator">
+        <div class="card-head">
+          <div>
+            <h2>Orchestrator mode</h2>
+            <p class="sub">
+              Build one pool from every selected model and every API key. If a key or model
+              hits a rate limit, quota, auth error, or outage, the current step continues on
+              the next endpoint.
+            </p>
+          </div>
+          <span id="orch-summary" class="badge">off</span>
+        </div>
+
+        <div class="grid">
+          <label class="span-2 checkbox-row">
+            <input id="s-orchestrator" type="checkbox" />
+            <span>Enable orchestrator mode (automatic failover across keys and models)</span>
+          </label>
+
+          <label>
+            Max endpoints to try per step
+            <input id="s-orch-max" type="number" min="1" max="200" step="1" value="200" />
+            <span class="hint">Default 200. Each endpoint is one provider + model + key.</span>
+          </label>
+
+          <label>
+            Rate-limit cooldown (seconds)
+            <input id="s-orch-cooldown" type="number" min="5" max="86400" step="5" value="60" />
+            <span class="hint">A failed endpoint is skipped for this long.</span>
+          </label>
+        </div>
+
+        <div class="form-actions">
+          <span id="orch-result" class="test-result"></span>
+          <button id="orch-refresh-models" class="btn ghost small">Refresh model lists</button>
+          <button id="orch-select-all" class="btn ghost small">Select all models</button>
+          <button id="orch-clear" class="btn ghost small">Clear</button>
+          <button id="save-orchestrator" class="btn primary">Save orchestrator</button>
+        </div>
+
+        <div id="orch-pool" class="orch-pool"></div>
+      </section>
+
+      <!-- Tool confirmations -->
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Ask before these tools run</h2>
+            <p class="sub">Akron pauses and asks for permission each time a checked tool is used.</p>
+          </div>
+        </div>
+        <div id="confirm-tools-list" class="check-list"></div>
+        <div class="form-actions">
+          <span id="save-tools-result" class="test-result"></span>
+          <button id="save-tools" class="btn primary">Save tool permissions</button>
+        </div>
+      </section>
+
+      <!-- Skills -->
+      <section class="card" id="skills">
+        <div class="card-head">
+          <div>
+            <h2>Skills</h2>
+            <p class="sub">SKILL.md files. Names and descriptions stay in the prompt. The full instructions load when a task matches.</p>
+          </div>
+        </div>
+        <div id="skills-list" class="skill-list"></div>
+
+        <div class="grid">
+          <label>
+            New skill name
+            <input id="sk-name" type="text" placeholder="e.g. Inbox triage" />
+          </label>
+          <label>
+            Short description
+            <input id="sk-desc" type="text" placeholder="What it is for" />
+          </label>
+          <label class="span-2">
+            Instructions
+            <textarea id="sk-instructions" rows="3" placeholder="How Akron should behave when this skill is enabled."></textarea>
+          </label>
+        </div>
+        <div class="form-actions">
+          <span id="skill-result" class="test-result"></span>
+          <button id="add-skill" class="btn ghost">Add skill</button>
+          <button id="import-skill" class="btn ghost" type="button">Import SKILL.md</button>
+          <button id="export-skills" class="btn ghost" type="button">Export skills</button>
+          <input id="skill-file" type="file" accept=".md,text/markdown" class="hidden" />
+        </div>
+      </section>
+
+      <!-- Scheduled tasks -->
+      <section class="card" id="schedules">
+        <div class="card-head">
+          <div>
+            <h2>Scheduled tasks</h2>
+            <p class="sub">Run a prompt on a repeating timer in a background tab. Results are saved and notified.</p>
+          </div>
+        </div>
+
+        <div class="grid">
+          <label>
+            Title
+            <input id="sch-title" type="text" placeholder="e.g. Check inbox" />
+          </label>
+          <label>
+            Repeat
+            <select id="sch-repeat">
+              <option value="interval">Every N minutes</option>
+              <option value="once">Once</option>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+              <option value="annually">Annually</option>
+            </select>
+          </label>
+          <label>
+            Every (minutes)
+            <input id="sch-every" type="number" min="1" step="1" value="60" />
+          </label>
+          <label>
+            Time
+            <input id="sch-time" type="time" value="09:00" />
+          </label>
+          <label>
+            Date
+            <input id="sch-date" type="date" />
+          </label>
+          <label>
+            Weekday
+            <select id="sch-weekday">
+              <option value="0">Sunday</option>
+              <option value="1" selected>Monday</option>
+              <option value="2">Tuesday</option>
+              <option value="3">Wednesday</option>
+              <option value="4">Thursday</option>
+              <option value="5">Friday</option>
+              <option value="6">Saturday</option>
+            </select>
+          </label>
+          <label>
+            Day of month
+            <input id="sch-monthday" type="number" min="1" max="31" value="1" />
+          </label>
+          <label>
+            Month and day
+            <input id="sch-annual" type="text" value="01-01" placeholder="01-01" />
+          </label>
+          <label class="span-2">
+            Prompt
+            <textarea id="sch-prompt" rows="3" placeholder="What should Akron do each time?"></textarea>
+          </label>
+          <label class="span-2">
+            Start URL (optional)
+            <input id="sch-url" type="text" placeholder="https://example.com" />
+          </label>
+          <label class="span-2 checkbox-row">
+            <input id="sch-enabled" type="checkbox" checked />
+            <span>Enabled</span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <span id="schedule-result" class="test-result"></span>
+          <button id="add-schedule" class="btn primary">Add schedule</button>
+        </div>
+
+        <div id="schedule-list" class="schedule-list"></div>
+        <div id="no-schedules" class="empty-note">No scheduled tasks yet.</div>
+      </section>
+
+      <!-- Saved prompts -->
+      <section class="card" id="prompts">
+        <div class="card-head">
+          <div>
+            <h2>Saved prompts</h2>
+            <p class="sub">Reusable prompts, available from the 📌 button in the side panel.</p>
+          </div>
+        </div>
+
+        <div class="grid">
+          <label>
+            Title
+            <input id="sp-title" type="text" placeholder="e.g. Summarize page" />
+          </label>
+          <label class="span-2">
+            Prompt
+            <textarea id="sp-text" rows="3" placeholder="Prompt text"></textarea>
+          </label>
+        </div>
+        <div class="form-actions">
+          <span id="prompt-result" class="test-result"></span>
+          <button id="add-saved-prompt" class="btn primary">Save prompt</button>
+        </div>
+
+        <div id="saved-prompt-list" class="prompt-list"></div>
+        <div id="no-prompts" class="empty-note">No saved prompts yet.</div>
+      </section>
+
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Permissions &amp; domains</h2>
+            <p class="sub">Limit which sites Akron is allowed to touch.</p>
+          </div>
+        </div>
+
+        <h3>Your approved sites</h3>
+        <p class="sub">Sites you chose with Always allow. Revoke one and Akron will ask again.</p>
+        <div id="approved-sites" class="prompt-list"></div>
+        <p id="approved-empty" class="empty-note">No sites are approved yet.</p>
+
+        <div class="grid">
+          <label>
+            Allowed domains (one per line)
+            <textarea id="s-allowed" rows="3" placeholder="example.com&#10;*.trusted.org"></textarea>
+            <span class="hint">Leave empty to allow every site except the blocked ones. Supports <code>example.com</code> and <code>*.example.com</code>.</span>
+          </label>
+
+          <label>
+            Blocked domains (one per line)
+            <textarea id="s-blocked" rows="3" placeholder="bank.example.com&#10;*.internal.corp"></textarea>
+            <span class="hint">Always refused, even if the allowed list would permit them. Use <code>*</code> to block everything.</span>
+          </label>
+        </div>
+
+        <div class="form-actions">
+          <span id="save-policy-result" class="test-result"></span>
+          <button id="save-policy" class="btn primary">Save policy</button>
+        </div>
+      </section>
+
+      <section class="card about">
+        <h2>How it works</h2>
+        <p>
+          Akron runs an agent loop in the extension's service worker. It asks your chosen model what to do,
+          then executes browser tools (read page, click, type, scroll, open tabs, screenshot) on the active tab.
+          No account, no proxy, no server: your key goes straight from this browser to the provider.
+        </p>
+        <p class="warn">
+          Treat API keys like passwords. Anyone with access to this Chrome profile can read them.
+          Revoke a key at the provider if you stop using it.
+        </p>
+      </section>
+    </main>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

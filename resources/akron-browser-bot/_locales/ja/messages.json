@@ -1,0 +1,6 @@
+{
+  "appName": { "message": "Akron Browser Bot" },
+  "appDesc": { "message": "自分の API キーで使える AI ブラウザエージェント。Claude in Chrome のように動作し、任意のプロバイダーに対応します。" },
+  "actionTitle": { "message": "Akron Browser Bot を開く" },
+  "commandToggle": { "message": "Akron Browser Bot サイドパネルを切り替え" }
+}

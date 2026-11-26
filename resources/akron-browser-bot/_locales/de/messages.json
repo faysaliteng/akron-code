@@ -1,0 +1,6 @@
+{
+  "appName": { "message": "Akron Browser Bot" },
+  "appDesc": { "message": "Ein KI-Browser-Agent mit eigenem API-Schlüssel. Funktioniert wie Claude in Chrome, aber mit jedem Anbieter." },
+  "actionTitle": { "message": "Akron Browser Bot öffnen" },
+  "commandToggle": { "message": "Akron Browser Bot-Seitenleiste umschalten" }
+}

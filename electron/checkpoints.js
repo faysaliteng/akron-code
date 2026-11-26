@@ -111,4 +111,95 @@ function removeCheckpoint(conv, id) {
   try { fs.rmSync(target.dir, { recursive: true, force: true }); return true; } catch (_) { return false; }
 }
 
-module.exports = { ROOT, snapshotFile, listCheckpoints, restore, removeCheckpoint, snapDir };
+function computeLineDiff(beforeText, afterText) {
+  const a = beforeText === '' ? [] : String(beforeText).replace(/\r\n/g, '\n').split('\n');
+  const b = afterText === '' ? [] : String(afterText).replace(/\r\n/g, '\n').split('\n');
+  const m = a.length;
+  const n = b.length;
+  // LCS matrix for reasonably sized source files; prefix/suffix fallback for huge files.
+  if (m * n > 400000) {
+    let p = 0;
+    while (p < m && p < n && a[p] === b[p]) p++;
+    let s = 0;
+    while (s < (m - p) && s < (n - p) && a[m - 1 - s] === b[n - 1 - s]) s++;
+    const lines = [];
+    for (let i = 0; i < p; i++) lines.push({ type: 'ctx', oldLine: i + 1, newLine: i + 1, text: a[i] });
+    for (let i = p; i < m - s; i++) lines.push({ type: 'del', oldLine: i + 1, newLine: null, text: a[i] });
+    for (let j = p; j < n - s; j++) lines.push({ type: 'add', oldLine: null, newLine: j + 1, text: b[j] });
+    for (let k = 0; k < s; k++) lines.push({ type: 'ctx', oldLine: m - s + k + 1, newLine: n - s + k + 1, text: a[m - s + k] });
+    return { lines, added: Math.max(0, (n - s) - p), removed: Math.max(0, (m - s) - p) };
+  }
+  const dp = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      if (a[i] === b[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
+      else dp[i][j] = dp[i + 1][j] >= dp[i][j + 1] ? dp[i + 1][j] : dp[i][j + 1];
+    }
+  }
+  const lines = [];
+  let i = 0; let j = 0;
+  let added = 0; let removed = 0;
+  while (i < m && j < n) {
+    if (a[i] === b[j]) {
+      lines.push({ type: 'ctx', oldLine: i + 1, newLine: j + 1, text: a[i] });
+      i++; j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      lines.push({ type: 'del', oldLine: i + 1, newLine: null, text: a[i] });
+      removed++; i++;
+    } else {
+      lines.push({ type: 'add', oldLine: null, newLine: j + 1, text: b[j] });
+      added++; j++;
+    }
+  }
+  while (i < m) { lines.push({ type: 'del', oldLine: i + 1, newLine: null, text: a[i++] }); removed++; }
+  while (j < n) { lines.push({ type: 'add', oldLine: null, newLine: j + 1, text: b[j++] }); added++; }
+  return { lines, added, removed };
+}
+
+// Compute per-file unified diffs from stored checkpoint pre-states to current disk contents.
+function computeTurnDiffs(conv, checkpointId, cwd) {
+  const all = listCheckpoints(conv);
+  if (!all.length) return [];
+  let list = all;
+  if (checkpointId && checkpointId !== 'all' && checkpointId !== 'latest') {
+    const exact = all.filter((c) => c.id === checkpointId || path.basename(c.dir) === checkpointId || String(c.turn) === String(checkpointId));
+    if (exact.length) list = exact;
+    else list = [all[all.length - 1]];
+  } else if (checkpointId === 'latest') {
+    list = [all[all.length - 1]];
+  }
+  const earliestByPath = new Map();
+  for (const cp of list) {
+    for (const f of cp.files || []) {
+      if (!f || !f.path || earliestByPath.has(f.path)) continue;
+      earliestByPath.set(f.path, { cp, f });
+    }
+  }
+  const baseCwd = cwd ? path.resolve(cwd) : '';
+  const diffs = [];
+  for (const [absPath, { cp, f }] of earliestByPath) {
+    let before = '';
+    if (f.existed && f.backup) {
+      try { before = fs.readFileSync(path.join(cp.dir, f.backup), 'utf8'); } catch (_) { before = ''; }
+    }
+    const existsNow = fs.existsSync(absPath);
+    let after = '';
+    if (existsNow) {
+      try { after = fs.readFileSync(absPath, 'utf8'); } catch (_) { after = ''; }
+    }
+    const status = !f.existed ? (existsNow ? 'added' : 'deleted') : (existsNow ? 'modified' : 'deleted');
+    const relPath = baseCwd && absPath.startsWith(baseCwd + path.sep) ? path.relative(baseCwd, absPath) : path.basename(absPath);
+    const d = computeLineDiff(before, after);
+    diffs.push({
+      path: absPath,
+      relPath,
+      status,
+      added: d.added,
+      removed: d.removed,
+      lines: d.lines,
+    });
+  }
+  return diffs;
+}
+
+module.exports = { ROOT, snapshotFile, listCheckpoints, restore, removeCheckpoint, computeTurnDiffs, computeLineDiff, snapDir };

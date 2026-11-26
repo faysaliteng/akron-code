@@ -2373,8 +2373,71 @@ ipcMain.handle('autobot:rewind', (e, convId, checkpointId) => {
   try {
     const r = require('./checkpoints').restore(convId, checkpointId);
     const ok = (r.errors || []).length === 0;
-    return { ok, restored: (r.restored || []).length, removed: (r.removed || []).length, errors: r.errors || [] };
-  } catch (err) { return { ok: false, restored: 0, removed: 0, errors: [String(err && err.message || err)] }; }
+    return { ok, restored: (r.restored || []).length, removed: (r.removed || []).length, restoredFiles: r.restored || [], removedFiles: r.removed || [], errors: r.errors || [] };
+  } catch (err) { return { ok: false, restored: 0, removed: 0, restoredFiles: [], removedFiles: [], errors: [String(err && err.message || err)] }; }
+});
+ipcMain.handle('autobot:turnDiffs', (e, convId, checkpointId, cwd) => {
+  try { return require('./checkpoints').computeTurnDiffs(convId, checkpointId, cwd); } catch (_) { return []; }
+});
+ipcMain.handle('autobot:extBridgeStatus', () => {
+  try { return require('./extbridge').status(); } catch (e) { return { running: false, error: e.message, tabs: [] }; }
+});
+ipcMain.handle('autobot:extBridgeOpenFolder', () => {
+  try {
+    const dir = require('./extbridge').extensionDir();
+    if (!fs.existsSync(dir)) return { ok: false, error: 'Extension folder not found' };
+    shell.openPath(dir);
+    return { ok: true, dir };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle('autobot:transcribeAudio', async (e, payload = {}) => {
+  try {
+    const wavB64 = String(payload.wavBase64 || '');
+    if (!wavB64) return { ok: false, fallback: 'local-whisper' };
+    let base = '';
+    let key = '';
+    let model = 'whisper-large-v3-turbo';
+    try {
+      const cfg = freellm.loadConfig ? freellm.loadConfig() : null;
+      if (cfg && cfg.token && cfg.providers && ((cfg.providers.groq && cfg.providers.groq.apiKey) || (cfg.providers.openai && cfg.providers.openai.apiKey))) {
+        base = `http://${cfg.host || '127.0.0.1'}:${cfg.port || 3001}/v1`;
+        key = cfg.token;
+      }
+    } catch (_) {}
+    if (!base || !key) {
+      const s = store.getSettings() || {};
+      const p = s.provider || {};
+      if (p.baseURL && p.apiKey && /openai\.com|groq\.com|127\.0\.0\.1:3001/i.test(String(p.baseURL))) {
+        base = String(p.baseURL).replace(/\/+$/, '');
+        key = String(p.apiKey);
+        if (/openai\.com/i.test(base)) model = 'whisper-1';
+      }
+    }
+    if (!base || !key) return { ok: false, fallback: 'local-whisper' };
+    const buf = Buffer.from(wavB64, 'base64');
+    const fd = new FormData();
+    fd.append('file', new Blob([buf], { type: 'audio/wav' }), 'speech.wav');
+    fd.append('model', model);
+    if (payload.lang) fd.append('language', String(payload.lang).slice(0, 2));
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    try {
+      const r = await fetch(`${base}/audio/transcriptions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}` },
+        body: fd,
+        signal: ctrl.signal,
+      });
+      if (!r.ok) return { ok: false, status: r.status, fallback: 'local-whisper' };
+      const j = await r.json().catch(() => null);
+      const txt = j && typeof j.text === 'string' ? j.text.trim() : '';
+      return txt ? { ok: true, text: txt, engine: 'gateway' } : { ok: false, fallback: 'local-whisper' };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (_) {
+    return { ok: false, fallback: 'local-whisper' };
+  }
 });
 ipcMain.handle('autobot:getOrchestrator', () => store.getOrchestrator());
 ipcMain.handle('autobot:setOrchestrator', (e, patch) => store.setOrchestrator(patch));
@@ -3207,10 +3270,52 @@ app.whenReady().then(() => {
   } catch (e) {
     console.error('helio-extension scheme unavailable:', e.message);
   }
+  // Grant microphone permissions for built-in voice typing (ONNX Whisper).
+  try {
+    const isLocalOrigin = (url) => !url || /^file:|^http:\/\/(127\.0\.0\.1|localhost)\b/i.test(String(url));
+    session.defaultSession.setPermissionCheckHandler((_wc, perm, origin) => {
+      if ((perm === 'media' || perm === 'audioCapture' || perm === 'microphone') && isLocalOrigin(origin)) return true;
+      return true;
+    });
+    session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => {
+      if (perm === 'media' || perm === 'audioCapture' || perm === 'microphone') {
+        return cb(isLocalOrigin(wc && wc.getURL ? wc.getURL() : ''));
+      }
+      cb(true);
+    });
+  } catch (_) {}
+
   // Loopback WebSocket bridge for a real Chrome extension (Desktop parity).
   extHost.startBridge().then((r) => {
     if (!r || !r.ok) console.error('extension bridge unavailable:', (r && r.error) || 'unknown');
   }).catch((e) => console.error('extension bridge failed:', e.message));
+
+  // Akron Browser Bot Desktop Bridge (ws://127.0.0.1:8766 + zero-key /v1 proxy).
+  try {
+    const extbridge = require('./extbridge');
+    const getHydratedProvider = async () => {
+      const s = store.getSettings() || {};
+      let p = s.provider || {};
+      if (p.oauthProvider) {
+        try { p = await hydrateProvider(p); } catch (_) {}
+      }
+      if (!p.apiKey && /:3001\b/.test(String(p.baseURL || ''))) {
+        try { const c = freellm.loadConfig ? freellm.loadConfig() : null; if (c && c.token) p = { ...p, apiKey: c.token }; } catch (_) {}
+      }
+      return p;
+    };
+    const getHydratedOrch = async () => {
+      const orch = store.getOrchestrator() || {};
+      const rows = Array.isArray(orch.providers) ? await Promise.all(orch.providers.map(async (r) => {
+        if (r && r.oauthProvider) { try { return await hydrateProvider(r); } catch (_) { return r; } }
+        return r;
+      })) : [];
+      return { ...orch, providers: rows };
+    };
+    extbridge.start({ getProvider: getHydratedProvider, getOrchestrator: getHydratedOrch }).then((r) => {
+      if (!r || !r.ok) console.error('akron-browser-bot bridge unavailable:', (r && r.error) || 'unknown');
+    }).catch(() => {});
+  } catch (_) {}
   applyFeatures(store.getFeatures());
   // Re-assert the login item on boot so a moved/reinstalled app keeps working
   // (macOS stores the path, and it changes between dev and packaged builds).
@@ -3263,6 +3368,7 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   try { scheduler.stop(); } catch (_) {}
   try { extHost.stopBridge(); } catch (_) {}
+  try { require('./extbridge').stop(); } catch (_) {}
   try { if (freellmHandle) freellmHandle.stop(); } catch (_) {}
   freellmHandle = null;
 });

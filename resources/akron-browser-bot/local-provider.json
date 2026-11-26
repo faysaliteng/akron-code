@@ -1,0 +1,22 @@
+{
+  "version": 100,
+  "providers": [
+    {
+      "id": "akron-desktop",
+      "name": "Akron Bot Desktop (All Models · Zero Key)",
+      "type": "openai-compatible",
+      "baseUrl": "http://127.0.0.1:8766/v1",
+      "apiKey": "akron-desktop-local",
+      "replace": true,
+      "models": [
+        "akron-default",
+        "akron-planner",
+        "akron-coder",
+        "akron-vision",
+        "akron-fast",
+        "akron-longctx"
+      ],
+      "defaultModel": "akron-default"
+    }
+  ]
+}

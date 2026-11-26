@@ -14,13 +14,14 @@ class ShellManager {
   }
 
   // Spawn a persistent shell in a given cwd.
-  start({ cwd, shell = '/bin/zsh', pathPrefix = '' } = {}) {
+  start({ cwd, shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh', pathPrefix = '' } = {}) {
     const id = 'sh' + this.nextId++;
     // `-s`: read commands from stdin even when the parent has a controlling
     // TTY (terminal launch, test runner) — plain `zsh -i` reads /dev/tty there
     // and every command times out. `detached` drops the TTY and gives the
     // shell its own process group so kill() can take its children too.
-    const proc = spawn(shell, ['-i', '-s'], {
+    const args = process.platform === 'win32' ? ['-NoLogo', '-NoProfile', '-Command', '-'] : ['-i', '-s'];
+    const proc = spawn(shell, args, {
       cwd: cwd || process.cwd(),
       env: { ...process.env, TERM: 'xterm-256color', PS1: '' },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -70,7 +71,10 @@ class ShellManager {
         entry.listeners = entry.listeners.filter((l) => l !== onData);
       };
       // echo marker so we know when the command finished
-      entry.proc.stdin.write(command + `; echo "\n${marker}\n"\n`);
+      const tail = process.platform === 'win32'
+        ? `\nWrite-Output ""\nWrite-Output "${marker}"\n`
+        : `; echo "\n${marker}\n"\n`;
+      entry.proc.stdin.write(command + tail);
       const poll = setInterval(() => {
         if (entry.buffer.includes(marker)) {
           clearInterval(poll);

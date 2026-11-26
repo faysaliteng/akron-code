@@ -18,7 +18,7 @@ const STANDARD_TOOLS = new Set([
   'Bash', 'Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'LS', 'TodoWrite', 'WebFetch', 'WebSearch',
   'Task', 'Agent', 'TaskOutput', 'TaskStop', 'Swarm', 'Workflow', 'ToolSearch', 'find_mcp_tools', 'Skill',
   'TeamCreate', 'TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate', 'SendMessage',
-  'CreateCustomTool', 'ListCustomTools', 'DeleteCustomTool',
+  'CreateCustomTool', 'ListCustomTools', 'DeleteCustomTool', 'ext_browser',
   'AskUserQuestion', 'ExitPlanMode', 'KillShell', 'Artifact', 'Cd',
   'browser_open', 'browser_navigate', 'browser_read', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_screenshot',
 ]);
@@ -168,6 +168,7 @@ const SYSTEM_PROMPT = `You are Akron Bot, an agentic desktop coding assistant ru
 
 ## Working style
 - Be concise. Do the work with tools; narrate only the key steps.
+- Start executing immediately: do at most ONE quick directory/file check (LS or Glob), post your plan with TodoWrite, and begin creating/editing code right away. Never spend multiple turns probing the environment without writing code.
 - For anything multi-step, call TodoWrite first, then execute the steps one by one.
 - Never claim something is done until a tool result proves it. Verify with ls / Read / running the build.
 - Keep working until the task is genuinely complete. Do not stop after a plan, and do not stop after one partial edit.
@@ -1906,7 +1907,8 @@ async function runAgent(opts) {
     for (const p of checkpointTargets(name, a)) {
       try {
         const abs = path.isAbsolute(p) ? p : path.resolve(currentCwd || process.cwd(), p);
-        ck.snapshotFile(opts.convId, opts.turnId || 'turn', abs);
+        const rec = ck.snapshotFile(opts.convId, opts.turnId || 'turn', abs);
+        if (rec) emit({ type: 'checkpoint', id: String(opts.turnId || 'turn'), path: abs, existed: !!rec.existed, at: Date.now() });
       } catch (_) {}
     }
   };

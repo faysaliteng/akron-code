@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Welcome to Akron Browser Bot</title>
+    <link rel="icon" type="image/png" href="../icons/icon48.png" />
+    <link rel="stylesheet" href="onboarding.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="hero">
+        <img class="logo" src="../icons/logo.svg" alt="Akron Browser Bot" />
+        <div>
+          <h1>Akron Browser Bot <span>by akronlogic.com</span></h1>
+          <p class="tagline">
+            A browser agent that uses your own API key from any provider.
+          </p>
+        </div>
+      </header>
+
+      <section class="status" id="status">
+        <span id="status-dot" class="dot"></span>
+        <span id="status-text">Checking your setup…</span>
+      </section>
+
+      <section class="steps">
+        <article class="step-card">
+          <div class="num">1</div>
+          <div class="step-body">
+            <h2>Add an API key</h2>
+            <p>
+              Pick Anthropic, OpenAI, Google Gemini, or any OpenAI-compatible endpoint
+              (OpenRouter, Groq, Together, Ollama, LM Studio, vLLM…). Keys stay in this
+              browser and go straight to the provider.
+            </p>
+            <button id="open-settings" class="btn primary">Open settings</button>
+          </div>
+        </article>
+
+        <article class="step-card">
+          <div class="num">2</div>
+          <div class="step-body">
+            <h2>Open the side panel</h2>
+            <p>
+              Click the Akron toolbar icon, press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd>
+              (<kbd>⌘</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> on Mac), or pin the side panel from
+              Chrome's side-panel menu. Keep it open while a task runs.
+            </p>
+            <button id="open-panel" class="btn ghost">Open the side panel</button>
+          </div>
+        </article>
+
+        <article class="step-card">
+          <div class="num">3</div>
+          <div class="step-body">
+            <h2>Give it a task</h2>
+            <p>
+              Try “Summarize this page”, “Fill this form with test data”, or “Find the login
+              button and click it”. Akron reads the page, acts on it, and shows every tool
+              call as it goes.
+            </p>
+          </div>
+        </article>
+      </section>
+
+      <section class="features">
+        <h2>What's included</h2>
+        <div class="feature-grid">
+          <div class="feature"><strong>Full page control</strong><span>Read, click, type, scroll, navigate, hover, drag, upload files, and manage tabs and tab groups.</span></div>
+          <div class="feature"><strong>Trusted input</strong><span>Real mouse and keyboard events through the Chrome DevTools Protocol for sites that ignore synthetic clicks.</span></div>
+          <div class="feature"><strong>Screenshots</strong><span>Capture the visible tab, a single element, or a full page, and show it inline.</span></div>
+          <div class="feature"><strong>Streaming replies</strong><span>Answers appear as the model writes them, with an automatic non-streaming fallback.</span></div>
+          <div class="feature"><strong>Plans &amp; tools</strong><span>A live plan panel plus collapsible cards for every tool call, its arguments, and its result.</span></div>
+          <div class="feature"><strong>Scheduled tasks</strong><span>Run prompts on a repeating timer in the background, with saved results and notifications.</span></div>
+          <div class="feature"><strong>Saved prompts &amp; skills</strong><span>Reusable prompts in the side panel, and switchable instruction packs for forms, research, and QA.</span></div>
+          <div class="feature"><strong>Voice &amp; attachments</strong><span>Dictate with the microphone and attach images or text files to a message.</span></div>
+          <div class="feature"><strong>GIF recording</strong><span>Record the tab as an animated GIF of the agent working, encoded locally and downloaded.</span></div>
+          <div class="feature"><strong>Domain policy</strong><span>Allow or block sites, and optionally ask before Akron touches a new host.</span></div>
+          <div class="feature"><strong>Per-tool confirmation</strong><span>Choose which tools must ask for permission on every use.</span></div>
+          <div class="feature"><strong>Local only</strong><span>No account, no proxy, no analytics. Keys stay in chrome.storage.local.</span></div>
+        </div>
+      </section>
+
+      <section class="privacy">
+        <h2>Privacy in one line</h2>
+        <p>
+          Page text, screenshots, and your prompts are sent only to the provider you configured.
+          Nothing passes through an Akron server — there isn't one.
+        </p>
+        <p class="warn">
+          Treat API keys like passwords. Anyone with access to this Chrome profile can read them.
+          Revoke a key at the provider when you stop using it.
+        </p>
+      </section>
+
+      <footer class="foot">
+        <button id="done" class="btn ghost">Done</button>
+        <button id="open-settings-2" class="btn primary">Add my first key</button>
+      </footer>
+    </main>
+    <script type="module" src="onboarding.js"></script>
+  </body>
+</html>
