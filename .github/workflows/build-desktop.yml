@@ -2,10 +2,14 @@ name: Build Akron Code Desktop (macOS · Windows · Linux)
 
 on:
   push:
-    branches: [main, master, fix/harness-swarm-pools]
+    branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -26,6 +30,7 @@ jobs:
           for f in test/*.test.js; do
             echo "=== $f ==="
             if ! node "$f"; then
+              echo "FAILED: $f"
               failed=$((failed + 1))
             fi
           done
@@ -38,19 +43,21 @@ jobs:
 
   package:
     needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
             platform: mac
-            cmd: npm run build && npx electron-builder --mac dmg zip --publish never
+            cmd: npm run build && npx electron-builder --mac dmg zip -c.compression=normal --publish never
           - os: windows-latest
             platform: win
-            cmd: npm run build && npx electron-builder --win --publish never
+            cmd: npm run build && npx electron-builder --win -c.compression=normal --publish never
           - os: ubuntu-latest
             platform: linux
-            cmd: npm run build && npx electron-builder --linux AppImage --publish never
+            cmd: npm run build && npx electron-builder --linux AppImage -c.compression=normal --publish never
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -68,12 +75,13 @@ jobs:
         run: ${{ matrix.cmd }}
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-      - name: Verify Electron Fuses & clean cold boot (macOS)
+      - name: Verify Electron Fuses, codesign & clean cold boot (macOS)
         if: matrix.platform == 'mac'
         shell: bash
         run: |
           APP_PATH="./release/mac-arm64/Akron Code.app"
           if [ ! -d "$APP_PATH" ]; then APP_PATH="./release/mac/Akron Code.app"; fi
+          codesign --verify --deep --strict "$APP_PATH"
           APP_PATH="$APP_PATH" node -e "
           const { getCurrentFuseWire, FuseV1Options } = require('@electron/fuses');
           getCurrentFuseWire(process.env.APP_PATH).then(w => {
@@ -89,7 +97,7 @@ jobs:
           const { spawnSync } = require('child_process');
           const freshHome = fs.mkdtempSync(path.join(os.tmpdir(), 'akron-ci-boot-'));
           const exe = path.join(process.env.APP_PATH, 'Contents', 'MacOS', 'Akron Code');
-          const res = spawnSync(exe, [], {
+          const res = spawnSync(exe, ['--disable-gpu'], {
             timeout: 30000,
             encoding: 'utf8',
             env: { ...process.env, HOME: freshHome, AKRON_COLD_BOOT_CHECK: '1', AKRON_NO_DIALOG: '1' }
