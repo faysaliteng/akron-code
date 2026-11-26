@@ -1078,6 +1078,7 @@ async function main() {
   });
 
   await test('ollama: picker lists discovered models and offers a one-click connect', () => {
+    const mainSrcOrLater = () => fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8');
     assert.ok(/autobot\.ollamaModels\(/.test(src), 'renderer must ask Ollama what is installed');
     assert.ok(/autobot\.ollamaServe\('start'\)/.test(src), 'renderer must be able to start the local server');
@@ -1087,11 +1088,14 @@ async function main() {
     // The old bug: a static PRESETS.map meant gemma4 never appeared.
     assert.ok(!/\{PRESETS\.map\(\(p\) => \{\s*\n\s*const short =/.test(src), 'static preset map must be gone from the picker');
     const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8');
-    assert.ok(/ollamaModels:\s*\(baseURL\) => ipcRenderer\.invoke\('autobot:ollamaModels'/.test(preload));
+    // A keyed local router (FreeLLMAPI on :3001) answers 401 to an anonymous
+    // GET /models, so the scan carries the bearer the turn will use.
+    assert.ok(/ollamaModels:\s*\(baseURL, apiKey\) => ipcRenderer\.invoke\('autobot:ollamaModels'/.test(preload),
+      'the picker scan must forward the endpoint key');
+    assert.ok(/providerStatus\.ollamaModels\(baseURL, \{ apiKey \}\)/.test(mainSrcOrLater()), 'main must hand the key to the probe');
     assert.ok(/ollamaServe:\s*\(action\) => ipcRenderer\.invoke\('autobot:ollamaServe'/.test(preload));
-    const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
-    assert.ok(/ipcMain\.handle\('autobot:ollamaModels'/.test(mainSrc));
-    assert.ok(/ipcMain\.handle\('autobot:ollamaServe'/.test(mainSrc));
+    assert.ok(/ipcMain\.handle\('autobot:ollamaModels'/.test(mainSrcOrLater()));
+    assert.ok(/ipcMain\.handle\('autobot:ollamaServe'/.test(mainSrcOrLater()));
   });
 
   // ---- cowork orchestrator: one goal, several different backends ----

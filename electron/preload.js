@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('autobot', {
   compact: (payload) => ipcRenderer.invoke('autobot:compact', payload),
   testProvider: (provider) => ipcRenderer.invoke('autobot:testProvider', provider),
   probeProviders: (list) => ipcRenderer.invoke('autobot:probeProviders', list),
-  ollamaModels: (baseURL) => ipcRenderer.invoke('autobot:ollamaModels', baseURL),
+  ollamaModels: (baseURL, apiKey) => ipcRenderer.invoke('autobot:ollamaModels', baseURL, apiKey || ''),
   ollamaServe: (action) => ipcRenderer.invoke('autobot:ollamaServe', action),
   onEvent: (cb) => {
     const handler = (event, payload) => cb(payload);

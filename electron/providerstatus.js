@@ -135,14 +135,25 @@ async function ollamaModels(baseURL, opts = {}) {
     { url: root + '/v1/models', via: 'v1/models' },
   ];
 
+  // A keyed local router (FreeLLMAPI, LM Studio with auth, vLLM behind a proxy)
+  // answers 401 to an anonymous GET /models, which used to render the preset as
+  // "not set up" even though the app held a working key. Send the same bearer
+  // the turn will use, so the picker lists the models the key can actually call.
+  const apiKey = String(opts.apiKey || '');
+  const headers = apiKey ? { authorization: 'Bearer ' + apiKey } : {};
   let lastDetail = 'Unreachable';
   for (const a of attempts) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, timeout);
     try {
-      const res = await fetchImpl(a.url, { method: 'GET', signal: ctrl.signal });
+      const res = await fetchImpl(a.url, { method: 'GET', headers, signal: ctrl.signal });
       const text = await res.text().catch(() => '');
-      if (!res.ok) { lastDetail = 'Status ' + res.status; continue; }
+      if (!res.ok) {
+        lastDetail = (res.status === 401 || res.status === 403)
+          ? (apiKey ? 'Key rejected (' + res.status + ')' : 'Needs an API key (' + res.status + ')')
+          : 'Status ' + res.status;
+        continue;
+      }
       let payload = null;
       try { payload = JSON.parse(text); } catch (_) { lastDetail = 'Not an Ollama server'; continue; }
       const models = normalizeModels(payload);

@@ -23,8 +23,23 @@ const BUNDLED_SKILLS_DIR = path.join(__dirname, '..', 'resources', 'skills');
 const CLAUDE_SKILLS_DIR = path.join(os.homedir(), '.claude', 'skills');
 
 function ensureDir(dir) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
+
+// `~/.autobot` holds API keys (settings.provider.apiKey, pool rows' apiKey,
+// account tokens) and is meant to be user-private. The directory shipped 0755
+// and every JSON was written 0644 — i.e. readable by any local account — so the
+// 0600 on settings.json/secrets.json only ever held because it was chmod'd by
+// hand. Tighten the directory once at load and write every JSON 0600.
+try { if (fs.existsSync(DATA_DIR)) fs.chmodSync(DATA_DIR, 0o700); } catch (_) {}
+// Legacy files written by older builds stay 0644 until something rewrites
+// them; normalise the whole JSON set once per launch.
+try {
+  for (const f of fs.readdirSync(DATA_DIR)) {
+    if (!/\.json$/.test(f)) continue;
+    try { fs.chmodSync(path.join(DATA_DIR, f), 0o600); } catch (_) {}
+  }
+} catch (_) {}
 
 function readJSON(file, fallback) {
   try {
@@ -35,7 +50,10 @@ function readJSON(file, fallback) {
 
 function writeJSON(file, data) {
   ensureDir(path.dirname(file));
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+  // mode only applies on create, so chmod after write: an existing 0644 file
+  // (from an older build) would otherwise stay world-readable.
+  fs.writeFileSync(file, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch (_) {}
 }
 
 // ---- Memory (.auto-memory) ----

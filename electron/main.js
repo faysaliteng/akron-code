@@ -1106,9 +1106,9 @@ ipcMain.handle('autobot:probeProviders', async (event, list) => {
 
 // Local Ollama discovery: a local server only runs the models that were actually
 // pulled, so the picker has to ask which ones exist instead of guessing.
-ipcMain.handle('autobot:ollamaModels', async (event, baseURL) => {
+ipcMain.handle('autobot:ollamaModels', async (event, baseURL, apiKey) => {
   try {
-    return await providerStatus.ollamaModels(baseURL);
+    return await providerStatus.ollamaModels(baseURL, { apiKey });
   } catch (e) {
     return { ok: false, base: '', via: '', models: [], detail: e.message };
   }

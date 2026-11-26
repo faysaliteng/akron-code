@@ -2209,3 +2209,62 @@ so in one line, once.
 asserting it is not worded as throttling). Full suite: 37 suites, 0 failing. The
 packaged proof matrix (`build/run-package-matrix.sh 9444`) is 9/9 probes green on
 the same artifact.
+
+## 42. The state a proof run touches is the user's, not the test's (2026-11-26)
+
+Proving the FreeLLMAPI key meant taking the composer off the orchestrator pool for
+one turn — the turn has to be answered by the single keyed provider, or the proof
+proves nothing. The first version of `build/probe-freellm-key.cjs` restored the
+pool inline on the success path only, so when a check threw the user was left with
+`{"enabled":false,"providers":[]}` in `~/.autobot/orchestrator.json`: a real
+four-row pool, ticked by hand, silently deleted by a test.
+
+**Fix, in the probe.** The pool is parked through the app, not by hand: read it,
+write `~/.autobot/orchestrator.preprobe.json` (0600) *before* disabling, and put it
+back via `window.autobot.setOrchestrator(...)` from `restorePool()`, which both the
+success path and the `.catch` path call. `poolWorthKeeping()` is the guard — an
+empty pool is not backed up and a backup that is empty is never restored, so a
+failed run cannot resurrect a pool the user deliberately cleared.
+
+**Fix, in the app.** The same run exposed a second way to lose saved state: the
+renderer profile is `localStorage`-hydrated over a hardcoded default and mirrored
+to main, so on a reload the built-in preset (`FreeLLMAPI · model: auto`) could win
+over the model the user had saved (`auto:fast`) — the picker only re-inserts an
+alias the catalog omits while it *is* the active model, so the alias vanished from
+the row list and the mirror wrote the demotion back. The adoption effect now keeps
+the saved model when main already holds a key for the same endpoint:
+
+```js
+sameEndpoint && saved.model && own.model !== saved.model  // → setProvider({ model: saved.model })
+```
+
+| proof | result |
+| --- | --- |
+| `node build/probe-freellm-key.cjs 9444 … auto:fast` (packaged, with the rebuilt 3-row pool) | **12/12** — `orchestrator pool restored: 3 rows, enabled=true`, turn `WIRED-MWX01YWD`, no error banner, no markup leak |
+| pool after the run | `enabled:true`, 3 rows (`claude-opus-5-5` heavy, `claude-haiku-5-5` small, `claude-fable-5-2` critical, all 1M, `activeIndex 0`), 0600 |
+| model retention | `before auto → seeded auto:fast → reload → auto:fast → reload → auto:fast` (main settings and `localStorage` agree) |
+| a turn through the rebuilt pool | `POOLOK-MWX0135A` answered in 3 s, zero `.prov-notice`, no dead-row line |
+
+## 43. `~/.autobot` was readable by every local account (2026-11-26)
+
+Checking the restored pool turned up `-rw-r--r-- orchestrator.json` next to
+`-rw------- settings.json`. The 0600 on settings was not policy, it was a manual
+chmod: `electron/store.js writeJSON()` called
+
+```js
+fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');   // 0644 under umask 022
+```
+
+for every file it owns — and those files carry credentials. `settings.provider.apiKey`
+is the gateway key; a pool row persists `baseUrl` + `apiKey` for gateway entries.
+The directory itself was `0755`, so any other account on the machine could read
+both.
+
+**Fix.** `writeJSON()` now writes with `{ mode: 0o600 }` and `chmodSync(0600)`
+afterwards (the mode flag only applies on create, so an existing 0644 file from an
+older build would otherwise stay readable), `ensureDir()` creates 0700, and one
+chmod pass at load tightens `~/.autobot` to 0700 and every pre-existing `*.json`
+in it to 0600 — legacy files are normalised instead of waiting to be rewritten.
+
+Verified: `drwx------ ~/.autobot`, and `stat -f '%Sp %N' ~/.autobot/*.json` shows
+no non-0600 file. `test/e2e.test.js`: **112 passed, 0 failed**.

@@ -8,7 +8,7 @@ import iconsMap from './icons.json';
 import { t as _t, LOCALES, localeDir } from './i18n.js';
 import { stripToolProtocol } from './textproto.mjs';
 import { normBase, LOCAL_BASE, KEY_STATUS_TTL, keySig, statusOf, presetStatus } from './providerstatus-ui.mjs';
-import { hydrateProvider } from './providerhydrate.mjs';
+import { hydrateProvider, endpointKey } from './providerhydrate.mjs';
 import { ctxToastState } from './ctx-toast.mjs';
 import ConnectorLogo from './ConnectorLogo.jsx';
 
@@ -633,9 +633,74 @@ export default function App() {
   useEffect(() => { saveJSON('autobot:activeId', activeId); }, [activeId]);
   useEffect(() => { saveJSON('autobot:provider', provider); }, [provider]);
   useEffect(() => { saveJSON('autobot:providerKeys', providerKeys); }, [providerKeys]);
+  // Credentials live in the main process file (~/.autobot/settings.json, 0600)
+  // because headless/scheduled runs read them from there. A renderer profile
+  // with no stored provider starts on the built-in default, so adopt the saved
+  // endpoint + key once — and hold the mirror below until that decision is made,
+  // otherwise the empty default overwrote the user's keyed configuration on
+  // every launch. Never overwrites a key the user already has.
+  const [settingsAdopted, setSettingsAdopted] = useState(false);
+  // Snapshot what the profile held *before* any effect ran. The persist effects
+  // above fire on mount and replace an absent profile with the built-in default,
+  // so reading localStorage inside the adoption effect would always see the
+  // default's key and never adopt the saved one.
+  const bootRef = useRef(null);
+  if (bootRef.current === null) {
+    bootRef.current = { own: loadJSON('autobot:provider', null), keys: loadJSON('autobot:providerKeys', {}) };
+  }
+  // Main's saved provider, remembered so the mirror below can never overwrite a
+  // real credential with a renderer profile that merely echoes the built-in
+  // default (that clobber cost the user's stored gateway key twice).
+  const savedProvRef = useRef(null);
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve(window.autobot.getSettings()).then((s) => {
+      if (cancelled || !s) return;
+      const saved = (s.provider) || {};
+      if (saved.baseURL) savedProvRef.current = saved;
+      const base = normBase(saved.baseURL);
+      if (!base || !saved.apiKey) return;
+      const boot = bootRef.current || {};
+      const own = boot.own;
+      const keys = boot.keys || {};
+      const ownBase = endpointKey((own && own.baseURL) || '');
+      const ownKey = (own && own.apiKey) || keys[base] || '';
+      if (ownKey) {
+        // The key is already here, but the *model* can be a stale fallback: the
+        // picker only re-inserts an alias the catalog omits while it is the
+        // active model, so a reload that starts from an older profile demoted
+        // `auto:fast` to the preset's `auto` and the mirror then persisted it.
+        // Same endpoint means the saved model is the last one the user chose.
+        const sameEndpoint = !ownBase || ownBase === endpointKey(base);
+        if (sameEndpoint && saved.model && (own && own.model) !== saved.model) {
+          setProvider((v) => ({ ...v, model: saved.model }));
+        }
+        return;                                            // the user's own key wins
+      }
+      if (ownBase && ownBase !== endpointKey(base)) return; // a different endpoint was chosen
+      savedProvRef.current = saved;
+      setProvider((v) => hydrateProvider({ ...v, ...saved }, v, PRESETS));
+      setProviderKeys((m) => ({ ...(m || {}), [base]: saved.apiKey }));
+    }).catch(() => {}).finally(() => { if (!cancelled) setSettingsAdopted(true); });
+    return () => { cancelled = true; };
+  }, []);
   // Mirror the active provider into the main-process settings so headless runs
   // (scheduled tasks) use the same model the user picked.
-  useEffect(() => { try { window.autobot.setSettings({ provider }); } catch (_) {} }, [provider]);
+  useEffect(() => {
+    if (!settingsAdopted) return;
+    // Never let a profile that is just the built-in default overwrite a real
+    // keyed endpoint in main's settings file — that file is what headless and
+    // scheduled runs read, and the default carries a hardcoded key of its own.
+    const boot = (bootRef.current && bootRef.current.own) || null;
+    const saved = savedProvRef.current;
+    const untouchedDefault = boot
+      && endpointKey(boot.baseURL || '') === endpointKey(DEFAULT_PROVIDER.baseURL || '')
+      && String(boot.apiKey || '') === String(DEFAULT_PROVIDER.apiKey || '');
+    const savedIsOther = saved && saved.apiKey
+      && endpointKey(saved.baseURL || '') !== endpointKey(DEFAULT_PROVIDER.baseURL || '');
+    if (untouchedDefault && savedIsOther) return;
+    try { window.autobot.setSettings({ provider }); } catch (_) {}
+  }, [provider, settingsAdopted]);
   useEffect(() => {
     saveJSON('autobot:settings', settings);
     // Push the OS-level toggle to main (it drives app.setLoginItemSettings).
@@ -5417,14 +5482,18 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
     const activeBase = normBase(provider.baseURL);
     if (activeBase && LOCAL_BASE.test(activeBase)) bases.add(activeBase);
     if (!bases.size) return {};
+    // A keyed local router (FreeLLMAPI on :3001) refuses an anonymous
+    // GET /models, so the scan must carry the same bearer the turn will use —
+    // otherwise a working endpoint renders as "not set up" and lists nothing.
+    const keyForBase = (b) => (providerKeys || {})[b] || PRESET_KEYS[b] || (b === activeBase ? provider.apiKey : '') || '';
     const found = {};
     for (const b of bases) {
-      const res = await Promise.resolve(window.autobot.ollamaModels(b)).catch(() => null);
+      const res = await Promise.resolve(window.autobot.ollamaModels(b, keyForBase(b))).catch(() => null);
       if (res) found[b] = res;
     }
     setOllama((prev) => ({ ...prev, ...found }));
     return found;
-  }, [provider.baseURL]);
+  }, [provider.baseURL, provider.apiKey, providerKeys]);
 
   useEffect(() => {
     if (!modelMenuOpen) return;
@@ -5531,13 +5600,22 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
     const base = normBase(p.baseURL);
     const scan = ollama[base];
     if (scan && scan.ok && scan.models && scan.models.length) {
-      for (const m of scan.models) {
+      // A local router lists its whole catalog. Label it for what it is
+      // ("live" = the key authenticated the endpoint) and keep the model the
+      // user already picked selectable even when it is a router alias that the
+      // catalog does not enumerate (FreeLLMAPI's `auto:fast`).
+      const isOllamaBase = /:11434\b/.test(base);
+      const list = scan.models.slice();
+      if (base === normBase(provider.baseURL) && provider.model && !list.some((m) => m.name === provider.model)) {
+        list.unshift({ name: provider.model, size: 0, family: '' });
+      }
+      for (const m of list) {
         pickerRows.push({
           key: base + '|' + m.name,
           preset: p,
           model: m.name,
           label: m.name.split('/').pop().replace(/:latest$/, ''),
-          prov: p.name.replace(/\s*\(.*\)$/, '') + ' · installed',
+          prov: p.name.replace(/\s*\(.*\)$/, '') + (isOllamaBase ? ' · installed' : ' · live'),
           local: true,
         });
       }
