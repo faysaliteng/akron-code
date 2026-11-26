@@ -23,7 +23,9 @@ const curated = require('./connector-catalog');
 const registry = require('./mcpregistry');
 
 const DATA_DIR = path.join(os.homedir(), '.autobot');
-const PLUGINS_FILE = path.join(DATA_DIR, 'plugins.json');
+function pluginsFile() {
+  return process.env.AUTOBOT_PLUGINS_FILE || path.join(DATA_DIR, 'plugins.json');
+}
 const LIST_DEFAULT_LIMIT = 5000;
 
 function ensureDir(d) { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); }
@@ -55,22 +57,38 @@ function lookup(id) { return CURATED_BY_ID.get(id) || registry.get(id) || null; 
 
 // ---- Install state ---------------------------------------------------------
 function getState() {
-  const s = readJSON(PLUGINS_FILE, { installed: {}, config: {} });
+  const s = readJSON(pluginsFile(), { installed: {}, config: {} });
   if (!s.installed) s.installed = {};
   if (!s.config) s.config = {};
   return s;
 }
-function saveState(s) { writeJSON(PLUGINS_FILE, s); }
+function saveState(s) { writeJSON(pluginsFile(), s); }
 
 function decorate(entry, state) {
   const inst = state.installed[entry.id];
+  const cfg = (state.config && state.config[entry.id]) || {};
+  const effectiveEndpoint = cfg.customEndpoint || entry.endpoint || null;
+  const effectiveCommand = cfg.customCommand || entry.command || null;
+  const builtInAdapter = entry.id === 'rea'
+    ? 'rea'
+    : (['gdrive', 'gdocs', 'gsheets', 'gslides'].includes(entry.id) ? 'gdrive' : null);
   return {
     ...entry,
+    ...(effectiveEndpoint ? { endpoint: effectiveEndpoint } : {}),
+    ...(effectiveCommand ? { command: effectiveCommand } : {}),
+    builtInAdapter,
+    hasApiKey: !!cfg.hasApiKey,
+    hasCustomEndpoint: !!cfg.customEndpoint,
+    hasCustomCommand: !!cfg.customCommand,
+    configMode: cfg.mode || null,
+    toolCount: cfg.toolCount || 0,
+    lastTestAt: cfg.lastTestAt || null,
+    lastTestOk: cfg.lastTestOk != null ? !!cfg.lastTestOk : null,
     origin: entry.origin || 'curated',
     installed: !!inst,
     installedAt: inst ? inst.at : null,
-    requiresSignIn: !!inst && entry.auth !== 'none' && !(state.config[entry.id] && state.config[entry.id].connected),
-    connected: !!(state.config[entry.id] && state.config[entry.id].connected),
+    requiresSignIn: !!inst && entry.auth !== 'none' && !cfg.connected,
+    connected: !!cfg.connected,
   };
 }
 

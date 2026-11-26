@@ -38,6 +38,7 @@ const orchPool = require('./orch-pool');
 const sessionlog = require('./sessionlog');
 const { hydrateOrchestrator, poolDeadNotice } = require('./orch-hydrate');
 const rea = require('./rea');
+const gdrive = require('./gdrive');
 try { rea.enrichProcessPath(); } catch (_) {}
 
 // ---------------------------------------------------------------------------
@@ -884,7 +885,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   const orchInput = orchestrator || orchSource;
   const orchReady = validateOrchestrator(orchInput, emit).catch(() => orchInput);
 
-  // gather MCP tools across connected servers
+  // gather MCP tools across connected servers + built-in Google Drive tools
   const extraTools = [];
   const serverIds = [...mcp.servers.keys()];
   for (const sid of serverIds) {
@@ -894,10 +895,20 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       extraTools.push({ name: `mcp__${sid}__${t.name}`, description: `[MCP ${entry.name}] ${t.description || ''}`, inputSchema: t.inputSchema });
     }
   }
+  try {
+    if (gdrive.status(mcp).connected && !mcp.servers.has('gdrive')) {
+      for (const t of gdrive.toolSpecs()) {
+        extraTools.push({ name: `mcp__gdrive__${t.name}`, description: t.description, inputSchema: t.inputSchema });
+      }
+    }
+  } catch (_) {}
 
   const callMcpTool = async (name, args) => {
     const m = /^mcp__(\w+?)__(.+)$/.exec(name);
     if (!m) return 'Unknown MCP tool: ' + name;
+    if (m[1] === 'gdrive' && !mcp.servers.has('gdrive')) {
+      return await gdrive.callTool(m[2], args || {}, mcp);
+    }
     return await mcp.callTool(m[1], m[2], args);
   };
 
@@ -2141,26 +2152,53 @@ ipcMain.handle('autobot:suggestPlugins', (e, goal, opts) => pluginsDir.suggest(g
 ipcMain.handle('autobot:installPlugin', async (e, id) => {
   const r = pluginsDir.install(id);
   if (!r.ok) return r;
-  // Connect immediately when the entry carries a usable MCP transport.
   const entry = r.entry || {};
   const withTimeout = (p, ms) => Promise.race([
     p,
     new Promise((_, rej) => setTimeout(() => rej(new Error('connect timed out after ' + (ms / 1000) + 's')), ms)),
   ]);
   try {
+    if (id === 'rea') {
+      const res = await withTimeout(rea.ensureConnected(mcp, { userDataDir: app.getPath('userData') }), 20000);
+      pluginsDir.setConfig(id, { connected: true, connectedAt: Date.now(), mode: 'built-in', toolCount: res.toolCount || 0 });
+      const upd = pluginsDir.markConnected(id);
+      return { ok: true, entry: upd || r.entry, serverId: 'rea', tools: res.tools || [] };
+    }
+    if (id === 'gdrive' || id === 'gdocs' || id === 'gsheets' || id === 'gslides') {
+      const st = gdrive.status(mcp);
+      if (st.connected) {
+        pluginsDir.setConfig(id, { connected: true, connectedAt: Date.now(), mode: st.mode });
+        const upd = pluginsDir.markConnected(id);
+        return { ok: true, entry: upd || r.entry, gdriveStatus: st };
+      }
+      return { ok: true, entry: r.entry, needsSetup: 'gdrive', detectedLocalFolders: st.detectedLocalFolders || [] };
+    }
+    const storedKey = secretstore.get(`plugin:apikey:${id}`) || undefined;
     if (entry.endpoint && entry.endpoint.url) {
-      const info = await withTimeout(mcp.connect({ url: entry.endpoint.url, transport: entry.endpoint.type === 'sse' ? 'sse' : 'http', name: entry.name }), 12000);
+      const info = await withTimeout(mcp.connect({
+        url: entry.endpoint.url,
+        transport: entry.endpoint.type === 'sse' ? 'sse' : 'http',
+        name: entry.name,
+        apiKey: storedKey,
+      }), 12000);
       const srv = mcp.servers.get(info.serverId);
       if (srv) srv.fullTools = info.tools || [];
+      pluginsDir.setConfig(id, { connected: true, connectedAt: Date.now(), toolCount: (info.tools || []).length });
       const upd = pluginsDir.markConnected(id);
       return { ok: true, entry: upd || r.entry, serverId: info.serverId, tools: info.tools || [] };
     }
     if (entry.command && entry.command.command) {
-      const info = await withTimeout(mcp.connect({ command: entry.command.command, args: entry.command.args || [], name: entry.name }), 15000);
+      const extraEnv = storedKey ? { API_KEY: storedKey, BEARER_TOKEN: storedKey, ...(entry.command.env || {}) } : (entry.command.env || {});
+      const info = await withTimeout(mcp.connect({ command: entry.command.command, args: entry.command.args || [], env: extraEnv, name: entry.name }), 15000);
       const srv = mcp.servers.get(info.serverId);
       if (srv) srv.fullTools = info.tools || [];
+      pluginsDir.setConfig(id, { connected: true, connectedAt: Date.now(), toolCount: (info.tools || []).length });
       const upd = pluginsDir.markConnected(id);
       return { ok: true, entry: upd || r.entry, serverId: info.serverId, tools: info.tools || [] };
+    }
+    if (storedKey) {
+      const upd = pluginsDir.markConnected(id);
+      return { ok: true, entry: upd || r.entry, mode: 'apikey' };
     }
   } catch (err) {
     // Install intent is preserved; surface the transport error without failing.
@@ -2177,7 +2215,160 @@ ipcMain.handle('autobot:installPlugin', async (e, id) => {
   }
   return r;
 });
-ipcMain.handle('autobot:uninstallPlugin', (e, id) => pluginsDir.uninstall(id));
+ipcMain.handle('autobot:uninstallPlugin', (e, id) => {
+  try { secretstore.del(`plugin:apikey:${id}`); } catch (_) {}
+  return pluginsDir.uninstall(id);
+});
+ipcMain.handle('autobot:configurePlugin', async (e, id, cfg = {}) => {
+  const entry = pluginsDir.get(id);
+  if (!entry) return { ok: false, error: `Unknown plugin/connector id: ${id}` };
+  if (!entry.installed) pluginsDir.install(id);
+
+  const patch = {};
+  let apiKey = null;
+  if (Object.prototype.hasOwnProperty.call(cfg, 'apiKey')) {
+    const cleanKey = String(cfg.apiKey || '').trim();
+    if (cleanKey) {
+      secretstore.set(`plugin:apikey:${id}`, cleanKey);
+      patch.hasApiKey = true;
+      apiKey = cleanKey;
+    } else {
+      secretstore.del(`plugin:apikey:${id}`);
+      patch.hasApiKey = false;
+    }
+  } else {
+    apiKey = secretstore.get(`plugin:apikey:${id}`) || null;
+  }
+
+  const endpointUrl = String(cfg.endpointUrl || '').trim();
+  const cmdStr = String(cfg.command || '').trim();
+  if (endpointUrl) {
+    patch.customEndpoint = { type: cfg.transport === 'sse' ? 'sse' : 'http', url: endpointUrl };
+  }
+  if (cmdStr) {
+    const parts = Array.isArray(cfg.args) ? cfg.args : String(cfg.args || '').trim().split(/\s+/).filter(Boolean);
+    patch.customCommand = { command: cmdStr, args: parts };
+  }
+
+  let updated = pluginsDir.setConfig(id, patch);
+  const effectiveEndpoint = (updated && updated.endpoint) || entry.endpoint;
+  const effectiveCommand = (updated && updated.command) || entry.command;
+
+  if (effectiveEndpoint && effectiveEndpoint.url) {
+    try {
+      const headers = {};
+      if (apiKey) {
+        const hdrName = String(cfg.headerName || 'authorization').trim();
+        headers[hdrName.toLowerCase()] = hdrName.toLowerCase() === 'authorization' ? `Bearer ${apiKey}` : apiKey;
+      }
+      const info = await mcp.connect({
+        url: effectiveEndpoint.url,
+        transport: effectiveEndpoint.type === 'sse' ? 'sse' : 'http',
+        name: entry.name,
+        headers,
+        apiKey: apiKey || undefined,
+      });
+      const srv = mcp.servers.get(info.serverId);
+      if (srv) srv.fullTools = info.tools || [];
+      updated = pluginsDir.setConfig(id, {
+        connected: true,
+        connectedAt: Date.now(),
+        mode: apiKey ? 'apikey+mcp' : 'mcp',
+        toolCount: (info.tools || []).length,
+        lastTestAt: Date.now(),
+        lastTestOk: true,
+      });
+      return { ok: true, entry: updated, serverId: info.serverId, tools: info.tools || [] };
+    } catch (err) {
+      return { ok: false, entry: updated, error: describeConnectError(err) };
+    }
+  }
+  if (effectiveCommand && effectiveCommand.command) {
+    try {
+      const keySlug = String(id).toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+      const env = apiKey ? { API_KEY: apiKey, [`${keySlug}_API_KEY`]: apiKey, BEARER_TOKEN: apiKey } : {};
+      const info = await mcp.connect({
+        command: effectiveCommand.command,
+        args: effectiveCommand.args || [],
+        env,
+        name: entry.name,
+      });
+      const srv = mcp.servers.get(info.serverId);
+      if (srv) srv.fullTools = info.tools || [];
+      updated = pluginsDir.setConfig(id, {
+        connected: true,
+        connectedAt: Date.now(),
+        mode: 'stdio-mcp',
+        toolCount: (info.tools || []).length,
+        lastTestAt: Date.now(),
+        lastTestOk: true,
+      });
+      return { ok: true, entry: updated, serverId: info.serverId, tools: info.tools || [] };
+    } catch (err) {
+      return { ok: false, entry: updated, error: describeConnectError(err) };
+    }
+  }
+  if (patch.hasApiKey) {
+    updated = pluginsDir.setConfig(id, { connected: true, connectedAt: Date.now(), mode: 'apikey', lastTestAt: Date.now(), lastTestOk: true });
+    return { ok: true, entry: updated, detail: 'API key stored securely and marked connected.' };
+  }
+  return { ok: true, entry: updated };
+});
+ipcMain.handle('autobot:testPlugin', async (e, id) => {
+  const entry = pluginsDir.get(id);
+  if (!entry) return { ok: false, error: `Unknown plugin/connector id: ${id}` };
+  try {
+    if (id === 'rea') {
+      const res = await rea.ensureConnected(mcp, { userDataDir: app.getPath('userData') });
+      const upd = pluginsDir.setConfig(id, { connected: true, connectedAt: Date.now(), toolCount: res.toolCount || 0, lastTestAt: Date.now(), lastTestOk: true });
+      return { ok: true, entry: upd, toolCount: res.toolCount || 0, detail: `REA connected (${res.toolCount || 0} MCP tools)` };
+    }
+    if (['gdrive', 'gdocs', 'gsheets', 'gslides'].includes(id)) {
+      const st = gdrive.status(mcp);
+      if (!st.connected) return { ok: false, needsSetup: 'gdrive', error: 'Google Drive is not set up yet.' };
+      const res = await gdrive.searchFiles('', { limit: 1 }, mcp);
+      const upd = pluginsDir.setConfig(id, { connected: true, connectedAt: Date.now(), lastTestAt: Date.now(), lastTestOk: true });
+      return { ok: true, entry: upd, detail: `Drive ${st.mode} OK (${(res.files || []).length} sample result)` };
+    }
+    if (entry.type === 'plugin') {
+      const upd = pluginsDir.setConfig(id, { connected: true, connectedAt: Date.now(), lastTestAt: Date.now(), lastTestOk: true });
+      const cap = (entry.provides || []).join(', ') || 'built-in';
+      return { ok: true, entry: upd, detail: `Plugin active (${cap})` };
+    }
+    const storedKey = secretstore.get(`plugin:apikey:${id}`) || null;
+    if (entry.endpoint && entry.endpoint.url) {
+      try {
+        const info = await mcp.connect({
+          url: entry.endpoint.url,
+          transport: entry.endpoint.type === 'sse' ? 'sse' : 'http',
+          name: entry.name,
+          apiKey: storedKey || undefined,
+        });
+        const upd = pluginsDir.setConfig(id, { connected: true, connectedAt: Date.now(), toolCount: (info.tools || []).length, lastTestAt: Date.now(), lastTestOk: true });
+        return { ok: true, entry: upd, toolCount: (info.tools || []).length, detail: `Connected (${(info.tools || []).length} MCP tools)` };
+      } catch (err) {
+        const msg = describeConnectError(err);
+        pluginsDir.setConfig(id, { lastTestAt: Date.now(), lastTestOk: false });
+        return { ok: false, error: msg };
+      }
+    }
+    if (entry.command && entry.command.command) {
+      const keySlug = String(id).toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+      const env = storedKey ? { API_KEY: storedKey, [`${keySlug}_API_KEY`]: storedKey, BEARER_TOKEN: storedKey } : {};
+      const info = await mcp.connect({ command: entry.command.command, args: entry.command.args || [], env, name: entry.name });
+      const upd = pluginsDir.setConfig(id, { connected: true, connectedAt: Date.now(), toolCount: (info.tools || []).length, lastTestAt: Date.now(), lastTestOk: true });
+      return { ok: true, entry: upd, toolCount: (info.tools || []).length, detail: `Connected (${(info.tools || []).length} MCP tools)` };
+    }
+    if (storedKey || entry.auth === 'none') {
+      const upd = pluginsDir.setConfig(id, { connected: true, connectedAt: Date.now(), lastTestAt: Date.now(), lastTestOk: true });
+      return { ok: true, entry: upd, detail: entry.auth === 'none' ? 'Ready (no credentials needed)' : 'API key verified in local secret store' };
+    }
+    return { ok: false, error: 'Requires sign-in or API key configuration first.' };
+  } catch (err) {
+    pluginsDir.setConfig(id, { lastTestAt: Date.now(), lastTestOk: false });
+    return { ok: false, error: oneLine(err) };
+  }
+});
 ipcMain.handle('autobot:pluginStats', () => pluginsDir.stats());
 ipcMain.handle('autobot:refreshRegistry', (e, opts) => pluginsDir.refreshRegistry(opts));
 ipcMain.handle('autobot:registryStatus', () => pluginsDir.registryStatus());
@@ -2351,6 +2542,196 @@ const cwdFor = (cwd) => cwd || store.getSettings().lastCwd || require('./workspa
 
 ipcMain.handle('autobot:listCommands', (e, cwd) => {
   try { return require('./commands').listForUi(cwdFor(cwd)); } catch (_) { return []; }
+});
+ipcMain.handle('autobot:listSlashActions', async (e, cwd) => {
+  try {
+    const cmds = require('./commands');
+    const dir = cwdFor(cwd);
+    const seenMcp = new Set();
+    const mcpPrompts = [];
+    // Include live MCP prompts from all connected servers first
+    for (const sid of [...mcp.servers.keys()]) {
+      try {
+        const items = await mcp.listPrompts(sid);
+        for (const p of items) {
+          const k = `${p.serverId}:${p.name}`;
+          if (!seenMcp.has(k)) { seenMcp.add(k); mcpPrompts.push(p); }
+        }
+      } catch (_) {}
+    }
+    // Always surface built-in REA guided workflows immediately when REA is installed
+    try {
+      const reaSt = rea.status(mcp, { userDataDir: app.getPath('userData') });
+      if (reaSt.available) {
+        for (const p of (rea.REA_BUILTIN_PROMPTS || [])) {
+          const k = `${p.serverId}:${p.name}`;
+          if (!seenMcp.has(k)) { seenMcp.add(k); mcpPrompts.push(p); }
+        }
+      }
+    } catch (_) {}
+    let skills = [];
+    try { skills = store.getSkills() || []; } catch (_) {}
+    return cmds.listSlashActions({ cwd: dir, mcpPrompts, skills });
+  } catch (_) {
+    return [];
+  }
+});
+ipcMain.handle('autobot:expandMcpPrompt', async (e, payload = {}) => {
+  try {
+    const serverId = String(payload.serverId || '').trim();
+    const name = String(payload.name || '').trim();
+    const argText = String(payload.argText || '').trim();
+    const dir = cwdFor(payload.cwd);
+    if (serverId === 'rea') {
+      const text = await rea.expandReaPrompt(mcp, name, argText, dir);
+      return { ok: true, prompt: text };
+    }
+    const srv = mcp.servers.get(serverId);
+    if (!srv) return { ok: false, error: `MCP server "${serverId}" is not connected.` };
+    const prompts = await mcp.listPrompts(serverId);
+    const meta = prompts.find((p) => p.name === name);
+    const parsedArgs = {};
+    if (argText) {
+      const kv = [...argText.matchAll(/(\w+)=(?:"([^"]*)"|'([^']*)'|(\S+))/g)];
+      if (kv.length) {
+        for (const m of kv) parsedArgs[m[1]] = m[2] != null ? m[2] : (m[3] != null ? m[3] : m[4]);
+      } else if (meta && meta.arguments && meta.arguments.length) {
+        parsedArgs[meta.arguments[0].name] = argText;
+      }
+    }
+    const res = await mcp.getPrompt(serverId, name, parsedArgs);
+    return { ok: true, prompt: res.text || argText || `Run ${serverId}:${name}` };
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+ipcMain.handle('autobot:listWorkspaceFiles', async (e, cwd, query = '') => {
+  try {
+    const dir = path.resolve(cwdFor(cwd));
+    const q = String(query || '').trim().toLowerCase();
+    const results = [];
+    const skip = new Set(['node_modules', '.git', 'dist', 'release', 'build', '.next', '.cache', '__pycache__']);
+    const stack = [{ d: dir, depth: 0 }];
+    while (stack.length && results.length < 250) {
+      const { d, depth } = stack.pop();
+      let ents;
+      try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { continue; }
+      for (const ent of ents) {
+        if (skip.has(ent.name)) continue;
+        const full = path.join(d, ent.name);
+        const rel = path.relative(dir, full).replace(/\\/g, '/');
+        if (ent.isDirectory()) {
+          if (depth < 4) stack.push({ d: full, depth: depth + 1 });
+          continue;
+        }
+        if (!ent.isFile()) continue;
+        if (q && !rel.toLowerCase().includes(q) && !ent.name.toLowerCase().includes(q)) continue;
+        results.push({ name: ent.name, path: rel, fullPath: full });
+        if (results.length >= 250) break;
+      }
+    }
+    results.sort((a, b) => {
+      if (!q) return a.path.localeCompare(b.path);
+      const ap = a.name.toLowerCase().startsWith(q) ? 0 : 1;
+      const bp = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+      return ap - bp || a.path.localeCompare(b.path);
+    });
+    return results.slice(0, 40);
+  } catch (_) {
+    return [];
+  }
+});
+ipcMain.handle('autobot:gdriveStatus', () => {
+  try { return gdrive.status(mcp); } catch (err) { return { ok: false, connected: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:gdrivePickFolder', async (event) => {
+  const cs = path.join(os.homedir(), 'Library', 'CloudStorage');
+  const defaultPath = fs.existsSync(cs) ? cs : os.homedir();
+  const r = await dialog.showOpenDialog(winFor(event), {
+    defaultPath,
+    properties: ['openDirectory'],
+  });
+  return r.canceled ? null : r.filePaths[0];
+});
+ipcMain.handle('autobot:gdriveConnect', async (e, payload = {}) => {
+  try {
+    const mode = String(payload.mode || 'local');
+    let res;
+    if (mode === 'local') {
+      res = gdrive.connectLocalFolder(payload.folderPath);
+    } else if (mode === 'token') {
+      res = await gdrive.connectToken({
+        accessToken: payload.accessToken,
+        refreshToken: payload.refreshToken,
+        clientId: payload.clientId,
+        clientSecret: payload.clientSecret,
+        apiBaseUrl: payload.apiBaseUrl,
+        uploadBaseUrl: payload.uploadBaseUrl,
+        verify: payload.verify !== false,
+      });
+    } else if (mode === 'oauth') {
+      const parent = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null;
+      res = await gdrive.connectOAuth({
+        clientId: payload.clientId,
+        clientSecret: payload.clientSecret,
+        apiBaseUrl: payload.apiBaseUrl,
+        uploadBaseUrl: payload.uploadBaseUrl,
+        openExternal: async (authUrl) => {
+          if (parent && !parent.isDestroyed()) {
+            const w = new BrowserWindow({
+              parent, modal: false, width: 520, height: 720,
+              title: 'Sign in with Google Drive',
+              backgroundColor: '#F5FAF8',
+              webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+            });
+            w.setMenuBarVisibility(false);
+            w.loadURL(authUrl);
+            const closeOnReturn = (ev, target) => {
+              try {
+                const u = new URL(target);
+                if (u.hostname === mcpoauth.REDIRECT_HOST || u.pathname === mcpoauth.CALLBACK_PATH) {
+                  setTimeout(() => { try { w.close(); } catch (_) {} }, 900);
+                }
+              } catch (_) {}
+            };
+            w.webContents.on('will-navigate', closeOnReturn);
+            w.webContents.on('did-navigate', closeOnReturn);
+            return;
+          }
+          await shell.openExternal(authUrl);
+        },
+      });
+    } else if (mode === 'mcp') {
+      res = await gdrive.connectMcp(payload, mcp);
+    } else {
+      return { ok: false, error: `Unknown Google Drive connection mode: ${mode}` };
+    }
+    pluginsDir.install('gdrive');
+    pluginsDir.setConfig('gdrive', { connected: true, connectedAt: Date.now(), mode });
+    const st = gdrive.status(mcp);
+    broadcast({ type: 'gdrive', status: st });
+    return { ...res, status: st };
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+ipcMain.handle('autobot:gdriveDisconnect', () => {
+  try {
+    const r = gdrive.disconnect(mcp);
+    if (pluginsDir.get('gdrive') && pluginsDir.get('gdrive').installed) {
+      pluginsDir.setConfig('gdrive', { connected: false, connectedAt: null, mode: null });
+    }
+    broadcast({ type: 'gdrive', status: r.status });
+    return r;
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+ipcMain.handle('autobot:gdriveSearch', async (e, query = '', opts = {}) => {
+  try { return await gdrive.searchFiles(query, opts, mcp); } catch (err) { return { ok: false, error: oneLine(err), files: [] }; }
+});
+ipcMain.handle('autobot:gdriveRead', async (e, idOrPath) => {
+  try { return await gdrive.readFile(idOrPath, mcp); } catch (err) { return { ok: false, error: oneLine(err) }; }
 });
 ipcMain.handle('autobot:resolveCommand', async (e, name, args, cwd) => {
   try {
@@ -2954,6 +3335,14 @@ async function slidesUpload(payload) {
   const { name, html } = payload || {};
   const body = String(html == null ? '' : html);
   if (!body) return { ok: false, error: 'nothing to upload' };
+  if (gdrive.status(mcp).connected && !mcp.servers.has('gdrive')) {
+    try {
+      const r = await gdrive.saveFile({ name: String(name || 'slides') + '.html', content: body, mimeType: 'text/html' }, mcp);
+      return { ok: true, server: 'Google Drive', ...r };
+    } catch (err) {
+      return { ok: false, error: oneLine(err) || 'the Drive upload failed' };
+    }
+  }
   const wantServer = /drive|gdrive|google/i;
   let found = null;
   for (const [sid, entry] of mcp.servers) {

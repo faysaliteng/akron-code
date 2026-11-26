@@ -36,6 +36,16 @@ function Icon({ name, size = 16, className = '', title, style }) {
   );
 }
 
+function GoogleDriveIcon({ size = 15 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <path d="M8.5 3.5h7l6 10.5h-7L8.5 3.5Z" fill="#FFC107" />
+      <path d="M2.5 14l3.5 6h12l3.5-6h-19Z" fill="#2684FC" />
+      <path d="M8.5 3.5l-6 10.5 3.5 6 6-10.5-3.5-6Z" fill="#00AC47" />
+    </svg>
+  );
+}
+
 // ---------- provider notices ----------
 // Every banner in the account/picker surface is dismissible. The dismissed
 // value is the banner's own text, so hiding "Imported 2 accounts" can never
@@ -669,6 +679,18 @@ export default function App() {
   const [permission, setPermission] = useState(null); // pending permission prompt { id, tool, args, summary }
   const [cuConsent, setCuConsent] = useState(null); // pending Computer Use consent { id, tier, tool, sensitive }
   const [planMode, setPlanMode] = useState(null); // active plan-mode banner { active, file }
+  const [gdriveModalOpen, setGdriveModalOpen] = useState(false);
+  const [gdriveState, setGdriveState] = useState({ connected: false, mode: null, detectedLocalFolders: [] });
+
+  const refreshGdriveStatus = useCallback(async () => {
+    try {
+      if (window.autobot && window.autobot.gdriveStatus) {
+        const st = await window.autobot.gdriveStatus();
+        if (st && typeof st === 'object') setGdriveState(st);
+      }
+    } catch (_) {}
+  }, []);
+  useEffect(() => { refreshGdriveStatus(); }, [refreshGdriveStatus]);
 
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
@@ -2259,10 +2281,43 @@ export default function App() {
         break;
       }
       case 'goal': {
-        if (!argText) { note(goal ? 'Current goal: ' + goal : 'No goal set. Use `/goal <text>`.'); break; }
+        if (!argText) {
+          note(goal ? 'Current goal: ' + goal + '\nUse `/goal <objective>` to run autonomously until that goal is completely finished.' : 'No goal set. Use `/goal <objective>` to run until the specified goal is completely finished.');
+          break;
+        }
         setGoal(argText);
         setNotice('Goal: ' + argText);
-        note('🎯 Goal set: ' + argText);
+        if (!streaming) {
+          send(`[AUTONOMOUS GOAL MODE]\nGoal: ${argText}\n\nWork thoroughly step-by-step, verify everything end-to-end with concrete checks/tests, and do not stop until this goal is completely finished.`);
+        } else {
+          note('🎯 Goal updated: ' + argText);
+        }
+        break;
+      }
+      case 'swarm': {
+        const clean = String(argText || '').trim();
+        if (clean === 'off') {
+          setSwarmEnabled(false);
+          note('Swarm mode **OFF**.');
+          break;
+        }
+        if (clean === 'on' || !clean) {
+          const next = clean === 'on' ? true : !swarmEnabled;
+          setSwarmEnabled(next);
+          note('Swarm mode **' + (next ? 'ON' : 'OFF') + '** — multi-model Planner + role-pooled Swarm workers ' + (next ? 'enabled.' : 'disabled.'));
+          break;
+        }
+        setSwarmEnabled(true);
+        if (!streaming) send(clean);
+        else note('Swarm mode ON. Current run is still active.');
+        break;
+      }
+      case 'subagents': {
+        showSessionPane('subagents');
+        break;
+      }
+      case 'gdrive': {
+        setGdriveModalOpen(true);
         break;
       }
       // ---------- one-shot model calls ----------
@@ -2566,6 +2621,39 @@ export default function App() {
         break;
       }
       default: {
+        // MCP Prompt / REA guided workflow: `/mcp:<serverId>:<promptName> [args]`
+        if (/^mcp:[^:\s]+:[^:\s]+$/i.test(cmd)) {
+          const [, serverId, ...restParts] = cmd.split(':');
+          const promptName = restParts.join(':');
+          try {
+            const expanded = await window.autobot.expandMcpPrompt({ serverId, name: promptName, argText, cwd });
+            if (expanded && expanded.ok && expanded.prompt) {
+              if (!streaming) send(expanded.prompt);
+              else note(expanded.prompt);
+              break;
+            }
+            if (expanded && expanded.error) {
+              note('⚠️ ' + expanded.error);
+              break;
+            }
+          } catch (e) {
+            note('⚠️ ' + (e.message || 'MCP prompt expansion failed'));
+            break;
+          }
+        }
+        // Installed/built-in skill invocation: `/skill:<name> [args]`
+        if (/^skill:.+$/i.test(cmd)) {
+          const skillName = cmd.slice(6);
+          try {
+            const loaded = await window.autobot.loadSkill(skillName);
+            if (loaded && loaded.content) {
+              const prompt = `[Skill: ${skillName}]\n${loaded.content}\n\nUser request: ${argText || `Apply the ${skillName} skill to the current task in ${cwd || 'workspace'}.`}`;
+              if (!streaming) send(prompt);
+              else note('Loaded skill `' + skillName + '`.');
+              break;
+            }
+          } catch (_) {}
+        }
         // Project / user command: expand its markdown body into a real prompt.
         let hit = null;
         try { hit = await window.autobot.resolveCommand(cmd, argText, cwd); } catch (_) {}
@@ -2750,7 +2838,7 @@ export default function App() {
               {panel === 'terminal' && <TerminalView terminal={terminal} setTerminal={setTerminal} startTerminal={startTerminal} runInTerminal={runInTerminal} writeTerminal={writeTerminal} killTerminal={killTerminal} />}
               {panel === 'code' && <CodeView cwd={cwd} setCwd={setCwd} permissions={permissions} setPermissions={setPermissions} T={T} />}
               {panel === 'projects' && <ProjectsView projects={projects} setProjects={setProjects} activeProject={activeProject} setActiveProject={setActiveProject} />}
-              {panel === 'plugins' && <PluginsView />}
+              {panel === 'plugins' && <PluginsView onOpenGdrive={() => setGdriveModalOpen(true)} gdriveState={gdriveState} />}
               {panel === 'scheduled' && <ScheduledView />}
             </div>
 
@@ -2826,6 +2914,8 @@ export default function App() {
             sessionPane={sessionPane} toggleSessionPane={toggleSessionPane}
             permissions={permissions} setPermissions={setPermissions}
             lastUsage={lastUsage}
+            gdriveState={gdriveState}
+            onOpenGdrive={() => setGdriveModalOpen(true)}
             T={T}
           />
         </main>
@@ -2846,6 +2936,17 @@ export default function App() {
           memory={memory} addMemory={addMemory} clearMemory={clearMemory}
           notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells}
           openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook}
+          onOpenGdrive={() => setGdriveModalOpen(true)}
+          gdriveState={gdriveState}
+        />
+      )}
+
+      {gdriveModalOpen && (
+        <GoogleDriveModal
+          gdriveState={gdriveState}
+          onRefreshStatus={refreshGdriveStatus}
+          onAttachFiles={(atts) => setAttachments((a) => [...a, ...atts])}
+          onClose={() => setGdriveModalOpen(false)}
         />
       )}
 
@@ -4920,8 +5021,8 @@ function SkillsView({ skills, toggleSkill, setAllSkills, refreshSkills }) {
   );
 }
 
-// ---------- Plugins & Connectors (Claude Desktop parity: directory + install) ----------
-function PluginsView() {
+// ---------- Plugins & Connectors (Claude Desktop parity: directory + install + configure + test) ----------
+function PluginsView({ onOpenGdrive, gdriveState } = {}) {
   const [items, setItems] = useState([]);
   const [cats, setCats] = useState([]);
   const [q, setQ] = useState('');
@@ -4934,6 +5035,9 @@ function PluginsView() {
   const [shown, setShown] = useState(120);
   const [tab, setTab] = useState('directory');
   const [authBusy, setAuthBusy] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [cfgDraft, setCfgDraft] = useState({ apiKey: '', endpointUrl: '', command: '' });
+  const [testMap, setTestMap] = useState({}); // id -> { ok, detail, error }
 
   const refreshStats = useCallback(async () => {
     try {
@@ -4974,12 +5078,76 @@ function PluginsView() {
     try {
       const r = on ? await window.autobot.installPlugin(id) : await window.autobot.uninstallPlugin(id);
       if (r && r.ok === false) setErr(r.error);
-      else if (r && r.needsAuth) {
+      else if (r && r.needsSetup === 'gdrive' && onOpenGdrive) {
+        onOpenGdrive();
+      } else if (r && r.needsAuth) {
         // OAuth-gated connector: installation succeeded, the server wants a token.
-        setErr('Installed. Click “Sign in” on the card to authorize with the provider.');
+        setErr('Installed. Click “Sign in” (or “Configure”) on the card to authorize with the provider.');
       } else if (r && r.connectError) setErr('Installed, but could not connect: ' + r.connectError);
+      else if (on && r && r.entry && r.entry.auth === 'apikey' && !r.entry.connected) {
+        setEditingId(id);
+        setCfgDraft({ apiKey: '', endpointUrl: (r.entry.endpoint && r.entry.endpoint.url) || '', command: '' });
+      }
     } finally {
       setBusy(false);
+      await refresh();
+      refreshStats();
+    }
+  };
+
+  const openConfigure = (it) => {
+    if (it.builtInAdapter === 'gdrive' && onOpenGdrive) {
+      onOpenGdrive();
+      return;
+    }
+    setEditingId((prev) => (prev === it.id ? null : it.id));
+    setCfgDraft({
+      apiKey: '',
+      endpointUrl: (it.endpoint && it.endpoint.url) || '',
+      command: (it.command && it.command.command) || '',
+    });
+  };
+
+  const saveConfigure = async (it) => {
+    setErr('');
+    setAuthBusy(it.id);
+    try {
+      const r = await window.autobot.configurePlugin(it.id, cfgDraft);
+      if (!r || r.ok === false) {
+        const msg = (r && r.error) || 'Failed to save configuration';
+        setErr(msg);
+        setTestMap((m) => ({ ...m, [it.id]: { ok: false, error: msg } }));
+      } else {
+        setEditingId(null);
+        setTestMap((m) => ({ ...m, [it.id]: { ok: true, detail: r.detail || `Connected (${(r.tools || []).length || 'OK'})` } }));
+      }
+    } catch (e) {
+      setErr(e && e.message ? e.message : String(e));
+    } finally {
+      setAuthBusy(null);
+      await refresh();
+      refreshStats();
+    }
+  };
+
+  const testConnector = async (it) => {
+    setErr('');
+    setAuthBusy(it.id);
+    try {
+      const r = await window.autobot.testPlugin(it.id);
+      if (r && r.needsSetup === 'gdrive' && onOpenGdrive) {
+        onOpenGdrive();
+      }
+      setTestMap((m) => ({
+        ...m,
+        [it.id]: r && r.ok
+          ? { ok: true, detail: r.detail || 'OK' }
+          : { ok: false, error: (r && r.error) || 'Test failed' },
+      }));
+    } catch (e) {
+      setTestMap((m) => ({ ...m, [it.id]: { ok: false, error: e && e.message ? e.message : String(e) } }));
+    } finally {
+      setAuthBusy(null);
       await refresh();
       refreshStats();
     }
@@ -5082,7 +5250,11 @@ function PluginsView() {
       {items.length === 0 && <p className="muted">No plugins or connectors match.</p>}
 
       <div className="plugin-grid">
-        {visible.map((it) => (
+        {visible.map((it) => {
+          const isDrive = it.builtInAdapter === 'gdrive';
+          const isConnected = isDrive ? !!(gdriveState && gdriveState.connected) : !it.requiresSignIn;
+          const tr = testMap[it.id];
+          return (
           <div key={it.id} className={'plugin-card' + (it.installed ? ' installed' : '')}>
             <div className="plugin-card-head">
               <div className="plugin-card-id">
@@ -5105,30 +5277,69 @@ function PluginsView() {
               <span className="muted">{it.auth === 'none' ? 'No sign-in needed' : it.auth === 'oauth' ? 'OAuth sign-in' : 'API key'}</span>
               <span className="badge">{it.type}</span>
               {it.origin === 'registry' && <span className="badge">registry</span>}
-              {it.installed && it.requiresSignIn && <span className="badge warn">needs sign-in</span>}
-              {it.installed && !it.requiresSignIn && <span className="badge ok">installed</span>}
-              {it.installed && it.endpoint && it.auth !== 'none' && (
+              {it.installed && !isConnected && <span className="badge warn">needs sign-in</span>}
+              {it.installed && isConnected && <span className="badge ok">{it.toolCount > 0 ? `${it.toolCount} tools` : (isDrive && gdriveState ? `connected (${gdriveState.mode || 'drive'})` : 'connected')}</span>}
+              {it.installed && isDrive && (
+                <button className="plugin-auth primary" onClick={() => onOpenGdrive && onOpenGdrive()}>
+                  {isConnected ? 'Configure Drive' : 'Set up'}
+                </button>
+              )}
+              {it.installed && !isDrive && it.endpoint && it.auth === 'oauth' && (
                 it.requiresSignIn
-                  ? <button
-                      className="plugin-auth primary"
-                      disabled={authBusy === it.id}
-                      onClick={() => signIn(it.id)}
-                    >
+                  ? <button className="plugin-auth primary" disabled={authBusy === it.id} onClick={() => signIn(it.id)}>
                       {authBusy === it.id ? 'Signing in…' : 'Sign in'}
                     </button>
-                  : it.auth === 'oauth'
-                    ? <button
-                        className="plugin-auth"
-                        disabled={authBusy === it.id}
-                        onClick={() => signOut(it.id)}
-                      >
-                        Sign out
-                      </button>
-                    : null
+                  : <button className="plugin-auth" disabled={authBusy === it.id} onClick={() => signOut(it.id)}>
+                      Sign out
+                    </button>
+              )}
+              {it.installed && !isDrive && (it.auth === 'apikey' || (it.auth === 'oauth' && !it.endpoint)) && (
+                <button className={'plugin-auth' + (it.requiresSignIn ? ' primary' : '')} disabled={authBusy === it.id} onClick={() => openConfigure(it)}>
+                  {editingId === it.id ? 'Close' : (it.requiresSignIn ? 'Configure' : 'Edit key')}
+                </button>
+              )}
+              {it.installed && (
+                <button className="plugin-auth" disabled={authBusy === it.id} onClick={() => testConnector(it)}>
+                  {authBusy === it.id ? 'Testing…' : 'Test'}
+                </button>
               )}
             </div>
+            {tr && (
+              <div className={'plugin-test-res ' + (tr.ok ? 'ok' : 'err')}>
+                {tr.ok ? `✓ ${tr.detail}` : `✕ ${tr.error}`}
+              </div>
+            )}
+            {it.installed && editingId === it.id && (
+              <div className="plugin-cfg-drawer">
+                <input
+                  type="password"
+                  placeholder={it.auth === 'oauth' ? 'Bearer / personal access token…' : 'Paste API key / token…'}
+                  value={cfgDraft.apiKey}
+                  onChange={(e) => setCfgDraft((d) => ({ ...d, apiKey: e.target.value }))}
+                />
+                <input
+                  type="text"
+                  placeholder="Optional MCP server URL (https://.../mcp)"
+                  value={cfgDraft.endpointUrl}
+                  onChange={(e) => setCfgDraft((d) => ({ ...d, endpointUrl: e.target.value }))}
+                />
+                <input
+                  type="text"
+                  placeholder="Optional stdio MCP command (e.g. npx -y @org/mcp)"
+                  value={cfgDraft.command}
+                  onChange={(e) => setCfgDraft((d) => ({ ...d, command: e.target.value }))}
+                />
+                <div className="plugin-cfg-actions">
+                  <button className="btn-mini primary" disabled={authBusy === it.id} onClick={() => saveConfigure(it)}>
+                    {authBusy === it.id ? 'Connecting…' : 'Save & Connect'}
+                  </button>
+                  <button className="btn-mini" onClick={() => setEditingId(null)}>Cancel</button>
+                </div>
+              </div>
+            )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {items.length > visible.length && (
@@ -6447,11 +6658,211 @@ const PERM_MODES = [
 ];
 const PERM_SHORT = { auto: 'perm.auto', ask: 'perm.manual', acceptEdits: 'perm.acceptEdits', plan: 'perm.plan', bypass: 'perm.bypass' };
 
-function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, editQueued, sendQueuedNow, lastUsage, settings, onVoiceError, T }) {
+const BUILTIN_MENTION_AGENTS = [
+  { name: 'verifier', kind: 'agent', description: 'Run independent tests & adversarial build verification' },
+  { name: 'code-reviewer', kind: 'agent', description: 'Review pending changes for bugs, security & conventions' },
+  { name: 'Explore', kind: 'agent', description: 'Fast codebase search & architecture trace subagent' },
+  { name: 'Plan', kind: 'agent', description: 'Read-only planning & design subagent' },
+];
+
+function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, editQueued, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [permOpen, setPermOpen] = useState(false);
+  const [addCtxOpen, setAddCtxOpen] = useState(false);
+  const [inputText, setInputText] = useState(() => (inputRef.current && inputRef.current.value) || '');
+  const [slashActions, setSlashActions] = useState([]);
+  const [slashIdx, setSlashIdx] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const [mentionIdx, setMentionIdx] = useState(0);
+  const [mentionFiles, setMentionFiles] = useState([]);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const addCtxWrapRef = useRef(null);
+  const slashPaletteRef = useRef(null);
+  const mentionPaletteRef = useRef(null);
+  useDismiss(addCtxOpen, [addCtxWrapRef], () => setAddCtxOpen(false));
+
+  const refreshSlashActions = useCallback(async () => {
+    try {
+      if (window.autobot && window.autobot.listSlashActions) {
+        const list = await window.autobot.listSlashActions(cwd);
+        if (Array.isArray(list)) setSlashActions(list);
+      }
+    } catch (_) {}
+  }, [cwd]);
+  useEffect(() => { refreshSlashActions(); }, [refreshSlashActions]);
+
+  // Slash token detection: active whenever text starts with `/<token>` (no spaces/newlines yet),
+  // regardless of whether attachments are present in the composer (Antigravity Screenshot 2 parity).
+  const slashMatch = /^\/([^\s\n]*)$/.exec(inputText);
+  const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null;
+  const filteredSlashActions = useMemo(() => {
+    if (slashQuery === null) return [];
+    const list = slashActions || [];
+    if (!slashQuery) return list.slice(0, 60);
+    const hits = [];
+    for (const item of list) {
+      const n = String(item.name || '').toLowerCase();
+      const d = String(item.description || '').toLowerCase();
+      const al = (item.aliases || []).some((x) => String(x).toLowerCase().includes(slashQuery));
+      let rank = 99;
+      if (n.startsWith(slashQuery)) rank = 0;
+      else if (n.includes(slashQuery) || al) rank = 1;
+      else if (d.includes(slashQuery)) rank = 2;
+      if (rank < 99) hits.push({ item, rank });
+    }
+    hits.sort((a, b) => a.rank - b.rank);
+    return hits.slice(0, 40).map((h) => h.item);
+  }, [slashQuery, slashActions]);
+  const slashOpen = slashQuery !== null && !slashDismissed && filteredSlashActions.length > 0;
+  useEffect(() => { setSlashIdx(0); }, [slashQuery]);
+
+  // @ Mentions detection when typing `@<query>` (either empty or immediately after whitespace)
+  const mentionMatch = !slashOpen ? /(?:^|\s)@([^\s@\n]*)$/.exec(inputText) : null;
+  const mentionQuery = mentionMatch ? mentionMatch[1] : null;
+  useEffect(() => {
+    if (mentionQuery === null || mentionDismissed) return;
+    let cancelled = false;
+    Promise.resolve(window.autobot && window.autobot.listWorkspaceFiles ? window.autobot.listWorkspaceFiles(cwd, mentionQuery) : [])
+      .then((list) => { if (!cancelled && Array.isArray(list)) setMentionFiles(list); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [mentionQuery, mentionDismissed, cwd]);
+
+  const mentionItems = useMemo(() => {
+    if (mentionQuery === null) return [];
+    const q = mentionQuery.toLowerCase();
+    const agents = BUILTIN_MENTION_AGENTS
+      .filter((a) => !q || a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q))
+      .map((a) => ({ id: 'agent:' + a.name, label: '@' + a.name, insert: '@' + a.name + ' ', kind: 'agent', sub: a.description }));
+    const files = (mentionFiles || []).map((f) => ({
+      id: 'file:' + f.path,
+      label: f.path,
+      insert: '@' + f.path + ' ',
+      kind: 'file',
+      sub: f.name,
+      fileObj: f,
+    }));
+    return [...agents, ...files].slice(0, 25);
+  }, [mentionQuery, mentionFiles]);
+  const mentionOpen = mentionQuery !== null && !mentionDismissed && mentionItems.length > 0;
+  useEffect(() => { setMentionIdx(0); }, [mentionQuery]);
+
+  const syncInputState = useCallback((val) => {
+    setInputText(val);
+    setHasText(!!String(val || '').trim());
+    setSlashDismissed(false);
+    setMentionDismissed(false);
+  }, []);
+
+  const applySlashItem = useCallback((item, mode = 'enter') => {
+    if (!item || !inputRef.current) return;
+    const el = inputRef.current;
+    if (mode === 'tab' || item.takesArgs) {
+      const next = '/' + item.name + ' ';
+      el.value = next;
+      syncInputState(next);
+      el.focus();
+      try { el.setSelectionRange(next.length, next.length); } catch (_) {}
+      setSlashDismissed(true);
+      return;
+    }
+    el.value = '';
+    syncInputState('');
+    runSlashCommand(item.name);
+  }, [inputRef, runSlashCommand, syncInputState]);
+
+  const applyMentionItem = useCallback((item) => {
+    if (!item || !inputRef.current) return;
+    const el = inputRef.current;
+    const cur = el.value || '';
+    const updated = cur.replace(/(^|\s)@([^\s@\n]*)$/, '$1' + item.insert);
+    el.value = updated;
+    syncInputState(updated);
+    el.focus();
+    try { el.setSelectionRange(updated.length, updated.length); } catch (_) {}
+    setMentionDismissed(true);
+  }, [inputRef, syncInputState]);
+
+  const attachFolderContext = useCallback(async () => {
+    setAddCtxOpen(false);
+    if (!window.autobot || !window.autobot.pickFolder) return;
+    const dir = await window.autobot.pickFolder();
+    if (!dir) return;
+    let listing = '';
+    try {
+      const files = await window.autobot.listWorkspaceFiles(dir, '');
+      if (Array.isArray(files) && files.length) {
+        listing = '\nFiles:\n' + files.slice(0, 30).map((f) => `- ${f.path}`).join('\n');
+      }
+    } catch (_) {}
+    const folderName = dir.split('/').filter(Boolean).pop() || dir;
+    setAttachments((a) => [...a, {
+      name: `📁 ${folderName}`,
+      path: dir,
+      size: 0,
+      isText: true,
+      content: `Attached workspace folder context: ${dir}${listing}`,
+    }]);
+  }, [setAttachments]);
+
+  const attachBrowserContext = useCallback(async () => {
+    setAddCtxOpen(false);
+    try {
+      const ext = window.autobot && window.autobot.extBridgeStatus ? await window.autobot.extBridgeStatus() : null;
+      const liveTab = ext && Array.isArray(ext.tabs) && ext.tabs.find((t) => t.active) || (ext && ext.tabs && ext.tabs[0]);
+      if (liveTab && liveTab.url) {
+        setAttachments((a) => [...a, {
+          name: `🌐 ${liveTab.title || liveTab.url}`,
+          path: liveTab.url,
+          size: 0,
+          isText: true,
+          content: `External Browser tab context (Akron Browser Bot):\nTitle: ${liveTab.title || ''}\nURL: ${liveTab.url}`,
+        }]);
+        return;
+      }
+      const inAppUrl = window.autobot && window.autobot.browserGetURL ? await window.autobot.browserGetURL() : '';
+      if (inAppUrl) {
+        const title = await window.autobot.browserGetTitle().catch(() => '');
+        const text = await window.autobot.browserRead().catch(() => '');
+        setAttachments((a) => [...a, {
+          name: `🌐 ${title || inAppUrl}`,
+          path: inAppUrl,
+          size: String(text || '').length,
+          isText: true,
+          content: `Built-in Browser context:\nTitle: ${title || ''}\nURL: ${inAppUrl}\n\n${String(text || '').slice(0, 12000)}`,
+        }]);
+        return;
+      }
+    } catch (_) {}
+    toggleSessionPane('browser');
+  }, [setAttachments, toggleSessionPane]);
+
+  const triggerMentionInsert = useCallback(() => {
+    setAddCtxOpen(false);
+    if (!inputRef.current) return;
+    const el = inputRef.current;
+    const cur = el.value || '';
+    const next = cur && !/\s$/.test(cur) ? cur + ' @' : cur + '@';
+    el.value = next;
+    syncInputState(next);
+    el.focus();
+    try { el.setSelectionRange(next.length, next.length); } catch (_) {}
+  }, [inputRef, syncInputState]);
+
+  const triggerActionsInsert = useCallback(() => {
+    setAddCtxOpen(false);
+    refreshSlashActions();
+    if (!inputRef.current) return;
+    const el = inputRef.current;
+    const cur = el.value || '';
+    const next = cur.startsWith('/') ? cur : '/';
+    el.value = next;
+    syncInputState(next);
+    el.focus();
+    try { el.setSelectionRange(next.length, next.length); } catch (_) {}
+  }, [inputRef, syncInputState, refreshSlashActions]);
   const voice = useVoiceDictation({
     engine: (settings && settings.voiceEngine) || 'auto',
     lang: (settings && settings.voiceLang) || 'en-US',
@@ -6874,16 +7285,76 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
   };
 
   const onKey = (e) => {
+    if (slashOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSlashIdx((i) => Math.min(i + 1, filteredSlashActions.length - 1));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSlashIdx((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setSlashDismissed(true);
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        applySlashItem(filteredSlashActions[slashIdx] || filteredSlashActions[0], 'tab');
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const picked = filteredSlashActions[slashIdx] || filteredSlashActions[0];
+        if (picked) {
+          // If the exact token already matches `/${picked.name}` and it is an MCP workflow (which has a default workspace action),
+          // run it directly when pressed twice or on exact Enter match for no-arg commands.
+          if (slashQuery === picked.name.toLowerCase() && /^mcp:/i.test(picked.name)) {
+            inputRef.current.value = '';
+            syncInputState('');
+            runSlashCommand(picked.name);
+          } else {
+            applySlashItem(picked, 'enter');
+          }
+        }
+        return;
+      }
+    }
+    if (mentionOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionIdx((i) => Math.min(i + 1, mentionItems.length - 1));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionIdx((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setMentionDismissed(true);
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault();
+        applyMentionItem(mentionItems[mentionIdx] || mentionItems[0]);
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       const text = (inputRef.current?.value || '').trim();
       if (text.startsWith('/')) {
         inputRef.current.value = '';
-        setHasText(false);
+        syncInputState('');
         runSlashCommand(text.slice(1));
       } else {
         send();
-        setHasText(false);
+        syncInputState('');
       }
     }
   };
@@ -6955,21 +7426,6 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
         <span className="cwd"><Icon name="Folder" size={13} /> {cwd || '~'}</span>
         <button className="cwd-pick" onClick={async () => { const d = await window.autobot.pickFolder(); if (d) { setCwd(d); const id = loadJSON('autobot:activeId', null); if (id) window.autobot.setWorkspace(id, d).catch(() => {}); } }}>Change</button>
       </div>
-
-      {attachments.length > 0 && (
-        <div className="attach-chips">
-          {attachments.map((a, i) => (
-            <span key={i} className={'attach-chip' + (a.isImage ? ' img' : a.isText ? ' text' : ' bin')} title={a.path || a.name}>
-              {a.isImage && a.dataUrl
-                ? <img className="attach-thumb" src={a.dataUrl} alt={a.name} />
-                : <Icon name={a.isText ? 'File' : 'Attachment'} size={12} />}
-              <span className="attach-name">{a.name}</span>
-              {a.isText || a.isImage ? null : <span className="attach-size"> · {a.size} B</span>}
-              <button className="attach-x" onClick={() => removeAttachment(i)}><Icon name="X" size={11} /></button>
-            </span>
-          ))}
-        </div>
-      )}
 
       {queued && queued.length > 0 && (
         <div className="queue-bar">
@@ -7144,14 +7600,127 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
         </div>
       </div>
 
+      <div className={'composer-shell' + (slashOpen || mentionOpen ? ' has-palette' : '')}>
+        {slashOpen && (
+          <div className="slash-palette" ref={slashPaletteRef} role="listbox" aria-label="Slash actions">
+            {filteredSlashActions.map((item, idx) => (
+              <button
+                key={item.name}
+                type="button"
+                role="option"
+                aria-selected={idx === slashIdx}
+                className={'slash-row' + (idx === slashIdx ? ' sel' : '')}
+                onMouseEnter={() => setSlashIdx(idx)}
+                onMouseDown={(e) => { e.preventDefault(); applySlashItem(item, 'enter'); }}
+              >
+                <span className="slash-ico">
+                  <Icon
+                    name={item.icon === 'btw' ? 'ChatAdd' : item.icon === 'mcp' ? 'CommandLinePrompt' : item.icon === 'goal' ? 'Clock' : item.icon === 'skill' ? 'Sparkles' : 'CommandLine'}
+                    size={15}
+                  />
+                </span>
+                <span className="slash-name">{item.name}</span>
+                <span className="slash-desc">{item.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {mentionOpen && (
+          <div className="mention-palette" ref={mentionPaletteRef} role="listbox" aria-label="Mentions">
+            <div className="mention-head">Mentions · Agents &amp; Files</div>
+            {mentionItems.map((item, idx) => (
+              <button
+                key={item.id}
+                type="button"
+                role="option"
+                aria-selected={idx === mentionIdx}
+                className={'slash-row' + (idx === mentionIdx ? ' sel' : '')}
+                onMouseEnter={() => setMentionIdx(idx)}
+                onMouseDown={(e) => { e.preventDefault(); applyMentionItem(item); }}
+              >
+                <span className="slash-ico">
+                  <Icon name={item.kind === 'agent' ? 'Agent' : 'File'} size={14} />
+                </span>
+                <span className="slash-name">{item.label}</span>
+                <span className="slash-desc">{item.sub}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
       <div className={'composer' + (streaming ? ' is-streaming' : '')}>
-        <textarea ref={inputRef} rows={1} placeholder={T('composer.placeholder')} onKeyDown={onKey} onInput={(e) => setHasText(!!e.target.value.trim())} onPaste={onPasteFiles} />
+        {attachments.length > 0 && (
+          <div className="attach-chips">
+            {attachments.map((a, i) => (
+              <span key={i} className={'attach-chip' + (a.isImage ? ' img' : a.isText ? ' text' : ' bin')} title={a.path || a.name}>
+                {a.isImage && a.dataUrl
+                  ? <img className="attach-thumb" src={a.dataUrl} alt={a.name} />
+                  : <Icon name={a.isText ? 'File' : 'Attachment'} size={12} />}
+                <span className="attach-name">{a.name}</span>
+                {a.isText || a.isImage ? null : <span className="attach-size"> · {a.size} B</span>}
+                <button className="attach-x" onClick={() => removeAttachment(i)}><Icon name="X" size={11} /></button>
+              </span>
+            ))}
+          </div>
+        )}
+        <textarea
+          ref={inputRef}
+          rows={1}
+          placeholder={T('composer.placeholder')}
+          onFocus={() => refreshSlashActions()}
+          onKeyDown={onKey}
+          onInput={(e) => syncInputState(e.target.value)}
+          onPaste={onPasteFiles}
+        />
         <div className="composer-foot">
           <div className="composer-actions">
-            {!hasText && !streaming && (
-              <span className="composer-hint" aria-hidden="true">Type <kbd>/</kbd> for commands</span>
-            )}
-            <button className="icon-btn attach-btn f-attach" title="Attach files" onClick={attachFiles}><Icon name="Attachment" size={17} /></button>
+            <div className="add-context-wrap" ref={addCtxWrapRef}>
+              <button
+                type="button"
+                className={'icon-btn add-context-btn' + (addCtxOpen ? ' open' : '')}
+                title="Add Context (Files, Folder, @Mentions, /Actions, Browser, Drive)"
+                aria-label="Add Context"
+                aria-haspopup="menu"
+                aria-expanded={addCtxOpen}
+                onClick={() => setAddCtxOpen((v) => !v)}
+              >
+                <Icon name="Plus" size={16} />
+              </button>
+              {addCtxOpen && (
+                <div className="add-context-menu" role="menu">
+                  <div className="add-context-head">Add Context</div>
+                  <button type="button" role="menuitem" className="add-context-item" onClick={() => { setAddCtxOpen(false); attachFiles(); }}>
+                    <Icon name="Attachment" size={15} />
+                    <span className="add-context-label">Files</span>
+                  </button>
+                  <button type="button" role="menuitem" className="add-context-item" onClick={attachFolderContext}>
+                    <Icon name="Folder" size={15} />
+                    <span className="add-context-label">Folder</span>
+                  </button>
+                  <button type="button" role="menuitem" className="add-context-item" onClick={triggerMentionInsert}>
+                    <span className="add-context-glyph">@</span>
+                    <span className="add-context-label">Mentions</span>
+                  </button>
+                  <button type="button" role="menuitem" className="add-context-item" onClick={triggerActionsInsert}>
+                    <Icon name="CommandLinePrompt" size={15} />
+                    <span className="add-context-label">Actions</span>
+                  </button>
+                  <button type="button" role="menuitem" className="add-context-item" onClick={attachBrowserContext}>
+                    <Icon name="Globe" size={15} />
+                    <span className="add-context-label">Browser</span>
+                  </button>
+                  <button type="button" role="menuitem" className="add-context-item" onClick={() => { setAddCtxOpen(false); onOpenGdrive && onOpenGdrive(); }}>
+                    <GoogleDriveIcon size={15} />
+                    <span className="add-context-label">Drive</span>
+                    <span className={'add-context-badge' + (gdriveState && gdriveState.connected ? ' ok' : ' setup')}>
+                      {gdriveState && gdriveState.connected ? 'Connected' : 'Set up'}
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
+            <button className="icon-btn attach-btn f-attach" title="Attach files" onClick={attachFiles}><Icon name="Attachment" size={16} /></button>
           </div>
 
           <div className="composer-right">
@@ -7398,7 +7967,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
             {(!streaming || hasText) && (
               <button
                 className={'send' + (streaming ? ' queued' : '')}
-                onClick={() => { send(); setHasText(false); }}
+                onClick={() => { send(); syncInputState(''); }}
                 title={streaming ? 'Queue message' : 'Send'}
               >
                 <Icon name="ArrowUp" size={16} />
@@ -7406,6 +7975,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
             )}
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
@@ -8623,6 +9193,7 @@ function SettingsModal({
   mcpServers = [], mcpForm, setMcpForm, connectMcp, disconnectMcp,
   memory = [], addMemory, clearMemory,
   notebooks = [], activeNotebook, notebookCells = [], setNotebookCells, openNotebook, newNotebook, saveActiveNotebook, deleteActiveNotebook,
+  onOpenGdrive, gdriveState,
 }) {
   const [section, setSection] = useState(initialSection || 'providers');
   const [navFilter, setNavFilter] = useState('');
@@ -9208,8 +9779,8 @@ function SettingsModal({
                   <SkillsView skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills} />
                 </div>
                 <div className="settings-card">
-                  <h3><Icon name="Plugin" size={14} /> Plugins &amp; Extensions</h3>
-                  <PluginsView />
+                  <h3><Icon name="Plugin" size={14} /> Plugins &amp; Connectors</h3>
+                  <PluginsView onOpenGdrive={onOpenGdrive} gdriveState={gdriveState} />
                 </div>
               </>
             )}
@@ -9477,6 +10048,232 @@ function FindBar({ query, setQuery, messages, onClose }) {
         <button className="icon-btn" onClick={onClose}><Icon name="X" size={14} /></button>
       </div>
       {query && hits.length > 0 && <div className="find-result"><span className="find-role">{hits[cur].role}</span> …{hits[cur].snippet}…</div>}
+    </div>
+  );
+}
+
+// ---------- Google Drive Setup & File Picker Modal ----------
+function GoogleDriveModal({ gdriveState, onRefreshStatus, onAttachFiles, onClose }) {
+  const detected = (gdriveState && gdriveState.detectedLocalFolders) || [];
+  const connected = !!(gdriveState && gdriveState.connected);
+  const [tab, setTab] = useState(connected ? 'browse' : (detected.length ? 'local' : 'token'));
+  const [folderPath, setFolderPath] = useState(() => (gdriveState && gdriveState.folderPath) || (detected[0] && detected[0].path) || '');
+  const [accessToken, setAccessToken] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [mcpUrl, setMcpUrl] = useState('');
+  const [mcpCmd, setMcpCmd] = useState('npx');
+  const [mcpArgs, setMcpArgs] = useState('-y @modelcontextprotocol/server-gdrive');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const [searchQ, setSearchQ] = useState('');
+  const [files, setFiles] = useState([]);
+  const [searching, setSearching] = useState(false);
+
+  const loadFiles = useCallback(async (q = '') => {
+    if (!window.autobot || !window.autobot.gdriveSearch) return;
+    setSearching(true);
+    try {
+      const r = await window.autobot.gdriveSearch(q, { limit: 30 });
+      if (r && r.ok) setFiles(r.files || []);
+      else if (r && r.error) setErr(r.error);
+    } finally { setSearching(false); }
+  }, []);
+
+  useEffect(() => {
+    if (connected) loadFiles('');
+  }, [connected, loadFiles]);
+
+  const pickLocalFolder = async () => {
+    const p = await window.autobot.gdrivePickFolder();
+    if (p) setFolderPath(p);
+  };
+
+  const connectMode = async (payload) => {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const r = await window.autobot.gdriveConnect(payload);
+      if (!r || !r.ok) {
+        setErr((r && r.error) || 'Failed to connect Google Drive');
+        return;
+      }
+      setMsg(`Connected Google Drive (${(r.status && r.status.mode) || payload.mode}).`);
+      if (onRefreshStatus) await onRefreshStatus();
+      setTab('browse');
+      await loadFiles('');
+    } catch (e) {
+      setErr(e && e.message ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnectDrive = async () => {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await window.autobot.gdriveDisconnect();
+      setFiles([]);
+      setMsg('Disconnected Google Drive.');
+      if (onRefreshStatus) await onRefreshStatus();
+      setTab(detected.length ? 'local' : 'token');
+    } finally { setBusy(false); }
+  };
+
+  const attachDriveFile = async (f) => {
+    setBusy(true); setErr('');
+    try {
+      const res = await window.autobot.gdriveRead(f.id || f.path);
+      if (!res || !res.ok) {
+        setErr((res && res.error) || 'Could not read Drive file');
+        return;
+      }
+      if (onAttachFiles) {
+        onAttachFiles([{
+          name: `${res.name || f.name} (Drive)`,
+          path: `gdrive://${res.id || f.id}`,
+          size: String(res.content || '').length,
+          isText: true,
+          content: String(res.content || ''),
+        }]);
+      }
+      setMsg(`Attached "${res.name || f.name}" to composer context.`);
+      onClose();
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal gdrive-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="gdrive-head">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <GoogleDriveIcon size={20} />
+            <div>
+              <h2>Google Drive</h2>
+              <span className="muted">
+                {connected
+                  ? `Connected via ${gdriveState.mode}${gdriveState.accountEmail ? ' · ' + gdriveState.accountEmail : (gdriveState.folderPath ? ' · ' + gdriveState.folderPath : '')}`
+                  : 'Connect Drive files, Docs, Sheets & Slides to chat context and agent tools'}
+              </span>
+            </div>
+          </div>
+          <button className="icon-btn" onClick={onClose} aria-label="Close"><Icon name="X" size={16} /></button>
+        </div>
+
+        <div className="seg" style={{ marginBottom: 12 }}>
+          {connected && <button className={tab === 'browse' ? 'on' : ''} onClick={() => setTab('browse')}>Browse &amp; Attach</button>}
+          <button className={tab === 'local' ? 'on' : ''} onClick={() => setTab('local')}>Drive Desktop Folder</button>
+          <button className={tab === 'token' ? 'on' : ''} onClick={() => setTab('token')}>Google OAuth / Token</button>
+          <button className={tab === 'mcp' ? 'on' : ''} onClick={() => setTab('mcp')}>MCP Server</button>
+        </div>
+
+        {err && <div className="plugin-test-res err" style={{ marginBottom: 10 }}>✕ {err}</div>}
+        {msg && <div className="plugin-test-res ok" style={{ marginBottom: 10 }}>✓ {msg}</div>}
+
+        {tab === 'browse' && connected && (
+          <div className="gdrive-body">
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+              <input
+                className="gdrive-input"
+                placeholder="Search Google Drive files…"
+                value={searchQ}
+                onChange={(e) => setSearchQ(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') loadFiles(searchQ); }}
+              />
+              <button className="btn-mini primary" disabled={searching} onClick={() => loadFiles(searchQ)}>
+                {searching ? 'Searching…' : 'Search'}
+              </button>
+              <button className="btn-mini" disabled={busy} onClick={disconnectDrive}>Disconnect</button>
+            </div>
+            <div className="gdrive-list">
+              {files.map((f) => (
+                <div key={f.id || f.path || f.name} className="gdrive-file-row">
+                  <Icon name="File" size={14} />
+                  <div className="gdrive-file-meta">
+                    <b>{f.name}</b>
+                    <span className="muted">{f.relativePath || f.mimeType || ''}</span>
+                  </div>
+                  <button className="btn-mini primary" disabled={busy} onClick={() => attachDriveFile(f)}>Attach</button>
+                </div>
+              ))}
+              {!searching && files.length === 0 && <p className="muted">No files matched in connected Google Drive.</p>}
+            </div>
+          </div>
+        )}
+
+        {tab === 'local' && (
+          <div className="gdrive-body">
+            <p className="muted">Connect a synced Google Drive for Desktop mount (<code>~/Library/CloudStorage/GoogleDrive-*</code>) or any local synced Drive folder with zero cloud console setup.</p>
+            {detected.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                {detected.map((d) => (
+                  <button key={d.path} className="btn-mini primary" disabled={busy} onClick={() => { setFolderPath(d.path); connectMode({ mode: 'local', folderPath: d.path }); }}>
+                    Use {d.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input className="gdrive-input" placeholder="/Users/.../Library/CloudStorage/GoogleDrive-.../My Drive" value={folderPath} onChange={(e) => setFolderPath(e.target.value)} />
+              <button className="btn-mini" onClick={pickLocalFolder}>Browse…</button>
+            </div>
+            <div className="gdrive-foot">
+              <button className="btn-mini primary" disabled={busy || !folderPath.trim()} onClick={() => connectMode({ mode: 'local', folderPath: folderPath.trim() })}>
+                {busy ? 'Connecting…' : 'Connect Folder'}
+              </button>
+              {connected && <button className="btn-mini" disabled={busy} onClick={disconnectDrive}>Disconnect</button>}
+            </div>
+          </div>
+        )}
+
+        {tab === 'token' && (
+          <div className="gdrive-body">
+            <p className="muted">Connect directly to Google Drive REST API v3 with either a Google OAuth 2.0 Client ID (PKCE browser sign-in) or a Google OAuth access token.</p>
+            <div className="gdrive-fields">
+              <label>Google OAuth Access Token (instant connection)</label>
+              <input type="password" className="gdrive-input" placeholder="ya29...." value={accessToken} onChange={(e) => setAccessToken(e.target.value)} />
+              <button className="btn-mini primary" style={{ alignSelf: 'flex-start' }} disabled={busy || !accessToken.trim()} onClick={() => connectMode({ mode: 'token', accessToken: accessToken.trim() })}>
+                {busy ? 'Verifying…' : 'Connect with Access Token'}
+              </button>
+            </div>
+            <div className="model-menu-divider" style={{ margin: '12px 0' }} />
+            <div className="gdrive-fields">
+              <label>Or Sign in via Google OAuth 2.0 PKCE</label>
+              <input type="text" className="gdrive-input" placeholder="Google OAuth Client ID (....apps.googleusercontent.com)" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+              <input type="password" className="gdrive-input" placeholder="Client Secret (optional for desktop OAuth)" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
+              <button className="btn-mini" disabled={busy || !clientId.trim()} onClick={() => connectMode({ mode: 'oauth', clientId: clientId.trim(), clientSecret: clientSecret.trim() })}>
+                {busy ? 'Opening Google Sign-in…' : 'Sign in with Google'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {tab === 'mcp' && (
+          <div className="gdrive-body">
+            <p className="muted">Connect an external Google Drive MCP server over stdio (<code>@modelcontextprotocol/server-gdrive</code>) or HTTP/SSE.</p>
+            <div className="gdrive-fields">
+              <label>HTTP / SSE MCP Server URL (optional)</label>
+              <input type="text" className="gdrive-input" placeholder="https://.../mcp (leave blank to use stdio command below)" value={mcpUrl} onChange={(e) => setMcpUrl(e.target.value)} />
+              <label>Stdio Command &amp; Args</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input type="text" className="gdrive-input" style={{ flex: '0 0 120px' }} value={mcpCmd} onChange={(e) => setMcpCmd(e.target.value)} />
+                <input type="text" className="gdrive-input" value={mcpArgs} onChange={(e) => setMcpArgs(e.target.value)} />
+              </div>
+            </div>
+            <div className="gdrive-foot">
+              <button
+                className="btn-mini primary"
+                disabled={busy}
+                onClick={() => connectMode(mcpUrl.trim()
+                  ? { mode: 'mcp', url: mcpUrl.trim(), transport: /sse/i.test(mcpUrl) ? 'sse' : 'http' }
+                  : { mode: 'mcp', command: mcpCmd.trim() || 'npx', args: mcpArgs.trim().split(/\s+/).filter(Boolean) })}
+              >
+                {busy ? 'Connecting…' : 'Connect MCP Server'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

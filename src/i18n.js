@@ -35,7 +35,7 @@ const STRINGS = {
     'sidebar.code': 'Code',
     'sidebar.browser': 'Browser',
     'sidebar.settings': 'Settings',
-    'composer.placeholder': 'Message Akron Bot…',
+    'composer.placeholder': 'Ask anything, @ to mention, / for actions',
     'composer.send': 'Send message',
     'composer.voice': 'Voice mode',
     'composer.browser': 'Open browser',

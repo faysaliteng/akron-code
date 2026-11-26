@@ -59,7 +59,7 @@ class MCPClient {
     // Optional per-connector API key pasted in settings.
     if (!headers.authorization && cfg.apiKey) headers.authorization = 'Bearer ' + cfg.apiKey;
     const entry = {
-      type: 'http', url, headers, nextId: 1, tools: [], fullTools: [], name: cfg.name || url,
+      type: 'http', url, headers, nextId: 1, tools: [], fullTools: [], prompts: [], name: cfg.name || url,
       pending: new Map(), stderr: () => '', sessionId: null,
     };
     const post = async (body) => {
@@ -76,8 +76,12 @@ class MCPClient {
       const sid = res.headers.get('mcp-session-id');
       if (sid) { entry.sessionId = sid; headers['mcp-session-id'] = sid; }
       const ct = res.headers.get('content-type') || '';
-      if (ct.includes('text/event-stream')) return await parseSSE(res);
-      return await res.json();
+      const msg = ct.includes('text/event-stream') ? await parseSSE(res) : await res.json();
+      if (msg && typeof msg === 'object' && Object.prototype.hasOwnProperty.call(msg, 'jsonrpc')) {
+        if (msg.error) throw new Error(msg.error.message || 'MCP error');
+        return msg.result !== undefined ? msg.result : msg;
+      }
+      return msg;
     };
     entry.post = post;
     this.servers.set(serverId, entry);
@@ -96,7 +100,13 @@ class MCPClient {
     } catch (_) {}
     entry.fullTools = tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
     entry.tools = entry.fullTools.map((t) => t.name);
-    return { serverId, name: entry.name, tools: entry.fullTools };
+    let prompts = [];
+    try {
+      const pr = await this._request(serverId, 'prompts/list', {}, Math.min(initTimeout, 5000));
+      prompts = (pr && Array.isArray(pr.prompts)) ? pr.prompts : [];
+    } catch (_) {}
+    entry.prompts = prompts;
+    return { serverId, name: entry.name, tools: entry.fullTools, prompts: entry.prompts };
   }
 
   async _connectStdio(cfg) {
@@ -118,7 +128,7 @@ class MCPClient {
     proc.stderr.on('data', (d) => {
       if (stderr.length < 32768) stderr += d.toString();
     });
-    const entry = { type: 'stdio', proc, nextId: 1, tools: [], fullTools: [], name: cfg.name || command, pending: new Map(), stderr: () => stderr, exited: false };
+    const entry = { type: 'stdio', proc, nextId: 1, tools: [], fullTools: [], prompts: [], name: cfg.name || command, pending: new Map(), stderr: () => stderr, exited: false };
     this.servers.set(serverId, entry);
 
     proc.on('error', (err) => {
@@ -175,7 +185,13 @@ class MCPClient {
       } catch (_) {}
       entry.fullTools = tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
       entry.tools = entry.fullTools.map((t) => t.name);
-      return { serverId, name: entry.name, tools: entry.fullTools };
+      let prompts = [];
+      try {
+        const pr = await this._request(serverId, 'prompts/list', {}, Math.min(initTimeout, 5000));
+        prompts = (pr && Array.isArray(pr.prompts)) ? pr.prompts : [];
+      } catch (_) {}
+      entry.prompts = prompts;
+      return { serverId, name: entry.name, tools: entry.fullTools, prompts: entry.prompts };
     } catch (e) {
       this.disconnect(serverId);
       throw e;
@@ -224,6 +240,68 @@ class MCPClient {
   listTools(serverId) {
     const entry = this.servers.get(serverId);
     return entry ? entry.tools : [];
+  }
+
+  async listPrompts(serverId) {
+    if (serverId) {
+      const entry = this.servers.get(serverId);
+      if (!entry) throw new Error('server not found');
+      try {
+        const r = await this._request(serverId, 'prompts/list', {}, 8000);
+        const prompts = (r && Array.isArray(r.prompts)) ? r.prompts : [];
+        entry.prompts = prompts;
+        return prompts.map((p) => ({
+          serverId,
+          serverName: entry.name || serverId,
+          name: p.name,
+          title: p.title || '',
+          description: p.description || '',
+          arguments: Array.isArray(p.arguments) ? p.arguments : [],
+        }));
+      } catch (_) {
+        return (entry.prompts || []).map((p) => ({
+          serverId,
+          serverName: entry.name || serverId,
+          name: p.name,
+          title: p.title || '',
+          description: p.description || '',
+          arguments: Array.isArray(p.arguments) ? p.arguments : [],
+        }));
+      }
+    }
+    const all = [];
+    for (const sid of [...this.servers.keys()]) {
+      try {
+        const items = await this.listPrompts(sid);
+        all.push(...items);
+      } catch (_) {}
+    }
+    return all;
+  }
+
+  async getPrompt(serverId, name, args = {}) {
+    const entry = this.servers.get(serverId);
+    if (!entry) throw new Error('server not found');
+    const r = await this._request(serverId, 'prompts/get', { name, arguments: args || {} }, 15000);
+    const msgs = Array.isArray(r && r.messages) ? r.messages : [];
+    const parts = [];
+    for (const m of msgs) {
+      const c = m && m.content;
+      if (typeof c === 'string') parts.push(c);
+      else if (c && typeof c.text === 'string') parts.push(c.text);
+      else if (Array.isArray(c)) {
+        for (const item of c) {
+          if (item && typeof item.text === 'string') parts.push(item.text);
+        }
+      } else if (c != null) {
+        parts.push(JSON.stringify(c));
+      }
+    }
+    return {
+      description: (r && r.description) || '',
+      messages: msgs,
+      text: parts.filter(Boolean).join('\n\n'),
+    };
   }
 
   async listResources(serverId) {

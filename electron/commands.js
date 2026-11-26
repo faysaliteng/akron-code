@@ -312,10 +312,13 @@ const BUILTIN = [
   { name: 'security-review', description: 'Security review of the diff' },
   { name: 'simplify', description: 'Simplify the changed code' },
   { name: 'advisor', description: 'Second opinion from the model' },
-  { name: 'btw', description: 'Quick side answer' },
+  { name: 'btw', description: 'Ask a quick question without interrupting the main conversation.' },
   { name: 'recap', description: 'Recap this conversation' },
   { name: 'brief', description: 'Short brief of this conversation' },
-  { name: 'goal', description: 'Set the run goal' },
+  { name: 'goal', description: 'Run until the specified goal is completely finished.' },
+  { name: 'swarm', description: 'Toggle or launch multi-agent Swarm orchestration' },
+  { name: 'subagents', description: 'Open Subagents inspector pane' },
+  { name: 'gdrive', description: 'Open Google Drive setup and file picker', guiEquivalent: true },
   // config & system
   { name: 'hooks', description: 'Show merged hook config' },
   { name: 'mcp', description: 'List MCP servers and tools' },
@@ -399,6 +402,139 @@ function listForUi(cwd) {
   return [...builtin, ...skills, ...custom];
 }
 
+const PINNED_ACTION_ORDER = [
+  'btw',
+  'mcp:rea:investigate_feature',
+  'mcp:rea:compare_application_versions',
+  'mcp:rea:verify_reconstruction',
+  'mcp:rea:trace_crash',
+  'mcp:rea:audit_residual_unknowns',
+  'mcp:rea:prepare_bounded_process_capture',
+  'goal',
+  'plan',
+  'swarm',
+  'review',
+  'compact',
+  'clear',
+  'init',
+  'doctor',
+  'subagents',
+  'agents',
+  'memory',
+  'context',
+  'cost',
+  'usage',
+  'model',
+  'diff',
+  'rewind',
+  'tasks',
+  'schedule',
+  'mcp',
+  'skills',
+  'plugins',
+  'gdrive',
+  'help',
+];
+
+const TAKES_ARGS_SET = new Set([
+  'btw', 'goal', 'advisor', 'add-dir', 'cwd', 'resume', 'rename', 'effort',
+  'output-style', 'export', 'autocompact', 'search', 'swarm',
+]);
+
+function listSlashActions({ cwd, mcpPrompts = [], skills = [] } = {}) {
+  const byName = new Map();
+  const upsert = (item) => {
+    if (!item || !item.name) return;
+    const key = String(item.name).toLowerCase();
+    if (!byName.has(key)) byName.set(key, item);
+  };
+
+  // Built-in commands + built-in skill prompts
+  for (const b of BUILTIN) {
+    upsert({
+      name: b.name,
+      description: b.description || '',
+      kind: 'builtin',
+      icon: b.name === 'btw' ? 'btw' : b.name === 'goal' ? 'goal' : 'command',
+      takesArgs: TAKES_ARGS_SET.has(b.name),
+      aliases: b.aliases || [],
+      source: 'builtin',
+    });
+  }
+
+  // MCP prompts (REA workflows + any other connected MCP servers)
+  for (const p of mcpPrompts || []) {
+    if (!p || !p.serverId || !p.name) continue;
+    const fullName = `mcp:${p.serverId}:${p.name}`;
+    upsert({
+      name: fullName,
+      serverId: p.serverId,
+      promptName: p.name,
+      description: p.description || p.title || `MCP prompt from ${p.serverName || p.serverId}`,
+      kind: 'mcp',
+      icon: 'mcp',
+      takesArgs: true,
+      arguments: Array.isArray(p.arguments) ? p.arguments : [],
+      source: 'mcp',
+    });
+  }
+
+  // Custom .claude/commands & built-in skill commands
+  for (const c of discover(cwd, { fresh: true })) {
+    upsert({
+      name: c.name,
+      description: c.description || 'Custom command',
+      kind: 'custom',
+      icon: 'command',
+      takesArgs: /\$ARGUMENTS|\$1/.test(String(c.body || '')),
+      argumentHint: c.argumentHint || '',
+      source: c.source || 'project',
+    });
+  }
+  for (const [k, v] of Object.entries(SKILL_PROMPTS)) {
+    upsert({
+      name: k,
+      description: v.description || '',
+      kind: 'skill',
+      icon: 'skill',
+      takesArgs: true,
+      source: 'skill',
+    });
+  }
+  // Enabled agent skills (e.g. reverse-engineer-anything, run-workflow, etc.)
+  for (const s of skills || []) {
+    if (!s || s.enabled === false) continue;
+    const rawName = String(s.name || s.id || '').trim();
+    if (!rawName) continue;
+    upsert({
+      name: `skill:${rawName}`,
+      skillName: rawName,
+      description: s.description || `Run with skill ${rawName}`,
+      kind: 'skill',
+      icon: 'skill',
+      takesArgs: true,
+      source: 'skill',
+    });
+  }
+
+  const rankOf = (name) => {
+    const idx = PINNED_ACTION_ORDER.indexOf(String(name).toLowerCase());
+    return idx >= 0 ? idx : 1000;
+  };
+
+  return [...byName.values()].sort((a, b) => {
+    const ra = rankOf(a.name);
+    const rb = rankOf(b.name);
+    if (ra !== rb) return ra - rb;
+    // Secondary MCP prompts right before unpinned built-ins
+    if (ra === 1000 && rb === 1000) {
+      if (a.kind === 'mcp' && b.kind !== 'mcp') return -1;
+      if (a.kind !== 'mcp' && b.kind === 'mcp') return 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
 module.exports = {
   BUILTIN,
   SKILL_PROMPTS,
@@ -407,5 +543,6 @@ module.exports = {
   expand,
   splitArgs,
   listForUi,
+  listSlashActions,
   commandDirs,
 };

@@ -945,7 +945,7 @@ async function main() {
     assert.ok(/function PluginsView\(/.test(src) && /autobot\.installPlugin\(/.test(src), 'plugins panel must install');
     assert.ok(/function ScheduledView\(/.test(src) && /autobot\.createScheduledTask\(/.test(src), 'scheduled panel must create tasks');
     assert.ok(/autobot\.runScheduledTask\(/.test(src), 'scheduled panel must support run-now');
-    assert.ok(/setPanel\('plugins'\)/.test(src) && /setPanel\('scheduled'\)/.test(src), 'both panels need sidebar entries');
+    assert.ok((/setPanel\('plugins'\)/.test(src) || /openSettingsAt\('skills'\)/.test(src)) && /setPanel\('scheduled'\)/.test(src), 'plugins (via Customizations/panel) and scheduled panels are reachable');
   });
 
   // ---- provider key / credit status (model picker dots) ----

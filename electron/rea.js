@@ -15,6 +15,110 @@ const { spawn, execFileSync } = require('child_process');
 const mcpSchema = require('./mcp-schema');
 
 const MAX_CLI_BYTES = 200 * 1024;
+
+const REA_BUILTIN_PROMPTS = [
+  {
+    serverId: 'rea',
+    serverName: 'rea',
+    name: 'investigate_feature',
+    title: 'Investigate a feature',
+    description: 'Trace a feature through relevant artifact, symbol, and function evidence while distinguishing observations, inferences, and residual unknowns.',
+    arguments: [
+      { name: 'feature', description: 'Feature, behavior, string, or symbol to investigate', required: true },
+      { name: 'target_path', description: 'Absolute target path; omit when the intended target is already open', required: false },
+    ],
+  },
+  {
+    serverId: 'rea',
+    serverName: 'rea',
+    name: 'compare_application_versions',
+    title: 'Compare application versions',
+    description: 'Compare two shipped application artifacts through complete inventory and optional static or runtime evidence without equating missing data with unchanged behavior.',
+    arguments: [
+      { name: 'left_target_path', description: 'Absolute path to the earlier or baseline target', required: true },
+      { name: 'right_target_path', description: 'Absolute path to the later or candidate target', required: true },
+    ],
+  },
+  {
+    serverId: 'rea',
+    serverName: 'rea',
+    name: 'verify_reconstruction',
+    title: 'Verify a reconstruction',
+    description: 'Evaluate a finite reconstruction specification against retained Evidence comparisons without broadening pass results into global equivalence claims.',
+    arguments: [
+      { name: 'reconstruction_goal', description: 'Finite behavior or structure the reconstruction is expected to satisfy', required: true },
+    ],
+  },
+  {
+    serverId: 'rea',
+    serverName: 'rea',
+    name: 'trace_crash',
+    title: 'Trace a crash',
+    description: 'Correlate a crash symptom with static call and reference evidence plus optional process capture observations.',
+    arguments: [
+      { name: 'crash_signal', description: 'Crash message, exception, signal, address, or reproducible symptom', required: true },
+      { name: 'target_path', description: 'Absolute target path; omit when the intended target is already open', required: false },
+    ],
+  },
+  {
+    serverId: 'rea',
+    serverName: 'rea',
+    name: 'audit_residual_unknowns',
+    title: 'Audit residual unknowns',
+    description: 'Review current residual-unknown heads against retained evidence, revision integrity, and declared authority without silently closing unanswered questions.',
+    arguments: [
+      { name: 'audit_scope', description: 'Decision, risk, or investigation scope the unknown audit must support', required: true },
+    ],
+  },
+  {
+    serverId: 'rea',
+    serverName: 'rea',
+    name: 'prepare_bounded_process_capture',
+    title: 'Prepare a bounded process capture',
+    description: 'Choose a command, inputs, observations, and stopping conditions for a process capture that answers the behavioral question.',
+    arguments: [
+      { name: 'behavior_question', description: 'Behavioral question the capture must answer and stopping condition', required: true },
+      { name: 'executable', description: 'Command name or executable path requested for the scenario', required: true },
+      { name: 'working_directory', description: 'Working directory requested for the scenario', required: true },
+    ],
+  },
+];
+
+async function expandReaPrompt(mcpClient, promptName, argText, cwd) {
+  const cleanName = String(promptName || '').trim();
+  const promptMeta = REA_BUILTIN_PROMPTS.find((p) => p.name === cleanName);
+  const rawArgs = String(argText || '').trim();
+  const parsedArgs = {};
+  // Parse key=value pairs if supplied, otherwise bind rawArgs to the first required argument.
+  if (rawArgs) {
+    const kvPairs = [...rawArgs.matchAll(/(\w+)=(?:"([^"]*)"|'([^']*)'|(\S+))/g)];
+    if (kvPairs.length) {
+      for (const m of kvPairs) parsedArgs[m[1]] = m[2] != null ? m[2] : (m[3] != null ? m[3] : m[4]);
+    } else if (promptMeta && promptMeta.arguments && promptMeta.arguments.length) {
+      parsedArgs[promptMeta.arguments[0].name] = rawArgs;
+      if (promptMeta.arguments.some((a) => a.name === 'working_directory') && cwd) parsedArgs.working_directory = cwd;
+    }
+  }
+  const hasAllRequired = promptMeta
+    ? (promptMeta.arguments || []).filter((a) => a.required).every((a) => Boolean(parsedArgs[a.name]))
+    : false;
+
+  if (mcpClient && hasAllRequired) {
+    try {
+      await ensureConnected(mcpClient);
+      const res = await mcpClient.getPrompt('rea', cleanName, parsedArgs);
+      if (res && res.text) return res.text;
+    } catch (_) {}
+  }
+
+  const desc = (promptMeta && promptMeta.description) || `Run REA guided workflow ${cleanName}.`;
+  return [
+    `[REA Guided Workflow: mcp:rea:${cleanName}]`,
+    desc,
+    rawArgs ? `Target / Input: ${rawArgs}` : `Working folder: ${cwd || process.cwd()}`,
+    `Use the built-in \`rea\` tool (action="search", action="call" on relevant REA tools such as guided_workflows, trace_feature, trace_application_feature, compare_application_versions, inspect_recorded_crash, verify_reconstruction, audit_residual_unknowns, capture_process_scenario, and evidence-bundle tools) to carry out this workflow systematically. Explicitly separate direct observations from inferences and list any residual unknowns.`,
+  ].join('\n\n');
+}
 let cachedNode = null;
 let cachedInstall = null;
 let inflightConnect = null;
@@ -469,6 +573,8 @@ function resetCaches() {
 }
 
 module.exports = {
+  REA_BUILTIN_PROMPTS,
+  expandReaPrompt,
   enrichProcessPath,
   isSupportedNodeVersion,
   resolveNodeRuntime,

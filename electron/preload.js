@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('autobot', {
   pluginAuthStart: (id, opts) => ipcRenderer.invoke('autobot:pluginAuthStart', id, opts),
   pluginAuthStatus: (id) => ipcRenderer.invoke('autobot:pluginAuthStatus', id),
   pluginSignOut: (id) => ipcRenderer.invoke('autobot:pluginSignOut', id),
+  configurePlugin: (id, cfg) => ipcRenderer.invoke('autobot:configurePlugin', id, cfg),
+  testPlugin: (id) => ipcRenderer.invoke('autobot:testPlugin', id),
 
   // Subscription accounts (Claude Max / ChatGPT / Antigravity / Grok). Only
   // non-secret status crosses the bridge; tokens stay in the main process.
@@ -117,6 +119,15 @@ contextBridge.exposeInMainWorld('autobot', {
 
   // Example-parity config surface: the same `.claude/` files Claude Code reads.
   listCommands: (cwd) => ipcRenderer.invoke('autobot:listCommands', cwd),
+  listSlashActions: (cwd) => ipcRenderer.invoke('autobot:listSlashActions', cwd),
+  expandMcpPrompt: (payload) => ipcRenderer.invoke('autobot:expandMcpPrompt', payload),
+  listWorkspaceFiles: (cwd, query) => ipcRenderer.invoke('autobot:listWorkspaceFiles', cwd, query),
+  gdriveStatus: () => ipcRenderer.invoke('autobot:gdriveStatus'),
+  gdrivePickFolder: () => ipcRenderer.invoke('autobot:gdrivePickFolder'),
+  gdriveConnect: (payload) => ipcRenderer.invoke('autobot:gdriveConnect', payload),
+  gdriveDisconnect: () => ipcRenderer.invoke('autobot:gdriveDisconnect'),
+  gdriveSearch: (query, opts) => ipcRenderer.invoke('autobot:gdriveSearch', query, opts),
+  gdriveRead: (idOrPath) => ipcRenderer.invoke('autobot:gdriveRead', idOrPath),
   resolveCommand: (name, args, cwd) => ipcRenderer.invoke('autobot:resolveCommand', name, args, cwd),
   listAgentDefs: (cwd) => ipcRenderer.invoke('autobot:listAgents', cwd),
   getProjectMemory: (cwd) => ipcRenderer.invoke('autobot:getProjectMemory', cwd),
