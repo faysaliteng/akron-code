@@ -52,9 +52,27 @@ function normalizeWinAsarIntegrityPath(exePath) {
   }
 }
 
+function ensureUnpackedIcons(context) {
+  const platform = context.electronPlatformName;
+  const targetPath = resolveTargetBinary(context);
+  const resDir = platform === 'darwin'
+    ? path.join(targetPath, 'Contents', 'Resources')
+    : path.join(path.dirname(targetPath), 'resources');
+  if (!fs.existsSync(resDir)) return;
+  const projectRoot = path.resolve(__dirname, '..');
+  for (const name of ['icon.png', 'icon.ico']) {
+    const src = path.join(projectRoot, 'build', name);
+    const dest = path.join(resDir, name);
+    if (fs.existsSync(src) && !fs.existsSync(dest)) {
+      fs.copyFileSync(src, dest);
+    }
+  }
+}
+
 exports.default = async function afterPackHardenFuses(context) {
   const platform = context.electronPlatformName;
   const targetPath = resolveTargetBinary(context);
+  ensureUnpackedIcons(context);
   console.log(`[harden-fuses] Flipping Electron Fuses on ${platform}: ${targetPath}`);
 
   if (platform === 'win32') {

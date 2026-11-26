@@ -141,9 +141,23 @@ class MCPClient {
       this.servers.delete(serverId);
     });
 
+    const maxStdoutBufferBytes = Number(cfg.maxStdoutBufferBytes) || 8 * 1024 * 1024;
     let buffer = '';
     proc.stdout.on('data', (d) => {
+      if (entry.exited) return;
       buffer += d.toString();
+      if (Buffer.byteLength(buffer, 'utf8') > maxStdoutBufferBytes) {
+        buffer = '';
+        entry.exited = true;
+        const err = new Error(`MCP stdout flood exceeded ${maxStdoutBufferBytes} bytes without newline delimiter`);
+        for (const [, p] of entry.pending) {
+          clearTimeout(p.timer);
+          p.reject(err);
+        }
+        entry.pending.clear();
+        try { proc.kill('SIGKILL'); } catch (_) {}
+        return;
+      }
       let nl;
       while ((nl = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, nl).trim();

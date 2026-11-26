@@ -12,6 +12,9 @@ const providertransport = require('./providertransport');
 const mcpSchema = require('./mcp-schema');
 const gate = require('./provider-gate');
 const router = require('./orch-router');
+const spill = require('./spill');
+const contextPipeline = require('./context-pipeline');
+const loopGuardMod = require('./loop-guard');
 
 const LEAN_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'Bash', 'LS', 'TodoWrite', 'WebFetch', 'WebSearch', 'ToolSearch']);
 const STANDARD_TOOLS = new Set([
@@ -1480,6 +1483,9 @@ async function runAgent(opts) {
   const HARD_STEP_CAP = Number(opts.hardStepCap) || 1000;
   const maxSteps = Number(opts.maxSteps) > 0 ? Number(opts.maxSteps) : HARD_STEP_CAP;
   let currentCwd = opts.cwd || process.cwd();
+  if (opts.turnStart) {
+    Promise.resolve().then(() => spill.pruneOldSpills()).catch(() => {});
+  }
 
   // ── Lifecycle hooks (Claude Code parity) ────────────────────────────────
   // The same ten events Claude Code fires, read from ~/.claude/settings.json,
@@ -2017,6 +2023,21 @@ async function runAgent(opts) {
   let lastSig = '';
   let repeatCount = 0;
   let nudges = 0;
+  const loopGuard = loopGuardMod.createLoopGuard({
+    circuitBreakerThreshold: Number(opts.loopBreakerThreshold) || 8,
+  });
+  const SPILL_TOOLS = new Set(['Bash', 'Read', 'Grep', 'WebFetch', 'mcp__workspace__bash', 'mcp__workspace__read_file', 'mcp__workspace__grep']);
+  const maybeSpillResult = (name, args, callId, text, hasImage) => {
+    if (hasImage || typeof text !== 'string') return String(text || '');
+    const isReadSlice = (name === 'Read' || name === 'mcp__workspace__read_file') && args && (args.offset != null || args.limit != null || args.pages != null);
+    if (isReadSlice) return text;
+    if (!SPILL_TOOLS.has(name) && !String(name || '').startsWith('mcp__')) return text;
+    return spill.maybeSpillOutput(text, {
+      convId: opts.convId || 'scratch',
+      callId,
+      toolName: name,
+    }).text;
+  };
   // Plan mode: track whether the turn already ended on ExitPlanMode/AskUserQuestion
   // so a prose-only finish gets nudged back onto the contract.
   let planEnded = false;
@@ -2305,12 +2326,13 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           phase: 'args',
         });
       };
+      const wireMessages = contextPipeline.maskOlderToolOutputs(messages, { keepRecentSteps: 4 });
       return chatWithFailover({
         list: providerList,
         getIndex,
         getHome: () => homeIndex,
         setIndex,
-        messages,
+        messages: wireMessages,
         tools: withTools ? tools : undefined,
         onDelta: (text, thinking) => {
           if (thinking) turnThink += text.length; else turnChars += text.length;
@@ -2400,8 +2422,10 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           }
           if (!isContextOverflow(e) || (opts.signal && opts.signal.aborted)) throw e;
           if (tries >= 5) throw e;
+          const ratios = contextPipeline.SHRINK_RATIOS;
+          const ratio = ratios[Math.min(tries, ratios.length - 1)];
           tries++;
-          const c = compactTo(Math.round(historyBudget * 0.55));
+          const c = compactTo(Math.round(historyBudget * ratio));
           const shrunk = c.freed > 0 || shrinkLargest();
           if (!shrunk) throw e;
           emit({
@@ -3165,8 +3189,9 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         const pre = await beforeTool(p.name, p.args);
         if (pre.blocked) return { content: pre.planGate ? pre.reason : `Blocked by hook: ${pre.reason}`, isError: true };
         const r = await runTool(p.name, pre.args, ctx);
-        const content = typeof r === 'string' ? r : r.content;
+        const rawContent = typeof r === 'string' ? r : r.content;
         const imageDataUrl = (r && typeof r === 'object' && r.imageDataUrl) ? r.imageDataUrl : null;
+        const content = maybeSpillResult(p.name, pre.args, p.tc && p.tc.id, String(rawContent), !!imageDataUrl);
         const isErr = (typeof r === 'object' && Boolean(r.isError))
           || /^(Error|Tool error)/i.test(String(content).trim());
         return { content: await afterTool(p.name, pre.args, String(content), isErr), isError: isErr, imageDataUrl };
@@ -3184,10 +3209,16 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       let args = parseArgs(tc.function.arguments);
       emit({ type: 'tool', id: tc.id, name, args });
 
-      // Loop detection: identical tool + identical args repeated back-to-back.
-      let sig;
-      try { sig = name + '|' + JSON.stringify(args); } catch { sig = name + '|?'; }
-      if (sig === lastSig) repeatCount++; else { lastSig = sig; repeatCount = 1; }
+      // Loop detection: identical tool + identical args repeated back-to-back or cyclically.
+      const lgPre = loopGuard.beforeCall(name, args);
+      const sig = lgPre.sig;
+      repeatCount = lgPre.consecutiveCount;
+      if (lgPre.blocked) {
+        emit({ type: 'toolResult', id: tc.id, name, result: lgPre.reason, isError: true });
+        if (textCalls) messages.push({ role: 'user', content: `TOOL RESULT ${tc.id} (${name}):\n${lgPre.reason}` });
+        else messages.push({ role: 'tool', tool_call_id: tc.id, name, content: lgPre.reason });
+        return;
+      }
 
       let result;
       let isError = false;
@@ -3267,8 +3298,10 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         result = 'Tool error: ' + (e && e.message ? e.message : String(e));
         isError = true;
       }
-      const resultStr = String(result);
+      let resultStr = String(result);
       if (!isError && /^(Error|Tool error)/i.test(resultStr.trim())) isError = true;
+      resultStr = maybeSpillResult(name, args, tc.id, resultStr, !!imageDataUrl);
+      result = resultStr;
       if (WRITE_TOOLS.has(name) && !/^(Error|Tool error)/i.test(resultStr.trim())) {
         wroteSomething = true;
         // Surface the deliverable the moment it lands on disk: the browser pane
@@ -3283,8 +3316,11 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       }
 
       // Steer out of a loop instead of letting it eat the whole step budget.
-      // Two identical calls in a row already means the retry strategy is broken.
-      if (repeatCount >= 2 && nudges < 5) {
+      const lgPost = loopGuard.afterCall(name, args, { isError });
+      if (lgPost && lgPost.level && (lgPost.level === 'advisory' || lgPost.level === 'strong')) {
+        nudges++;
+        result = resultStr + `\n\n[SYSTEM NOTE: ${lgPost.note}]`;
+      } else if (repeatCount >= 2 && nudges < 5) {
         nudges++;
         const hint = name === 'Bash'
           ? 'You are repeating the exact same shell command. Do not retry it unchanged — inspect the error, then use a different approach (e.g. Write for files).'

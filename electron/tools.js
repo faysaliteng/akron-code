@@ -529,6 +529,12 @@ const executors = {
         return `Error reading file: ${fp} does not exist (${e.code || e.message}).`;
       }
       if (st.isDirectory()) return `Error: ${fp} is a directory, not a file. Use Glob or Bash \`ls\` to list it.`;
+      if (st.isFIFO && st.isFIFO()) {
+        const fifoRes = await require('./loop-guard').readFifoNonBlocking(fp, { timeoutMs: 20000 });
+        return fifoRes.ok
+          ? formatNumbered(fifoRes.content, fp, offset, limit, '(empty FIFO)')
+          : fifoRes.error;
+      }
       if (_readMtimes instanceof Map) _readMtimes.set(fp, Math.floor(st.mtimeMs));
       if (IMAGE_EXT.test(fp)) {
         const ext = path.extname(fp).toLowerCase();

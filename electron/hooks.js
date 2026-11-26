@@ -45,7 +45,16 @@ const EVENTS = [
 ];
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest']);
-const MAX_STREAM = 64 * 1024;
+const MAX_HOOK_OUTPUT_BYTES = 50 * 1024;
+const MAX_STREAM = MAX_HOOK_OUTPUT_BYTES;
+
+function capHookText(s, limit = MAX_HOOK_OUTPUT_BYTES) {
+  const str = String(s == null ? '' : s);
+  const bytes = Buffer.byteLength(str, 'utf8');
+  if (bytes <= limit) return str;
+  const note = `\n...[hook output truncated to ${Math.round(limit / 1024)} KB (was ${bytes} bytes)]`;
+  return Buffer.from(str, 'utf8').subarray(0, Math.max(0, limit - Buffer.byteLength(note, 'utf8'))).toString('utf8') + note;
+}
 
 function expand(p) { return String(p || '').replace(/^~(?=$|\/)/, os.homedir()); }
 
@@ -196,13 +205,13 @@ async function runEvent(event, payload = {}, opts = {}) {
         verdict.blocked = true;
         verdict.reason = parsed.reason || res.stderr || String(parsed.systemMessage || 'Blocked by PreToolUse hook');
       }
-      if (parsed.systemMessage) verdict.systemMessages.push(String(parsed.systemMessage));
+      if (parsed.systemMessage) verdict.systemMessages.push(capHookText(parsed.systemMessage));
       if (parsed.continue === false) { verdict.stop = true; verdict.reason = parsed.stopReason || verdict.reason; }
       if (parsed.suppressOutput) verdict.suppressOutput = true;
 
       const hs = parsed.hookSpecificOutput;
       if (hs && typeof hs === 'object') {
-        if (hs.additionalContext) ctxNotes.push(String(hs.additionalContext));
+        if (hs.additionalContext) ctxNotes.push(capHookText(hs.additionalContext));
         if (hs.permissionDecision === 'deny') {
           verdict.blocked = true;
           verdict.reason = hs.permissionDecisionReason || verdict.reason || 'Denied by hook';
@@ -214,7 +223,11 @@ async function runEvent(event, payload = {}, opts = {}) {
         verdict.blocked = true;
         verdict.reason = parsed.reason || verdict.reason;
       }
-      if (ctxNotes.length) verdict.additionalContext += (verdict.additionalContext ? '\n' : '') + ctxNotes.join('\n');
+      if (ctxNotes.length) {
+        verdict.additionalContext = capHookText(
+          verdict.additionalContext ? `${verdict.additionalContext}\n${ctxNotes.join('\n')}` : ctxNotes.join('\n')
+        );
+      }
     }
   }
   return verdict;
@@ -226,4 +239,4 @@ function hasHooks(event, cwd) {
   return Boolean((cfg[event] || []).length);
 }
 
-module.exports = { EVENTS, TOOL_EVENTS, loadHookConfig, runEvent, hasHooks, matches };
+module.exports = { EVENTS, TOOL_EVENTS, MAX_HOOK_OUTPUT_BYTES, capHookText, loadHookConfig, runEvent, hasHooks, matches };

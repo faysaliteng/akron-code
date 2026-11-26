@@ -61,7 +61,15 @@ function verifyBrandIntegrity(opts = {}) {
     const candidates = [];
 
     if (meta.runtime === 'asar' || meta.runtime === 'both') {
-      candidates.push(asarPath);
+      if (meta.runtime === 'asar' && !fs.existsSync(asarPath) && resBase) {
+        const unpackedByRel = path.join(resBase, rel);
+        const unpackedByBase = path.join(resBase, path.basename(rel));
+        if (fs.existsSync(unpackedByRel)) candidates.push(unpackedByRel);
+        else if (fs.existsSync(unpackedByBase)) candidates.push(unpackedByBase);
+        else candidates.push(asarPath);
+      } else {
+        candidates.push(asarPath);
+      }
     } else if (meta.runtime === 'repo-only') {
       // Packaged apps hold .icns/.ico natively outside ASAR, so only check when present in appRoot
       if (fs.existsSync(asarPath)) candidates.push(asarPath);

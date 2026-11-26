@@ -159,6 +159,11 @@ function isReadAllowed(p) {
   if (isProtectedCredentialPath(p)) {
     return { allowed: false, reason: `access to Akron credential store is blocked: ${path.basename(String(p))}` };
   }
+  try {
+    const resolvedSpill = path.resolve(expandPath(p)).replace(/\\/g, '/');
+    const spillRoot = path.resolve(path.join(os.homedir(), '.autobot', 'spills')).replace(/\\/g, '/');
+    if (resolvedSpill === spillRoot || resolvedSpill.startsWith(spillRoot + '/')) return true;
+  } catch (_) {}
   const pol = load().sandbox;
   if (!pol.enabled) return true;
   const fsPol = pol.filesystem || {};
