@@ -125,6 +125,7 @@ contextBridge.exposeInMainWorld('autobot', {
   listCheckpoints: (convId) => ipcRenderer.invoke('autobot:listCheckpoints', convId),
   rewind: (convId, checkpointId) => ipcRenderer.invoke('autobot:rewind', convId, checkpointId),
   turnDiffs: (convId, checkpointId, cwd) => ipcRenderer.invoke('autobot:turnDiffs', convId, checkpointId, cwd),
+  gitDiffFiles: (cwd) => ipcRenderer.invoke('autobot:gitDiffFiles', cwd),
   extBridgeStatus: () => ipcRenderer.invoke('autobot:extBridgeStatus'),
   extBridgeOpenFolder: () => ipcRenderer.invoke('autobot:extBridgeOpenFolder'),
   reaStatus: () => ipcRenderer.invoke('autobot:reaStatus'),

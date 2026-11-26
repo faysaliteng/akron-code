@@ -1,5 +1,6 @@
 'use strict';
-const { exec } = require('child_process');
+const { exec, execFileSync } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
 // Repo-aware git introspection — the "Claude Code" surface. Runs git commands in a
@@ -145,4 +146,150 @@ function unifiedDiff(oldText, newText, label = 'file', context = 3) {
   };
 }
 
-module.exports = { gitInfo, findRoot, unifiedDiff };
+function parseGitDiffOutput(diffText, root) {
+  const files = [];
+  if (!diffText) return files;
+  const rawLines = String(diffText).split('\n');
+  let cur = null;
+  let oldLn = 1;
+  let newLn = 1;
+  let inHunk = false;
+
+  const flush = () => {
+    if (cur) {
+      files.push(cur);
+      cur = null;
+    }
+    inHunk = false;
+  };
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    if (line.startsWith('diff --git ')) {
+      flush();
+      const m = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+      const rel = m ? m[2] : line.slice(11).trim();
+      cur = {
+        path: path.join(root, rel),
+        relPath: rel,
+        status: 'modified',
+        added: 0,
+        removed: 0,
+        lines: [],
+        binary: false,
+      };
+      continue;
+    }
+    if (!cur) continue;
+    if (!inHunk) {
+      if (line.startsWith('new file mode')) { cur.status = 'added'; continue; }
+      if (line.startsWith('deleted file mode')) { cur.status = 'deleted'; continue; }
+      if (line.startsWith('rename to ')) {
+        const rel = line.slice(10).trim();
+        cur.relPath = rel;
+        cur.path = path.join(root, rel);
+        continue;
+      }
+      if (line.startsWith('Binary files ')) { cur.binary = true; continue; }
+      if (line.startsWith('--- ') || line.startsWith('+++ ') || line.startsWith('index ') || line.startsWith('similarity ') || line.startsWith('rename from ')) continue;
+    }
+    const hm = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (hm) {
+      oldLn = parseInt(hm[1], 10) || 1;
+      newLn = parseInt(hm[2], 10) || 1;
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk || cur.binary) continue;
+    if (line === '\\ No newline at end of file') continue;
+    const ch = line[0];
+    const body = line.slice(1);
+    if (ch === '+') {
+      cur.lines.push({ type: 'add', oldLine: null, newLine: newLn++, text: body });
+      cur.added++;
+    } else if (ch === '-') {
+      cur.lines.push({ type: 'del', oldLine: oldLn++, newLine: null, text: body });
+      cur.removed++;
+    } else if (ch === ' ') {
+      cur.lines.push({ type: 'ctx', oldLine: oldLn++, newLine: newLn++, text: body });
+    }
+  }
+  flush();
+  return files.filter((f) => !f.binary && (f.added > 0 || f.removed > 0 || f.lines.length > 0));
+}
+
+// Structured working-tree diff (modified + untracked files) with full context
+// so CodeReviewPane can collapse/expand unchanged regions and search inside them.
+function gitDiffFiles(cwd) {
+  cwd = cwd || process.cwd();
+  let root = '';
+  try {
+    root = String(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'] }) || '').trim();
+  } catch {
+    return [];
+  }
+  if (!root) return [];
+
+  let diffOut = '';
+  try {
+    diffOut = execFileSync('git', ['diff', 'HEAD', '--no-color', '--unified=99999'], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 6000,
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    try {
+      diffOut = execFileSync('git', ['diff', '--cached', '--no-color', '--unified=99999'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 6000,
+        maxBuffer: 8 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch {
+      diffOut = '';
+    }
+  }
+
+  const files = parseGitDiffOutput(diffOut, root);
+  const seen = new Set(files.map((f) => f.relPath));
+
+  // Include untracked non-binary text files up to a safe cap.
+  try {
+    const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 4000,
+      maxBuffer: 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const rels = String(untracked || '').split('\n').filter(Boolean).slice(0, 30);
+    for (const rel of rels) {
+      if (seen.has(rel)) continue;
+      if (/^(?:node_modules|dist|release|\.git)\//.test(rel)) continue;
+      const full = path.join(root, rel);
+      try {
+        const st = fs.statSync(full);
+        if (!st.isFile() || st.size > 200 * 1024) continue;
+        const buf = fs.readFileSync(full);
+        const probe = buf.subarray(0, Math.min(buf.length, 4096));
+        if (probe.includes(0)) continue; // binary
+        const textLines = buf.toString('utf8').split('\n');
+        files.push({
+          path: full,
+          relPath: rel,
+          status: 'added',
+          added: textLines.length,
+          removed: 0,
+          lines: textLines.map((txt, idx) => ({ type: 'add', oldLine: null, newLine: idx + 1, text: txt })),
+        });
+      } catch (_) {}
+    }
+  } catch (_) {}
+
+  return files;
+}
+
+module.exports = { gitInfo, findRoot, unifiedDiff, gitDiffFiles, parseGitDiffOutput };

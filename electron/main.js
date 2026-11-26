@@ -2389,6 +2389,9 @@ ipcMain.handle('autobot:rewind', (e, convId, checkpointId) => {
 ipcMain.handle('autobot:turnDiffs', (e, convId, checkpointId, cwd) => {
   try { return require('./checkpoints').computeTurnDiffs(convId, checkpointId, cwd); } catch (_) { return []; }
 });
+ipcMain.handle('autobot:gitDiffFiles', (e, cwd) => {
+  try { return require('./git').gitDiffFiles(cwd || workspace.ROOT); } catch (_) { return []; }
+});
 ipcMain.handle('autobot:extBridgeStatus', () => {
   try { return require('./extbridge').status(); } catch (e) { return { running: false, error: e.message, tabs: [] }; }
 });

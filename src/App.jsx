@@ -14,6 +14,7 @@ import ConnectorLogo from './ConnectorLogo.jsx';
 import { useVoiceDictation } from './voice';
 import { LiveChecklistCard, FilesChangedBar, summarizeChangedFiles } from './components/LiveProgress.jsx';
 import { CodeReviewPane } from './components/CodeReviewPane.jsx';
+import { deriveSubAgents } from './review-helpers.mjs';
 
 // ---------- Anthropicons (Example's icon font, PUA U+E000+) ----------
 const iconChar = (name) => {
@@ -653,7 +654,9 @@ export default function App() {
   const [dictating, setDictating] = useState(false);
   const [projects, setProjects] = useState(() => loadJSON('autobot:projects', [])); // { id, name, instructions }
   const [activeProject, setActiveProject] = useState(() => loadJSON('autobot:activeProject', null));
-  const [sessionPane, setSessionPane] = useState({ type: null, width: 460 }); // type: null | 'browser' | 'env' | 'runlog' | 'review' | 'subagents' | 'files' | 'terminal'
+  const [sessionPane, setSessionPane] = useState({ type: null, width: 480 }); // type: null | 'browser' | 'env' | 'runlog' | 'review' | 'subagents' | 'files' | 'terminal'
+  const [openPaneTabs, setOpenPaneTabs] = useState(['review']);
+  const lastPaneRef = useRef('review');
   const [reviewTarget, setReviewTarget] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null); // file the browser pane should show (generated site)
   const [voiceMode, setVoiceMode] = useState(false); // full-duplex conversational voice session
@@ -674,15 +677,49 @@ export default function App() {
   const active = convs.find((c) => c.id === activeId) || null;
   const messages = active ? active.messages : [];
 
+  const showSessionPane = useCallback((type) => {
+    if (!type) {
+      setSessionPane((p) => ({ ...p, type: null }));
+      return;
+    }
+    lastPaneRef.current = type;
+    setOpenPaneTabs((tabs) => (tabs.includes(type) ? tabs : [...tabs, type]));
+    setSessionPane((p) => ({
+      ...p,
+      type,
+      width: type === 'review' ? Math.max(Number(p.width) || 540, 520) : (p.width || 480),
+    }));
+    setPanel('chats');
+  }, []);
+
   // Example parity: session panes coexist with chat and toggle via dispatchToggleSessionPane semantics
   const toggleSessionPane = useCallback((type) => {
-    setSessionPane((p) => (p.type === type ? { ...p, type: null } : { ...p, type }));
+    const targetType = type || lastPaneRef.current || 'review';
+    setSessionPane((p) => {
+      if (p.type === targetType || (!type && p.type)) return { ...p, type: null };
+      lastPaneRef.current = targetType;
+      setOpenPaneTabs((tabs) => (tabs.includes(targetType) ? tabs : [...tabs, targetType]));
+      return { ...p, type: targetType };
+    });
     // Opening a session pane always returns the main area to the chat context
     setPanel('chats');
   }, []);
 
+  const closeSessionTab = useCallback((tabType) => {
+    setOpenPaneTabs((prev) => {
+      const next = prev.filter((t) => t !== tabType);
+      setSessionPane((p) => {
+        if (p.type !== tabType) return p;
+        return { ...p, type: next.length ? next[next.length - 1] : null };
+      });
+      return next.length ? next : ['review'];
+    });
+  }, []);
+
   const openReview = useCallback((target = null) => {
     setReviewTarget(target);
+    lastPaneRef.current = 'review';
+    setOpenPaneTabs((tabs) => (tabs.includes('review') ? tabs : [...tabs, 'review']));
     setSessionPane((p) => ({ ...p, type: 'review', width: Math.max(Number(p.width) || 540, 520) }));
     setPanel('chats');
   }, []);
@@ -1296,6 +1333,12 @@ export default function App() {
   // The conversation the current team (sub-agents / swarm) belongs to. The
   // rows are global state, so without this they painted into every chat.
   const teamConvRef = useRef(null);
+  const subAgentsRef = useRef(subAgents);
+  subAgentsRef.current = subAgents;
+  const swarmInfoRef = useRef(swarmInfo);
+  swarmInfoRef.current = swarmInfo;
+  const swarmBoardRef = useRef(swarmBoard);
+  swarmBoardRef.current = swarmBoard;
   const runStartedAtRef = useRef(0);
   runStartedAtRef.current = runStartedAt;
   const commitLive = useCallback(() => {
@@ -1314,7 +1357,8 @@ export default function App() {
     // Calling setConvs inside a setLive updater double-appended under StrictMode.
     const l = liveRef.current;
     setLiveSync(null);
-    if (l && (l.content || (l.tools && l.tools.length) || (l.checkpoints && l.checkpoints.length))) {
+    const hasTeam = teamConvRef.current === target && subAgentsRef.current && subAgentsRef.current.length > 0;
+    if (l && (l.content || (l.tools && l.tools.length) || (l.checkpoints && l.checkpoints.length) || hasTeam)) {
       // Bind the reply to the conversation the run was started from — the user
       // may have switched chats while it streamed.
       const msg = {
@@ -1325,10 +1369,20 @@ export default function App() {
         segments: l.segments,
         checkpoints: l.checkpoints || [],
         checkpointId: l.checkpointId || null,
+        subAgents: hasTeam ? subAgentsRef.current : undefined,
+        swarmInfo: teamConvRef.current === target && swarmInfoRef.current ? swarmInfoRef.current : undefined,
         ts: Date.now(),
         durationMs: startedAt ? Date.now() - startedAt : 0,
       };
-      setConvs((cs) => cs.map((c) => (c.id === target ? { ...c, messages: [...c.messages, msg] } : c)));
+      setConvs((cs) => cs.map((c) => (c.id === target ? {
+        ...c,
+        messages: [...c.messages, msg],
+        ...(hasTeam ? {
+          subAgents: subAgentsRef.current,
+          swarmInfo: swarmInfoRef.current,
+          swarmBoard: swarmBoardRef.current,
+        } : {}),
+      } : c)));
     }
   }, [setLiveSync]);
 
@@ -1592,6 +1646,10 @@ export default function App() {
   };
   const pinConv = (id) => {
     setConvs((cs) => cs.map((c) => (c.id === id ? { ...c, pinned: !c.pinned } : c)));
+  };
+  const archiveConv = (id) => {
+    setConvs((cs) => cs.map((c) => (c.id === id ? { ...c, archived: !c.archived } : c)));
+    setError('✅ Conversation archive state toggled.');
   };
   const splitConv = (id) => {
     const src = convsRef.current.find((c) => c.id === id);
@@ -2545,6 +2603,39 @@ export default function App() {
     return blocks;
   }, [messages, live, artifactsExplicit]);
 
+  const liveTeam = teamConvRef.current === activeId;
+  const effectiveSubAgents = useMemo(
+    () => deriveSubAgents(liveTeam ? subAgents : [], active, messages, liveForActive),
+    [liveTeam, subAgents, active, messages, liveForActive]
+  );
+  const effectiveSwarmInfo = (liveTeam && swarmInfo) || (active && active.swarmInfo) || null;
+  const effectiveSwarmBoard = (liveTeam && swarmBoard.length ? swarmBoard : null) || (active && active.swarmBoard) || [];
+  const allActiveTools = useMemo(
+    () => (messages || []).flatMap((m) => m.tools || []).concat((liveForActive && liveForActive.tools) || []),
+    [messages, liveForActive]
+  );
+  const allActiveCheckpoints = useMemo(
+    () => (messages || []).flatMap((m) => m.checkpoints || []).concat((liveForActive && liveForActive.checkpoints) || []),
+    [messages, liveForActive]
+  );
+  const changedFilesBadge = useMemo(
+    () => summarizeChangedFiles(allActiveTools, allActiveCheckpoints).files.length,
+    [allActiveTools, allActiveCheckpoints]
+  );
+  const paneProps = {
+    activeType: sessionPane.type,
+    openTabs: openPaneTabs,
+    onSelectTab: showSessionPane,
+    onCloseTab: closeSessionTab,
+    badges: {
+      subagents: effectiveSubAgents.length,
+      review: changedFilesBadge,
+    },
+    width: sessionPane.type === 'review' ? Math.max(sessionPane.width || 540, 520) : (sessionPane.width || 480),
+    onWidth: (w) => setSessionPane((p) => ({ ...p, width: w })),
+    onHide: () => setSessionPane((p) => ({ ...p, type: null })),
+  };
+
   return (
     <div className="app" data-theme={settings.theme} dir={localeDir(settings.locale)} lang={settings.locale}>
       <div className="titlebar"><Logo size={16} active={streaming} /><span className="brand">Akron Bot</span><span className="sub">{T('brand.sub')}</span></div>
@@ -2611,7 +2702,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={teamConvRef.current === activeId ? subAgents : []} swarmInfo={teamConvRef.current === activeId ? swarmInfo : null} swarmBoard={teamConvRef.current === activeId ? swarmBoard : []} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => toggleSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} onOpenReview={openReview} onTogglePane={toggleSessionPane} onOpenPlugins={() => setPanel('plugins')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onSplitConv={() => active && splitConv(active.id)} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
+              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => setPanel('plugins')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
@@ -2626,12 +2717,12 @@ export default function App() {
             </div>
 
             {sessionPane.type === 'browser' && (
-              <SessionPane icon="Globe" title={T('sidebar.browser')} width={sessionPane.width} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
-                <BrowserView cwd={cwd} previewUrl={previewUrl} />
+              <SessionPane {...paneProps} icon="Globe" title={T('sidebar.browser')}>
+                <BrowserView cwd={cwd} previewUrl={previewUrl} onClose={() => setSessionPane((p) => ({ ...p, type: null }))} />
               </SessionPane>
             )}
             {sessionPane.type === 'env' && (
-              <SessionPane icon="DotsHorizontal" title="Environment" width={sessionPane.width} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
+              <SessionPane {...paneProps} icon="DotsHorizontal" title="Environment">
                 <EnvPanel
                   cwd={cwd} setCwd={setCwd} provider={provider} lastUsage={lastUsage}
                   mcpServers={mcpServers} features={features} saveFeat={saveFeat}
@@ -2642,17 +2733,17 @@ export default function App() {
               </SessionPane>
             )}
             {sessionPane.type === 'runlog' && (
-              <SessionPane icon="Activity" title="Run Log & Rewind" width={sessionPane.width} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
+              <SessionPane {...paneProps} icon="Activity" title="Background Tasks">
                 <RunLogPanel convId={activeId} />
               </SessionPane>
             )}
             {sessionPane.type === 'review' && (
-              <SessionPane icon="GitDiff" title="Review" width={Math.max(sessionPane.width || 540, 500)} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
+              <SessionPane {...paneProps} icon="File" title="Review">
                 <CodeReviewPane
                   convId={activeId}
                   cwd={cwd}
                   target={reviewTarget}
-                  allTools={messages.flatMap((m) => m.tools || []).concat(liveForActive?.tools || [])}
+                  allTools={allActiveTools}
                   onSendComment={(txt) => send(txt)}
                   onRewindDone={(r) => setError(`✅ Rewound: restored ${(r && r.restored) || 0}, removed ${(r && r.removed) || 0}.`)}
                   voiceOpts={{ engine: settings.voiceEngine || 'auto', lang: settings.voiceLang || 'en-US' }}
@@ -2661,17 +2752,17 @@ export default function App() {
               </SessionPane>
             )}
             {sessionPane.type === 'subagents' && (
-              <SessionPane icon="AgentsSimple" title="Subagents" width={sessionPane.width} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
-                <MissionControl subAgents={teamConvRef.current === activeId ? subAgents : []} swarmInfo={teamConvRef.current === activeId ? swarmInfo : null} swarmBoard={teamConvRef.current === activeId ? swarmBoard : []} />
+              <SessionPane {...paneProps} icon="GitBranch" title="Subagents">
+                <SubagentsPane subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} />
               </SessionPane>
             )}
             {sessionPane.type === 'files' && (
-              <SessionPane icon="Files" title="Workspace Files" width={sessionPane.width} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
+              <SessionPane {...paneProps} icon="Files" title="Files">
                 <CodeView cwd={cwd} setCwd={setCwd} permissions={permissions} setPermissions={setPermissions} T={T} />
               </SessionPane>
             )}
             {sessionPane.type === 'terminal' && (
-              <SessionPane icon="CommandLine" title="Terminal" width={sessionPane.width} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
+              <SessionPane {...paneProps} icon="CommandLine" title="Terminal">
                 <TerminalView terminal={terminal} setTerminal={setTerminal} startTerminal={startTerminal} runInTerminal={runInTerminal} writeTerminal={writeTerminal} killTerminal={killTerminal} />
               </SessionPane>
             )}
@@ -3565,15 +3656,16 @@ function RunLogPanel({ convId }) {
 }
 
 // ---------- Chat view ----------
-function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, onOpenReview, onTogglePane, onOpenPlugins, onRenameConv, onPinConv, onSplitConv, onDeleteConv, setError }) {
+function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
+  const [subExpanded, setSubExpanded] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameVal, setRenameVal] = useState('');
   const moreRef = useRef(null);
   const overviewRef = useRef(null);
   useDismiss(moreOpen, [moreRef], () => setMoreOpen(false));
-  useDismiss(overviewOpen, [overviewRef], () => setOverviewOpen(false));
+  useDismiss(overviewOpen, [overviewRef], () => { setOverviewOpen(false); setSubExpanded(false); });
 
   const allTools = useMemo(
     () => (messages || []).flatMap((m) => m.tools || []).concat((live && live.tools) || []),
@@ -3584,7 +3676,31 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
     [messages, live]
   );
   const changedSummary = useMemo(() => summarizeChangedFiles(allTools, allCheckpoints), [allTools, allCheckpoints]);
-  const overviewBadge = (subAgents && subAgents.length) || changedSummary.files.length || 0;
+  const wsLeaf = String(cwd || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Akron Bot';
+  const subCount = (subAgents && subAgents.length) || 0;
+  const bgTasksCount = allCheckpoints.length + allTools.filter((t) => t && (t.name === 'Bash' || t.name === 'Task' || t.name === 'Agent' || t.name === 'Swarm' || t.background)).length;
+
+  const turnPrompts = useMemo(() => {
+    const out = [];
+    let lastUser = '';
+    for (const m of messages || []) {
+      if (m && m.role === 'user') {
+        const line = String(m.content || '').split('\n').find((s) => s.trim()) || '';
+        lastUser = line.trim().slice(0, 28);
+      }
+      out.push(lastUser);
+    }
+    return out;
+  }, [messages]);
+  const liveTurnLabel = useMemo(() => {
+    for (let i = (messages || []).length - 1; i >= 0; i--) {
+      if (messages[i] && messages[i].role === 'user') {
+        const line = String(messages[i].content || '').split('\n').find((s) => s.trim()) || '';
+        return line.trim().slice(0, 28);
+      }
+    }
+    return '';
+  }, [messages]);
 
   return (
     <div className="chat" onClick={(e) => { copyBlock(e); applyBlock(e); }}>
@@ -3593,118 +3709,197 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
           <Icon name="Clipboard" size={13} /> Plan mode · read-only · writes go to {planMode.file || 'PLAN.md'}
         </div>
       )}
-      {conv && (
-        <div className="conv-toolbar">
-          {renaming ? (
-            <input
-              className="conv-rename-in"
-              value={renameVal}
-              autoFocus
-              onChange={(e) => setRenameVal(e.target.value)}
-              onBlur={() => { if (onRenameConv && renameVal.trim()) onRenameConv(renameVal.trim()); setRenaming(false); }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') { if (onRenameConv && renameVal.trim()) onRenameConv(renameVal.trim()); setRenaming(false); }
-                if (e.key === 'Escape') setRenaming(false);
-              }}
-            />
-          ) : (
-            <div className="conv-toolbar-title">
-              {conv.pinned && <Icon name="Pin" size={13} style={{ marginRight: 5, color: 'var(--accent-text)' }} />}
-              {conv.title || 'Untitled'}
-            </div>
-          )}
-          <div className="conv-toolbar-right">
-            <ExportMenu conv={conv} exportConv={exportConv} T={T} />
-            <button
-              type="button"
-              className={'icon-btn conv-env-btn' + (runLogOpen ? ' active' : '')}
-              title={runLogOpen ? 'Hide run log & rewind' : 'Run log & checkpoints'}
-              onClick={(e) => { e.stopPropagation(); if (onToggleRunLog) onToggleRunLog(); }}
-            >
-              <Icon name="Activity" size={15} />
-            </button>
-            <button
-              type="button"
-              className={'icon-btn conv-env-btn' + (envOpen ? ' active' : '')}
-              title={envOpen ? 'Hide environment' : 'Environment — folder, context, connectors'}
-              onClick={(e) => { e.stopPropagation(); if (onToggleEnv) onToggleEnv(); }}
-            >
-              <Icon name="DotsHorizontal" size={15} />
-            </button>
-
-            <div className="conv-pop-wrap" ref={overviewRef}>
-              <button
-                type="button"
-                className={'icon-btn conv-env-btn conv-overview-btn' + ((overviewOpen || reviewOpen) ? ' active' : '')}
-                title="Overview — Review, Files, Terminal, Plugins, Subagents"
-                onClick={(e) => { e.stopPropagation(); setMoreOpen(false); setOverviewOpen((v) => !v); }}
-              >
-                <Icon name="SidebarRight" size={15} />
-                {overviewBadge > 0 && <span className="conv-overview-badge">{overviewBadge}</span>}
-              </button>
-              {overviewOpen && (
-                <div className="conv-popover" onClick={(e) => e.stopPropagation()}>
-                  <div className="conv-pop-head">Overview</div>
-                  <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onOpenReview && onOpenReview({ tools: allTools, checkpoints: allCheckpoints, checkpointId: (live && live.checkpointId) || 'latest' }); }}>
-                    <Icon name="GitDiff" size={14} /> <span>Review</span>
-                    {changedSummary.files.length > 0 && <span className="conv-pop-count">{changedSummary.files.length}</span>}
-                  </button>
-                  <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onTogglePane && onTogglePane('files'); }}>
-                    <Icon name="Files" size={14} /> <span>Files</span>
-                  </button>
-                  <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onTogglePane && onTogglePane('terminal'); }}>
-                    <Icon name="CommandLine" size={14} /> <span>Terminal</span>
-                  </button>
-                  <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onOpenPlugins && onOpenPlugins(); }}>
-                    <Icon name="Plugin" size={14} /> <span>Plugins</span>
-                  </button>
-                  <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onTogglePane && onTogglePane('subagents'); }}>
-                    <Icon name="AgentsSimple" size={14} /> <span>Subagents</span>
-                    {subAgents && subAgents.length > 0 && <span className="conv-pop-count">{subAgents.length}</span>}
-                  </button>
-                  <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onToggleRunLog && onToggleRunLog(); }}>
-                    <Icon name="Activity" size={14} /> <span>Background Tasks</span>
-                    {allCheckpoints.length > 0 && <span className="conv-pop-count">{allCheckpoints.length}</span>}
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div className="conv-pop-wrap" ref={moreRef}>
-              <button
-                type="button"
-                className={'icon-btn conv-env-btn' + (moreOpen ? ' active' : '')}
-                title="Conversation actions — Rename, Pin, Split, Copy"
-                onClick={(e) => { e.stopPropagation(); setOverviewOpen(false); setMoreOpen((v) => !v); }}
-              >
-                <Icon name="DotsVertical" size={15} />
-              </button>
-              {moreOpen && (
-                <div className="conv-popover" onClick={(e) => e.stopPropagation()}>
-                  <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); setRenameVal(conv.title || ''); setRenaming(true); }}>
-                    <Icon name="Edit" size={14} /> <span>Rename</span>
-                  </button>
-                  <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onPinConv && onPinConv(); }}>
-                    <Icon name="Pin" size={14} /> <span>{conv.pinned ? 'Unpin' : 'Pin'}</span>
-                  </button>
-                  <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onSplitConv && onSplitConv(); }}>
-                    <Icon name="ArrowSplitRight" size={14} /> <span>Split conversation</span>
-                  </button>
-                  <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); navigator.clipboard?.writeText(convToMarkdown(conv)).catch(() => {}); setError && setError('✅ Conversation Markdown copied.'); }}>
-                    <Icon name="Copy" size={14} /> <span>Copy Markdown</span>
-                  </button>
-                  <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onOpenPlugins && onOpenPlugins(); }}>
-                    <Icon name="Plugin" size={14} /> <span>Plugins</span>
-                  </button>
-                  <button type="button" className="conv-pop-item danger" onClick={() => { setMoreOpen(false); onDeleteConv && onDeleteConv(); }}>
-                    <Icon name="Trash" size={14} /> <span>Delete</span>
-                  </button>
-                </div>
-              )}
-            </div>
+      <div className="conv-toolbar">
+        {renaming && conv ? (
+          <input
+            className="conv-rename-in"
+            value={renameVal}
+            autoFocus
+            onChange={(e) => setRenameVal(e.target.value)}
+            onBlur={() => { if (onRenameConv && renameVal.trim()) onRenameConv(renameVal.trim()); setRenaming(false); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { if (onRenameConv && renameVal.trim()) onRenameConv(renameVal.trim()); setRenaming(false); }
+              if (e.key === 'Escape') setRenaming(false);
+            }}
+          />
+        ) : (
+          <div className="conv-toolbar-title">
+            {conv && conv.pinned && <Icon name="Pin" size={13} style={{ marginRight: 5, color: 'var(--accent-text)' }} />}
+            <span className="conv-ws-leaf">{wsLeaf}</span>
+            <span className="conv-crumb-slash">/</span>
+            <span className="conv-title-text">{(conv && conv.title) || 'New Conversation'}</span>
           </div>
+        )}
+        <div className="conv-toolbar-right">
+          {subCount > 0 && (
+            <button
+              type="button"
+              className={'conv-subagents-pill' + (sessionPaneType === 'subagents' ? ' active' : '')}
+              title={`${subCount} subagents — open Subagents visualization`}
+              onClick={() => onTogglePane && onTogglePane('subagents')}
+            >
+              <Icon name="GitBranch" size={12} />
+              <span>{subCount}</span>
+            </button>
+          )}
+
+          <div className="conv-pop-wrap" ref={moreRef}>
+            <button
+              type="button"
+              className={'icon-btn conv-env-btn' + (moreOpen ? ' active' : '')}
+              title="Conversation actions — Rename, Pin, Archive, Split, Copy, Plugins"
+              onClick={(e) => { e.stopPropagation(); setOverviewOpen(false); setMoreOpen((v) => !v); }}
+            >
+              <Icon name="DotsVertical" size={15} />
+            </button>
+            {moreOpen && (
+              <div className="conv-popover" onClick={(e) => e.stopPropagation()}>
+                {conv && (
+                  <>
+                    <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); setRenameVal(conv.title || ''); setRenaming(true); }}>
+                      <Icon name="Edit" size={14} /> <span>Rename</span>
+                    </button>
+                    <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onPinConv && onPinConv(); }}>
+                      <Icon name="Pin" size={14} /> <span>{conv.pinned ? 'Unpin' : 'Pin'}</span>
+                    </button>
+                    <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onArchiveConv && onArchiveConv(); }}>
+                      <Icon name="Bookmark" size={14} /> <span>{conv.archived ? 'Unarchive' : 'Archive'}</span>
+                    </button>
+                    <div className="conv-pop-sep" />
+                  </>
+                )}
+                <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onSplitConv && onSplitConv(); }}>
+                  <Icon name="ArrowSplitRight" size={14} /> <span>Split</span>
+                  <Icon name="CaretRight" size={12} className="conv-pop-chev" />
+                </button>
+                <button
+                  type="button"
+                  className="conv-pop-item"
+                  onClick={() => {
+                    setMoreOpen(false);
+                    const payload = conv ? convToMarkdown(conv) : (cwd || '');
+                    navigator.clipboard?.writeText(payload).catch(() => {});
+                    setError && setError('✅ Copied to clipboard.');
+                  }}
+                >
+                  <Icon name="Copy" size={14} /> <span>Copy</span>
+                  <Icon name="CaretRight" size={12} className="conv-pop-chev" />
+                </button>
+                <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onOpenPlugins && onOpenPlugins(); }}>
+                  <Icon name="Plugin" size={14} /> <span>Plugins</span>
+                  <Icon name="CaretRight" size={12} className="conv-pop-chev" />
+                </button>
+                <button type="button" className="conv-pop-item" onClick={() => { setMoreOpen(false); onToggleEnv && onToggleEnv(); }}>
+                  <Icon name="Settings" size={14} /> <span>Environment</span>
+                </button>
+                {conv && (
+                  <>
+                    <div className="conv-pop-sep" />
+                    <button type="button" className="conv-pop-item danger" onClick={() => { setMoreOpen(false); onDeleteConv && onDeleteConv(); }}>
+                      <Icon name="Trash" size={14} /> <span>Delete</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="conv-pop-wrap" ref={overviewRef}>
+            <button
+              type="button"
+              className={'icon-btn conv-env-btn conv-overview-btn' + (overviewOpen ? ' active' : '')}
+              title="Overview — Review, Files, Terminal, Plugins, Subagents, Background Tasks"
+              onClick={(e) => { e.stopPropagation(); setMoreOpen(false); setOverviewOpen((v) => !v); }}
+            >
+              <Icon name="BookText" size={15} />
+              {(subCount > 0 || changedSummary.files.length > 0) && (
+                <span className="conv-overview-badge">{subCount > 0 ? subCount : changedSummary.files.length}</span>
+              )}
+            </button>
+            {overviewOpen && (
+              <div className="conv-popover overview-pop" onClick={(e) => e.stopPropagation()}>
+                <div className="conv-pop-head-row">
+                  <span>Overview</span>
+                  <button type="button" className="icon-btn" onClick={() => { setOverviewOpen(false); onToggleEnv && onToggleEnv(); }} title="Environment">
+                    <Icon name="DotsVertical" size={13} />
+                  </button>
+                </div>
+                <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onOpenReview && onOpenReview({ tools: allTools, checkpoints: allCheckpoints, checkpointId: (live && live.checkpointId) || 'latest', turnLabel: liveTurnLabel, scope: 'all' }); }}>
+                  <Icon name="File" size={14} /> <span>Review</span>
+                  {changedSummary.files.length > 0 && <span className="conv-pop-count">{changedSummary.files.length}</span>}
+                </button>
+                <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onTogglePane && onTogglePane('files'); }}>
+                  <Icon name="Files" size={14} /> <span>Files</span>
+                </button>
+                <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onTogglePane && onTogglePane('terminal'); }}>
+                  <Icon name="CommandLine" size={14} /> <span>Terminal</span>
+                </button>
+                <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onOpenPlugins && onOpenPlugins(); }}>
+                  <Icon name="Plugin" size={14} /> <span>Plugins</span>
+                  <Icon name="CaretRight" size={12} className="conv-pop-chev" />
+                </button>
+                <div className="conv-pop-sep" />
+                <button
+                  type="button"
+                  className="conv-pop-item"
+                  onClick={() => {
+                    if (subCount > 0 && !subExpanded) {
+                      setSubExpanded(true);
+                    } else {
+                      setOverviewOpen(false);
+                      onTogglePane && onTogglePane('subagents');
+                    }
+                  }}
+                >
+                  <span>Subagents</span>
+                  <span className="conv-pop-right">
+                    <span className="conv-pop-num">{subCount}</span>
+                    <Icon name={subExpanded ? 'CaretDown' : 'CaretRight'} size={12} className="conv-pop-chev-inline" />
+                  </span>
+                </button>
+                {subExpanded && (
+                  <div className="ov-sub-list">
+                    {(subAgents || []).slice(0, 6).map((a) => (
+                      <button
+                        key={a.key}
+                        type="button"
+                        className="ov-sub-row"
+                        onClick={() => { setOverviewOpen(false); onTogglePane && onTogglePane('subagents'); }}
+                      >
+                        <span className={'mc-dot ' + (a.status || 'done')} />
+                        <span className="ov-sub-name">{a.name}</span>
+                        {a.model && <span className="ov-sub-model">{a.model}</span>}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className="ov-sub-open-all"
+                      onClick={() => { setOverviewOpen(false); onTogglePane && onTogglePane('subagents'); }}
+                    >
+                      Open Subagents Panel ({subCount}) →
+                    </button>
+                  </div>
+                )}
+                <button type="button" className="conv-pop-item" onClick={() => { setOverviewOpen(false); onToggleRunLog && onToggleRunLog(); }}>
+                  <span>Background Tasks</span>
+                  <span className="conv-pop-right">
+                    <span className="conv-pop-num">{bgTasksCount}</span>
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            className={'icon-btn conv-env-btn' + (sessionPaneType ? ' active' : '')}
+            title={sessionPaneType ? 'Toggle side pane' : 'Open side pane (Review / Subagents / Files)'}
+            onClick={() => onTogglePane && onTogglePane()}
+          >
+            <Icon name="SidebarRight" size={15} />
+          </button>
         </div>
-      )}
+      </div>
       {messages.length === 0 && !live && (
         <div className="welcome">
           <Logo size={56} />
@@ -3712,8 +3907,8 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
           <p className="muted">{T('welcome.prompt')}</p>
         </div>
       )}
-      {messages.map((m, i) => <Message key={m.id} m={m} convId={convId} idx={i} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} onOpenReview={onOpenReview} />)}
-      {(subAgents.length > 0 || swarmInfo) && (
+      {messages.map((m, i) => <Message key={m.id} m={m} convId={convId} idx={i} turnLabel={turnPrompts[i]} subAgentCount={subCount} taskCount={bgTasksCount} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} />)}
+      {Boolean((subAgents && subAgents.length > 0) || swarmInfo) && (
         <MissionControl subAgents={subAgents} swarmInfo={swarmInfo} swarmBoard={swarmBoard} />
       )}
       {live && <div className="msg assistant">
@@ -3733,7 +3928,7 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
               {live.content ? <div className="md streaming" dangerouslySetInnerHTML={{ __html: renderMarkdown(live.content) + '<span class="cursor">▍</span>' }} /> : null}
             </>
           )}
-          <FilesChangedBar tools={live.tools} checkpoints={live.checkpoints} checkpointId={live.checkpointId} convId={convId} onOpenReview={onOpenReview} streaming Icon={Icon} />
+          <FilesChangedBar tools={live.tools} checkpoints={live.checkpoints} checkpointId={live.checkpointId} turnLabel={liveTurnLabel} convId={convId} subAgentCount={subCount} taskCount={bgTasksCount} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} streaming Icon={Icon} />
           {live.content === '' && live.tools.length === 0 && !thinking && <span className="cursor">▍</span>}
         </div>
       </div>}
@@ -3786,7 +3981,7 @@ function SegmentView({ segments, tools, streaming }) {
   });
 }
 
-function Message({ m, convId, idx, copyMessage, editMessage, deleteMessage, retryMessage, onOpenReview }) {
+function Message({ m, convId, idx, turnLabel = '', subAgentCount = 0, taskCount = 0, copyMessage, editMessage, deleteMessage, retryMessage, onOpenReview, onOpenSubagents, onOpenRunLog }) {
   const [copied, setCopied] = useState(false);
   const doCopy = () => { copyMessage(m); setCopied(true); setTimeout(() => setCopied(false), 1200); };
   const images = (m.attachments || []).filter((a) => a.isImage && a.dataUrl);
@@ -3833,7 +4028,7 @@ function Message({ m, convId, idx, copyMessage, editMessage, deleteMessage, retr
           <LiveChecklistCard tools={m.tools} durationMs={m.durationMs} streaming={false} Icon={Icon} />
         )}
         {m.role === 'assistant' && (
-          <FilesChangedBar tools={m.tools} checkpoints={m.checkpoints} checkpointId={m.checkpointId} convId={convId} onOpenReview={onOpenReview} streaming={false} Icon={Icon} />
+          <FilesChangedBar tools={m.tools} checkpoints={m.checkpoints} checkpointId={m.checkpointId} turnLabel={turnLabel} convId={convId} subAgentCount={subAgentCount} taskCount={taskCount} onOpenReview={onOpenReview} onOpenSubagents={onOpenSubagents} onOpenRunLog={onOpenRunLog} streaming={false} Icon={Icon} />
         )}
         {m.role === 'assistant' && m.durationMs > 800 && (
           <div className="worked-for"><Icon name="Clock" size={12} /> Worked for {fmtElapsed(m.durationMs)}</div>
@@ -5381,7 +5576,7 @@ function normalizeUrl(url, cwd) {
   return url;
 }
 
-function BrowserView({ cwd, previewUrl }) {
+function BrowserView({ cwd, previewUrl, onClose }) {
   // `launch` is the URL handed to <webview src> at mount and never changes afterwards.
   // `url` tracks the live location. Keeping src stable stops React from re-issuing a
   // navigation on every did-navigate (which aborted and duplicated in-flight loads).
@@ -5434,7 +5629,11 @@ function BrowserView({ cwd, previewUrl }) {
   }, []);
   useEffect(() => {
     if (!expanded) return undefined;
-    const onEsc = (e) => { if (e.key === 'Escape') setExpanded(false); };
+    const onEsc = (e) => {
+      if (e.key === 'Escape' && document.activeElement !== omniboxRef.current) {
+        setExpanded(false);
+      }
+    };
     window.addEventListener('keydown', onEsc);
     return () => window.removeEventListener('keydown', onEsc);
   }, [expanded]);
@@ -5702,7 +5901,23 @@ function BrowserView({ cwd, previewUrl }) {
             squeezed out of the toolbar by a narrow pane. */}
         <div className="browser-tabs-actions">
           <button className="browser-act" onClick={() => openTab()} title="New tab"><Icon name="Add" size={14} /></button>
-          <button className={'browser-act' + (expanded ? ' on' : '')} onClick={() => setExpanded(!expanded)} title={expanded ? 'Restore (⌘↓)' : 'Expand (⌘↑)'}><Icon name={expanded ? 'ArrowsIn' : 'ArrowsOut'} size={14} /></button>
+          <button
+            className={'browser-act' + (expanded ? ' browser-restore-btn on' : '')}
+            onClick={() => setExpanded(!expanded)}
+            title={expanded ? 'Minimize / Restore side pane (⌘↓ or Esc)' : 'Expand (⌘↑)'}
+          >
+            <Icon name={expanded ? 'ArrowsIn' : 'ArrowsOut'} size={14} />
+            {expanded && <span>Minimize</span>}
+          </button>
+          {expanded && onClose && (
+            <button
+              className="browser-act"
+              onClick={() => { setExpanded(false); onClose(); }}
+              title="Close browser pane"
+            >
+              <Icon name="X" size={14} />
+            </button>
+          )}
           <button ref={menuBtnRef} className={'browser-act browser-menu-btn' + (menuOpen ? ' on' : '')} onClick={() => { setMenuNote(''); setMenuOpen(!menuOpen); }} title="Browser options"><Icon name="DotsHorizontal" size={15} /></button>
         </div>
       </div>
@@ -5723,6 +5938,11 @@ function BrowserView({ cwd, previewUrl }) {
 
       {menuOpen && (
         <div className="browser-menu" role="menu" ref={menuRef}>
+          <button className="bm-item" role="menuitem" onClick={() => { setExpanded((v) => !v); setMenuOpen(false); }}>
+            <Icon name={expanded ? 'ArrowsIn' : 'ArrowsOut'} size={14} />
+            <span className="bm-label">{expanded ? 'Minimize to side pane' : 'Maximize browser'}</span>
+          </button>
+          <div className="bm-sep" />
           <button className="bm-item" role="menuitem" onClick={() => openExternal('brave')}><Icon name="ArrowUpRight" size={14} /><span className="bm-label">Open in Brave Browser</span></button>
           <button className="bm-item" role="menuitem" onClick={() => openExternal('default')}><Icon name="Globe" size={14} /><span className="bm-label">Open in default browser</span></button>
           <button className="bm-item" role="menuitem" onClick={copyLink}><Icon name="Copy" size={14} /><span className="bm-label">Copy link</span></button>
@@ -5782,11 +6002,58 @@ function BrowserView({ cwd, previewUrl }) {
   );
 }
 
-// ---------- Session pane (Example parity: coexisting resizable pane toggled via dispatchToggleSessionPane) ----------
-function SessionPane({ icon, title, width, onWidth, onHide, children }) {
+const PANE_TAB_META = [
+  { id: 'review', label: 'Review', icon: 'File' },
+  { id: 'subagents', label: 'Subagents', icon: 'GitBranch' },
+  { id: 'files', label: 'Files', icon: 'Files' },
+  { id: 'terminal', label: 'Terminal', icon: 'CommandLine' },
+  { id: 'browser', label: 'Browser', icon: 'Globe' },
+  { id: 'runlog', label: 'Background Tasks', icon: 'Activity' },
+  { id: 'env', label: 'Environment', icon: 'DotsHorizontal' },
+];
+
+function SubagentsPane({ subAgents = [], swarmInfo = null, swarmBoard = [] }) {
+  const counts = { active: 0, done: 0, error: 0 };
+  for (const a of subAgents) {
+    if (a.status === 'running' || a.status === 'working' || a.status === 'waiting' || a.status === 'queued') counts.active++;
+    else if (a.status === 'error') counts.error++;
+    else counts.done++;
+  }
+  return (
+    <div className="subagents-pane">
+      <div className="sa-summary">
+        <div className="sa-summary-title">
+          <Icon name="GitBranch" size={15} />
+          <span>Subagents</span>
+          <span className="sa-count-pill">{subAgents.length}</span>
+        </div>
+        <div className="sa-summary-stats">
+          {counts.active > 0 && <span className="mc-pill working">{counts.active} active</span>}
+          {counts.done > 0 && <span className="mc-pill done">{counts.done} completed</span>}
+          {counts.error > 0 && <span className="mc-pill err">{counts.error} error</span>}
+        </div>
+      </div>
+      {subAgents.length === 0 && !swarmInfo ? (
+        <div className="sa-empty">
+          <Icon name="AgentsSimple" size={28} />
+          <div className="sa-empty-title">No subagents yet in this turn</div>
+          <div className="sa-empty-sub">When the agent delegates subtasks (`Task` / `Agent`) or starts a Swarm wave, every worker, model, failover, and board message appears here.</div>
+        </div>
+      ) : (
+        <MissionControl subAgents={subAgents} swarmInfo={swarmInfo} swarmBoard={swarmBoard} />
+      )}
+    </div>
+  );
+}
+
+// ---------- Session pane (Antigravity tabbed right pane) ----------
+function SessionPane({ icon, title, activeType, openTabs = [], onSelectTab, onCloseTab, badges = {}, width, onWidth, onHide, children }) {
   const dragRef = useRef(null);
   const startX = useRef(0);
   const startW = useRef(0);
+  const [addOpen, setAddOpen] = useState(false);
+  const addRef = useRef(null);
+  useDismiss(addOpen, [addRef], () => setAddOpen(false));
 
   const onDragStart = (e) => {
     e.preventDefault();
@@ -5807,12 +6074,71 @@ function SessionPane({ icon, title, width, onWidth, onHide, children }) {
     window.addEventListener('mouseup', onUp);
   };
 
+  const tabIds = openTabs && openTabs.length ? openTabs : (activeType ? [activeType] : []);
+
   return (
     <div className="session-pane" style={{ width }}>
       <div ref={dragRef} className="session-pane-divider" onMouseDown={onDragStart} title="Drag to resize" />
       <div className="session-pane-head">
-        <Icon name={icon} size={15} />
-        <span className="session-pane-title">{title}</span>
+        <div className="sp-tab-strip">
+          {tabIds.length > 0 ? tabIds.map((tid) => {
+            const meta = PANE_TAB_META.find((m) => m.id === tid) || { id: tid, label: title, icon };
+            const badge = badges[tid];
+            return (
+              <div
+                key={tid}
+                className={'sp-tab' + (tid === activeType ? ' on' : '')}
+                onClick={() => onSelectTab && onSelectTab(tid)}
+                title={meta.label}
+              >
+                <Icon name={meta.icon} size={13} />
+                <span className="sp-tab-label">{meta.label}</span>
+                {badge > 0 && <span className="sp-tab-badge">{badge}</span>}
+                {tabIds.length > 1 && (
+                  <button
+                    type="button"
+                    className="sp-tab-x"
+                    onClick={(e) => { e.stopPropagation(); onCloseTab && onCloseTab(tid); }}
+                    title={'Close ' + meta.label}
+                  >
+                    <Icon name="X" size={10} />
+                  </button>
+                )}
+              </div>
+            );
+          }) : (
+            <div className="sp-tab on">
+              <Icon name={icon} size={14} />
+              <span className="sp-tab-label">{title}</span>
+            </div>
+          )}
+          <div className="sp-add-wrap" ref={addRef}>
+            <button
+              type="button"
+              className={'icon-btn sp-add-btn' + (addOpen ? ' active' : '')}
+              onClick={() => setAddOpen((v) => !v)}
+              title="Open view tab (Review, Subagents, Files, Terminal, Browser)"
+            >
+              <Icon name="Add" size={14} />
+            </button>
+            {addOpen && (
+              <div className="sp-add-menu">
+                {PANE_TAB_META.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className={'sp-add-item' + (m.id === activeType ? ' on' : '')}
+                    onClick={() => { setAddOpen(false); onSelectTab && onSelectTab(m.id); }}
+                  >
+                    <Icon name={m.icon} size={13} />
+                    <span>{m.label}</span>
+                    {badges[m.id] > 0 && <span className="conv-pop-count">{badges[m.id]}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
         <button className="icon-btn session-pane-hide" onClick={onHide} title={'Hide ' + title}><Icon name="X" size={15} /></button>
       </div>
       <div className="session-pane-body">{children}</div>

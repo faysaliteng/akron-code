@@ -1,70 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useVoiceDictation } from '../voice';
-
-function fallbackDiffsFromTools(tools = []) {
-  const byPath = new Map();
-  for (const t of tools || []) {
-    if (!t) continue;
-    const nm = String(t.name || '');
-    if (nm !== 'Write' && nm !== 'Edit' && nm !== 'MultiEdit' && nm !== 'StrReplace') continue;
-    const a = t.args || {};
-    const p = String(a.file_path || a.path || '');
-    if (!p) continue;
-    const cur = byPath.get(p) || { path: p, relPath: p.split('/').slice(-2).join('/'), status: nm === 'Write' ? 'added' : 'modified', added: 0, removed: 0, lines: [] };
-    if (nm === 'Write') {
-      const arr = String(a.content || '').split('\n');
-      arr.forEach((txt, idx) => {
-        cur.lines.push({ type: 'add', oldLine: null, newLine: idx + 1, text: txt });
-        cur.added++;
-      });
-    } else {
-      const edits = Array.isArray(a.edits) ? a.edits : [{ old_string: a.old_string ?? a.old_str ?? '', new_string: a.new_string ?? a.new_str ?? '' }];
-      let ln = 1;
-      for (const e of edits) {
-        const dels = String(e.old_string ?? '').split('\n');
-        const adds = String(e.new_string ?? '').split('\n');
-        dels.forEach((txt) => { cur.lines.push({ type: 'del', oldLine: ln++, newLine: null, text: txt }); cur.removed++; });
-        adds.forEach((txt, i) => { cur.lines.push({ type: 'add', oldLine: null, newLine: i + 1, text: txt }); cur.added++; });
-      }
-    }
-    byPath.set(p, cur);
-  }
-  return [...byPath.values()];
-}
-
-function groupDiffChunks(lines = []) {
-  // Collapse runs of unchanged ('ctx') lines longer than 7 into { kind:'fold', start, end, count }
-  const out = [];
-  const CONTEXT = 3;
-  const n = lines.length;
-  const keep = new Uint8Array(n);
-  for (let i = 0; i < n; i++) {
-    if (lines[i].type !== 'ctx') {
-      for (let k = Math.max(0, i - CONTEXT); k <= Math.min(n - 1, i + CONTEXT); k++) keep[k] = 1;
-    }
-  }
-  let i = 0;
-  while (i < n) {
-    if (keep[i] || lines[i].type !== 'ctx') {
-      out.push({ kind: 'line', idx: i, line: lines[i] });
-      i++;
-    } else {
-      const start = i;
-      while (i < n && !keep[i] && lines[i].type === 'ctx') i++;
-      if (i - start <= 2) {
-        for (let k = start; k < i; k++) out.push({ kind: 'line', idx: k, line: lines[k] });
-      } else {
-        out.push({ kind: 'fold', id: `fold-${start}-${i}`, start, end: i, count: i - start, lines: lines.slice(start, i) });
-      }
-    }
-  }
-  return out;
-}
-
-function extBadge(p) {
-  const m = /\.([a-zA-Z0-9]+)$/.exec(String(p || ''));
-  return m ? m[1].toUpperCase().slice(0, 4) : 'FILE';
-}
+import {
+  fallbackDiffsFromTools,
+  mergeDiffFiles,
+  groupDiffChunks,
+  computeFoldSlice,
+  findFoldForLine,
+  buildSearchMatcher,
+  extInfo,
+} from '../review-helpers.mjs';
 
 function highlightLine(text, matcher) {
   if (!matcher) return text;
@@ -88,26 +32,50 @@ function highlightLine(text, matcher) {
 }
 
 export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComment, onRewindDone, voiceOpts = {}, Icon }) {
-  const [scope, setScope] = useState(target && target.checkpointId ? 'turn' : 'all'); // 'turn' | 'all'
+  const [scope, setScope] = useState(target && (target.scope === 'all' ? 'all' : (target.checkpointId || target.turnLabel || (target.tools && target.tools.length))) ? (target.scope || 'turn') : 'all');
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState({});
   const [expandedFolds, setExpandedFolds] = useState({});
 
-  // Search bar state
+  // Sub-header menus
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [filesJumpOpen, setFilesJumpOpen] = useState(false);
+
+  // Search bar state (Aa, ab, .*, 1 of N, ↑/↓, ×)
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [matchCase, setMatchCase] = useState(false);
+  const [wholeWord, setWholeWord] = useState(false);
   const [useRegex, setUseRegex] = useState(false);
   const [matchIdx, setMatchIdx] = useState(0);
 
   // Inline diff line comments
-  const [draftAt, setDraftAt] = useState(null); // { key, file, lineNum, textSnapshot }
+  const [draftAt, setDraftAt] = useState(null); // { key, file, fullPath, lineNum, code }
   const [draftText, setDraftText] = useState('');
-  const [comments, setComments] = useState([]); // { id, file, lineNum, code, text }
+  const [comments, setComments] = useState([]); // { id, key, file, lineNum, code, text }
 
   const matchRefs = useRef(new Map());
+  const fileRefs = useRef(new Map());
   const draftInputRef = useRef(null);
+  const searchInputRef = useRef(null);
+  const menuWrapRef = useRef(null);
+  const jumpWrapRef = useRef(null);
+
+  useEffect(() => {
+    if (target && target.scope) setScope(target.scope);
+    else if (target && (target.checkpointId || target.turnLabel || (target.tools && target.tools.length))) setScope('turn');
+  }, [target]);
+
+  useEffect(() => {
+    if (!menuOpen && !filesJumpOpen) return undefined;
+    const onDocClick = (e) => {
+      if (menuOpen && menuWrapRef.current && !menuWrapRef.current.contains(e.target)) setMenuOpen(false);
+      if (filesJumpOpen && jumpWrapRef.current && !jumpWrapRef.current.contains(e.target)) setFilesJumpOpen(false);
+    };
+    window.addEventListener('mousedown', onDocClick);
+    return () => window.removeEventListener('mousedown', onDocClick);
+  }, [menuOpen, filesJumpOpen]);
 
   const commentVoice = useVoiceDictation({
     engine: voiceOpts.engine || 'auto',
@@ -121,14 +89,18 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComme
       setLoading(true);
       try {
         const cpArg = scope === 'turn' ? (target?.checkpointId || 'latest') : 'all';
-        let list = [];
+        let cpDiffs = [];
         if (convId && window.autobot && window.autobot.turnDiffs) {
-          list = await window.autobot.turnDiffs(convId, cpArg, cwd).catch(() => []);
+          cpDiffs = await window.autobot.turnDiffs(convId, cpArg, cwd).catch(() => []);
         }
-        if (!Array.isArray(list) || list.length === 0) {
-          list = fallbackDiffsFromTools(scope === 'turn' && target?.tools?.length ? target.tools : allTools);
+        const toolDiffs = fallbackDiffsFromTools(scope === 'turn' && target?.tools?.length ? target.tools : allTools);
+        let merged = mergeDiffFiles(cpDiffs, toolDiffs);
+
+        if ((scope === 'all' || merged.length === 0) && window.autobot && window.autobot.gitDiffFiles && cwd) {
+          const gitDiffs = await window.autobot.gitDiffFiles(cwd).catch(() => []);
+          merged = scope === 'all' ? mergeDiffFiles(merged, gitDiffs) : (gitDiffs.length ? gitDiffs : merged);
         }
-        if (alive) setFiles(Array.isArray(list) ? list : []);
+        if (alive) setFiles(Array.isArray(merged) ? merged : []);
       } finally {
         if (alive) setLoading(false);
       }
@@ -137,16 +109,15 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComme
     return () => { alive = false; };
   }, [convId, cwd, scope, target, allTools]);
 
-  const matcher = useMemo(() => {
-    const q = query.trim();
-    if (!searchOpen || !q) return null;
-    try {
-      const esc = useRegex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp(esc, matchCase ? 'g' : 'gi');
-    } catch {
-      return null;
-    }
-  }, [searchOpen, query, matchCase, useRegex]);
+  const chunksByFile = useMemo(
+    () => files.map((f) => groupDiffChunks(f.lines || [])),
+    [files]
+  );
+
+  const matcher = useMemo(
+    () => (searchOpen ? buildSearchMatcher(query, { matchCase, wholeWord, useRegex }) : null),
+    [searchOpen, query, matchCase, wholeWord, useRegex]
+  );
 
   const matchKeys = useMemo(() => {
     if (!matcher) return [];
@@ -160,23 +131,52 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComme
     return out;
   }, [files, matcher]);
 
+  const ensureMatchVisible = (mk) => {
+    if (!mk) return;
+    const [fiStr, liStr] = String(mk).split(':');
+    const fi = Number(fiStr);
+    const li = Number(liStr);
+    const file = files[fi];
+    if (!file) return;
+    if (collapsed[file.path]) {
+      setCollapsed((c) => ({ ...c, [file.path]: false }));
+    }
+    const foldId = findFoldForLine(chunksByFile[fi] || [], li);
+    if (foldId) {
+      const fk = `${file.path}:${foldId}`;
+      setExpandedFolds((prev) => (prev[fk] === true ? prev : { ...prev, [fk]: true }));
+    }
+    setTimeout(() => {
+      const el = matchRefs.current.get(mk);
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 30);
+  };
+
   useEffect(() => {
     setMatchIdx(0);
-  }, [query, matchCase, useRegex, files.length]);
+    if (matchKeys.length > 0) {
+      ensureMatchVisible(matchKeys[0]);
+    }
+  }, [query, matchCase, wholeWord, useRegex, files.length]);
 
   const jumpMatch = (delta) => {
     if (!matchKeys.length) return;
     const next = (matchIdx + delta + matchKeys.length) % matchKeys.length;
     setMatchIdx(next);
-    const el = matchRefs.current.get(matchKeys[next]);
-    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    ensureMatchVisible(matchKeys[next]);
   };
 
   const totalAdded = files.reduce((s, f) => s + (f.added || 0), 0);
   const totalRemoved = files.reduce((s, f) => s + (f.removed || 0), 0);
 
   const openDraft = (key, file, line) => {
-    setDraftAt({ key, file: file.relPath || file.path, fullPath: file.path, lineNum: line.newLine || line.oldLine || 1, code: line.text || '' });
+    setDraftAt({
+      key,
+      file: file.relPath || file.path,
+      fullPath: file.path,
+      lineNum: line.newLine || line.oldLine || 1,
+      code: line.text || '',
+    });
     setDraftText('');
     setTimeout(() => draftInputRef.current && draftInputRef.current.focus(), 20);
   };
@@ -206,58 +206,264 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComme
     if (onRewindDone) onRewindDone(r);
   };
 
+  const expandFoldStep = (foldKey, dir, step = 10) => {
+    setExpandedFolds((prev) => {
+      const cur = prev[foldKey];
+      if (cur === true) return prev;
+      const top = Number(cur && cur.top) || 0;
+      const bottom = Number(cur && cur.bottom) || 0;
+      return {
+        ...prev,
+        [foldKey]: dir === 'top' ? { top: top + step, bottom } : { top, bottom: bottom + step },
+      };
+    });
+  };
+
+  const expandAllFolds = () => {
+    const next = {};
+    files.forEach((f, fi) => {
+      (chunksByFile[fi] || []).forEach((ch) => {
+        if (ch.kind === 'fold') next[`${f.path}:${ch.id}`] = true;
+      });
+    });
+    setExpandedFolds(next);
+    setMenuOpen(false);
+  };
+
+  const renderDiffLine = (ln, rowIdx, file, fi) => {
+    const rowKey = `${file.path}:${rowIdx}`;
+    const mk = `${fi}:${rowIdx}`;
+    const lineComments = comments.filter((c) => c.key === rowKey);
+    const isMatch = matchKeys[matchIdx] === mk;
+    const lineNum = ln.newLine != null ? ln.newLine : (ln.oldLine != null ? ln.oldLine : '');
+    return (
+      <React.Fragment key={rowKey}>
+        <div
+          ref={(el) => { if (el) matchRefs.current.set(mk, el); else matchRefs.current.delete(mk); }}
+          className={'rv-line ' + ln.type + (isMatch ? ' match-active' : '')}
+        >
+          <span className="rv-gutter">
+            <span className="rv-ln">{lineNum}</span>
+            <button
+              type="button"
+              className="rv-add-c"
+              title="Add inline comment"
+              aria-label={`Add comment on line ${lineNum || rowIdx + 1}`}
+              onClick={() => openDraft(rowKey, file, ln)}
+            >
+              +
+            </button>
+          </span>
+          <span className="rv-sign">{ln.type === 'add' ? '+' : ln.type === 'del' ? '−' : ' '}</span>
+          <code className="rv-code">{highlightLine(ln.text, matcher)}</code>
+        </div>
+        {lineComments.map((c) => (
+          <div key={c.id} className="rv-comment-card">
+            <div className="rv-comment-meta">
+              <span>Line {c.lineNum}</span>
+              <button type="button" className="icon-btn" onClick={() => setComments((cs) => cs.filter((x) => x.id !== c.id))} title="Delete comment">
+                <Icon name="Trash" size={12} />
+              </button>
+            </div>
+            <div className="rv-comment-text">{c.text}</div>
+          </div>
+        ))}
+        {draftAt && draftAt.key === rowKey && (
+          <div className="rv-draft">
+            <textarea
+              ref={draftInputRef}
+              rows={2}
+              placeholder="Leave a comment"
+              value={draftText}
+              onChange={(e) => setDraftText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commitComment(); }
+                if (e.key === 'Escape') { e.preventDefault(); setDraftAt(null); }
+              }}
+            />
+            <div className="rv-draft-foot">
+              <button type="button" className="rv-draft-cancel" onClick={() => setDraftAt(null)}>Cancel</button>
+              <div className="rv-draft-right">
+                <button
+                  type="button"
+                  className={'icon-btn rv-mic' + (commentVoice.state !== 'idle' ? ' active' : '')}
+                  title={commentVoice.state === 'recording' ? 'Stop & transcribe voice comment' : 'Voice type comment (Whisper)'}
+                  onClick={commentVoice.toggle}
+                >
+                  <Icon name={commentVoice.state === 'transcribing' ? 'Spinner' : 'Microphone'} size={14} className={commentVoice.state === 'transcribing' ? 'spin' : ''} />
+                </button>
+                <button type="button" className="rv-draft-submit" disabled={!draftText.trim()} onClick={commitComment}>
+                  Add Comment
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </React.Fragment>
+    );
+  };
+
   return (
     <div className="rv-pane">
-      <div className="rv-head">
-        <div className="rv-tabs">
-          <button type="button" className={'rv-tab' + (scope === 'turn' ? ' on' : '')} onClick={() => setScope('turn')}>For Turn</button>
-          <button type="button" className={'rv-tab' + (scope === 'all' ? ' on' : '')} onClick={() => setScope('all')}>All Changes</button>
-        </div>
-        <div className="rv-head-right">
+      <div className="rv-subhead">
+        <div className="rv-scope-bar">
+          {scope === 'turn' ? (
+            <>
+              <span className="rv-scope-label">For Turn</span>
+              <span className="rv-turn-chip" title={target?.turnLabel || 'Latest turn'}>
+                <span className="rv-turn-chip-txt">{target?.turnLabel || 'latest turn'}</span>
+                <button type="button" className="rv-turn-chip-x" onClick={() => setScope('all')} title="Clear turn filter (show All Changes)">
+                  <Icon name="X" size={11} />
+                </button>
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="rv-scope-pill">All Changes</span>
+              {target && (
+                <button type="button" className="rv-scope-switch" onClick={() => setScope('turn')}>
+                  For Turn
+                </button>
+              )}
+            </>
+          )}
           {(totalAdded > 0 || totalRemoved > 0) && (
             <span className="rv-totals">
               <span className="delta-add">+{totalAdded}</span>
               <span className="delta-del">−{totalRemoved}</span>
             </span>
           )}
-          {target?.checkpointId && (
-            <button type="button" className="btn-mini" onClick={handleRewind} title="Rewind this turn's checkpoint">
-              <Icon name="ArrowCounterClockwise" size={12} /> Rewind
+        </div>
+
+        <div className="rv-head-right">
+          <div className="rv-pop-wrap" ref={menuWrapRef}>
+            <button
+              type="button"
+              className={'icon-btn' + (menuOpen ? ' active' : '')}
+              onClick={() => { setFilesJumpOpen(false); setMenuOpen((v) => !v); }}
+              title="Review options"
+            >
+              <Icon name="DotsVertical" size={14} />
             </button>
-          )}
+            {menuOpen && (
+              <div className="rv-popover">
+                <button type="button" className="rv-pop-item" onClick={expandAllFolds}>
+                  <span>Expand all folds</span>
+                </button>
+                <button type="button" className="rv-pop-item" onClick={() => { setCollapsed({}); setMenuOpen(false); }}>
+                  <span>Expand all files</span>
+                </button>
+                <button
+                  type="button"
+                  className="rv-pop-item"
+                  onClick={() => {
+                    const next = {};
+                    files.forEach((f) => { next[f.path] = true; });
+                    setCollapsed(next);
+                    setMenuOpen(false);
+                  }}
+                >
+                  <span>Collapse all files</span>
+                </button>
+                {target?.checkpointId && (
+                  <button type="button" className="rv-pop-item" onClick={() => { setMenuOpen(false); handleRewind(); }}>
+                    <Icon name="ArrowCounterClockwise" size={13} />
+                    <span>Rewind this turn</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
           <button
             type="button"
-            className={'icon-btn' + (searchOpen ? ' active' : '')}
-            onClick={() => setSearchOpen((v) => !v)}
-            title="Search inside diffs"
+            className={'icon-btn rv-search-toggle' + (searchOpen ? ' active' : '')}
+            onClick={() => {
+              setSearchOpen((v) => !v);
+              setTimeout(() => searchInputRef.current && searchInputRef.current.focus(), 20);
+            }}
+            title="Search diffs"
           >
             <Icon name="Search" size={14} />
           </button>
+
+          <div className="rv-pop-wrap" ref={jumpWrapRef}>
+            <button
+              type="button"
+              className={'icon-btn' + (filesJumpOpen ? ' active' : '')}
+              onClick={() => { setMenuOpen(false); setFilesJumpOpen((v) => !v); }}
+              title="Changed files list"
+            >
+              <Icon name="ListBullet" size={14} />
+            </button>
+            {filesJumpOpen && (
+              <div className="rv-popover rv-files-pop">
+                <div className="rv-pop-head">Changed Files ({files.length})</div>
+                {files.length === 0 ? (
+                  <div className="rv-pop-empty">No changed files</div>
+                ) : files.map((f, idx) => {
+                  const base = (f.relPath || f.path || '').split('/').pop();
+                  const info = extInfo(base);
+                  return (
+                    <button
+                      key={f.path + ':jump:' + idx}
+                      type="button"
+                      className="rv-pop-item"
+                      onClick={() => {
+                        setCollapsed((c) => ({ ...c, [f.path]: false }));
+                        setFilesJumpOpen(false);
+                        setTimeout(() => {
+                          const el = fileRefs.current.get(f.path);
+                          if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+                        }, 20);
+                      }}
+                    >
+                      <span className={'rv-ext ' + info.cls}>{info.label}</span>
+                      <span className="rv-pop-file">{f.relPath || base}</span>
+                      <span className="rv-pop-deltas">
+                        <span className="delta-add">+{f.added || 0}</span>
+                        <span className="delta-del">−{f.removed || 0}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
       {searchOpen && (
         <div className="rv-searchbar">
-          <Icon name="Search" size={13} />
-          <input
-            className="rv-search-in"
-            placeholder="Find in diffs…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') jumpMatch(e.shiftKey ? -1 : 1);
-              if (e.key === 'Escape') setSearchOpen(false);
-            }}
-            autoFocus
-          />
-          <button type="button" className={'rv-opt' + (matchCase ? ' on' : '')} title="Match case" onClick={() => setMatchCase((v) => !v)}>Aa</button>
-          <button type="button" className={'rv-opt' + (useRegex ? ' on' : '')} title="Use regex" onClick={() => setUseRegex((v) => !v)}>.*</button>
+          <div className="rv-search-box">
+            <input
+              ref={searchInputRef}
+              className="rv-search-in"
+              placeholder="Search diffs…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') jumpMatch(e.shiftKey ? -1 : 1);
+                if (e.key === 'Escape') setSearchOpen(false);
+              }}
+              autoFocus
+            />
+            <button type="button" className={'rv-opt' + (matchCase ? ' on' : '')} title="Match case" onClick={() => setMatchCase((v) => !v)}>Aa</button>
+            <button type="button" className={'rv-opt' + (wholeWord ? ' on' : '')} title="Match whole word" onClick={() => setWholeWord((v) => !v)}>ab</button>
+            <button type="button" className={'rv-opt' + (useRegex ? ' on' : '')} title="Use regular expression" onClick={() => setUseRegex((v) => !v)}>.*</button>
+          </div>
           <span className="rv-match-count">
             {matchKeys.length ? `${matchIdx + 1} of ${matchKeys.length}` : '0 results'}
           </span>
-          <button type="button" className="icon-btn" onClick={() => jumpMatch(-1)} title="Previous match"><Icon name="ArrowUp" size={12} /></button>
-          <button type="button" className="icon-btn" onClick={() => jumpMatch(1)} title="Next match"><Icon name="ArrowDown" size={12} /></button>
-          <button type="button" className="icon-btn" onClick={() => { setSearchOpen(false); setQuery(''); }} title="Close search"><Icon name="X" size={12} /></button>
+          <button type="button" className="icon-btn rv-nav-btn" onClick={() => jumpMatch(-1)} title="Previous match">
+            <Icon name="ArrowUp" size={12} />
+          </button>
+          <button type="button" className="icon-btn rv-nav-btn" onClick={() => jumpMatch(1)} title="Next match">
+            <Icon name="ArrowDown" size={12} />
+          </button>
+          <button type="button" className="icon-btn rv-nav-btn" onClick={() => { setSearchOpen(false); setQuery(''); }} title="Close search">
+            <Icon name="X" size={12} />
+          </button>
         </div>
       )}
 
@@ -265,20 +471,28 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComme
         {loading ? (
           <div className="env-empty"><Icon name="Spinner" size={14} className="spin" /> Loading diffs…</div>
         ) : files.length === 0 ? (
-          <div className="env-empty">No file diffs recorded yet for this selection. Changes from Write / Edit tools appear here automatically.</div>
+          <div className="env-empty">No file diffs recorded yet for this selection. Changes from tools or Git working tree appear here automatically.</div>
         ) : files.map((file, fi) => {
           const isCollapsed = !!collapsed[file.path];
-          const chunks = groupDiffChunks(file.lines || []);
-          const base = (file.relPath || file.path || '').split('/').pop();
-          const dirPart = (file.relPath || file.path || '').split('/').slice(0, -1).join('/');
+          const chunks = chunksByFile[fi] || [];
+          const fullNorm = String(file.path || '').replace(/\\/g, '/');
+          const relNorm = String(file.relPath || fullNorm).replace(/\\/g, '/');
+          const base = relNorm.split('/').pop() || fullNorm.split('/').pop();
+          const dirPart = fullNorm.includes('/') ? fullNorm.split('/').slice(0, -1).join('/') : relNorm.split('/').slice(0, -1).join('/');
+          const info = extInfo(base);
+
           return (
-            <div key={file.path + ':' + fi} className="rv-file">
+            <div
+              key={file.path + ':' + fi}
+              ref={(el) => { if (el) fileRefs.current.set(file.path, el); else fileRefs.current.delete(file.path); }}
+              className="rv-file"
+            >
               <button
                 type="button"
                 className="rv-file-head"
                 onClick={() => setCollapsed((c) => ({ ...c, [file.path]: !c[file.path] }))}
               >
-                <span className="rv-ext">{extBadge(base)}</span>
+                <span className={'rv-ext ' + info.cls}>{info.label}</span>
                 <span className="rv-file-name">{base}</span>
                 {dirPart && <span className="rv-file-dir">{dirPart}</span>}
                 <span className="rv-file-right">
@@ -293,125 +507,45 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComme
                   {chunks.map((ch) => {
                     if (ch.kind === 'fold') {
                       const foldKey = `${file.path}:${ch.id}`;
-                      if (!expandedFolds[foldKey]) {
-                        return (
-                          <button
-                            key={ch.id}
-                            type="button"
-                            className="rv-fold"
-                            onClick={() => setExpandedFolds((e) => ({ ...e, [foldKey]: true }))}
-                          >
-                            +{ch.count} more lines
-                          </button>
-                        );
-                      }
-                      return ch.lines.map((ln, offset) => {
-                        const rowIdx = ch.start + offset;
-                        const rowKey = `${file.path}:${rowIdx}`;
-                        const mk = `${fi}:${rowIdx}`;
-                        const lineComments = comments.filter((c) => c.key === rowKey);
-                        const isMatch = matchKeys[matchIdx] === mk;
-                        return (
-                          <React.Fragment key={rowKey}>
-                            <div
-                              ref={(el) => { if (el) matchRefs.current.set(mk, el); else matchRefs.current.delete(mk); }}
-                              className={'rv-line ' + ln.type + (isMatch ? ' match-active' : '')}
-                            >
-                              <span className="rv-ln">{ln.oldLine || ''}</span>
-                              <span className="rv-ln">{ln.newLine || ''}</span>
-                              <button type="button" className="rv-add-c" title="Add inline comment" onClick={() => openDraft(rowKey, file, ln)}>+</button>
-                              <span className="rv-sign">{ln.type === 'add' ? '+' : ln.type === 'del' ? '−' : ' '}</span>
-                              <code className="rv-code">{highlightLine(ln.text, matcher)}</code>
-                            </div>
-                            {lineComments.map((c) => (
-                              <div key={c.id} className="rv-comment-card">
-                                <div className="rv-comment-meta">
-                                  <span>Line {c.lineNum}</span>
-                                  <button type="button" className="icon-btn" onClick={() => setComments((cs) => cs.filter((x) => x.id !== c.id))}><Icon name="Trash" size={12} /></button>
-                                </div>
-                                <div className="rv-comment-text">{c.text}</div>
-                              </div>
-                            ))}
-                            {draftAt && draftAt.key === rowKey && (
-                              <div className="rv-draft">
-                                <textarea
-                                  ref={draftInputRef}
-                                  rows={2}
-                                  placeholder="Leave a comment…"
-                                  value={draftText}
-                                  onChange={(e) => setDraftText(e.target.value)}
-                                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commitComment(); } }}
-                                />
-                                <div className="rv-draft-foot">
-                                  <button type="button" className="btn-mini" onClick={() => setDraftAt(null)}>Cancel</button>
-                                  <button
-                                    type="button"
-                                    className={'icon-btn rv-mic' + (commentVoice.state !== 'idle' ? ' active' : '')}
-                                    title={commentVoice.state === 'recording' ? 'Stop & transcribe voice comment' : 'Voice type comment'}
-                                    onClick={commentVoice.toggle}
-                                  >
-                                    <Icon name={commentVoice.state === 'transcribing' ? 'Spinner' : 'Microphone'} size={13} className={commentVoice.state === 'transcribing' ? 'spin' : ''} />
-                                  </button>
-                                  <button type="button" className="btn-mini primary" disabled={!draftText.trim()} onClick={commitComment}>Add Comment</button>
-                                </div>
-                              </div>
-                            )}
-                          </React.Fragment>
-                        );
-                      });
-                    }
-                    const ln = ch.line;
-                    const rowKey = `${file.path}:${ch.idx}`;
-                    const mk = `${fi}:${ch.idx}`;
-                    const lineComments = comments.filter((c) => c.key === rowKey);
-                    const isMatch = matchKeys[matchIdx] === mk;
-                    return (
-                      <React.Fragment key={rowKey}>
-                        <div
-                          ref={(el) => { if (el) matchRefs.current.set(mk, el); else matchRefs.current.delete(mk); }}
-                          className={'rv-line ' + ln.type + (isMatch ? ' match-active' : '')}
-                        >
-                          <span className="rv-ln">{ln.oldLine || ''}</span>
-                          <span className="rv-ln">{ln.newLine || ''}</span>
-                          <button type="button" className="rv-add-c" title="Add inline comment" onClick={() => openDraft(rowKey, file, ln)}>+</button>
-                          <span className="rv-sign">{ln.type === 'add' ? '+' : ln.type === 'del' ? '−' : ' '}</span>
-                          <code className="rv-code">{highlightLine(ln.text, matcher)}</code>
-                        </div>
-                        {lineComments.map((c) => (
-                          <div key={c.id} className="rv-comment-card">
-                            <div className="rv-comment-meta">
-                              <span>Line {c.lineNum}</span>
-                              <button type="button" className="icon-btn" onClick={() => setComments((cs) => cs.filter((x) => x.id !== c.id))}><Icon name="Trash" size={12} /></button>
-                            </div>
-                            <div className="rv-comment-text">{c.text}</div>
-                          </div>
-                        ))}
-                        {draftAt && draftAt.key === rowKey && (
-                          <div className="rv-draft">
-                            <textarea
-                              ref={draftInputRef}
-                              rows={2}
-                              placeholder="Leave a comment…"
-                              value={draftText}
-                              onChange={(e) => setDraftText(e.target.value)}
-                              onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commitComment(); } }}
-                            />
-                            <div className="rv-draft-foot">
-                              <button type="button" className="btn-mini" onClick={() => setDraftAt(null)}>Cancel</button>
+                      const slice = computeFoldSlice(ch, expandedFolds[foldKey]);
+                      return (
+                        <React.Fragment key={ch.id}>
+                          {slice.topLines.map(({ ln, rowIdx }) => renderDiffLine(ln, rowIdx, file, fi))}
+                          {!slice.expanded && slice.remaining > 0 && (
+                            <div className="rv-fold-bar">
                               <button
                                 type="button"
-                                className={'icon-btn rv-mic' + (commentVoice.state !== 'idle' ? ' active' : '')}
-                                title={commentVoice.state === 'recording' ? 'Stop & transcribe voice comment' : 'Voice type comment'}
-                                onClick={commentVoice.toggle}
+                                className="rv-fold-all"
+                                onClick={() => setExpandedFolds((e) => ({ ...e, [foldKey]: true }))}
+                                title={`Expand all ${slice.remaining} hidden lines`}
                               >
-                                <Icon name={commentVoice.state === 'transcribing' ? 'Spinner' : 'Microphone'} size={13} className={commentVoice.state === 'transcribing' ? 'spin' : ''} />
+                                +{slice.remaining} more lines
                               </button>
-                              <button type="button" className="btn-mini primary" disabled={!draftText.trim()} onClick={commitComment}>Add Comment</button>
+                              <div className="rv-fold-steps">
+                                <button
+                                  type="button"
+                                  className="rv-fold-step"
+                                  onClick={() => expandFoldStep(foldKey, 'top', 10)}
+                                  title="Reveal next 10 lines downward"
+                                >
+                                  +10
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rv-fold-step"
+                                  onClick={() => expandFoldStep(foldKey, 'bottom', 10)}
+                                  title="Reveal previous 10 lines upward"
+                                >
+                                  +10
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        )}
-                      </React.Fragment>
-                    );
+                          )}
+                          {slice.bottomLines.map(({ ln, rowIdx }) => renderDiffLine(ln, rowIdx, file, fi))}
+                        </React.Fragment>
+                      );
+                    }
+                    return renderDiffLine(ch.line, ch.idx, file, fi);
                   })}
                 </div>
               )}
@@ -424,7 +558,7 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComme
         <div className="rv-foot">
           <span className="rv-foot-count">{comments.length} {comments.length === 1 ? 'comment' : 'comments'} ready</span>
           <button type="button" className="btn-mini primary" onClick={sendAllComments}>
-            <Icon name="PaperPlane" size={12} /> Send Review Comments to Agent
+            <Icon name="ArrowBendUpRight" size={12} /> Send Review Comments to Agent
           </button>
         </div>
       )}

@@ -128,6 +128,7 @@ export function LiveChecklistCard({ tools = [], subAgents = [], swarmInfo = null
         <span className="live-plan-bar" aria-hidden="true">
           <span className="live-plan-fill" style={{ width: `${pct}%` }} />
         </span>
+        <span className="live-plan-ratio">{done}/{total}</span>
         <Icon name={open ? 'CaretUp' : 'CaretDown'} size={12} className="live-plan-caret" />
       </button>
       {open && (
@@ -138,8 +139,8 @@ export function LiveChecklistCard({ tools = [], subAgents = [], swarmInfo = null
             return (
               <div key={idx} className={'live-plan-row ' + st}>
                 <span className="live-plan-mark">
-                  {st === 'completed' ? <Icon name="CheckCircleFilled" size={14} /> :
-                    st === 'in_progress' ? <Icon name="Spinner" size={13} className="spin" /> :
+                  {st === 'completed' ? <Icon name="CheckCircle" size={14} /> :
+                    st === 'in_progress' ? <span className="live-dots-loader" aria-hidden="true"><i /><i /><i /><i /></span> :
                       <Icon name="Circle" size={13} />}
                 </span>
                 <span className="live-plan-text">{label}</span>
@@ -156,8 +157,13 @@ export function FilesChangedBar({
   tools = [],
   checkpoints = [],
   checkpointId = null,
+  turnLabel = '',
   convId = null,
+  subAgentCount = 0,
+  taskCount = 0,
   onOpenReview,
+  onOpenSubagents,
+  onOpenRunLog,
   onRewindDone,
   streaming = false,
   Icon,
@@ -166,7 +172,7 @@ export function FilesChangedBar({
   const [rewindMsg, setRewindMsg] = useState('');
   const summary = useMemo(() => summarizeChangedFiles(tools, checkpoints), [tools, checkpoints]);
 
-  if (!summary.files.length) return null;
+  if (!summary.files.length && !subAgentCount && !taskCount) return null;
 
   const canRewind = Boolean(checkpointId && convId && window.autobot && window.autobot.rewind && !streaming);
   const handleRewind = async (e) => {
@@ -187,44 +193,57 @@ export function FilesChangedBar({
     }
   };
 
-  const previewNames = summary.files.slice(0, 3).map((f) => f.short.split('/').pop()).join(', ');
-
   return (
-    <div className={'files-changed-bar' + (streaming ? ' is-live' : '')}>
-      <div className="fcb-left">
-        <span className="fcb-ico"><Icon name="ChangesPlusMinus" size={14} /></span>
-        <span className="fcb-count">{summary.files.length} {summary.files.length === 1 ? 'file' : 'files'} changed</span>
-        {(summary.totalAdded > 0 || summary.totalRemoved > 0) && (
-          <span className="fcb-deltas">
-            <span className="delta-add">+{summary.totalAdded}</span>
-            <span className="delta-del">−{summary.totalRemoved}</span>
-          </span>
-        )}
-        <span className="fcb-names" title={summary.files.map((f) => f.path).join('\n')}>
-          {previewNames}{summary.files.length > 3 ? ` +${summary.files.length - 3}` : ''}
-        </span>
-        {(checkpoints && checkpoints.length > 0) && (
-          <span className="fcb-cp-badge" title="File state checkpoint saved for safe rewind">
-            <Icon name="History" size={11} /> Checkpoint
-          </span>
-        )}
-        {rewindMsg && <span className="fcb-note">{rewindMsg}</span>}
-      </div>
-      <div className="fcb-actions">
-        {canRewind && (
-          <button type="button" className="fcb-btn" onClick={handleRewind} disabled={rewinding} title="Rewind files touched in this checkpoint">
-            <Icon name="ArrowCounterClockwise" size={12} /> {rewinding ? 'Rewinding…' : 'Rewind'}
-          </button>
-        )}
-        <button
-          type="button"
-          className="fcb-btn primary"
-          onClick={() => onOpenReview && onOpenReview({ tools, checkpoints, checkpointId })}
-          title="Open side-by-side Code Review with search & inline comments"
-        >
-          <Icon name="GitDiff" size={13} /> Review
-        </button>
-      </div>
+    <div className="fcb-wrap">
+      {summary.files.length > 0 && (
+        <div className={'files-changed-bar' + (streaming ? ' is-live' : '')}>
+          <div className="fcb-left">
+            <span className="fcb-count">{summary.files.length} {summary.files.length === 1 ? 'file' : 'files'} changed</span>
+            {(summary.totalAdded > 0 || summary.totalRemoved > 0) && (
+              <span className="fcb-deltas">
+                <span className="delta-add">+{summary.totalAdded}</span>
+                <span className="delta-del">−{summary.totalRemoved}</span>
+              </span>
+            )}
+            <Icon name="CaretRight" size={11} className="fcb-chev" />
+            {(checkpoints && checkpoints.length > 0) && (
+              <span className="fcb-cp-badge" title="File state checkpoint saved for safe rewind">
+                <Icon name="History" size={11} /> Checkpoint
+              </span>
+            )}
+            {rewindMsg && <span className="fcb-note">{rewindMsg}</span>}
+          </div>
+          <div className="fcb-actions">
+            {canRewind && (
+              <button type="button" className="fcb-btn" onClick={handleRewind} disabled={rewinding} title="Rewind files touched in this checkpoint">
+                <Icon name="ArrowCounterClockwise" size={12} /> {rewinding ? 'Rewinding…' : 'Rewind'}
+              </button>
+            )}
+            <button
+              type="button"
+              className="fcb-btn primary"
+              onClick={() => onOpenReview && onOpenReview({ tools, checkpoints, checkpointId, turnLabel })}
+              title="Open side-by-side Code Review with search & inline comments"
+            >
+              <Icon name="File" size={12} /> Review
+            </button>
+          </div>
+        </div>
+      )}
+      {(subAgentCount > 0 || taskCount > 0) && (
+        <div className="fcb-submeta">
+          {subAgentCount > 0 && (
+            <button type="button" className="fcb-meta-link" onClick={() => onOpenSubagents && onOpenSubagents()}>
+              <Icon name="GitBranch" size={11} /> {subAgentCount} {subAgentCount === 1 ? 'subagent' : 'subagents'}
+            </button>
+          )}
+          {taskCount > 0 && (
+            <button type="button" className="fcb-meta-link" onClick={() => onOpenRunLog && onOpenRunLog()}>
+              <span>{taskCount} {taskCount === 1 ? 'task' : 'tasks'}</span>
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
