@@ -11,8 +11,10 @@ const FEATURES_FILE = path.join(DATA_DIR, 'features.json');
 const SKILLS_DIR = path.join(DATA_DIR, 'skills');
 const SKILLS_STATE_FILE = path.join(DATA_DIR, 'skills-state.json');
 const NOTEBOOKS_DIR = path.join(DATA_DIR, 'notebooks');
-// Bundled Example skills (extracted 1:1 from Claude.app v6.28899.6 bundled-skills).
-const BUNDLED_SKILLS_DIR = path.join(__dirname, '..', 'resources', 'skills');
+// Bundled skills (including Claude Desktop bundled skills and built-in REA skill).
+const BUNDLED_SKILLS_DIR = (process.resourcesPath && fs.existsSync(path.join(process.resourcesPath, 'skills')))
+  ? path.join(process.resourcesPath, 'skills')
+  : path.join(__dirname, '..', 'resources', 'skills');
 // External skill source discovered on-disk (Claude Code built-in skills).
 //
 // Note: the ~/.config/opencode/skill tree (236 offensive-security skills) was
@@ -111,6 +113,7 @@ const BUNDLED_SKILLS = [
   { name: 'xlsx', description: 'Use any time a spreadsheet file is the primary input or output — open/read/edit/fix .xlsx/.xlsm/.xltx/.csv/.tsv, add columns, compute formulas, formatting, charting, cleaning messy data, or converting between tabular formats.' },
   { name: 'frontend-design', description: 'Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and choices that don\'t read as templated defaults.' },
   { name: 'draft-design-system', description: 'Draft a design system from a brand\'s own material (logos, fonts, colours, guidelines, codebase) as a folder of plain files — brand book, tokens, font files, components. Use when someone asks for a design system, brand kit, brand guidelines or style guide.' },
+  { name: 'reverse-engineer-anything', description: 'Reverse engineer native, managed, Electron/JavaScript, packaged, firmware, and browser targets with built-in REA (263 MCP tools & CLI), audit release exposure, decompile code, and build AgentEnv bundles.' },
 ];
 
 // ---- YAML frontmatter parser (name + description + domain/metadata) ----

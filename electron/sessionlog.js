@@ -80,7 +80,7 @@ function open(convId, turnId, meta = {}) {
         else pend.thinking += String(evt.text || '');
         return;
       }
-      if (evt.type === 'usage' || evt.type === 'retry') return;
+      if (evt.type === 'usage' || evt.type === 'retry' || evt.type === 'toolStream') return;
       flush();
       const s = shape(evt);
       if (s) write(s);

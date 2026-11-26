@@ -5,7 +5,11 @@
 //   3. Enterprise Left-Menu Settings Modal (Providers & Browser Extension tabs)
 
 const path = require('path');
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+
+if (dialog && typeof dialog.showErrorBox === 'function') {
+  dialog.showErrorBox = (t, c) => { console.error('[ErrorBox]', t, c); };
+}
 
 process.on('uncaughtException', (e) => { console.error(e); app.exit(1); });
 process.on('unhandledRejection', (e) => { console.error(e); app.exit(1); });
@@ -68,6 +72,14 @@ const handlers = {
     extensionDir: '/Users/saimon/akron-bot-standalone/resources/akron-browser-bot',
     tabs: [{ id: 12, title: 'Akron Logic Dashboard', url: 'https://akronlogic.com', active: true }],
   }),
+  'autobot:reaStatus': () => ({
+    ok: true, available: true, connected: true, serverId: 'rea',
+    version: '6.10.1', mode: 'package', nodePath: '/Users/saimon/.volta/bin/node', nodeVersion: 'v24.22.3',
+    reaPath: '/Users/saimon/.volta/tools/image/packages/rea-agents/lib/node_modules/rea-agents',
+    toolCount: 263, skillBundled: true,
+  }),
+  'autobot:reaConnect': () => ({ ok: true, toolCount: 263 }),
+  'autobot:reaDoctor': () => ({ ok: true, output: 'REA doctor OK: 263 tools ready' }),
   'autobot:runtimesList': () => [],
   'autobot:complianceGet': () => ({ profile: 'standard', state: {}, catalog: [] }),
   'autobot:listNotebooks': () => [],
@@ -167,16 +179,26 @@ app.whenReady().then(async () => {
   require('fs').writeFileSync(path.join(outDir, 'code-review-pane.png'), img2.toPNG());
   console.log('code-review-pane:', JSON.stringify(await checkOverflow()));
 
-  // 3. Enterprise Left-Menu Settings modal (switch to Browser Extension tab)
-  await win.webContents.executeJavaScript(`
+  // 3. Enterprise Left-Menu Settings modal (capture Reverse Engineering & Browser Extension tabs)
+  await win.webContents.executeJavaScript(`(() => {
     document.querySelector('.settings-icon')?.click();
-  `);
+  })()`);
   await new Promise((r) => setTimeout(r, 350));
-  await win.webContents.executeJavaScript(`
+  await win.webContents.executeJavaScript(`(() => {
+    const btns = Array.from(document.querySelectorAll('.settings-nav-btn'));
+    const rea = btns.find((b) => b.textContent.includes('Reverse Engineering'));
+    if (rea) rea.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 350));
+  const img3a = await win.webContents.capturePage();
+  require('fs').writeFileSync(path.join(outDir, 'settings-rea-tab.png'), img3a.toPNG());
+  console.log('settings-rea-tab:', JSON.stringify(await checkOverflow()));
+
+  await win.webContents.executeJavaScript(`(() => {
     const btns = Array.from(document.querySelectorAll('.settings-nav-btn'));
     const br = btns.find((b) => b.textContent.includes('Browser Extension'));
     if (br) br.click();
-  `);
+  })()`);
   await new Promise((r) => setTimeout(r, 350));
   const img3 = await win.webContents.capturePage();
   require('fs').writeFileSync(path.join(outDir, 'settings-enterprise-leftmenu.png'), img3.toPNG());

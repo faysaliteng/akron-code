@@ -57,7 +57,7 @@ export function summarizeChangedFiles(tools = [], checkpoints = []) {
   return { files, totalAdded, totalRemoved };
 }
 
-export function LiveChecklistCard({ tools = [], subAgents = [], swarmInfo = null, streaming = false, durationMs = 0, Icon }) {
+export function LiveChecklistCard({ tools = [], subAgents = [], swarmInfo = null, streamingTool = null, streaming = false, durationMs = 0, Icon }) {
   const [open, setOpen] = useState(true);
 
   const plan = useMemo(() => {
@@ -111,8 +111,11 @@ export function LiveChecklistCard({ tools = [], subAgents = [], swarmInfo = null
   const total = plan.items.length;
   const pct = total ? Math.round((done / total) * 100) : 0;
   const secs = durationMs ? Math.max(1, Math.round(durationMs / 1000)) : 0;
+  const streamSuffix = streaming && streamingTool && streamingTool.name
+    ? ` · ${streamingTool.name}${streamingTool.bytes ? ` (${streamingTool.bytes >= 1024 ? (streamingTool.bytes / 1024).toFixed(1) + ' KB' : streamingTool.bytes + ' B'})` : ''}`
+    : '';
   const headText = streaming
-    ? `Progress · ${done}/${total} steps`
+    ? `Progress · ${done}/${total} steps${streamSuffix}`
     : `Worked for ${secs ? secs + 's · ' : ''}${done}/${total} steps`;
 
   return (

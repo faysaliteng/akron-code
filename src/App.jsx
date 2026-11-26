@@ -973,7 +973,7 @@ export default function App() {
             const last = segments[segments.length - 1];
             if (last && last.type === 'text') segments[segments.length - 1] = { type: 'text', text: last.text + evt.text };
             else segments.push({ type: 'text', text: evt.text });
-            return { ...base, content: base.content + evt.text, segments };
+            return { ...base, content: base.content + evt.text, segments, streamingTool: null };
           });
           break;
         case 'thinking':
@@ -995,6 +995,22 @@ export default function App() {
             return { ...base, segments };
           });
           break;
+        case 'toolStream': {
+          setLiveSync((l) => {
+            const base = l || { content: '', tools: [], segments: [] };
+            return {
+              ...base,
+              streamingTool: {
+                id: evt.id || '',
+                name: evt.name || '',
+                bytes: Number(evt.bytes) || 0,
+                target: evt.target || '',
+                at: Date.now(),
+              },
+            };
+          });
+          break;
+        }
         case 'tool': {
           // A provider that omits the call id must not collapse every such row
           // onto `undefined` (one shared key, results landing on the wrong row).
@@ -1005,7 +1021,7 @@ export default function App() {
             const last = segments[segments.length - 1];
             if (last && last.type === 'tools') segments[segments.length - 1] = { type: 'tools', ids: [...last.ids, tid] };
             else segments.push({ type: 'tools', ids: [tid] });
-            return { ...base, tools: [...(base.tools || []), { id: tid, name: evt.name, args: evt.args, result: null, status: 'running' }], segments };
+            return { ...base, streamingTool: null, tools: [...(base.tools || []), { id: tid, name: evt.name, args: evt.args, result: null, status: 'running' }], segments };
           });
           break;
         }
@@ -2778,9 +2794,17 @@ function describeTool(name, args) {
       return { verb: 'Updating plan', target: todos.length ? `${done}/${todos.length} done` : '', icon: 'Check' };
     }
     case 'Artifact': return { verb: 'Creating', target: a.name || a.language || 'artifact', icon: 'Sparkles' };
-    case 'Task': return { verb: 'Delegating', target: String(a.description || a.prompt || '').slice(0, 60), icon: 'Sparkles' };
+    case 'Task': case 'Agent': return { verb: 'Delegating', target: String(a.description || a.prompt || '').slice(0, 60), icon: 'Sparkles' };
+    case 'Swarm': return { verb: 'Orchestrating swarm', target: String(a.goal || a.objective || '').slice(0, 70), icon: 'AgentsSimple' };
+    case 'rea': return { verb: 'Reverse engineering', target: String(a.tool || a.query || a.action || '').slice(0, 70), icon: 'Orbit' };
     case 'AskUser': case 'exitPlanMode': return { verb: 'Waiting on you', target: '', icon: 'Clock' };
-    default: return { verb: String(name || 'Working'), target: base(a.path || a.file_path || ''), icon: 'Wrench' };
+    default: {
+      const nStr = String(name || '');
+      if (nStr.startsWith('mcp__rea__')) {
+        return { verb: 'REA · ' + nStr.replace(/^mcp__rea__/, ''), target: shortPath(a.path || a.binary_path || a.target || a.query || ''), icon: 'Orbit' };
+      }
+      return { verb: String(name || 'Working'), target: base(a.path || a.file_path || ''), icon: 'Wrench' };
+    }
   }
 }
 
@@ -2790,6 +2814,7 @@ function RunActivity({ live, thinking, startedAt }) {
   const tools = (live && live.tools) || [];
   const segments = (live && live.segments) || [];
   const running = tools.find((t) => t.status === 'running');
+  const stTool = live && live.streamingTool;
   // Plan/approval tools are bookkeeping — the banner says "Working 5 steps"
   // forever if we let TodoWrite win. Prefer real work, then the current phase.
   const work = tools.filter((t) => t.name !== 'TodoWrite' && t.name !== 'exitPlanMode');
@@ -2801,6 +2826,11 @@ function RunActivity({ live, thinking, startedAt }) {
     const d = describeTool(running.name, running.args);
     label = d.verb + '…';
     target = d.target;
+  } else if (stTool && stTool.name) {
+    const d = describeTool(stTool.name, stTool.target ? { path: stTool.target, file_path: stTool.target, query: stTool.target, tool: stTool.target, goal: stTool.target, command: stTool.target } : {});
+    const kb = stTool.bytes >= 1024 ? (stTool.bytes / 1024).toFixed(1) + ' KB' : (stTool.bytes ? stTool.bytes + ' B' : '');
+    label = d.verb + '…';
+    target = [stTool.target || d.target, kb].filter(Boolean).join(' · ');
   } else if (lastSeg && lastSeg.type === 'text' && live && live.content) {
     label = 'Writing…';
   } else if (last) {
@@ -3690,7 +3720,7 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
         <div className="avatar avatar-assistant"><Logo size={20} /></div>
         <div className="body">
           <RunActivity live={live} thinking={thinking} startedAt={runStartedAt} />
-          <LiveChecklistCard tools={live.tools} subAgents={subAgents} swarmInfo={swarmInfo} streaming Icon={Icon} />
+          <LiveChecklistCard tools={live.tools} subAgents={subAgents} swarmInfo={swarmInfo} streamingTool={live.streamingTool} streaming Icon={Icon} />
           {live.segments && live.segments.length > 0 ? (
             <SegmentView segments={live.segments} tools={live.tools} streaming />
           ) : (
@@ -8168,6 +8198,7 @@ const SETTINGS_SECTIONS = [
   { id: 'providers', label: 'Models & Providers', icon: 'Sparkles', sub: 'Primary endpoints, presets, local Ollama, and subscription sign-in.', keys: 'model provider ollama api key preset subscription oauth temperature token' },
   { id: 'orchestrator', label: 'Orchestrator & Pools', icon: 'Orbit', sub: 'Multi-model failover tiers and FreeLLMAPI role pools with live pool health.', keys: 'orchestrator pool planner coder vision fast longctx failover swarm' },
   { id: 'harness', label: 'Harness & Custom Tools', icon: 'AgentsSimple', sub: 'Creator Mode runtime tools, developer features, and agent capabilities.', keys: 'creator custom tool harness developer extension buddy remote control' },
+  { id: 'rea', label: 'Reverse Engineering', icon: 'Orbit', sub: 'Built-in REA (morluto/rea) MCP & CLI, 263 tools, doctor & runtime.', keys: 'rea reverse engineer binary ghidra hopper ida rizin asar apk firmware mcp decompile' },
   { id: 'browser', label: 'Browser Extension', icon: 'Globe', sub: 'Zero-key Chrome extension bridge for live browser control & shared desktop models.', keys: 'chrome extension akron browser bot bridge websocket tabs 8766' },
   { id: 'voice', label: 'Voice & Dictation', icon: 'Microphone', sub: 'Built-in offline ONNX Whisper speech model & fast gateway transcription.', keys: 'voice dictation whisper microphone speech audio language' },
   { id: 'security', label: 'Permissions & Security', icon: 'LockShield', sub: 'Tool consent rules, Computer Use, Chrome CDP, bridges, and compliance.', keys: 'permission security computer use chrome cdp bridge compliance trusted folders' },
@@ -8256,6 +8287,21 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
   }, []);
   useEffect(() => { refreshCustomTools(); }, [refreshCustomTools]);
 
+  // Built-in REA (morluto/rea) status & diagnostics
+  const [reaInfo, setReaInfo] = useState(null);
+  const [reaDiagOut, setReaDiagOut] = useState('');
+  const [reaBusy, setReaBusy] = useState(false);
+  const refreshReaStatus = useCallback(async () => {
+    if (!window.autobot || !window.autobot.reaStatus) return;
+    try {
+      const res = await window.autobot.reaStatus();
+      if (res) setReaInfo(res);
+    } catch (_) {}
+  }, []);
+  useEffect(() => {
+    refreshReaStatus();
+  }, [refreshReaStatus]);
+
   // Browser extension bridge status
   const [extStatus, setExtStatus] = useState(null);
   const refreshExtStatus = useCallback(async () => {
@@ -8292,6 +8338,7 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
     if (id === 'providers') return (provider.model || '').split('/').pop().slice(0, 14) || 'Setup';
     if (id === 'orchestrator') return (orchestrator.pools && orchestrator.pools.enabled) ? 'Pools on' : (orchestrator.enabled ? 'On' : 'Off');
     if (id === 'harness') return customTools.length ? `${customTools.length} tool${customTools.length === 1 ? '' : 's'}` : '';
+    if (id === 'rea') return reaInfo && reaInfo.connected ? `${reaInfo.toolCount} tools` : (reaInfo && reaInfo.available ? 'Ready' : 'Setup');
     if (id === 'browser') return extStatus && extStatus.extensionConnected ? 'Live' : '8766';
     if (id === 'voice') return settings.voiceEngine === 'local' ? 'Whisper' : 'Auto';
     if (id === 'security') return permissions;
@@ -8523,6 +8570,87 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
                   <label className="check"><input type="checkbox" checked={!!features.developerMode} onChange={(e) => saveFeat({ ...features, developerMode: e.target.checked })} /> Developer mode (debug tools + local exec consent)</label>
                   <label className="check"><input type="checkbox" checked={!!features.buddy} onChange={(e) => saveFeat({ ...features, buddy: e.target.checked })} /> Buddy (pair-hunting co-pilot)</label>
                   <label className="check"><input type="checkbox" checked={!!features.remoteControl} onChange={(e) => saveFeat({ ...features, remoteControl: e.target.checked })} /> Remote Control (Drive / co-browsing session)</label>
+                </div>
+              </>
+            )}
+
+            {section === 'rea' && (
+              <>
+                <div className="settings-card">
+                  <h3><Icon name="Orbit" size={14} /> Built-In REA Engine (<code>morluto/rea</code>)</h3>
+                  <div className="ext-card-status">
+                    <div>
+                      <span className={'ext-dot' + (reaInfo && reaInfo.connected ? ' on' : '')} />
+                      <b>
+                        {reaInfo && reaInfo.connected
+                          ? `Connected (${reaInfo.toolCount} MCP tools active${reaInfo.version ? ' · v' + reaInfo.version : ''})`
+                          : (reaInfo && reaInfo.available ? `Ready (${reaInfo.mode}${reaInfo.version ? ' · v' + reaInfo.version : ''})` : 'Node 22+ or rea-agents not found')}
+                      </b>
+                      <p className="muted" style={{ margin: '4px 0 0' }}>
+                        Built-in reverse engineering across native binaries (Hopper / Ghidra / IDA / Rizin), Electron/ASAR/JS, Android APKs, Apple bundles, firmware, PCAP/HAR captures, and AgentEnv via <code>rea</code>, <code>find_mcp_tools</code>, and bundled skill <code>reverse-engineer-anything</code>.
+                      </p>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+                    <button
+                      type="button"
+                      className="btn-mini primary"
+                      disabled={reaBusy}
+                      onClick={async () => {
+                        if (!window.autobot || !window.autobot.reaConnect) return;
+                        setReaBusy(true); setReaDiagOut('');
+                        try {
+                          const r = await window.autobot.reaConnect();
+                          if (r && r.status) setReaInfo(r.status); else refreshReaStatus();
+                          setReaDiagOut(r && r.ok ? `Connected ${r.toolCount} REA tools.` : `Connect error: ${(r && r.error) || 'unknown'}`);
+                        } finally { setReaBusy(false); }
+                      }}
+                    >
+                      <Icon name={reaBusy ? 'Spinner' : 'Refresh'} size={12} className={reaBusy ? 'spin' : ''} /> Connect / Reconnect MCP
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-mini"
+                      disabled={reaBusy}
+                      onClick={async () => {
+                        if (!window.autobot || !window.autobot.reaDoctor) return;
+                        setReaBusy(true); setReaDiagOut('');
+                        try {
+                          const r = await window.autobot.reaDoctor();
+                          if (r && r.status) setReaInfo(r.status);
+                          setReaDiagOut((r && r.output) || (r && r.error) || 'Doctor finished.');
+                        } finally { setReaBusy(false); }
+                      }}
+                    >
+                      Run REA Doctor
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-mini"
+                      disabled={reaBusy}
+                      onClick={async () => {
+                        if (!window.autobot || !window.autobot.reaInstall) return;
+                        setReaBusy(true); setReaDiagOut('Installing/updating rea-agents...');
+                        try {
+                          const r = await window.autobot.reaInstall();
+                          if (r && r.status) setReaInfo(r.status);
+                          setReaDiagOut((r && r.output) || (r && r.error) || 'Done.');
+                        } finally { setReaBusy(false); }
+                      }}
+                    >
+                      Install / Update REA
+                    </button>
+                  </div>
+                  {reaInfo && (
+                    <div className="ct-list" style={{ marginTop: 12 }}>
+                      <div className="ct-row"><span>Node runtime</span><code>{reaInfo.nodeVersion ? `${reaInfo.nodeVersion} (${reaInfo.nodePath})` : 'Not detected'}</code></div>
+                      <div className="ct-row"><span>REA package</span><code>{reaInfo.reaPath || 'Unavailable'}</code></div>
+                      <div className="ct-row"><span>Bundled skill</span><code>{reaInfo.skillBundled ? 'reverse-engineer-anything (active)' : 'Missing'}</code></div>
+                    </div>
+                  )}
+                  {reaDiagOut && (
+                    <pre className="tool-result" style={{ marginTop: 12, maxHeight: 220, overflow: 'auto' }}>{reaDiagOut}</pre>
+                  )}
                 </div>
               </>
             )}

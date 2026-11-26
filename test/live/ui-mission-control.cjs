@@ -1,7 +1,10 @@
 // Offscreen Electron verification of Mission Control, Pool Health + Orch Rows,
 // and Run Log & Checkpoints using the real src/styles.css at 1180x820.
 //   npx electron test/live/ui-mission-control.cjs <outDir>
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, dialog } = require('electron');
+if (dialog && typeof dialog.showErrorBox === 'function') {
+  dialog.showErrorBox = (t, c) => { console.error('[ErrorBox]', t, c); };
+}
 const fs = require('fs');
 const path = require('path');
 const os = require('os');

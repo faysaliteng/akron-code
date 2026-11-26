@@ -37,6 +37,8 @@ const { createRuntimes } = require('./runtimes');
 const orchPool = require('./orch-pool');
 const sessionlog = require('./sessionlog');
 const { hydrateOrchestrator, poolDeadNotice } = require('./orch-hydrate');
+const rea = require('./rea');
+try { rea.enrichProcessPath(); } catch (_) {}
 
 // ---------------------------------------------------------------------------
 // Rebrand migration: user data used to live under "Helio Bot".
@@ -196,6 +198,12 @@ const autoMcp = new Map(); // `${cwd}::${name}` -> serverId
 const autoMcpTried = new Set(); // `${cwd}::${name}` that already failed once
 
 async function autoConnectMcp(cwd) {
+  try {
+    const feat = store.getFeatures ? store.getFeatures() : {};
+    if (!feat.reaDisabled) {
+      await rea.ensureConnected(mcp, { userDataDir: app.getPath('userData') }).catch(() => {});
+    }
+  } catch (_) {}
   let cfg;
   try { cfg = require('./claudeconfig').loadMcpServers(cwd); } catch (_) { return; }
   const entries = Object.entries((cfg && cfg.servers) || {});
@@ -1067,6 +1075,8 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       turnId,
       // This is the top-level user turn: it owns the token-budget pool.
       turnStart: true,
+      // Built-in MCP client so `rea` shares the persistent REA server session.
+      mcpClient: mcp,
       // Swarm is user-opted. Unless the renderer explicitly enabled it, the
       // `Swarm` tool is not offered to the model at all (multi-agent Task/Agent
       // still is). The roster it may use is frontier-only.
@@ -2390,6 +2400,23 @@ ipcMain.handle('autobot:extBridgeOpenFolder', () => {
     return { ok: true, dir };
   } catch (e) { return { ok: false, error: e.message }; }
 });
+ipcMain.handle('autobot:reaStatus', () => {
+  try { return rea.status(mcp, { userDataDir: app.getPath('userData') }); } catch (e) { return { ok: false, available: false, connected: false, error: e.message }; }
+});
+ipcMain.handle('autobot:reaConnect', async () => {
+  try {
+    const res = await rea.ensureConnected(mcp, { userDataDir: app.getPath('userData'), force: true });
+    return { ok: true, ...res, status: rea.status(mcp, { userDataDir: app.getPath('userData') }) };
+  } catch (e) {
+    return { ok: false, error: oneLine(e), status: rea.status(mcp, { userDataDir: app.getPath('userData') }) };
+  }
+});
+ipcMain.handle('autobot:reaDoctor', async () => {
+  try { return await rea.doctor(mcp, { userDataDir: app.getPath('userData') }); } catch (e) { return { ok: false, error: oneLine(e) }; }
+});
+ipcMain.handle('autobot:reaInstall', async () => {
+  try { return await rea.installOrUpdate({ userDataDir: app.getPath('userData'), mcpClient: mcp }); } catch (e) { return { ok: false, error: oneLine(e) }; }
+});
 ipcMain.handle('autobot:transcribeAudio', async (e, payload = {}) => {
   try {
     const wavB64 = String(payload.wavBase64 || '');
@@ -3358,6 +3385,18 @@ app.whenReady().then(() => {
   {
     const t = setTimeout(() => { warmModelCatalogs().catch(() => {}); }, 3000);
     if (t && typeof t.unref === 'function') t.unref();
+  }
+  // Warm built-in REA (morluto/rea) MCP server non-blockingly so all 263
+  // reverse-engineering tools are ready before the first turn.
+  {
+    const tRea = setTimeout(() => {
+      try {
+        if (!(store.getFeatures() || {}).reaDisabled) {
+          rea.ensureConnected(mcp, { userDataDir: app.getPath('userData') }).catch(() => {});
+        }
+      } catch (_) {}
+    }, 1200);
+    if (tRea && typeof tRea.unref === 'function') tRea.unref();
   }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

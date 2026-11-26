@@ -119,6 +119,7 @@ const CONNECTOR_ROWS = [
   // ===== Engineering: source, code review, CI =====
   ['github', 'GitHub', 'Engineering', 'oauth', 'Search repositories, read issues and pull requests, and inspect code.', ['search_repos', 'get_issue', 'list_pulls', 'get_file', 'list_commits']],
   ['github-official', 'GitHub (MCP)', 'Engineering', 'oauth', 'Official GitHub MCP server: repos, issues, PRs, Actions and code search.', ['search_repositories', 'get_file_contents', 'list_issues', 'create_issue', 'list_pull_requests'], { type: 'http', url: 'https://api.githubcopilot.com/mcp/' }],
+  ['rea', 'REA (Reverse Engineer Anything)', 'Security', 'none', 'Built-in reverse engineering MCP & CLI (263 tools): native binaries (Hopper/Ghidra/IDA/Rizin), Electron/ASAR/JS, Android APKs, Apple bundles, firmware, PCAP/HAR captures, and AgentEnv.', ['open_binary', 'inspect_artifact', 'analyze_javascript_application', 'audit_release_exposure', 'decompile']],
   ['gitlab', 'GitLab', 'Engineering', 'apikey', 'Search projects, merge requests, issues and pipelines on GitLab.', ['search_projects', 'list_merge_requests', 'get_pipeline']],
   ['bitbucket', 'Bitbucket', 'Engineering', 'oauth', 'Read Bitbucket repositories, pull requests and pipelines.', ['list_repos', 'get_pull_request']],
   ['azure-devops', 'Azure DevOps', 'Engineering', 'oauth', 'Read Azure DevOps repositories, work items and pipelines.', ['list_repos', 'get_work_item', 'list_pipelines']],

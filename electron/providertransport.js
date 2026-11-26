@@ -100,23 +100,80 @@ function trimBase(u) { return String(u || '').replace(/\/+$/, ''); }
  *
  * @returns {{stream: ReadableStream|null, isSse: boolean, empty: boolean}}
  */
-async function openStream(res) {
+async function fetchWithTimeout(url, options, label) {
+  const timeoutMs = Number(process.env.HELIO_CONNECT_TIMEOUT_MS) || 45000;
+  const ctrl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try { ctrl.abort(); } catch (_) {}
+  }, timeoutMs);
+  if (timer && typeof timer.unref === 'function') timer.unref();
+  const parent = options && options.signal;
+  const onParentAbort = () => { try { ctrl.abort(); } catch (_) {} };
+  if (parent) {
+    if (parent.aborted) { clearTimeout(timer); return fetch(url, options); }
+    parent.addEventListener('abort', onParentAbort, { once: true });
+  }
+  const fn = (options && options.fetchImpl) || fetch;
+  try {
+    return await fn(url, { ...options, signal: ctrl.signal });
+  } catch (e) {
+    if (timedOut && !(parent && parent.aborted)) {
+      const err = new Error(`LLM ${label || 'provider'} connection timed out after ${Math.round(timeoutMs / 1000)}s`);
+      err.transient = true;
+      throw err;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    if (parent) parent.removeEventListener('abort', onParentAbort);
+  }
+}
+
+async function openStream(res, signal) {
   const body = res && res.body;
   if (!body || typeof body.getReader !== 'function') return { stream: null, isSse: false, empty: true };
   const reader = body.getReader();
+  const stallMs = Number(process.env.HELIO_STREAM_STALL_MS) || 90000;
+  let stallTimer = null;
   let first;
-  try { first = await reader.read(); } catch (_) { return { stream: null, isSse: false, empty: true }; }
+  try {
+    first = await Promise.race([
+      reader.read(),
+      new Promise((_, reject) => {
+        stallTimer = setTimeout(() => reject(Object.assign(new Error(`LLM stream stalled: no data for ${stallMs / 1000}s`), { transient: true })), stallMs);
+      }),
+    ]);
+  } catch (e) {
+    clearTimeout(stallTimer);
+    if (signal && signal.aborted) throw e;
+    if (e && e.transient) { try { reader.cancel(); } catch (_) {} throw e; }
+    return { stream: null, isSse: false, empty: true };
+  } finally {
+    clearTimeout(stallTimer);
+  }
   if (first.done) return { stream: null, isSse: false, empty: true };
   const head = new TextDecoder().decode(first.value, { stream: true });
   const isSse = /^\s*(?:event|data)\s*:/.test(head);
   const stream = new ReadableStream({
     start(c) { c.enqueue(first.value); },
     async pull(c) {
+      let t = null;
       try {
-        const { done, value } = await reader.read();
-        if (done) { c.close(); return; }
-        c.enqueue(value);
-      } catch (e) { c.error(e); }
+        const resChunk = await Promise.race([
+          reader.read(),
+          new Promise((_, reject) => {
+            t = setTimeout(() => reject(Object.assign(new Error(`LLM stream stalled: no data for ${stallMs / 1000}s`), { transient: true })), stallMs);
+          }),
+        ]);
+        clearTimeout(t);
+        if (resChunk.done) { c.close(); return; }
+        c.enqueue(resChunk.value);
+      } catch (e) {
+        clearTimeout(t);
+        c.error(e);
+      }
     },
     cancel(reason) { try { reader.cancel(reason); } catch (_) {} },
   });
@@ -389,6 +446,26 @@ function toAnthropicBody(provider, messages, tools, maxTokens) {
       };
     });
   }
+  // 3-breakpoint ephemeral prompt caching for multi-turn agent loops when large
+  // enough to meet Anthropic's minimum cacheable block threshold (>=4096 chars).
+  try {
+    if (body.tools && body.tools.length && JSON.stringify(body.tools).length >= 4096) {
+      body.tools[body.tools.length - 1] = { ...body.tools[body.tools.length - 1], cache_control: { type: 'ephemeral' } };
+    }
+    if (body.system && body.system.length && JSON.stringify(body.system).length >= 4096) {
+      body.system[body.system.length - 1] = { ...body.system[body.system.length - 1], cache_control: { type: 'ephemeral' } };
+    }
+    if (body.messages && body.messages.length && JSON.stringify(body.messages).length >= 4096) {
+      for (let i = body.messages.length - 1; i >= 0; i--) {
+        const bm = body.messages[i];
+        if (bm && bm.role === 'user' && Array.isArray(bm.content) && bm.content.length) {
+          const lastIdx = bm.content.length - 1;
+          bm.content[lastIdx] = { ...bm.content[lastIdx], cache_control: { type: 'ephemeral' } };
+          break;
+        }
+      }
+    }
+  } catch (_) {}
   // Deliberately no `temperature`: the subscription path does not accept it the
   // way the public API does, and Claude Code itself never sends one.
   return body;
@@ -420,7 +497,7 @@ function anthropicFinish(stop) {
   return 'stop';
 }
 
-async function anthropicChat(provider, messages, tools, onDelta, signal, maxTokensOverride) {
+async function anthropicChat(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
   const base = trimBase(provider.baseURL || DEFAULT_ANTHROPIC_BASE);
   const { headers } = anthropicAuth(provider);
   const body = toAnthropicBody(provider, messages, tools, maxTokensOverride || provider.maxTokens);
@@ -441,9 +518,9 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   const shortBeta = headers['anthropic-beta'];
   if (longBeta) headers['anthropic-beta'] = shortBeta + ',' + catalog.LONG_CONTEXT_BETA;
 
-  const post = (hdrs) => fetch(base + '/v1/messages', {
+  const post = (hdrs) => fetchWithTimeout(base + '/v1/messages', {
     method: 'POST', headers: hdrs, body: payload, signal,
-  });
+  }, 'anthropic');
 
   let res = await post(headers);
   if (!res.ok && bigTurn && res.status === 400) {
@@ -540,7 +617,7 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
 
   // Classify by the body, not only the header: some backends stream SSE with no
   // content-type. `openStream` peeks one chunk and replays it.
-  const opened = await openStream(res);
+  const opened = await openStream(res, signal);
   if (opened.empty) { message.finish_reason = 'stop'; return message; }
   if (!opened.isSse) {
     // A proxy collapsed the stream back to one JSON body.
@@ -571,6 +648,7 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
         const acc = newToolAcc(block.id, block.name);
         accs.set(ev.index, acc);
         message.tool_calls.push(acc);
+        if (onToolDelta) onToolDelta({ id: acc.id, name: acc.function.name, argsPreview: '', bytes: 0 });
       }
     } else if (type === 'content_block_delta') {
       const d = ev.delta || {};
@@ -581,7 +659,17 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
         onDelta(d.thinking, true);
       } else if (d.type === 'input_json_delta') {
         const acc = accs.get(ev.index);
-        if (acc) pushToolArg(acc, d.partial_json);
+        if (acc) {
+          pushToolArg(acc, d.partial_json);
+          if (onToolDelta) {
+            onToolDelta({
+              id: acc.id,
+              name: acc.function.name,
+              argsPreview: acc.function.arguments.slice(0, 320),
+              bytes: acc.function.arguments.length,
+            });
+          }
+        }
       }
     } else if (type === 'message_delta') {
       const d = ev.delta || {};
@@ -673,13 +761,13 @@ function codexReasoning(level) {
 async function responsesChat(o) {
   const label = o.label || 'codex';
   const onDelta = o.onDelta || (() => {});
-  const doFetch = o.fetchImpl || fetch;
-  const res = await doFetch(o.url, {
-    method: 'POST', headers: o.headers, body: JSON.stringify(o.body), signal: o.signal,
-  });
+  const onToolDelta = o.onToolDelta || null;
+  const res = o.fetchImpl
+    ? await o.fetchImpl(o.url, { method: 'POST', headers: o.headers, body: JSON.stringify(o.body), signal: o.signal })
+    : await fetchWithTimeout(o.url, { method: 'POST', headers: o.headers, body: JSON.stringify(o.body), signal: o.signal }, label);
   if (!res.ok) throw httpError(label, res, await res.text().catch(() => ''));
 
-  const opened = await openStream(res);
+  const opened = await openStream(res, o.signal);
 
   const message = { role: 'assistant', content: '', tool_calls: [] };
   const byItem = new Map(); // output item id -> tool acc
@@ -757,10 +845,21 @@ async function responsesChat(o) {
       if (item.type === 'function_call') {
         const acc = addCall(item.call_id || item.id, item.name);
         if (item.id) byItem.set(item.id, acc);
+        if (onToolDelta) onToolDelta({ id: acc.id, name: acc.function.name, argsPreview: '', bytes: 0 });
       }
     } else if (type === 'response.function_call_arguments.delta') {
       const acc = byItem.get(ev.item_id);
-      if (acc) pushToolArg(acc, ev.delta);
+      if (acc) {
+        pushToolArg(acc, ev.delta);
+        if (onToolDelta) {
+          onToolDelta({
+            id: acc.id,
+            name: acc.function.name,
+            argsPreview: acc.function.arguments.slice(0, 320),
+            bytes: acc.function.arguments.length,
+          });
+        }
+      }
     } else if (type === 'response.function_call_arguments.done') {
       const acc = byItem.get(ev.item_id);
       if (acc && typeof ev.arguments === 'string' && ev.arguments) acc.function.arguments = ev.arguments;
@@ -786,7 +885,7 @@ async function responsesChat(o) {
   return finish();
 }
 
-async function codexChat(provider, messages, tools, onDelta, signal, maxTokensOverride) {
+async function codexChat(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
   const { instructions, input } = toCodexInput(messages);
   const body = {
     model: provider.model,
@@ -820,6 +919,7 @@ async function codexChat(provider, messages, tools, onDelta, signal, maxTokensOv
     headers,
     body,
     onDelta,
+    onToolDelta,
     signal,
   });
 }
@@ -1116,7 +1216,7 @@ function toGeminiDeclarations(tools) {
   return out;
 }
 
-async function googleChat(provider, messages, tools, onDelta, signal, maxTokensOverride) {
+async function googleChat(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
   const { systemParts, contents } = toGeminiContents(messages);
   const want = Number(maxTokensOverride || provider.maxTokens) > 0
     ? Number(maxTokensOverride || provider.maxTokens) : 32000;
@@ -1130,7 +1230,7 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
   // (sending one is what produced the old `403 The caller does not have
   // permission`), and `requestType`/`userAgent` mirror the desktop client.
   const body = { model: provider.model, request, userAgent: 'antigravity', requestType: 'agent' };
-  const res = await fetch(cloudcodeBase(provider) + ':streamGenerateContent?alt=sse', {
+  const res = await fetchWithTimeout(cloudcodeBase(provider) + ':streamGenerateContent?alt=sse', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -1140,7 +1240,7 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
     },
     body: JSON.stringify(body),
     signal,
-  });
+  }, 'antigravity');
   if (!res.ok) throw httpError('antigravity', res, await res.text().catch(() => ''));
 
   const message = { role: 'assistant', content: '', tool_calls: [] };
@@ -1164,6 +1264,14 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
           const acc = newToolAcc(fc.id || ('call_' + callSeq + '_' + name), name);
           acc.function.arguments = JSON.stringify(fc.args || {});
           message.tool_calls.push(acc);
+          if (onToolDelta) {
+            onToolDelta({
+              id: acc.id,
+              name: acc.function.name,
+              argsPreview: acc.function.arguments.slice(0, 320),
+              bytes: acc.function.arguments.length,
+            });
+          }
         }
       }
       if (cand.finishReason) message.finish_reason = geminiFinish(cand.finishReason);
@@ -1192,7 +1300,7 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
     }
     return message;
   };
-  const opened = await openStream(res);
+  const opened = await openStream(res, signal);
   if (opened.empty) return settle();
   if (!opened.isSse) {
     const text = await new Response(opened.stream).text().catch(() => '');
@@ -1303,7 +1411,7 @@ function grokHeaders(provider) {
   return headers;
 }
 
-function grokChat(provider, messages, tools, onDelta, signal, maxTokensOverride) {
+function grokChat(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
   const { instructions, input } = toCodexInput(messages);
   const toolDefs = toCodexTools(tools);
   const body = {
@@ -1344,6 +1452,7 @@ function grokChat(provider, messages, tools, onDelta, signal, maxTokensOverride)
     headers,
     body,
     onDelta,
+    onToolDelta,
     signal,
   }).catch(async (err) => {
     // A 402 here means the account's Grok Build credit pool, not the request.
@@ -1371,10 +1480,10 @@ function needsTransport(provider) {
   return !!(provider && ADAPTERS[provider.transport]);
 }
 
-function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride) {
+function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
   const fn = ADAPTERS[provider && provider.transport];
   if (!fn) throw new Error('no transport for ' + (provider && provider.transport));
-  return fn(provider, messages, tools, onDelta || (() => {}), signal, maxTokensOverride);
+  return fn(provider, messages, tools, onDelta || (() => {}), signal, maxTokensOverride, onToolDelta);
 }
 
 /**

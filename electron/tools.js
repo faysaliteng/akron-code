@@ -1356,6 +1356,23 @@ const toolDefinitions = [
     },
   },
 
+  // ---- Built-in REA (`https://github.com/morluto/rea`, rea-agents 263 MCP tools & CLI) ----
+  {
+    name: 'rea',
+    description: 'Built-in Reverse Engineer Anything (morluto/rea): search or invoke all 263 REA MCP tools (native binaries, Electron/ASAR/JS bundles, Android APKs, Apple bundles, firmware, PCAP/HAR captures, decompile, audit_release_exposure) or run the REA CLI.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['status', 'search', 'call', 'cli', 'doctor'], description: 'Action to run (default: search if query given, call if tool given, cli if command given, else status)' },
+        query: { type: 'string', description: 'Keywords to search across 263 REA tools (activates matches for direct mcp__rea__* calls)' },
+        tool: { type: 'string', description: 'Exact REA MCP tool name to call (e.g. "analyze_javascript_application", "open_binary", "inspect_artifact", "audit_release_exposure", "decompile")' },
+        arguments: { type: 'object', description: 'Arguments object for action="call"' },
+        command: { description: 'CLI arguments array or string for one-shot REA CLI (e.g. ["analyze-javascript-application", "/abs/path", "--json"])' },
+        cwd: { type: 'string' },
+      },
+    },
+  },
+
   // ---- Example-parity surface (see parity.js / parity-defs.js) ----
   ...require('./parity-defs'),
 ];
@@ -1613,7 +1630,8 @@ async function runToolInner(name, args, ctx) {
       });
       return `Started background agent "${label}" (${job.id}). Poll it with TaskOutput({task_id:"${job.id}"}) (optionally block:true) or stop it with TaskStop({task_id:"${job.id}"}).`;
     }
-    return await withTimeout(runSubagent(args), toolTimeoutMs(name, args), name);
+    const subOut = await withTimeout(runSubagent(args), toolTimeoutMs(name, args), name);
+    return (subOut == null || subOut === '') ? '(sub-agent completed with no text output)' : subOut;
   }
   if (name === 'Swarm') {
     if (!ctx.runAgent) return 'Swarm unavailable (no agent runner wired).';
@@ -1895,6 +1913,66 @@ async function runToolInner(name, args, ctx) {
       return typeof out === 'string' ? out : JSON.stringify(out, null, 2);
     } catch (e) {
       return { content: 'External browser error: ' + String((e && e.message) || e), isError: true };
+    }
+  }
+
+  if (name === 'rea') {
+    const reaMod = require('./rea');
+    const getReaClient = () => {
+      if (ctx.mcpClient) return ctx.mcpClient;
+      if (!runTool._fallbackReaClient) {
+        const { MCPClient } = require('./mcp');
+        runTool._fallbackReaClient = new MCPClient();
+      }
+      return runTool._fallbackReaClient;
+    };
+    const a = args || {};
+    const inferredAction = a.action
+      || (a.tool ? 'call' : (a.query || a.q ? 'search' : (a.command || a.args ? 'cli' : 'status')));
+    try {
+      if (inferredAction === 'status') {
+        const client = getReaClient();
+        try { await reaMod.ensureConnected(client); } catch (_) {}
+        return JSON.stringify(reaMod.status(client), null, 2);
+      }
+      if (inferredAction === 'doctor') {
+        const d = await reaMod.doctor(getReaClient(), { cwd: a.cwd || ctx.cwd });
+        return JSON.stringify(d, null, 2);
+      }
+      if (inferredAction === 'search') {
+        const client = getReaClient();
+        const { total, hits } = await reaMod.searchReaTools(client, a.query || a.q || '', 10);
+        if (typeof ctx.activateTools === 'function' && hits.length) {
+          try {
+            // Register matches cleanly into ctx.activateTools when caller has mcp__* defs loaded;
+            // either way the model can call them via rea(action="call") or direct mcp__rea__* when deferred.
+            ctx.activateTools(hits.map((h) => h.name));
+          } catch (_) {}
+        }
+        if (!hits.length) return `REA (${total} tools loaded): no tool matched ${JSON.stringify(a.query || '')}. Try another keyword or call rea(action="cli", command=[...]).`;
+        return `REA (${total} tools loaded) matching ${JSON.stringify(a.query || '')} — invoke via rea(action="call", tool="<name>", arguments={...}) or directly as mcp__rea__<name>:\n`
+          + hits.map((h) => `\n### ${h.name.replace(/^mcp__rea__/, '')} (${h.name})\n${h.description}\n${JSON.stringify(h.inputSchema)}`).join('\n');
+      }
+      if (inferredAction === 'call') {
+        const toolName = String(a.tool || a.name || '').trim();
+        if (!toolName) return { content: 'rea action="call" requires `tool` (e.g. "analyze_javascript_application", "open_binary", "inspect_artifact", "audit_release_exposure", "decompile").', isError: true };
+        const { action: _a, tool: _t, arguments: callArgs, args: legacyArgs, cwd: _c, query: _q, command: _cmd, ...rest } = a;
+        const merged = { ...(legacyArgs && typeof legacyArgs === 'object' ? legacyArgs : {}), ...(callArgs && typeof callArgs === 'object' ? callArgs : {}), ...rest };
+        const out = await reaMod.callReaTool(getReaClient(), toolName, merged);
+        return typeof out === 'string' ? out : JSON.stringify(out, null, 2);
+      }
+      if (inferredAction === 'cli') {
+        const rawCmd = a.command !== undefined ? a.command : a.args;
+        if (!rawCmd || (Array.isArray(rawCmd) && !rawCmd.length)) {
+          return { content: 'rea action="cli" requires `command` (array or string, e.g. ["analyze-javascript-application", "/abs/path", "--json"]).', isError: true };
+        }
+        const r = await reaMod.runCli(rawCmd, { cwd: a.cwd || ctx.cwd, signal: ctx.signal });
+        const text = [r.stdout, r.stderr].filter(Boolean).join('\n').trim();
+        return r.ok ? (text || '(rea completed with exit 0)') : { content: `REA CLI exit ${r.exitCode}:\n${text}`, isError: true };
+      }
+      return { content: `Unknown rea action "${inferredAction}". Expected status | search | call | cli | doctor.`, isError: true };
+    } catch (e) {
+      return { content: 'REA error: ' + String((e && e.message) || e), isError: true };
     }
   }
 

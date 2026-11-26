@@ -15,11 +15,13 @@ const router = require('./orch-router');
 
 const LEAN_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'Bash', 'LS', 'TodoWrite', 'WebFetch', 'WebSearch', 'ToolSearch']);
 const STANDARD_TOOLS = new Set([
-  'Bash', 'Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'LS', 'TodoWrite', 'WebFetch', 'WebSearch',
-  'Task', 'Agent', 'TaskOutput', 'TaskStop', 'Swarm', 'Workflow', 'ToolSearch', 'find_mcp_tools', 'Skill',
+  'Bash', 'Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'LS', 'Search', 'TodoWrite', 'WebFetch', 'WebSearch',
+  'Task', 'Agent', 'TaskOutput', 'TaskStop', 'ListAgents', 'Swarm', 'Workflow', 'ToolSearch', 'find_mcp_tools', 'Skill', 'list_skills',
   'TeamCreate', 'TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate', 'SendMessage',
-  'CreateCustomTool', 'ListCustomTools', 'DeleteCustomTool', 'ext_browser',
+  'CreateCustomTool', 'ListCustomTools', 'DeleteCustomTool', 'ext_browser', 'rea',
+  'EnterWorktree', 'ExitWorktree', 'EnterPlanMode',
   'AskUserQuestion', 'ExitPlanMode', 'KillShell', 'Artifact', 'Cd',
+  'memory_add', 'memory_list', 'mcp__visualize__visualize',
   'browser_open', 'browser_navigate', 'browser_read', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_screenshot',
 ]);
 
@@ -58,7 +60,7 @@ const localToolNames = new Set(toolDefinitions.map((t) => t.name));
 // discovery escape hatch that makes shed tools findable again).
 const CORE_TOOLS = new Set([
   'Bash', 'Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep',
-  'WebFetch', 'WebSearch', 'TodoWrite', 'Task', 'Agent',
+  'WebFetch', 'WebSearch', 'TodoWrite', 'Task', 'Agent', 'rea', 'ext_browser',
   'browser_open', 'browser_navigate', 'browser_read', 'browser_snapshot',
   'browser_click', 'browser_type', 'browser_screenshot', 'browser_js',
   'ToolSearch', 'find_mcp_tools', 'Skill', 'AskUserQuestion', 'KillShell',
@@ -222,7 +224,8 @@ const SYSTEM_PROMPT = `You are Akron Bot, an agentic desktop coding assistant ru
   do in one or two tool calls. After delegating, use the workers' results; do not redo their work.
 
 ## Other capabilities
-- Browser tools (browser_open / browser_navigate / browser_snapshot / browser_click / browser_type / browser_screenshot / browser_tabs) for web tasks the user can watch.
+- Browser tools (browser_open / browser_navigate / browser_snapshot / browser_click / browser_type / browser_screenshot / browser_tabs) for in-app web tasks, plus \`ext_browser\` when the user's Chrome/Brave/Edge browser is connected via Akron Browser Bot.
+- Reverse Engineering (built-in REA / \`morluto/rea\`): when asked to reverse engineer, inspect shipped binaries/ASAR/APK/IPA/firmware/captures, decompile, or audit release exposure, use \`rea\` (or \`find_mcp_tools\` for \`mcp__rea__*\`) and load \`Skill\` \`"reverse-engineer-anything"\`.
 - web_search / web_fetch for facts you are unsure about.
 - Shell, Read, Glob, Grep, memory and todo tools as needed.
 
@@ -416,12 +419,12 @@ function normalizeProvider(p) {
   };
 }
 
-async function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride) {
+async function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
   // Delegating to a wire adapter keeps one stream contract for the agent loop:
   // the adapter returns the same {content, tool_calls, finish_reason, usage}
   // shape the OpenAI-compatible path does, so failover and parsing are unchanged.
   if (providertransport.needsTransport(provider)) {
-    return providertransport.chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride);
+    return providertransport.chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta);
   }
   const url = provider.baseURL + 'chat/completions';
   const body = {
@@ -443,7 +446,31 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   const headers = { 'content-type': 'application/json' };
   if (provider.apiKey) headers['authorization'] = 'Bearer ' + provider.apiKey;
 
-  const doFetch = (payload) => fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal });
+  const CONNECT_TIMEOUT_MS = Number(process.env.HELIO_CONNECT_TIMEOUT_MS) || 45000;
+  const doFetch = async (payload) => {
+    const ctrl = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; try { ctrl.abort(); } catch (_) {} }, CONNECT_TIMEOUT_MS);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    const onAbort = () => { try { ctrl.abort(); } catch (_) {} };
+    if (signal) {
+      if (signal.aborted) { clearTimeout(timer); return fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal }); }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+    try {
+      return await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal: ctrl.signal });
+    } catch (e) {
+      if (timedOut && !(signal && signal.aborted)) {
+        const err = new Error(`LLM connect timed out after ${Math.round(CONNECT_TIMEOUT_MS / 1000)}s`);
+        err.transient = true;
+        throw err;
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    }
+  };
   const req = { ...body };
   let res = await doFetch(req);
   // Negotiate the request shape instead of failing outright. Some providers
@@ -660,6 +687,14 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
                 acc.function.arguments += String(a);
               }
             }
+          }
+          if (onToolDelta && acc.function.name) {
+            onToolDelta({
+              id: acc.id || String(idx),
+              name: acc.function.name,
+              argsPreview: acc.function.arguments.slice(0, 320),
+              bytes: acc.function.arguments.length,
+            });
           }
         }
       }
@@ -889,7 +924,7 @@ async function chatWithFailover(opts) {
         // (Anthropic serves Sonnet 4.x at 1M only with an entitled beta).
         const winPid = String(p.oauthProvider || '').split(':')[0] || p.transport || '';
         const winBefore = modelCatalog.contextWindowFor(p.model, winPid, p.contextWindow);
-        const out = await chatCompletion(p, messages, tools, onDelta, signal, reqMax);
+        const out = await chatCompletion(p, messages, tools, onDelta, signal, reqMax, opts.onToolDelta);
         const winAfter = modelCatalog.contextWindowFor(p.model, winPid, p.contextWindow);
         if (winAfter && winBefore && winAfter < winBefore) {
           emit({ type: 'notice', text: `${p.model} advertises ${modelCatalog.fmtWindow(winBefore)} but this account is not entitled to it — this session budgets ${modelCatalog.fmtWindow(winAfter)} and compacts to fit.` });
@@ -1591,7 +1626,8 @@ async function runAgent(opts) {
   //   lean     — workers & sub-agents on a pool: the coding core (~2k tokens)
   //   standard — the main agent on a pool: core + team/plan tools
   //   full     — everything (subscription providers, explicit opt-in)
-  const profile = opts.toolProfile || (poolMode ? (depth >= 1 ? 'lean' : 'standard') : 'full');
+  const isLocalOllama = /:11434\b|ollama/i.test(String((provider && provider.baseURL) || ''));
+  const profile = opts.toolProfile || ((poolMode || isLocalOllama) ? (depth >= 1 ? 'lean' : 'standard') : 'full');
   if (profile === 'lean' || profile === 'standard') {
     const keep = profile === 'lean' ? LEAN_TOOLS : STANDARD_TOOLS;
     tools = tools.filter((t) => {
@@ -1669,6 +1705,10 @@ async function runAgent(opts) {
   // 4. Semi-static per session cwd: project working directory.
   if (currentCwd) {
     messages[0].content += `\n\n<project_workspace>\nYour project working directory is: ${currentCwd}\nCreate and edit files in this folder by default (prefer relative paths). Run shell commands in this folder unless the user specifies another location. When the user asks for code or a file, write it here.\n</project_workspace>`;
+  }
+
+  if (opts.swarm === true && depth === 0 && allAllowedDefs.has('Swarm')) {
+    messages[0].content += `\n\n<swarm_mode_active>\nSwarm mode is ON. For any non-trivial build, multi-file implementation, audit, or research task with 2 or more independent workstreams, call \`Swarm\` {"goal": "..."} (optionally passing "tasks") or spawn parallel \`Task\` workers right away after at most ONE quick directory check rather than doing every file sequentially yourself.\n</swarm_mode_active>`;
   }
 
   // 5. Per-turn renderer directives (style / web-search / context notes).
@@ -2078,6 +2118,21 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     const doChat = (withTools, maxTokens) => {
       turnChars = 0;
       turnThink = 0;
+      let lastToolStreamAt = 0;
+      let lastToolStreamName = '';
+      const onToolDelta = (info) => {
+        if (!info || !info.name) return;
+        const now = Date.now();
+        if (info.name === lastToolStreamName && now - lastToolStreamAt < 180) return;
+        lastToolStreamAt = now;
+        lastToolStreamName = info.name;
+        let target = '';
+        if (info.argsPreview) {
+          const m = /"(?:file_path|path|command|cmd|description|goal|query|tool|url)"\s*:\s*"([^"\n]{1,90})/i.exec(info.argsPreview);
+          if (m) target = m[1];
+        }
+        emit({ type: 'toolStream', id: info.id || '', name: info.name, bytes: info.bytes || 0, target });
+      };
       return chatWithFailover({
         list: providerList,
         getIndex,
@@ -2089,6 +2144,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           if (thinking) turnThink += text.length; else turnChars += text.length;
           emit({ type: thinking ? 'thinking' : 'delta', text });
         },
+        onToolDelta,
         emit,
         signal: opts.signal,
         maxTokens,
@@ -2517,6 +2573,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         const subMsgs = defPrompt
           ? [{ role: 'system', content: defPrompt }, { role: 'user', content: userPrompt }]
           : [{ role: 'user', content: userPrompt }];
+        const subToolsRun = [];
         const subResult = await runAgent({
           provider: subProvider,
           orchestrator: subOrch,
@@ -2526,11 +2583,13 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           // the parent reports the child's status itself.
           emit: (evt) => {
             if (!evt || evt.type === 'done' || evt.type === 'complete') return;
+            if (evt.type === 'tool' && evt.name) subToolsRun.push(evt.name);
             emit({ ...evt, subagent: name });
           },
           maxSteps: opts.subagentMaxSteps || 0,
           useMemory: opts.useMemory,
           callMcpTool: opts.callMcpTool,
+          mcpClient: opts.mcpClient,
           askUser: opts.askUser,
           exitPlanMode: opts.exitPlanMode,
           mcpListResources: opts.mcpListResources,
@@ -2546,8 +2605,14 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           convId: opts.convId,
           turnId: opts.turnId,
         });
-        const last = [...subResult].reverse().find((m) => m.role === 'assistant' && m.content);
-        let outText = last ? last.content : '(sub-agent completed)';
+        const last = [...(Array.isArray(subResult) ? subResult : [])].reverse().find((m) => m.role === 'assistant' && m.content && String(m.content).trim());
+        let outText = last && last.content ? String(last.content) : '';
+        if (!outText.trim()) {
+          const uniq = [...new Set(subToolsRun)].slice(0, 8);
+          outText = uniq.length
+            ? `Sub-agent "${name}" completed (${subToolsRun.length} tool actions: ${uniq.join(', ')}) with no final prose summary.`
+            : `Sub-agent "${name}" completed with no final message.`;
+        }
         if (worktreeInfo) {
           let dirtyOrCommitted = false;
           try {
@@ -2684,6 +2749,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         useMemory: opts.useMemory,
         shell: opts.shell,
         callMcpTool: opts.callMcpTool,
+        mcpClient: opts.mcpClient,
         askUser: opts.askUser,
         exitPlanMode: opts.exitPlanMode,
         mcpListResources: opts.mcpListResources,
@@ -2695,6 +2761,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         depth: depth + 1,
         ...subOpts,
       }),
+      mcpClient: opts.mcpClient || null,
       get provider() { return providerList[getIndex()]; },
       orchestrator: opts.orchestrator || null,
       // The un-scoped pool config (role pools) for Swarm/Workflow routing.
@@ -2760,10 +2827,19 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       if (!calls.length) continue;
     }
 
+    const runFindMcpTools = (findArgs) => {
+      const hits = mcpSchema.searchMcpTools(extra, (findArgs && (findArgs.query || findArgs.q)) || '', findArgs && findArgs.server);
+      if (hits.length) activateTools(hits.map((h) => h.name));
+      return hits.length
+        ? `MCP tools matching ${JSON.stringify((findArgs && findArgs.query) || '')} (now active and callable by exact name):\n`
+          + hits.map((h) => `\n### ${h.name}\n${h.description}\n${JSON.stringify(h.inputSchema)}`).join('\n')
+        : `No MCP tool matched ${JSON.stringify((findArgs && findArgs.query) || '')}. Try a broader keyword, or omit "server".`;
+    };
+
     // Example runs independent read-only calls from the same turn concurrently
     // and shows all of the rows at once. Doing them one-by-one made a 4-file
     // read take 4 round trips of wall time and stacked rows progressively.
-    const PARALLEL_SAFE = new Set(['Read', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles', 'WebFetch', 'WebSearch', 'TaskList', 'TaskGet', 'CronList', 'ListMcpResources']);
+    const PARALLEL_SAFE = new Set(['Read', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles', 'WebFetch', 'WebSearch', 'TaskList', 'TaskGet', 'CronList', 'ListMcpResources', 'find_mcp_tools', 'ToolSearch', 'list_skills', 'Skill']);
     // Claude Code runs several Task/Agent blocks from one message concurrently;
     // they used to run one after another here. Bounded so a model that emits
     // ten delegations cannot open ten streams on a free tier at once.
@@ -2798,6 +2874,9 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           if (isLocal(p.name)) {
             const out = await localTools[p.name](p.args || {});
             return { content: typeof out === 'string' ? out : String(out), isError: false };
+          }
+          if (p.name === 'find_mcp_tools' && extraToolsDeferred) {
+            return { content: runFindMcpTools(p.args), isError: false };
           }
           if (toolAllow && !isAllowed(p.name)) return { content: `Tool "${p.name}" is not available to this sub-agent.`, isError: true };
           const pre = await beforeTool(p.name, p.args);
@@ -2872,11 +2951,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       // never the end of the user's turn.
       try {
         if (name === 'find_mcp_tools' && extraToolsDeferred) {
-          const hits = mcpSchema.searchMcpTools(extra, args.query || args.q || '', args.server);
-          result = hits.length
-            ? `MCP tools matching ${JSON.stringify(args.query || '')} — call by exact name:\n`
-              + hits.map((h) => `\n### ${h.name}\n${h.description}\n${JSON.stringify(h.inputSchema)}`).join('\n')
-            : `No MCP tool matched ${JSON.stringify(args.query || '')}. Try a broader keyword, or omit "server".`;
+          result = runFindMcpTools(args);
         } else if (name.startsWith('mcp__') && !localToolNames.has(name)) {
           if (!opts.callMcpTool) {
             result = `MCP tool ${name} unavailable`;

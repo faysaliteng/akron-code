@@ -45,7 +45,9 @@ class MCPClient {
   }
 
   async _connectHttp(cfg) {
-    const serverId = 'srv' + this.nextServerId++;
+    const customId = cfg.serverId && /^[A-Za-z0-9_]+$/.test(String(cfg.serverId)) ? String(cfg.serverId) : null;
+    if (customId && this.servers.has(customId)) this.disconnect(customId);
+    const serverId = customId || ('srv' + this.nextServerId++);
     const url = cfg.url;
     const headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(cfg.headers || {}) };
     if (!headers.authorization && typeof this.authProvider === 'function') {
@@ -57,7 +59,7 @@ class MCPClient {
     // Optional per-connector API key pasted in settings.
     if (!headers.authorization && cfg.apiKey) headers.authorization = 'Bearer ' + cfg.apiKey;
     const entry = {
-      type: 'http', url, headers, nextId: 1, tools: [], name: cfg.name || url,
+      type: 'http', url, headers, nextId: 1, tools: [], fullTools: [], name: cfg.name || url,
       pending: new Map(), stderr: () => '', sessionId: null,
     };
     const post = async (body) => {
@@ -80,33 +82,54 @@ class MCPClient {
     entry.post = post;
     this.servers.set(serverId, entry);
 
+    const initTimeout = Number(cfg.initTimeoutMs) || 30000;
     await this._request(serverId, 'initialize', {
       protocolVersion: '2025-03-26',
       capabilities: {},
       clientInfo: { name: 'autobot', version: '1.0.0' },
-    });
+    }, initTimeout);
     this._notify(serverId, 'notifications/initialized', {});
     let tools = [];
     try {
-      const r = await this._request(serverId, 'tools/list', {});
+      const r = await this._request(serverId, 'tools/list', {}, initTimeout);
       tools = (r && r.tools) || [];
     } catch (_) {}
-    entry.tools = tools.map((t) => t.name);
-    return { serverId, name: entry.name, tools: tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) };
+    entry.fullTools = tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+    entry.tools = entry.fullTools.map((t) => t.name);
+    return { serverId, name: entry.name, tools: entry.fullTools };
   }
 
   async _connectStdio(cfg) {
     const { command, args = [], env = {}, cwd } = cfg;
-    const serverId = 'srv' + this.nextServerId++;
-    const proc = spawn(command, args, {
-      cwd: cwd || undefined,
-      env: { ...process.env, ...env },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const customId = cfg.serverId && /^[A-Za-z0-9_]+$/.test(String(cfg.serverId)) ? String(cfg.serverId) : null;
+    if (customId && this.servers.has(customId)) this.disconnect(customId);
+    const serverId = customId || ('srv' + this.nextServerId++);
+    let proc;
+    try {
+      proc = spawn(command, args, {
+        cwd: cwd || undefined,
+        env: { ...process.env, ...env },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      throw new Error(`Failed to spawn MCP server "${command}": ${err.message}`);
+    }
     let stderr = '';
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
-    const entry = { type: 'stdio', proc, nextId: 1, tools: [], name: command, pending: new Map(), stderr: () => stderr };
+    proc.stderr.on('data', (d) => {
+      if (stderr.length < 32768) stderr += d.toString();
+    });
+    const entry = { type: 'stdio', proc, nextId: 1, tools: [], fullTools: [], name: cfg.name || command, pending: new Map(), stderr: () => stderr, exited: false };
     this.servers.set(serverId, entry);
+
+    proc.on('error', (err) => {
+      entry.exited = true;
+      for (const [, p] of entry.pending) {
+        clearTimeout(p.timer);
+        p.reject(new Error(`MCP process error (${command}): ${err.message}`));
+      }
+      entry.pending.clear();
+      this.servers.delete(serverId);
+    });
 
     let buffer = '';
     proc.stdout.on('data', (d) => {
@@ -119,7 +142,8 @@ class MCPClient {
         let msg;
         try { msg = JSON.parse(line); } catch { continue; }
         if (msg.id != null && entry.pending.has(msg.id)) {
-          const { resolve, reject } = entry.pending.get(msg.id);
+          const { resolve, reject, timer } = entry.pending.get(msg.id);
+          clearTimeout(timer);
           entry.pending.delete(msg.id);
           if (msg.error) reject(new Error(msg.error.message || 'MCP error'));
           else resolve(msg.result);
@@ -128,37 +152,62 @@ class MCPClient {
     });
 
     proc.on('exit', (code) => {
-      for (const [, p] of entry.pending) p.reject(new Error('MCP server exited (code ' + code + ')'));
+      for (const [, p] of entry.pending) {
+        clearTimeout(p.timer);
+        p.reject(new Error('MCP server exited (code ' + code + ')' + (stderr ? ': ' + stderr.slice(-240) : '')));
+      }
       entry.pending.clear();
       entry.exited = true;
     });
 
-    await this._request(serverId, 'initialize', {
-      protocolVersion: '2025-03-26',
-      capabilities: {},
-      clientInfo: { name: 'autobot', version: '1.0.0' },
-    });
-    this._notify(serverId, 'notifications/initialized', {});
-    let tools = [];
+    const initTimeout = Number(cfg.initTimeoutMs) || 30000;
     try {
-      const r = await this._request(serverId, 'tools/list', {});
-      tools = (r && r.tools) || [];
-    } catch (_) {}
-    entry.tools = tools.map((t) => t.name);
-    return { serverId, name: command, tools: tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) };
+      await this._request(serverId, 'initialize', {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: { name: 'autobot', version: '1.0.0' },
+      }, initTimeout);
+      this._notify(serverId, 'notifications/initialized', {});
+      let tools = [];
+      try {
+        const r = await this._request(serverId, 'tools/list', {}, initTimeout);
+        tools = (r && r.tools) || [];
+      } catch (_) {}
+      entry.fullTools = tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+      entry.tools = entry.fullTools.map((t) => t.name);
+      return { serverId, name: entry.name, tools: entry.fullTools };
+    } catch (e) {
+      this.disconnect(serverId);
+      throw e;
+    }
   }
 
-  _request(serverId, method, params) {
+  _request(serverId, method, params, timeoutMs) {
     const entry = this.servers.get(serverId);
     if (!entry) return Promise.reject(new Error('server not found'));
     if (entry.type === 'http') {
       const id = entry.nextId++;
       return entry.post({ jsonrpc: '2.0', id, method, params });
     }
+    if (entry.exited) return Promise.reject(new Error('MCP server already exited'));
     const id = entry.nextId++;
+    const limit = Number(timeoutMs) || 300000;
     return new Promise((resolve, reject) => {
-      entry.pending.set(id, { resolve, reject });
-      entry.proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+      const timer = setTimeout(() => {
+        if (entry.pending.has(id)) {
+          entry.pending.delete(id);
+          reject(new Error(`MCP ${method} timed out after ${limit}ms`));
+        }
+      }, limit);
+      if (timer && typeof timer.unref === 'function') timer.unref();
+      entry.pending.set(id, { resolve, reject, timer });
+      try {
+        entry.proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+      } catch (e) {
+        clearTimeout(timer);
+        entry.pending.delete(id);
+        reject(e);
+      }
     });
   }
 
