@@ -3144,6 +3144,28 @@ ipcMain.handle('autobot:rebuildSessionIndex', async () => {
     return { ok: false, error: oneLine(err) };
   }
 });
+ipcMain.handle('autobot:proactiveState', () => {
+  try { return require('./proactivity').loadState(); } catch (_) { return { matters: [], quietHours: { enabled: false, start: '22:00', end: '08:00' } }; }
+});
+ipcMain.handle('autobot:proactiveAction', (e, payload = {}) => {
+  try { return require('./proactivity').actOnMatter(payload.matterKey, payload.action, { snoozeMs: payload.snoozeMs }); } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:proactiveBrief', async (e, payload = {}) => {
+  try {
+    const pro = require('./proactivity');
+    const tasks = scheduler.list();
+    if (payload.kind === 'retro') return await pro.generateWeeklyRetro({ cwd: payload.cwd || workspace.ROOT, tasks });
+    return await pro.generateMorningBrief({ cwd: payload.cwd || workspace.ROOT, tasks });
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+ipcMain.handle('autobot:proactiveSuggest', (e, payload = {}) => {
+  try { return require('./proactivity').suggestAutomationsFromHistory({ convs: payload.convs || [], existingTasks: scheduler.list(), maxSuggestions: 3 }); } catch (_) { return []; }
+});
+ipcMain.handle('autobot:setQuietHours', (e, patch = {}) => {
+  try { return { ok: true, state: require('./proactivity').setQuietHours(patch) }; } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
 ipcMain.handle('autobot:extBridgeStatus', () => {
   try { return require('./extbridge').status(); } catch (e) { return { running: false, error: e.message, tabs: [] }; }
 });

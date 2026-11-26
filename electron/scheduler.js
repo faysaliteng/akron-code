@@ -224,9 +224,33 @@ function remove(id) {
 async function fire(task) {
   const result = { at: Date.now(), ok: true, output: null, error: null };
   try {
+    const proactivity = require('./proactivity');
+    if (task && task.attentionGate) {
+      const gate = await proactivity.runAttentionGate({
+        task,
+        fastProvider: task.fastProvider || null,
+      });
+      if (gate && gate.review === false) {
+        result.skippedByAttentionGate = true;
+        result.output = `Skipped by Attention Gate: ${gate.reason || 'no review needed'}`;
+        return result;
+      }
+    }
     if (!_runner) throw new Error('no runner wired');
     const out = await _runner({ task });
     result.output = typeof out === 'string' ? out.slice(0, 4000) : JSON.stringify(out).slice(0, 4000);
+    try {
+      proactivity.upsertMatter({
+        source: 'scheduler',
+        title: task.name || task.prompt || 'Scheduled check',
+        fingerprint: task.id || '',
+        summary: String(result.output || '').slice(0, 500),
+        preparedWork: task.prompt || '',
+        impact: task.impact || 'medium',
+        evidence: 'strong',
+        conditionData: result.output,
+      });
+    } catch (_) {}
   } catch (e) {
     result.ok = false;
     result.error = e.message;

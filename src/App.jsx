@@ -27,6 +27,7 @@ import { Icon, iconChar, GoogleDriveIcon } from './components/Icon.jsx';
 import { QuestionModal, ComputerUseModal, CommandPalette, FindBar, GoogleDriveModal } from './features/AppModals.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from './features/WorkspacePanels.jsx';
 import { MissionControlPane } from './components/MissionControlPane.jsx';
+import { ProactiveDashboard } from './components/ProactiveDashboard.jsx';
 
 // Icon, iconChar, GoogleDriveIcon imported from ./components/Icon.jsx
 
@@ -3612,7 +3613,7 @@ export default function App() {
               {panel === 'code' && <CodeView cwd={cwd} setCwd={setCwd} permissions={permissions} setPermissions={setPermissions} T={T} />}
               {panel === 'projects' && <ProjectsView projects={projects} setProjects={setProjects} activeProject={activeProject} setActiveProject={setActiveProject} />}
               {panel === 'plugins' && <PluginsView onOpenGdrive={() => setGdriveModalOpen(true)} gdriveState={gdriveState} />}
-              {panel === 'scheduled' && <ScheduledView />}
+              {panel === 'scheduled' && <ScheduledView cwd={cwd} convs={convs} onSendToChat={(txt) => { setPanel('chats'); send(txt); }} />}
             </div>
 
             {sessionPane.type === 'browser' && (
@@ -6438,7 +6439,7 @@ const CADENCES = [
   { id: 'weekly', label: 'Weekly' },
 ];
 
-function ScheduledView() {
+function ScheduledView({ cwd, convs = [], onSendToChat }) {
   const [tasks, setTasks] = useState([]);
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -6483,6 +6484,7 @@ function ScheduledView() {
 
   return (
     <div className="panel scheduled-panel">
+      <ProactiveDashboard cwd={cwd} convs={convs} onScheduledCreated={refresh} onSendToChat={onSendToChat} Icon={Icon} />
       <div className="panel-head">
         <h2>Scheduled tasks</h2>
         <span className="muted">{tasks.length} task{tasks.length === 1 ? '' : 's'}</span>
@@ -11281,6 +11283,7 @@ function SettingsModal({
                     ))}
                   </div>
                 </div>
+                <QuietHoursSection setNotice={setNotice} />
               </>
             )}
 
@@ -12079,6 +12082,65 @@ function PermissionRulesSection({ cwd, setNotice }) {
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function QuietHoursSection({ setNotice }) {
+  const [qh, setQh] = useState({ enabled: false, start: '22:00', end: '08:00' });
+  useEffect(() => {
+    (async () => {
+      try {
+        if (window.autobot && window.autobot.proactiveState) {
+          const st = await window.autobot.proactiveState();
+          if (st && st.quietHours) setQh(st.quietHours);
+        }
+      } catch (_) {}
+    })();
+  }, []);
+  const saveQh = async (patch) => {
+    const next = { ...qh, ...patch };
+    setQh(next);
+    try {
+      if (window.autobot && window.autobot.setQuietHours) {
+        await window.autobot.setQuietHours(next);
+        setNotice && setNotice(`Quiet hours ${next.enabled ? 'enabled' : 'disabled'}`);
+      }
+    } catch (_) {}
+  };
+  return (
+    <div>
+      <h3 className="oc-sec-title">Proactive Quiet Hours</h3>
+      <div className="oc-group">
+        <div className="oc-row">
+          <div className="oc-row-meta">
+            <div className="oc-row-title">Hold overnight proactive nudges</div>
+            <div className="oc-row-sub">Suppress non-urgent notifications during quiet hours; high-impact imminent deadlines still notify.</div>
+          </div>
+          <div className="oc-row-ctrl">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={!!qh.enabled}
+              className={'oc-switch' + (qh.enabled ? ' on' : '')}
+              onClick={() => saveQh({ enabled: !qh.enabled })}
+            >
+              <span className="oc-switch-knob" />
+            </button>
+          </div>
+        </div>
+        <div className="oc-row">
+          <div className="oc-row-meta">
+            <div className="oc-row-title">Schedule window</div>
+            <div className="oc-row-sub">Local wall-clock start and end times</div>
+          </div>
+          <div className="oc-row-ctrl" style={{ gap: 8 }}>
+            <input type="time" value={qh.start || '22:00'} onChange={(e) => saveQh({ start: e.target.value })} />
+            <span className="muted">to</span>
+            <input type="time" value={qh.end || '08:00'} onChange={(e) => saveQh({ end: e.target.value })} />
+          </div>
+        </div>
       </div>
     </div>
   );
