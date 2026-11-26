@@ -3290,6 +3290,9 @@ ipcMain.handle('autobot:browserWaitFor', (e, selector, timeoutMs) => browser.wai
 ipcMain.handle('autobot:browserScreenshot', (e, fullPage) => browser.screenshot(fullPage));
 ipcMain.handle('autobot:browserSyncTabs', (e, state) => browser.syncTabs(state));
 ipcMain.handle('autobot:browserListTabs', () => browser.listTabs());
+ipcMain.handle('autobot:browserInspectSet', (e, webContentsId, enabled) => browser.setInspectMode(webContentsId, enabled));
+ipcMain.handle('autobot:browserCaptureElement', (e, webContentsId, rect) => browser.captureElementRect(webContentsId, rect));
+ipcMain.handle('autobot:browserToggleDevTools', (e, webContentsId) => browser.toggleDevTools(webContentsId));
 
 // ---- Built-in browser ··· menu (Claude-app parity) ----
 // Each item here maps to something that actually happens. "Open in Brave" checks

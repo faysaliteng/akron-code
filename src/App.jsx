@@ -3294,7 +3294,17 @@ export default function App() {
 
             {sessionPane.type === 'browser' && (
               <SessionPane {...paneProps} icon="Globe" title={T('sidebar.browser')}>
-                <BrowserView cwd={cwd} previewUrl={previewUrl} onClose={() => setSessionPane((p) => ({ ...p, type: null }))} />
+                <BrowserView
+                  cwd={cwd}
+                  previewUrl={previewUrl}
+                  onClose={() => setSessionPane((p) => ({ ...p, type: null }))}
+                  onAttachInspect={(items) => {
+                    if (!items || !items.length) return;
+                    setAttachments((a) => [...a, ...items]);
+                    setNotice('Inspected element attached to composer');
+                    setTimeout(() => { try { inputRef.current && inputRef.current.focus(); } catch (_) {} }, 50);
+                  }}
+                />
               </SessionPane>
             )}
             {sessionPane.type === 'env' && (
@@ -6416,7 +6426,7 @@ function normalizeUrl(url, cwd) {
   return url;
 }
 
-function BrowserView({ cwd, previewUrl, onClose }) {
+function BrowserView({ cwd, previewUrl, onClose, onAttachInspect }) {
   // `launch` is the URL handed to <webview src> at mount and never changes afterwards.
   // `url` tracks the live location. Keeping src stable stops React from re-issuing a
   // navigation on every did-navigate (which aborted and duplicated in-flight loads).
@@ -6436,6 +6446,11 @@ function BrowserView({ cwd, previewUrl, onClose }) {
   const [dev, setDev] = useState(null);             // {hasScript, script, running, port, framework}
   const [devBusy, setDevBusy] = useState(false);
   const [menuNote, setMenuNote] = useState('');
+  const [inspectMode, setInspectMode] = useState(false);
+  const [inspectedEl, setInspectedEl] = useState(null);
+  const [devToolsOpen, setDevToolsOpen] = useState(false);
+  const inspectModeRef = useRef(false);
+  inspectModeRef.current = inspectMode;
   const webviews = useRef({});
   const omniboxRef = useRef(null);
   const activeIdRef = useRef(activeId);
@@ -6533,12 +6548,60 @@ function BrowserView({ cwd, previewUrl, onClose }) {
     }
   };
 
+  const exitInspectMode = useCallback(async () => {
+    setInspectMode(false);
+    inspectModeRef.current = false;
+    const wv = webviews.current[activeIdRef.current];
+    if (wv && window.autobot && window.autobot.browserInspectSet) {
+      try {
+        const wid = wv.getWebContentsId();
+        if (wid) await window.autobot.browserInspectSet(wid, false);
+      } catch (_) {}
+    }
+  }, []);
+
+  const enterInspectMode = useCallback(async () => {
+    const wv = webviews.current[activeIdRef.current];
+    if (!wv || !window.autobot || !window.autobot.browserInspectSet) return;
+    setInspectMode(true);
+    inspectModeRef.current = true;
+    try {
+      const wid = wv.getWebContentsId();
+      if (wid) await window.autobot.browserInspectSet(wid, true);
+    } catch (_) {}
+  }, []);
+
+  const toggleInspectMode = useCallback(() => {
+    if (inspectModeRef.current) exitInspectMode();
+    else enterInspectMode();
+  }, [enterInspectMode, exitInspectMode]);
+
+  useEffect(() => {
+    if (!inspectMode) return undefined;
+    const onEsc = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        exitInspectMode();
+      }
+    };
+    window.addEventListener('keydown', onEsc, true);
+    return () => window.removeEventListener('keydown', onEsc, true);
+  }, [inspectMode, exitInspectMode]);
+
   const bindWebview = (id) => (el) => {
     if (!el || webviews.current[id]) return;
     webviews.current[id] = el;
     const isActive = () => activeIdRef.current === id;
     el.addEventListener('did-start-loading', () => patchTab(id, { loading: true }));
-    el.addEventListener('did-stop-loading', () => patchTab(id, { loading: false }));
+    el.addEventListener('did-stop-loading', () => {
+      patchTab(id, { loading: false });
+      if (isActive() && inspectModeRef.current && window.autobot && window.autobot.browserInspectSet) {
+        try {
+          const wid = el.getWebContentsId();
+          if (wid) window.autobot.browserInspectSet(wid, true).catch(() => {});
+        } catch (_) {}
+      }
+    });
     el.addEventListener('did-navigate', (e) => { patchTab(id, { url: e.url }); if (isActive()) setOmnibox(e.url); });
     el.addEventListener('did-navigate-in-page', (e) => { patchTab(id, { url: e.url }); if (isActive()) setOmnibox(e.url); });
     el.addEventListener('page-title-updated', (e) => patchTab(id, { title: e.title || 'Untitled' }));
@@ -6546,6 +6609,30 @@ function BrowserView({ cwd, previewUrl, onClose }) {
     el.addEventListener('dom-ready', () => {
       try { const wid = el.getWebContentsId(); if (wid) window.autobot.browserRegister(wid); } catch {}
       try { const u = el.getURL(); patchTab(id, { url: u }); if (isActive()) setOmnibox(u); } catch {}
+    });
+    el.addEventListener('console-message', async (e) => {
+      const msg = String((e && e.message) || '');
+      if (!msg.startsWith('__AKRON_INSPECT__:')) return;
+      try {
+        const payload = JSON.parse(msg.slice('__AKRON_INSPECT__:'.length));
+        if (!payload) return;
+        if (payload.type === 'exit') {
+          setInspectMode(false);
+          inspectModeRef.current = false;
+          return;
+        }
+        if (payload.type === 'select') {
+          let shotDataUrl = '';
+          try {
+            const wid = el.getWebContentsId();
+            if (wid && window.autobot && window.autobot.browserCaptureElement && payload.rect) {
+              const r = await window.autobot.browserCaptureElement(wid, payload.rect);
+              if (r && r.ok && r.dataUrl) shotDataUrl = r.dataUrl;
+            }
+          } catch (_) {}
+          setInspectedEl({ ...payload, screenshot: shotDataUrl });
+        }
+      } catch (_) {}
     });
     el.addEventListener('new-window', (e) => { try { e.preventDefault(); if (e.url) openTab(e.url); } catch {} });
     el.addEventListener('found-in-page', (e) => setFindRes({ active: e.result.activeMatchOrdinal, total: e.result.matches }));
@@ -6698,10 +6785,68 @@ function BrowserView({ cwd, previewUrl, onClose }) {
     if (r && r.ok) { note('Cookies, cache and storage cleared'); reload(); }
     else note((r && r.error) || 'Could not clear data');
   };
-  const openDevTools = () => {
+  const openDevTools = async () => {
     const wv = webviews.current[activeId];
-    try { if (wv) { wv.openDevTools(); setMenuOpen(false); note('Developer tools opened'); } }
-    catch { note('Developer tools unavailable'); }
+    if (!wv) return note('Developer tools unavailable');
+    try {
+      if (window.autobot && window.autobot.browserToggleDevTools) {
+        const wid = wv.getWebContentsId();
+        const r = await window.autobot.browserToggleDevTools(wid);
+        if (r && r.ok) {
+          setDevToolsOpen(!!r.opened);
+          setMenuOpen(false);
+          note(r.opened ? 'Developer tools opened' : 'Developer tools closed');
+          return;
+        }
+      }
+      if (wv.isDevToolsOpened && wv.isDevToolsOpened()) {
+        wv.closeDevTools();
+        setDevToolsOpen(false);
+      } else {
+        wv.openDevTools();
+        setDevToolsOpen(true);
+      }
+      setMenuOpen(false);
+    } catch {
+      note('Developer tools unavailable');
+    }
+  };
+
+  const sendInspectedToAgent = () => {
+    if (!inspectedEl || !onAttachInspect) return;
+    const styleLines = Object.entries(inspectedEl.computedStyles || {})
+      .map(([k, v]) => `  - \`${k}\`: \`${v}\``)
+      .join('\n');
+    const summary = [
+      `# Inspected Browser Element`,
+      `- **Page**: ${inspectedEl.title || 'Untitled'} (${inspectedEl.url || ''})`,
+      `- **Element**: \`${inspectedEl.tagLabel || inspectedEl.tagName}\``,
+      `- **CSS Selector**: \`${inspectedEl.selector}\``,
+      styleLines ? `- **Computed Styles**:\n${styleLines}` : '',
+      inspectedEl.innerText ? `- **Text**: ${JSON.stringify(inspectedEl.innerText)}` : '',
+      `\`\`\`html\n${inspectedEl.outerHTML || ''}\n\`\`\``,
+    ].filter(Boolean).join('\n');
+    const atts = [
+      {
+        name: 'inspected-element.md',
+        path: 'inspected-element.md',
+        size: summary.length,
+        isText: true,
+        content: summary,
+      },
+    ];
+    if (inspectedEl.screenshot) {
+      atts.push({
+        name: 'inspected-element.png',
+        path: 'inspected-element.png',
+        isImage: true,
+        mimeType: 'image/png',
+        dataUrl: inspectedEl.screenshot,
+      });
+    }
+    onAttachInspect(atts);
+    setInspectedEl(null);
+    exitInspectMode();
   };
   const runDevServer = async () => {
     if (!cwd) return;
@@ -6773,8 +6918,40 @@ function BrowserView({ cwd, previewUrl, onClose }) {
           <Icon name="Lock" size={12} className="omnibox-lock" />
           <input ref={omniboxRef} value={omnibox} onChange={(e) => setOmnibox(e.target.value)} placeholder="Search or enter address" spellCheck={false} />
         </form>
+        <button
+          type="button"
+          className={'icon-btn browser-inspect-btn' + (inspectMode ? ' on' : '')}
+          onClick={toggleInspectMode}
+          title={inspectMode ? 'Exit Inspect Mode (Esc)' : 'Inspect Element'}
+          aria-pressed={inspectMode}
+        >
+          <Icon name="Eye" size={15} />
+        </button>
+        <button
+          type="button"
+          className={'icon-btn browser-devtools-btn' + (devToolsOpen ? ' on' : '')}
+          onClick={openDevTools}
+          title="Toggle Preview DevTools"
+          aria-pressed={devToolsOpen}
+        >
+          <Icon name="Wrench" size={14} />
+        </button>
         <button className={'icon-btn' + (findOpen ? ' on' : '')} onClick={() => setFindOpen(!findOpen)} title="Find in page"><Icon name="Search" size={15} /></button>
       </div>
+
+      {inspectMode && (
+        <div className="browser-inspect-banner" role="status">
+          <div className="browser-inspect-banner-left">
+            <span className="browser-inspect-dot" />
+            <span>
+              <strong>Inspect Element</strong> — Hover to highlight, click any element to inspect &amp; capture
+            </span>
+          </div>
+          <button type="button" className="browser-exit-inspect-btn" onClick={exitInspectMode}>
+            Exit Inspect Mode <kbd>Esc</kbd>
+          </button>
+        </div>
+      )}
 
       {menuOpen && (
         <div className="browser-menu" role="menu" ref={menuRef}>
@@ -6837,6 +7014,53 @@ function BrowserView({ cwd, previewUrl, onClose }) {
             partition={partition}
           />
         ))}
+        {inspectedEl && (
+          <div className="browser-inspect-card" role="region" aria-label="Inspected element details">
+            <div className="bic-head">
+              <span className="bic-tag">{inspectedEl.tagLabel || inspectedEl.tagName}</span>
+              <button type="button" className="icon-btn" onClick={() => setInspectedEl(null)} title="Dismiss"><Icon name="X" size={12} /></button>
+            </div>
+            <div className="bic-body">
+              {inspectedEl.screenshot && (
+                <img className="bic-shot" src={inspectedEl.screenshot} alt={inspectedEl.tagLabel || 'Inspected element'} />
+              )}
+              <code className="bic-selector" title={inspectedEl.selector}>{inspectedEl.selector}</code>
+              <div className="bic-styles">
+                {Object.entries(inspectedEl.computedStyles || {}).slice(0, 6).map(([k, v]) => (
+                  <span key={k} className="bic-style-chip">{k}: {String(v).slice(0, 28)}</span>
+                ))}
+              </div>
+              {inspectedEl.outerHTML && (
+                <details className="bic-html-details">
+                  <summary>outerHTML ({inspectedEl.outerHTML.length} chars)</summary>
+                  <pre className="bic-html">{inspectedEl.outerHTML.slice(0, 800)}</pre>
+                </details>
+              )}
+            </div>
+            <div className="bic-actions">
+              <button type="button" className="bic-btn primary" onClick={sendInspectedToAgent}>
+                <Icon name="Sparkles" size={12} /> Send to Agent
+              </button>
+              <button
+                type="button"
+                className="bic-btn"
+                onClick={() => { navigator.clipboard?.writeText(inspectedEl.selector || '').catch(() => {}); note('Selector copied'); }}
+              >
+                Copy Selector
+              </button>
+              <button
+                type="button"
+                className="bic-btn"
+                onClick={() => { navigator.clipboard?.writeText(inspectedEl.outerHTML || '').catch(() => {}); note('HTML copied'); }}
+              >
+                Copy HTML
+              </button>
+              {inspectMode && (
+                <button type="button" className="bic-btn" onClick={exitInspectMode}>Exit Inspect Mode</button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

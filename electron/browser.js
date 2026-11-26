@@ -443,6 +443,235 @@ function sendTabCommand(cmd) {
   return { ok: true };
 }
 
+// ---- Phase 1: Inspect Element overlay + capture + DevTools ----
+const INSPECT_CLEANUP_SCRIPT = `(function () {
+  try {
+    if (typeof window.__AKRON_INSPECT_CLEANUP__ === 'function') {
+      window.__AKRON_INSPECT_CLEANUP__();
+      return { ok: true, cleaned: true };
+    }
+    const root = document.getElementById('__akron_inspect_root__');
+    if (root) root.remove();
+    return { ok: true, cleaned: false };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  }
+})()`;
+
+const INSPECT_INJECT_SCRIPT = `(function () {
+  if (typeof window.__AKRON_INSPECT_CLEANUP__ === 'function') {
+    window.__AKRON_INSPECT_CLEANUP__();
+  }
+  const ROOT_ID = '__akron_inspect_root__';
+  const root = document.createElement('div');
+  root.id = ROOT_ID;
+  root.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483646;';
+
+  const box = document.createElement('div');
+  box.id = '__akron_inspect_box__';
+  box.style.cssText = 'position:fixed;display:none;border:2px solid #10b981;background:rgba(16,185,129,0.12);border-radius:4px;box-shadow:0 0 0 1px rgba(0,0,0,0.35);pointer-events:none;transition:all 40ms linear;';
+
+  const tip = document.createElement('div');
+  tip.id = '__akron_inspect_tip__';
+  tip.style.cssText = 'position:fixed;display:none;padding:3px 8px;border-radius:5px;background:#0f172a;color:#a7f3d0;border:1px solid #10b981;font:600 11px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;pointer-events:none;box-shadow:0 4px 14px rgba(0,0,0,0.45);';
+
+  root.appendChild(box);
+  root.appendChild(tip);
+  (document.documentElement || document.body).appendChild(root);
+
+  function cssEscape(str) {
+    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(str);
+    return String(str).replace(/[^A-Za-z0-9_-]/g, '\\\\$&');
+  }
+
+  function buildSelector(el) {
+    if (!el || el.nodeType !== 1) return '';
+    if (el.id) return '#' + cssEscape(el.id);
+    const parts = [];
+    let cur = el;
+    let depth = 0;
+    while (cur && cur.nodeType === 1 && depth < 5) {
+      let part = cur.tagName.toLowerCase();
+      if (cur.id) {
+        parts.unshift('#' + cssEscape(cur.id));
+        break;
+      }
+      const cls = typeof cur.className === 'string'
+        ? cur.className.trim().split(/\\s+/).filter((c) => c && !c.startsWith('__akron_')).slice(0, 2)
+        : [];
+      if (cls.length) part += '.' + cls.map(cssEscape).join('.');
+      if (cur.parentElement) {
+        const sibs = Array.from(cur.parentElement.children).filter((s) => s.tagName === cur.tagName);
+        if (sibs.length > 1) part += ':nth-of-type(' + (sibs.indexOf(cur) + 1) + ')';
+      }
+      parts.unshift(part);
+      if (cur.tagName === 'BODY' || cur.tagName === 'HTML') break;
+      cur = cur.parentElement;
+      depth++;
+    }
+    return parts.join(' > ');
+  }
+
+  function tagLabelOf(el, r) {
+    const tag = el.tagName.toLowerCase();
+    const id = el.id ? '#' + el.id : '';
+    const cls = typeof el.className === 'string'
+      ? el.className.trim().split(/\\s+/).filter((c) => c && !c.startsWith('__akron_')).slice(0, 2).map((c) => '.' + c).join('')
+      : '';
+    return tag + id + cls + ' · ' + Math.round(r.width) + '×' + Math.round(r.height);
+  }
+
+  let hovered = null;
+  function updateHighlight(target) {
+    if (!target || target.nodeType !== 1 || (target.id && target.id.startsWith('__akron_inspect_'))) return;
+    hovered = target;
+    const r = target.getBoundingClientRect();
+    box.style.display = 'block';
+    box.style.left = Math.round(r.left) + 'px';
+    box.style.top = Math.round(r.top) + 'px';
+    box.style.width = Math.max(2, Math.round(r.width)) + 'px';
+    box.style.height = Math.max(2, Math.round(r.height)) + 'px';
+
+    const label = tagLabelOf(target, r);
+    tip.textContent = label;
+    tip.style.display = 'block';
+    const topPos = r.top >= 28 ? r.top - 26 : Math.min(window.innerHeight - 26, r.bottom + 6);
+    const leftPos = Math.max(4, Math.min(window.innerWidth - 260, r.left));
+    tip.style.top = Math.round(topPos) + 'px';
+    tip.style.left = Math.round(leftPos) + 'px';
+  }
+
+  function pickComputedStyles(el) {
+    const cs = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    if (!cs) return {};
+    const keys = ['display', 'position', 'color', 'backgroundColor', 'fontSize', 'fontFamily', 'fontWeight', 'padding', 'margin', 'borderRadius'];
+    const out = {};
+    for (const k of keys) {
+      if (cs[k] != null && cs[k] !== '') out[k] = String(cs[k]);
+    }
+    return out;
+  }
+
+  function onMouseMove(e) {
+    const target = document.elementFromPoint(e.clientX, e.clientY) || e.target;
+    updateHighlight(target);
+  }
+
+  function blockEvent(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+  }
+
+  function onClickCapture(e) {
+    blockEvent(e);
+    const target = (e.target && e.target.nodeType === 1 && !(e.target.id || '').startsWith('__akron_inspect_'))
+      ? e.target
+      : (document.elementFromPoint(e.clientX, e.clientY) || hovered);
+    if (!target || target.nodeType !== 1) return;
+    const r = target.getBoundingClientRect();
+    const payload = {
+      type: 'select',
+      url: location.href,
+      title: document.title || '',
+      tagLabel: tagLabelOf(target, r),
+      tagName: target.tagName.toLowerCase(),
+      selector: buildSelector(target),
+      outerHTML: String(target.outerHTML || '').slice(0, 2400),
+      innerText: String(target.innerText || target.textContent || '').trim().slice(0, 400),
+      computedStyles: pickComputedStyles(target),
+      rect: {
+        x: Math.max(0, Math.round(r.left)),
+        y: Math.max(0, Math.round(r.top)),
+        width: Math.max(1, Math.round(r.width)),
+        height: Math.max(1, Math.round(r.height)),
+        dpr: window.devicePixelRatio || 1,
+      },
+    };
+    window.__AKRON_INSPECT_LAST__ = payload;
+    console.debug('__AKRON_INSPECT__:' + JSON.stringify(payload));
+  }
+
+  function onKeyDown(e) {
+    if (e.key === 'Escape') {
+      blockEvent(e);
+      console.debug('__AKRON_INSPECT__:{"type":"exit"}');
+      if (typeof window.__AKRON_INSPECT_CLEANUP__ === 'function') window.__AKRON_INSPECT_CLEANUP__();
+    }
+  }
+
+  document.addEventListener('mousemove', onMouseMove, true);
+  document.addEventListener('mouseover', onMouseMove, true);
+  document.addEventListener('pointerdown', blockEvent, true);
+  document.addEventListener('mousedown', blockEvent, true);
+  document.addEventListener('click', onClickCapture, true);
+  document.addEventListener('keydown', onKeyDown, true);
+
+  window.__AKRON_INSPECT_CLEANUP__ = function () {
+    document.removeEventListener('mousemove', onMouseMove, true);
+    document.removeEventListener('mouseover', onMouseMove, true);
+    document.removeEventListener('pointerdown', blockEvent, true);
+    document.removeEventListener('mousedown', blockEvent, true);
+    document.removeEventListener('click', onClickCapture, true);
+    document.removeEventListener('keydown', onKeyDown, true);
+    try { root.remove(); } catch (_) {}
+    try { delete window.__AKRON_INSPECT_CLEANUP__; } catch (_) { window.__AKRON_INSPECT_CLEANUP__ = undefined; }
+  };
+
+  return { ok: true, injected: true };
+})()`;
+
+function resolveGuestById(webContentsId) {
+  if (webContentsId != null && Number.isFinite(Number(webContentsId))) {
+    const wc = webContents.fromId(Number(webContentsId));
+    if (wc && !wc.isDestroyed()) return wc;
+  }
+  return getGuest();
+}
+
+async function setInspectMode(webContentsId, enabled) {
+  const wc = resolveGuestById(webContentsId);
+  if (!wc) return { ok: false, error: 'Browser pane is not open' };
+  try {
+    const script = enabled ? INSPECT_INJECT_SCRIPT : INSPECT_CLEANUP_SCRIPT;
+    const res = await jsWithTimeout(wc, script, false, 5000);
+    return { ok: true, enabled: !!enabled, result: res };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  }
+}
+
+async function captureElementRect(webContentsId, rect) {
+  const wc = resolveGuestById(webContentsId);
+  if (!wc) return { ok: false, error: 'Browser pane is not open' };
+  try {
+    const clip = {
+      x: Math.max(0, Math.round(Number(rect && rect.x) || 0)),
+      y: Math.max(0, Math.round(Number(rect && rect.y) || 0)),
+      width: Math.max(1, Math.min(2400, Math.round(Number(rect && rect.width) || 100))),
+      height: Math.max(1, Math.min(2400, Math.round(Number(rect && rect.height) || 60))),
+    };
+    const img = await wc.capturePage(clip);
+    const sz = img.getSize();
+    return { ok: true, dataUrl: img.toDataURL(), width: sz.width, height: sz.height };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  }
+}
+
+async function toggleDevTools(webContentsId) {
+  const wc = resolveGuestById(webContentsId);
+  if (!wc) return { ok: false, error: 'Browser pane is not open' };
+  try {
+    const opened = wc.isDevToolsOpened();
+    if (opened) wc.closeDevTools();
+    else wc.openDevTools({ mode: 'detach' });
+    return { ok: true, opened: !opened };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  }
+}
+
 module.exports = {
   setEnsurePane, setTabCommand,
   register, unregister, getGuest, hasGuest, ensureGuest,
@@ -451,4 +680,6 @@ module.exports = {
   hover, select, scroll, waitFor, screenshot,
   syncTabs, listTabs, sendTabCommand,
   normalizeUrl, localFileUrl,
+  INSPECT_INJECT_SCRIPT, INSPECT_CLEANUP_SCRIPT,
+  setInspectMode, captureElementRect, toggleDevTools,
 };
