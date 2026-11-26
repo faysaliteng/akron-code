@@ -1178,6 +1178,9 @@ async function runAgent(opts) {
       account: p.account, accountId: p.accountId, sessionId: p.sessionId,
       codexUrl: p.codexUrl, cloudcodeUrl: p.cloudcodeUrl, project: p.project,
       oauthProvider: p.oauthProvider,
+      // A ticked subscription row already knows the window the picker showed;
+      // carry it so budgetForModel/auto-compact use it instead of re-guessing.
+      contextWindow: p.contextWindow,
     }));
     activeIndex = Math.max(0, Math.min(Number(orch.activeIndex) || 0, providerList.length - 1));
   }

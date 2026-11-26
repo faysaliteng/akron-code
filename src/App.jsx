@@ -8,6 +8,7 @@ import iconsMap from './icons.json';
 import { t as _t, LOCALES, localeDir } from './i18n.js';
 import { stripToolProtocol } from './textproto.mjs';
 import { normBase, LOCAL_BASE, KEY_STATUS_TTL, keySig, statusOf, presetStatus } from './providerstatus-ui.mjs';
+import { hydrateProvider } from './providerhydrate.mjs';
 import ConnectorLogo from './ConnectorLogo.jsx';
 
 // ---------- Anthropicons (Example's icon font, PUA U+E000+) ----------
@@ -474,7 +475,7 @@ async function filesToAttachments(files) {
 export default function App() {
   const [convs, setConvs] = useState(() => loadJSON('autobot:convs', []));
   const [activeId, setActiveId] = useState(() => loadJSON('autobot:activeId', null));
-  const [provider, setProvider] = useState(() => ({ ...DEFAULT_PROVIDER, ...loadJSON('autobot:provider', {}) }));
+  const [provider, setProvider] = useState(() => hydrateProvider(loadJSON('autobot:provider', {}), DEFAULT_PROVIDER, PRESETS));
   const [providerKeys, setProviderKeys] = useState(() => loadJSON('autobot:providerKeys', {}));
   const [settings, setSettings] = useState(() => loadJSON('autobot:settings', { theme: 'dark', useMemory: true, locale: 'en' }));
   const T = useCallback((k) => _t(settings.locale, k), [settings.locale]);
@@ -1903,11 +1904,22 @@ export default function App() {
         break;
       case 'login':
         setShowSettings(true);
-        note('Sign-in lives in Settings → Account.');
+        note('Sign-in lives in Settings → Accounts.');
         break;
       case 'logout': {
+        // Sign out the subscription this session is actually using (not a mock
+        // identity). Clear the OAuth binding so the next turn falls back to the
+        // configured gateway until an account is picked again.
+        const active = provider.oauthProvider || '';
+        if (active) {
+          const cut = active.indexOf(':');
+          const pid = cut > 0 ? active.slice(0, cut) : active;
+          const acct = cut > 0 ? active.slice(cut + 1) : '';
+          try { await window.autobot.providerSignOut(pid, acct); } catch (_) { /* main may not hold it */ }
+          setProvider((v) => ({ ...v, oauthProvider: '', oauth: false, accessToken: '' }));
+        }
         setAccount((a) => ({ ...a, signedIn: false, email: '', authMethod: null, plan: 'Free' }));
-        note('Signed out.');
+        note(active ? 'Signed out of the active provider account.' : 'No provider account is active.');
         break;
       }
       case 'quit':
@@ -2291,7 +2303,7 @@ export default function App() {
       </div>
 
       {showSettings && (
-        <SettingsModal provider={provider} setProvider={setProvider} providerKeys={providerKeys} setProviderKeys={setProviderKeys} settings={settings} setSettings={setSettings} orchestrator={orchestrator} setOrchestrator={setOrchestrator} features={features} setFeatures={setFeatures} testProvider={testProvider} onClose={() => setShowSettings(false)} T={T} account={account} setAccount={setAccount} permissions={permissions} setPermissions={setPermissions} compliance={compliance} setCompliance={setCompliance} />
+        <SettingsModal provider={provider} setProvider={setProvider} providerKeys={providerKeys} setProviderKeys={setProviderKeys} settings={settings} setSettings={setSettings} orchestrator={orchestrator} setOrchestrator={setOrchestrator} features={features} setFeatures={setFeatures} testProvider={testProvider} onClose={() => setShowSettings(false)} T={T} permissions={permissions} setPermissions={setPermissions} compliance={compliance} setCompliance={setCompliance} />
       )}
 
       {question && (
@@ -5173,7 +5185,20 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
 
   // Sign in / import / sign out always refresh the list so the picker reflects
   // the real account state (never an optimistic guess).
+  //
+  // Claude is special: its credential is owned by the Claude Code CLI, so this
+  // surface drives the CLI's own login (the same flow Settings → Accounts uses)
+  // instead of a second independent OAuth, which would sign the CLI out.
+  const claudeSignIn = useClaudeReconnect({ t: T, onChanged: loadProvOauth });
+
+  // Stop a browser sign-in that is still waiting for the redirect. Without this
+  // the row spins until the 10-minute timeout when the browser never returns.
+  const cancelBrowserSignIn = async (id) => {
+    try { await window.autobot.providerSignInCancel(id); } catch (_) {}
+  };
+
   const providerAction = async (kind, id, account) => {
+    if (kind === 'signin' && id === 'claude') return claudeSignIn.start();
     setProvBusy(kind + ':' + (id || ''));
     try {
       let r;
@@ -5181,7 +5206,20 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
       else if (kind === 'signout') r = await window.autobot.providerSignOut(id, account);
       else if (kind === 'import') r = await window.autobot.providerImport();
       else if (kind === 'bearer') r = await window.autobot.providerAddBearer(id, account);
-      if (r && r.ok === false && r.error) {
+      if (r && r.cancelled) {
+        // The user stopped it — that is not a failure and must not read like one.
+        setProvNotice('Sign-in cancelled — no account was added.');
+      } else if (kind === 'import' && r && r.ok !== false && r.result) {
+        // A scan that finds nothing new must still say so — otherwise the button
+        // flashes "Scanning…" and appears dead.
+        const im = (r.result.imported || []).length;
+        const sk = (r.result.skipped || []).length;
+        const er = (r.result.errors || []).length;
+        const parts = ['Imported ' + im];
+        if (sk) parts.push('already present ' + sk);
+        if (er) parts.push('failed ' + er);
+        setProvNotice(parts.join(' · ') + (im ? '.' : ' — nothing new to import.'));
+      } else if (r && r.ok === false && r.error) {
         // One human line, never a stack trace or raw markup.
         setProvNotice(String(r.error).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 220));
       } else {
@@ -5777,6 +5815,11 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                     <>
                       <div className="model-menu-divider" />
                       <div className="model-menu-head">Subscription accounts</div>
+                      {/* An index that could not be parsed is not "no accounts":
+                          say so here too, where the user picks a model. */}
+                      {provOauth.storeError && (
+                        <div className="prov-notice warn">{T('account.storeError')}</div>
+                      )}
                       {provOauth.providers.map((pv) => {
                         const accounts = pv.accounts || [];
                         const live = provModels[pv.id];
@@ -5787,20 +5830,31 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                         // live catalog request is verified for that much at
                         // least. A live `warning` (dead token, 403) keeps the
                         // badge on.
-                        const unverified = !(pv.id === 'claude' || pv.id === 'antigravity' || (live && live.live));
+                        const anyVerified = accounts.some((a) => (a.verifiedAt || 0) > 0);
+                        const unverified = !(pv.id === 'claude' || pv.id === 'antigravity'
+                          || (live && live.live) || anyVerified);
                         return (
                           <div key={pv.id} className="prov-group">
                             <div className="prov-head">
                               <span className="prov-name">{pv.label}</span>
                               {unverified && <span className="prov-unv" title="Adapter implemented from the published wire format and unit-tested; no account of this kind exists on this machine to verify end-to-end.">unverified</span>}
-                              {pv.canBrowserSignIn && (
+                              {pv.id === 'claude' && (
                                 <button
                                   className="prov-link"
-                                  disabled={!!provBusy}
-                                  onClick={() => providerAction('signin', pv.id)}
-                                >{provBusy === 'signin:' + pv.id ? 'Opening browser…' : (accounts.length ? 'Add account' : 'Sign in')}</button>
+                                  title="The Claude Code CLI owns this credential — this starts its own sign-in and adopts the result, so the CLI stays signed in."
+                                  disabled={!!provBusy || claudeSignIn.busy}
+                                  onClick={claudeSignIn.start}
+                                >{claudeSignIn.busy ? 'Opening…' : (accounts.length ? 'Reconnect' : 'Sign in')}</button>
                               )}
-                              {pv.canManualCode && (
+                              {pv.id !== 'claude' && pv.canBrowserSignIn && (
+                                <button
+                                  className="prov-link"
+                                  title={provBusy === 'signin:' + pv.id ? 'Stop waiting for the browser' : 'Open the provider sign-in page'}
+                                  disabled={!!provBusy && provBusy !== 'signin:' + pv.id}
+                                  onClick={() => (provBusy === 'signin:' + pv.id ? cancelBrowserSignIn(pv.id) : providerAction('signin', pv.id))}
+                                >{provBusy === 'signin:' + pv.id ? 'Cancel' : (accounts.length ? 'Add account' : 'Sign in')}</button>
+                              )}
+                              {pv.id !== 'claude' && pv.canManualCode && (
                                 <button
                                   className="prov-link prov-link-sub"
                                   title="The sign-in page shows a code you paste back here — use this when the browser cannot reach this machine."
@@ -5840,8 +5894,21 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                                 </div>
                               );
                             })}
-                            {!accounts.length && pv.canBrowserSignIn && !pv.canPasteKey && !pv.canManualCode && (
+                            {!accounts.length && pv.canBrowserSignIn && !pv.canPasteKey && !pv.canManualCode && pv.id !== 'claude' && (
                               <div className="prov-none">Not signed in</div>
+                            )}
+                            {pv.id === 'claude' && (
+                              <ClaudeReconnectPanel
+                                t={T}
+                                rc={claudeSignIn.rc}
+                                busy={provBusy || claudeSignIn.busy}
+                                onCancel={claudeSignIn.cancel}
+                                onChange={claudeSignIn.setCode}
+                                onSubmit={claudeSignIn.submit}
+                              />
+                            )}
+                            {pv.id === 'claude' && claudeSignIn.notice && (
+                              <div className="prov-notice">{claudeSignIn.notice}</div>
                             )}
                             {provManual && provManual.provId === pv.id && (
                               <div className="prov-token prov-manual">
@@ -5935,93 +6002,499 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
 }
 
 // ---------- Settings ----------
-// ---------- Account & Billing (local equivalent of Example's account/SSO/plan surface) ----------
-// Honest scaffold: identity/SSO/plan/sync state is local (~/.autobot + localStorage); the
-// OAuth and upgrade actions open the real Anthropic endpoints in the default browser. True
-// cloud SSO/device-sync needs an account backend — documented as the residual B7 gap.
-const ANTHROPIC_OAUTH_URL = 'https://claude.ai/login';
-const ANTHROPIC_UPGRADE_URL = 'https://claude.ai/upgrade';
+// ---------- Accounts ----------
 
-function AccountSection({ account, setAccount, T }) {
-  const set = (patch) => setAccount((a) => ({ ...a, ...patch }));
-  const setSSO = (k) => (e) => setAccount((a) => ({ ...a, sso: { ...a.sso, [k]: e.target.value } }));
+/**
+ * One human-readable line out of any error value: strip markup, collapse
+ * whitespace, cap the length. Every surface that shows a provider error uses
+ * this so nothing raw (HTML, stack trace, JSON) ever reaches the user.
+ */
+function humanText(v) {
+  return String(v == null ? '' : v).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 220);
+}
 
-  const signIn = () => {
-    window.autobot.openExternal(ANTHROPIC_OAUTH_URL);
-    set({ signedIn: true, authMethod: 'anthropic' });
+/**
+ * The Claude credential belongs to the Claude Code CLI, so this app never runs
+ * its own OAuth for Claude — a second grant would mint a competing refresh
+ * token and sign the CLI out. Both sign-in surfaces (Settings → Accounts and
+ * the composer's model menu) drive the same CLI-owned flow through this hook:
+ * start `claude auth login`, surface the URL it prints, forward the pasted
+ * `code#state`, then let main adopt the keychain pair the CLI writes.
+ *
+ * `onChanged` is refreshed after every completed sign-in so the caller can
+ * reload its account list without this hook knowing about it.
+ */
+function useClaudeReconnect({ t, onChanged }) {
+  const [rc, setRc] = useState(null); // { flowId, url, code, sent, line }
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+  const changed = useRef(onChanged);
+  changed.current = onChanged;
+  const tRef = useRef(t);
+  tRef.current = t;
+  const rcRef = useRef(rc);
+  rcRef.current = rc;
+
+  const refresh = useCallback(async () => {
+    const fn = changed.current;
+    if (typeof fn === 'function') { try { await fn(); } catch (_) {} }
+  }, []);
+
+  // A Claude reconnect finishes when the CLI exits and we adopt its keychain.
+  useEffect(() => {
+    if (!window.autobot.onProviderReconnectResult) return undefined;
+    return window.autobot.onProviderReconnectResult(async (flowId, result) => {
+      setRc((m) => (m && m.flowId === flowId ? null : m));
+      if (result && result.ok) { setNotice(''); await refresh(); }
+      else setNotice(humanText((result && result.error) || 'sign-in did not complete'));
+    });
+  }, [refresh]);
+
+  // The CLI judges a pasted code line by line. A rejected code that leaves it
+  // waiting produces no result event at all, so quote its own words and hand
+  // the box back (`sent: false`) whenever it asks for the full code.
+  useEffect(() => {
+    if (!window.autobot.onProviderReconnectLine) return undefined;
+    return window.autobot.onProviderReconnectLine((flowId, payload) => {
+      const line = humanText(payload && payload.line);
+      if (!line) return;
+      const retry = !!(payload && payload.retryable);
+      setRc((m) => {
+        if (!m || m.flowId !== flowId) return m;
+        return retry ? { ...m, line, sent: false } : { ...m, line };
+      });
+      if (retry) setNotice('');
+    });
+  }, []);
+
+  // A flow can be started from the other surface (the model menu vs Settings →
+  // Accounts). Main owns the single login child, so on mount adopt whatever it
+  // is already waiting on: the same sign-in then shows its paste box in both
+  // places instead of looking dead in the one the user happens to be looking at.
+  useEffect(() => {
+    if (!window.autobot.providerReconnectState) return undefined;
+    let stop = false;
+    (async () => {
+      try {
+        const s = await window.autobot.providerReconnectState();
+        if (stop || !s || !s.waiting || !s.url) return;
+        setRc((m) => (m ? m : { flowId: s.flowId, url: s.url, code: '', sent: false, line: '' }));
+      } catch (_) {}
+    })();
+    return () => { stop = true; };
+  }, []);
+
+  // The CLI can exit while the panel still shows a paste box. Ask main whether
+  // the login is actually still waiting; a completed sign-in also stops the
+  // flow, so only a window still closed a moment later is reported as closed.
+  const rcFlowId = rc ? rc.flowId : '';
+  const rcSent = !!(rc && rc.sent);
+  useEffect(() => {
+    if (!rcFlowId || rcSent || !window.autobot.providerReconnectState) return undefined;
+    let stop = false;
+    const probe = async () => {
+      try { return await window.autobot.providerReconnectState(); } catch (_) { return null; }
+    };
+    const tick = async () => {
+      const s = await probe();
+      if (stop || !s || s.waiting) return;
+      await new Promise((r) => setTimeout(r, 1200));
+      if (stop) return;
+      const again = await probe();
+      if (stop || !again || again.waiting) return;
+      setRc((m) => (m && m.flowId === rcFlowId ? null : m));
+      setNotice(String(tRef.current ? tRef.current('account.reconnect.closed') : 'The Claude Code sign-in window closed.'));
+    };
+    const iv = setInterval(tick, 3000);
+    return () => { stop = true; clearInterval(iv); };
+  }, [rcFlowId, rcSent]);
+
+  const start = useCallback(async () => {
+    setBusy(true);
+    setNotice('');
+    try {
+      const r = await window.autobot.providerReconnectClaude();
+      if (!r || r.ok === false) {
+        setNotice(humanText((r && r.error) || 'could not start Claude Code sign-in'));
+        return null;
+      }
+      setRc({ flowId: r.flowId, url: r.url || '', code: '', sent: false, line: '' });
+      try { if (r.url && window.autobot.openExternal) await window.autobot.openExternal(r.url); } catch (_) {}
+      return r;
+    } catch (e) {
+      setNotice(humanText((e && e.message) || 'could not start Claude Code sign-in'));
+      return null;
+    } finally { setBusy(false); }
+  }, []);
+
+  const cancel = useCallback(async () => {
+    try { if (window.autobot.providerReconnectClaudeCancel) await window.autobot.providerReconnectClaudeCancel(); } catch (_) {}
+    setRc(null);
+  }, []);
+
+  const setCode = useCallback((code) => setRc((m) => (m ? { ...m, code } : m)), []);
+
+  const submit = useCallback(async () => {
+    const m = rcRef.current;
+    if (!m || !String(m.code || '').trim()) return;
+    setBusy(true);
+    try {
+      const r = await window.autobot.providerReconnectClaudeCode(m.flowId, String(m.code).trim());
+      if (r && r.ok === false) {
+        const said = humanText(r.error || 'paste the code the sign-in page shows');
+        // A dead flow is cleared so the panel stops offering a box that cannot
+        // accept the code; anything else keeps the box and explains itself in
+        // place, where the user is actually looking.
+        if (/no longer waiting|window closed|expired/i.test(String(r.error || ''))) {
+          setRc(null);
+          setNotice(said);
+          return;
+        }
+        setNotice('');
+        setRc((cur) => (cur ? { ...cur, line: said, sent: false } : cur));
+        return;
+      }
+      setNotice('');
+      setRc({ ...m, code: '', sent: true, line: '' });
+    } finally { setBusy(false); }
+  }, []);
+
+  return { rc, busy, notice, setNotice, start, cancel, submit, setCode };
+}
+
+/** Shared markup for the Claude paste-the-code box (both sign-in surfaces). */
+function ClaudeReconnectPanel({ t, rc, busy, onCancel, onChange, onSubmit }) {
+  if (!rc) return null;
+  return (
+    <div className="prov-token prov-manual">
+      <div className="prov-manual-hint">
+        {rc.sent ? t('account.manual.checking') : t('account.reconnect.hint')}
+      </div>
+      {rc.line && <div className={'prov-manual-line' + (rc.sent ? '' : ' warn')}>{rc.line}</div>}
+      {rc.url && (
+        <button className="prov-link" onClick={async () => { try { await window.autobot.openExternal(rc.url); } catch (_) {} }}>
+          {t('account.reconnect.open')}
+        </button>
+      )}
+      <input
+        className="prov-token-in"
+        type="text"
+        autoComplete="off"
+        spellCheck={false}
+        placeholder={t('account.manual.placeholder')}
+        value={rc.code || ''}
+        disabled={!!busy || rc.sent}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onSubmit(); } }}
+      />
+      <button
+        className="prov-link"
+        disabled={!!busy || rc.sent || !String(rc.code || '').trim()}
+        onClick={onSubmit}
+      >{rc.sent ? t('account.manual.submitting') : t('account.manual.submit')}</button>
+      <button className="prov-x" title={t('account.cancel')} aria-label={t('account.cancel')} onClick={onCancel}><Icon name="X" size={12} /></button>
+    </div>
+  );
+}
+
+// The real, local account surface. It reads this machine's provider subscriptions
+// through the same IPC the model picker uses and drives real sign-in / sign-out /
+// import. There is no account backend and no fabricated identity: every row below
+// came from a token this app actually holds, so what you see is what will be used.
+function AccountSection({ T, provider, setProvider }) {
+  const [st, setSt] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [notice, setNotice] = useState('');
+  const [manual, setManual] = useState(null); // { flowId, provId, code, sent }
+  const [token, setToken] = useState({}); // per-provider pasted API key
+
+  const load = useCallback(async () => {
+    try {
+      const r = await window.autobot.providerStatus();
+      setSt(r && r.ok ? r.status : null);
+    } catch (_) { setSt(null); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  // Claude sign-in is CLI-owned; this hook gives the panel the same flow the
+  // composer's model menu uses.
+  const claude = useClaudeReconnect({ t: T, onChanged: load });
+
+  // Main reports the outcome of a paste-the-code sign-in here.
+  useEffect(() => {
+    if (!window.autobot.onProviderManualResult) return undefined;
+    return window.autobot.onProviderManualResult(async (flowId, result) => {
+      setManual((m) => (m && m.flowId === flowId ? null : m));
+      if (result && result.ok) { setNotice(''); await load(); }
+      else setNotice(humanText((result && result.error) || 'sign-in did not complete'));
+    });
+  }, [load]);
+
+  // Browser sign-in does not resolve until the round-trip finishes (main waits
+  // up to 10 minutes on the loopback listener). Never hold the panel open on
+  // it: start the flow, keep the row spinner honest, and refresh when it lands
+  // so the paste-a-code fallback stays clickable the whole time.
+  const startBrowserSignIn = (id) => {
+    setBusy('signin:' + id);
+    setNotice('');
+    Promise.resolve()
+      .then(() => window.autobot.providerSignIn(id))
+      .then((r) => {
+        if (r && r.cancelled) setNotice('Sign-in cancelled — no account was added.');
+        else if (r && r.ok === false) setNotice(humanText(r.error || 'sign-in was refused'));
+      })
+      .catch((e) => setNotice(humanText((e && e.message) || 'sign-in was refused')))
+      .finally(() => { setBusy(''); load(); });
   };
-  const signOut = () => set({ signedIn: false, authMethod: null, email: '', sync: { ...account.sync, enabled: false, status: 'signed-out' } });
-  const syncNow = () => setAccount((a) => ({ ...a, sync: { ...a.sync, lastSync: new Date().toISOString(), status: 'synced' } }));
-  const importHistory = () => {
-    // Local equivalent of "import Example.ai history": open the export page in-browser.
-    window.autobot.openExternal('https://claude.ai/settings/export');
-    setAccount((a) => ({ ...a, sync: { ...a.sync, status: 'import-ready' } }));
+
+  // Same cancel as the composer picker: the browser can be closed or lost, and
+  // waiting out the timeout would look like a hang.
+  const cancelBrowserSignIn = async (id) => {
+    try { await window.autobot.providerSignInCancel(id); } catch (_) {}
   };
-  const planLabel = (p) => (p === 'Pro' ? 'Pro' : p === 'Max' ? 'Max' : 'Free');
+
+  const act = async (kind, id, account) => {
+    if (kind === 'signin') { startBrowserSignIn(id); return null; }
+    setBusy(kind + ':' + (id || ''));
+    try {
+      let r;
+      if (kind === 'signout') r = await window.autobot.providerSignOut(id, account);
+      else if (kind === 'import') r = await window.autobot.providerImport();
+      else if (kind === 'bearer') r = await window.autobot.providerAddBearer(id, account);
+      if (kind === 'import') {
+        // Summarise the scan so a successful or all-skipped import is never silent.
+        if (r && r.ok !== false && r.result) {
+          const im = (r.result.imported || []).length;
+          const sk = (r.result.skipped || []).length;
+          const er = (r.result.errors || []).length;
+          const parts = ['Imported ' + im];
+          if (sk) parts.push('already present ' + sk);
+          if (er) parts.push('failed ' + er);
+          setNotice(parts.join(' · ') + (im ? ' — listed below.' : ' — nothing new to import.'));
+        } else if (r && r.error) {
+          setNotice(humanText(r.error));
+        }
+      } else if (r && r.ok === false && r.error) {
+        // One human line, never a stack trace or raw markup.
+        setNotice(humanText(r.error));
+      } else {
+        setNotice('');
+        if (kind === 'bearer') setToken({});
+      }
+      await load();
+      return r;
+    } finally { setBusy(''); }
+  };
+
+  // Paste-the-code fallback: no loopback listener; we open the consent page which
+  // prints a code, and hand it back here (what the Claude CLI does when the
+  // browser cannot reach localhost).
+  const signInManual = async (id) => {
+    setBusy('manual:' + id);
+    try {
+      const r = await window.autobot.providerSignInManual(id);
+      if (!r || r.ok === false) {
+        setNotice(humanText((r && r.error) || 'could not start sign-in'));
+        return;
+      }
+      setNotice('');
+      setManual({ flowId: r.flowId, provId: id, url: r.url || '', code: '', sent: false });
+    } catch (e) {
+      setNotice(humanText((e && e.message) || 'could not start sign-in'));
+    } finally { setBusy(''); }
+  };
+
+  const submit = async () => {
+    const m = manual;
+    if (!m || !String(m.code || '').trim()) return;
+    setBusy('manual:' + m.provId);
+    try {
+      const r = await window.autobot.providerSubmitCode(m.flowId, String(m.code).trim());
+      if (r && r.ok === false) {
+        setNotice(humanText(r.error || 'paste the code the sign-in page shows'));
+        return;
+      }
+      setNotice('');
+      setManual({ ...m, code: '', sent: true });
+    } finally { setBusy(''); }
+  };
+
+  // Selecting an account here does the same thing the composer's model menu
+  // does: only the id goes into provider state, and main resolves it to a
+  // short-lived bearer at the start of every turn. Pick a model the vendor
+  // actually advertises so the first turn is not sent with a foreign id.
+  const use = async (pv, a) => {
+    if (!setProvider) return;
+    const ids = (pv.models || []).map((m) => m.id);
+    const dflt = ids.includes(provider.model) ? provider.model : (ids[0] || provider.model || '');
+    setProvider((v) => ({
+      ...v,
+      baseURL: '',
+      apiKey: '',
+      model: dflt || v.model,
+      supportsTools: true,
+      oauthProvider: a.id,
+      transport: pv.transport,
+      oauth: true,
+      accessToken: '',
+    }));
+    try { if (window.autobot.providerSetActive) await window.autobot.providerSetActive(pv.id, a.account); } catch (_) { /* main may not persist */ }
+  };
+
+  const providers = (st && st.providers) || [];
+
+  // Secondary line under an account name. Never repeat the plan when the label
+  // already carries it ("Claude · max" + "max"), and never show a bare internal
+  // token like "oauth" when we know which app the credential came from.
+  const SOURCE_NAMES = {
+    'claude-code': 'Claude Code app',
+    'antigravity-app': 'Antigravity app',
+    'codex-cli': 'Codex CLI',
+    'grok-cli': 'Grok CLI',
+    oauth: T('account.subscription'),
+    manual: T('account.keySource'),
+  };
+  const acctSub = (a) => {
+    const label = String(a.label || '');
+    // The provider's own name for the plan when it gave us one ("Free", "Plus"),
+    // else the internal slug. Both come from a real entitlement check.
+    const plan = String(a.planName || a.plan || '');
+    const planShown = plan && !label.toLowerCase().includes(plan.toLowerCase());
+    if (planShown) return plan;
+    return SOURCE_NAMES[a.source] || plan || T('account.signedIn');
+  };
 
   return (
     <div className="account-section">
-      <h3><Icon name="User" size={14} /> {T('account.title')}</h3>
+      <h3><Icon name="Plug" size={14} /> {T('account.title')}</h3>
+      <p className="muted" style={{ margin: '2px 0 12px' }}>{T('account.blurb')}</p>
 
-      <div className="account-card">
-        {account.signedIn ? (
-          <>
-            <div className="account-id">
-              <div className="account-avatar"><Icon name="User" size={18} /></div>
-              <div className="account-meta">
-                <div className="account-email">{account.email || 'signed-in-user'}</div>
-                <div className="account-plan">
-                  <span className={'plan-badge plan-' + account.plan.toLowerCase()}>{planLabel(account.plan)}</span>
-                  <span className="account-auth">{account.authMethod === 'sso' ? 'SSO' : 'Anthropic'}</span>
-                </div>
-              </div>
-            </div>
-            <div className="account-actions">
-              <button onClick={() => window.autobot.openExternal(ANTHROPIC_UPGRADE_URL)}><Icon name="ArrowUp" size={13} /> {T('account.upgrade')}</button>
-              <button onClick={signOut}><Icon name="Logout" size={13} /> {T('account.signOut')}</button>
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="muted">{T('account.signedOut')} — {T('account.signIn.hint')}</p>
-            <button className="primary" onClick={signIn}><Icon name="ArrowInSquare" size={14} /> {T('account.signIn')}</button>
-          </>
-        )}
-      </div>
+      {!st && <p className="muted">{T('account.loading')}</p>}
 
-      {account.signedIn && (
-        <label>{T('account.email')}<input value={account.email || ''} onChange={(e) => set({ email: e.target.value })} placeholder="you@example.com" /></label>
+      {/* An index that cannot be parsed is not "no accounts". Say so instead of
+          rendering an empty list the user would read as their sign-ins being gone. */}
+      {st && st.storeError && (
+        <p className="prov-notice warn">{T('account.storeError')}</p>
       )}
 
-      <label>{T('account.plan')}
-        <select value={account.plan} onChange={(e) => set({ plan: e.target.value })}>
-          <option value="Free">Free</option>
-          <option value="Pro">Pro</option>
-          <option value="Max">Max</option>
-        </select>
-      </label>
+      {st && providers.map((pv) => (
+        <div key={pv.id} className="prov-group acct-prov">
+          <div className="prov-head">
+            <span className="prov-name">{pv.label}</span>
+            <span className="acct-count">{pv.accounts.length ? pv.accounts.length + ' ' + T('account.count') : T('account.none')}</span>
+          </div>
 
-      <h4>{T('account.sso')}</h4>
-      <label className="check"><input type="checkbox" checked={!!account.sso.enabled} onChange={(e) => setAccount((a) => ({ ...a, sso: { ...a.sso, enabled: e.target.checked }, authMethod: e.target.checked && a.authMethod !== 'anthropic' ? 'sso' : a.authMethod }))} /> {T('account.sso.enable')}</label>
-      {account.sso.enabled && (
-        <div className="row-grid">
-          <label>{T('account.sso.idp')}<input value={account.sso.idpName || ''} onChange={setSSO('idpName')} placeholder="Okta / Entra ID / Google" /></label>
-          <label>{T('account.sso.issuer')}<input value={account.sso.issuer || ''} onChange={setSSO('issuer')} placeholder="https://idp.corp.com" /></label>
-          <label>{T('account.sso.clientId')}<input value={account.sso.clientId || ''} onChange={setSSO('clientId')} placeholder="sp-…" /></label>
-          <label>{T('account.sso.domain')}<input value={account.sso.domain || ''} onChange={setSSO('domain')} placeholder="corp.com" /></label>
+          {pv.accounts.map((a) => {
+            const on = provider && provider.oauthProvider === a.id;
+            return (
+              <div key={a.id} className={'prov-acct' + (on ? ' on' : '')}>
+                <span className={'model-dot ' + (a.needsSignIn || a.expired ? 'out' : 'ok')} />
+                <button
+                  className="prov-pick"
+                  title={a.needsSignIn ? T('account.needsSignIn') : (a.expired ? T('account.expired') : (a.label || a.account))}
+                  onClick={() => use(pv, a)}
+                >
+                  <span className="model-opt-name">{a.label || a.account}</span>
+                  <span className="model-opt-prov">{a.needsSignIn ? T('account.needsSignIn') : acctSub(a)}</span>
+                  {on && <Icon name="Check" size={13} className="model-check" />}
+                </button>
+                <button className="prov-x" title={T('account.signOut')} disabled={busy === 'signout:' + pv.id} onClick={() => act('signout', pv.id, a.account)}>
+                  <Icon name="Logout" size={12} />
+                </button>
+              </div>
+            );
+          })}
+
+          <div className="acct-actions">
+            {pv.id === 'claude' && (
+              <button className="primary" disabled={!!busy || claude.busy} onClick={claude.start}>
+                <Icon name="ArrowInSquare" size={13} /> {claude.busy ? T('account.opening') : T('account.reconnect')}
+              </button>
+            )}
+            {pv.id !== 'claude' && pv.canBrowserSignIn && (
+              <button
+                className="primary"
+                disabled={!!busy && busy !== 'signin:' + pv.id}
+                onClick={() => (busy === 'signin:' + pv.id ? cancelBrowserSignIn(pv.id) : act('signin', pv.id))}
+              >
+                <Icon name="ArrowInSquare" size={13} /> {busy === 'signin:' + pv.id ? T('account.cancel') : (pv.accounts.length ? T('account.add') : T('account.signIn'))}
+              </button>
+            )}
+            {pv.id !== 'claude' && pv.canManualCode && (
+              <button disabled={!!busy} onClick={() => signInManual(pv.id)}>
+                <Icon name="Clipboard" size={13} /> {busy === 'manual:' + pv.id ? T('account.opening') : T('account.paste')}
+              </button>
+            )}
+          </div>
+
+          {pv.id === 'claude' && (
+            <ClaudeReconnectPanel
+              t={T}
+              rc={claude.rc}
+              busy={busy || claude.busy}
+              onCancel={claude.cancel}
+              onChange={claude.setCode}
+              onSubmit={claude.submit}
+            />
+          )}
+
+          {manual && manual.provId === pv.id && (
+            <div className="prov-token prov-manual">
+              <div className="prov-manual-hint">
+                {manual.sent ? T('account.manual.checking') : T('account.manual.hint')}
+              </div>
+              <input
+                className="prov-token-in"
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder={T('account.manual.placeholder')}
+                value={manual.code || ''}
+                disabled={!!busy || manual.sent}
+                onChange={(e) => setManual((m) => (m ? { ...m, code: e.target.value } : m))}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }}
+              />
+              <button
+                className="prov-link"
+                disabled={!!busy || manual.sent || !String(manual.code || '').trim()}
+                onClick={submit}
+              >{manual.sent ? T('account.manual.submitting') : T('account.manual.submit')}</button>
+              <button className="prov-x" title={T('account.cancel')} aria-label={T('account.cancel')} onClick={() => setManual(null)}><Icon name="X" size={12} /></button>
+            </div>
+          )}
+
+          {pv.canPasteKey && (
+            <div className="prov-token">
+              <input
+                className="prov-token-in"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder={T('account.key') + ' ' + pv.vendor + ' ' + T('account.key.suffix')}
+                value={token[pv.id] || ''}
+                disabled={!!busy}
+                onChange={(e) => setToken((m) => ({ ...m, [pv.id]: e.target.value }))}
+                onKeyDown={(e) => { if (e.key === 'Enter' && (token[pv.id] || '').trim()) { e.preventDefault(); act('bearer', pv.id, (token[pv.id] || '').trim()); } }}
+              />
+              <button
+                className="prov-link"
+                disabled={!!busy || !(token[pv.id] || '').trim()}
+                onClick={() => act('bearer', pv.id, (token[pv.id] || '').trim())}
+              >{busy === 'bearer:' + pv.id ? T('account.key.checking') : T('account.key.add')}</button>
+            </div>
+          )}
+        </div>
+      ))}
+
+      {st && (
+        <div className="account-actions">
+          <button disabled={!!busy} onClick={() => act('import')}>
+            <Icon name="Download" size={13} /> {busy === 'import:' ? T('account.import.scanning') : T('account.import')}
+          </button>
         </div>
       )}
 
-      <h4>{T('account.sync')}</h4>
-      <label className="check"><input type="checkbox" checked={!!account.sync.enabled} onChange={(e) => setAccount((a) => ({ ...a, sync: { ...a.sync, enabled: e.target.checked } }))} /> {T('account.sync.enable')}</label>
-      <div className="account-actions">
-        <button onClick={syncNow}><Icon name="ArrowClockwise" size={13} /> {T('account.sync.now')}</button>
-        <button onClick={importHistory}><Icon name="Download" size={13} /> {T('account.import')}</button>
-      </div>
-      <div className="account-sync-meta">
-        <span>{T('account.sync.last')}: {account.sync.lastSync ? new Date(account.sync.lastSync).toLocaleString() : T('account.sync.never')}</span>
-        <span>{T('account.sync.devices')}: {account.sync.deviceCount || 1}</span>
-      </div>
+      {(notice || claude.notice) && <div className="prov-notice">{notice || claude.notice}</div>}
     </div>
   );
 }
@@ -6289,7 +6762,232 @@ function RuntimesSection() {
   );
 }
 
-function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator, features, setFeatures, testProvider, onClose, T, account, setAccount, permissions, setPermissions, compliance, setCompliance }) {
+// ---------------------------------------------------------------------------
+// Orchestrator pool — data-driven checklist
+//
+// The pool used to be free-text rows (#1 / URL / model / key / "+ Add
+// provider"), which meant the user re-typed a provider that the app had
+// already signed in and loaded. It is now a checklist of models this machine
+// can actually serve: every signed-in subscription account's live catalog plus
+// the local/API gateway the composer is pointed at. Ticking a row is the only
+// way an entry enters `orchestrator.providers`, so the swarm roster can never
+// name an endpoint that was never loaded. Subscription rows persist only
+// `oauthProvider`; main resolves the bearer token per turn.
+function orchId(row) {
+  return row.oauthProvider
+    ? 'oauth|' + row.oauthProvider + '|' + row.model
+    : 'gw|' + normBase(row.baseURL) + '|' + row.model;
+}
+
+function OrchModelChecklist({ orchestrator, provider, localModels, localBase, saveOrch }) {
+  const [cat, setCat] = useState({ status: null, models: {}, busy: false, error: '' });
+  const [q, setQ] = useState('');
+
+  const load = useCallback(async () => {
+    setCat((c) => ({ ...c, busy: true, error: '' }));
+    let status = null;
+    let error = '';
+    try {
+      const r = await window.autobot.providerStatus();
+      if (r && r.ok && r.status) {
+        status = r.status;
+        if (r.status.storeError) error = String(r.status.storeError);
+      } else {
+        error = (r && (r.error || r.message)) || 'could not read provider status';
+      }
+    } catch (e) {
+      error = String((e && e.message) || e);
+    }
+    const models = {};
+    if (status) {
+      for (const pv of status.providers || []) {
+        const accounts = (pv.accounts || []).filter((a) => a.hasToken !== false);
+        // Ask per account: plan tiers expose different model sets, and the
+        // account key is what the turn will resolve against.
+        const keys = accounts.length ? accounts.map((a) => pv.id + ':' + a.account) : [pv.id];
+        for (const key of keys) {
+          try {
+            const r = await window.autobot.providerModels(key);
+            if (r && r.ok && (r.models || []).length) models[key] = r.models;
+          } catch (_) {}
+        }
+      }
+    }
+    setCat({ status, models, busy: false, error });
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const groups = useMemo(() => {
+    const out = [];
+    const status = cat.status;
+    if (status) {
+      for (const pv of status.providers || []) {
+        const accounts = (pv.accounts || []).filter((a) => a.hasToken !== false);
+        for (const a of accounts) {
+          const key = pv.id + ':' + a.account;
+          const list = cat.models[key] || cat.models[pv.id] || pv.models || [];
+          const rows = (list || []).map((m) => ({
+            oauthProvider: key,
+            transport: pv.transport || '',
+            oauth: true,
+            baseURL: '',
+            apiKey: '',
+            model: m.id,
+            label: m.label || m.id,
+            window: m.windowLabel || '',
+            contextWindow: m.contextWindow || 0,
+            name: (pv.label || pv.id) + ' · ' + (a.planName || a.plan || a.account) + ' · ' + (m.label || m.id),
+          }));
+          if (rows.length) {
+            out.push({
+              key,
+              title: (pv.label || pv.id) + ' · ' + (a.planName || a.plan || a.account || ''),
+              rows: rows.map((r) => ({ ...r, id: orchId(r) })),
+            });
+          }
+        }
+      }
+    }
+    // Gateway + local models: whatever the composer is currently pointed at,
+    // plus the models this machine's Ollama actually has pulled.
+    const gw = [];
+    const pb = normBase(provider && provider.baseURL);
+    if (pb && !(provider && provider.oauthProvider) && provider.model) {
+      gw.push({
+        id: orchId({ baseURL: provider.baseURL, model: provider.model }),
+        oauthProvider: '', transport: '', oauth: false,
+        baseURL: provider.baseURL, apiKey: provider.apiKey || '',
+        model: provider.model, label: provider.model,
+        window: '', contextWindow: contextWindowFor(provider.model),
+        name: 'Gateway · ' + provider.model,
+      });
+    }
+    for (const m of localModels || []) {
+      const base = localBase || 'http://localhost:11434/v1';
+      const row = {
+        id: orchId({ baseURL: base, model: m.name }),
+        oauthProvider: '', transport: '', oauth: false,
+        baseURL: base, apiKey: '',
+        model: m.name, label: m.name,
+        window: '', contextWindow: 0,
+        name: 'Ollama · ' + m.name,
+      };
+      if (!gw.some((g) => g.id === row.id)) gw.push(row);
+    }
+    if (gw.length) out.push({ key: 'gateway', title: 'Local / API gateway', rows: gw });
+    return out;
+  }, [cat, provider, localModels, localBase]);
+
+  const entries = orchestrator.providers || [];
+  const byId = useMemo(() => new Map(entries.map((p) => [p.id, p])), [entries]);
+  const known = new Set();
+  for (const g of groups) for (const r of g.rows) known.add(r.id);
+  // Entries saved before this panel existed (free-text baseURL rows) must stay
+  // visible and removable instead of vanishing behind the new checklist.
+  const legacy = entries.filter((p) => !known.has(p.id));
+
+  const toggle = (row, on) => {
+    const cur = orchestrator.providers || [];
+    if (on) {
+      if (cur.some((p) => p.id === row.id)) return;
+      const entry = {
+        id: row.id,
+        name: row.name,
+        baseURL: row.baseURL || '',
+        apiKey: row.apiKey || '',
+        model: row.model,
+        tier: 'heavy',
+        oauth: !!row.oauth,
+        oauthProvider: row.oauthProvider || '',
+        transport: row.transport || '',
+        contextWindow: row.contextWindow || 0,
+      };
+      saveOrch({ ...orchestrator, providers: [...cur, entry], activeIndex: cur.length ? orchestrator.activeIndex : 0 });
+    } else {
+      const next = cur.filter((p) => p.id !== row.id);
+      saveOrch({ ...orchestrator, providers: next, activeIndex: next.length ? Math.min(Math.max(0, orchestrator.activeIndex), next.length - 1) : -1 });
+    }
+  };
+  const setTier = (id, tier) => saveOrch({ ...orchestrator, providers: entries.map((p) => (p.id === id ? { ...p, tier } : p)) });
+  const setActive = (id) => saveOrch({ ...orchestrator, activeIndex: entries.findIndex((p) => p.id === id) });
+
+  const query = q.trim().toLowerCase();
+  const match = (r) => !query || String(r.model).toLowerCase().includes(query) || String(r.name).toLowerCase().includes(query);
+  const total = groups.reduce((n, g) => n + g.rows.length, 0);
+  const picked = entries.length;
+
+  return (
+    <div className="orch-pool">
+      <div className="orch-pool-head">
+        <span className="orch-count">{picked} of {total} selected</span>
+        <input className="orch-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter models…" />
+        <button type="button" className="btn-mini" disabled={cat.busy} onClick={load}>
+          <Icon name="Refresh" size={12} /> {cat.busy ? 'Loading…' : 'Reload'}
+        </button>
+      </div>
+      {cat.error && <p className="muted orch-err">{cat.error}</p>}
+      {!cat.busy && total === 0 && (
+        <p className="muted">Nothing loadable yet. Sign in to a provider under Accounts, or point the composer at a gateway, then press Reload.</p>
+      )}
+      {groups.map((g) => {
+        const rows = g.rows.filter(match);
+        if (!rows.length) return null;
+        return (
+          <div key={g.key} className="orch-grp">
+            <div className="orch-grp-head">{g.title}</div>
+            {rows.map((r) => {
+              const entry = byId.get(r.id);
+              const on = !!entry;
+              return (
+                <div key={r.id} className={'orch-row' + (on ? ' on' : '')}>
+                  <label className="orch-check" title={r.name}>
+                    <input type="checkbox" checked={on} onChange={(e) => toggle(r, e.target.checked)} />
+                    <span className="orch-name">{r.label}</span>
+                    {r.window ? <span className="orch-win">{r.window}</span> : null}
+                  </label>
+                  {on && (
+                    <>
+                      <select className="orch-tier" value={entry.tier || 'heavy'} onChange={(e) => setTier(r.id, e.target.value)} title="Complexity tier this model serves">
+                        <option value="small">small</option>
+                        <option value="heavy">heavy</option>
+                        <option value="critical">critical</option>
+                      </select>
+                      <label className="orch-radio" title="Start here (failover order + supervisor)">
+                        <input type="radio" name="orch-active" checked={entries.indexOf(entry) === orchestrator.activeIndex} onChange={() => setActive(r.id)} /> start
+                      </label>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+      {legacy.length > 0 && (
+        <div className="orch-grp">
+          <div className="orch-grp-head">Saved earlier</div>
+          {legacy.map((p) => (
+            <div key={p.id} className="orch-row on">
+              <label className="orch-check" title={p.name || p.model}>
+                <input type="checkbox" checked onChange={() => toggle({ id: p.id }, false)} />
+                <span className="orch-name">{p.model || p.baseURL}</span>
+                <span className="orch-win">{p.baseURL ? normBase(p.baseURL).replace(/^https?:\/\//, '') : p.oauthProvider}</span>
+              </label>
+              <select className="orch-tier" value={p.tier || 'heavy'} onChange={(e) => setTier(p.id, e.target.value)}>
+                <option value="small">small</option>
+                <option value="heavy">heavy</option>
+                <option value="critical">critical</option>
+              </select>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator, features, setFeatures, testProvider, onClose, T, permissions, setPermissions, compliance, setCompliance }) {
   // Editing an endpoint/model by hand means this is no longer a signed-in
   // subscription selection — drop the OAuth binding so the gateway path wins.
   const set = (k) => (e) => setProvider({ ...provider, [k]: e.target.value, ...(k === 'baseURL' || k === 'apiKey' ? { oauthProvider: '', transport: '', accessToken: '', oauth: false } : {}) });
@@ -6337,20 +7035,6 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
       .then((r) => r && setOllama({ ok: !!r.ok, base: r.base || '', models: r.models || [], detail: r.detail || '' }))
       .catch(() => {});
   }, []);
-
-  const providers = orchestrator.providers || [];
-  const updateProviderEntry = (i, patch) => {
-    const next = providers.map((p, j) => (j === i ? { ...p, ...patch } : p));
-    saveOrch({ ...orchestrator, providers: next });
-  };
-  const addProvider = () => {
-    const entry = { id: 'p' + Date.now().toString(36), name: 'Provider ' + (providers.length + 1), baseURL: provider.baseURL || 'http://localhost:11434/v1', apiKey: '', model: provider.model || 'llama3.1', tier: 'heavy' };
-    saveOrch({ ...orchestrator, providers: [...providers, entry], activeIndex: providers.length ? orchestrator.activeIndex : 0 });
-  };
-  const removeProvider = (i) => {
-    const next = providers.filter((_, j) => j !== i);
-    saveOrch({ ...orchestrator, providers: next, activeIndex: next.length ? Math.min(Math.max(0, orchestrator.activeIndex), next.length - 1) : -1 });
-  };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -6417,31 +7101,22 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
         <h3><Icon name="Settings" size={14} /> {T('settings.orchestrator')}</h3>
         <label className="check"><input type="checkbox" checked={!!orchestrator.enabled} onChange={(e) => saveOrch({ ...orchestrator, enabled: e.target.checked })} /> Enable — multi-model pool for failover AND swarm tier routing</label>
         {orchestrator.enabled && (
-          <div className="orch-list">
-            {providers.length === 0 && <p className="muted">No providers added. Add your models below; Akron Bot fails over in order and routes swarm subtasks by tier.</p>}
+          <>
             <p className="muted" style={{ marginTop: -4 }}>
-              <b>Tier</b> decides which model a supervisor-assigned subtask runs on:
-              <b> small</b> = cheap/mechanical work, <b>heavy</b> = real implementation,
-              <b> critical</b> = architecture/security/review (also the supervisor's own model).
-              Without tiers every subtask falls back to the active provider.
+              Tick the models this pool may use — the list is everything this machine has loaded
+              (signed-in subscription accounts and the local/API gateway). <b>Tier</b> decides which
+              model a supervisor-assigned subtask runs on: <b>small</b> = cheap/mechanical work,
+              <b> heavy</b> = real implementation, <b>critical</b> = architecture/security/review
+              (also the supervisor's own model). <b>start</b> marks the first model failover tries.
             </p>
-            {providers.map((p, i) => (
-              <div key={p.id || i} className={'orch-item ' + (i === orchestrator.activeIndex ? 'on' : '')}>
-                <label className="orch-radio"><input type="radio" name="orch-active" checked={i === orchestrator.activeIndex} onChange={() => saveOrch({ ...orchestrator, activeIndex: i })} title="Start here" /> #{i + 1}</label>
-                <input value={p.name || ''} onChange={(e) => updateProviderEntry(i, { name: e.target.value })} placeholder="name" />
-                <input value={p.baseURL || ''} onChange={(e) => updateProviderEntry(i, { baseURL: e.target.value })} placeholder="baseURL" />
-                <input value={p.model || ''} onChange={(e) => updateProviderEntry(i, { model: e.target.value })} placeholder="model" />
-                <input value={p.apiKey || ''} onChange={(e) => updateProviderEntry(i, { apiKey: e.target.value })} placeholder="apiKey" type="password" />
-                <select value={p.tier || 'heavy'} onChange={(e) => updateProviderEntry(i, { tier: e.target.value })} title="Complexity tier this model serves">
-                  <option value="small">small</option>
-                  <option value="heavy">heavy</option>
-                  <option value="critical">critical</option>
-                </select>
-                <button className="orch-del" onClick={() => removeProvider(i)}>×</button>
-              </div>
-            ))}
-            <button onClick={addProvider}>+ Add provider</button>
-          </div>
+            <OrchModelChecklist
+              orchestrator={orchestrator}
+              provider={provider}
+              localModels={ollama.ok ? ollama.models : []}
+              localBase={ollama.base}
+              saveOrch={saveOrch}
+            />
+          </>
         )}
 
         <h3><Icon name="Lightbulb" size={14} /> {T('settings.features')}</h3>
@@ -6499,7 +7174,7 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
 
         <ComplianceSection compliance={compliance} setCompliance={setCompliance} />
 
-        <AccountSection account={account} setAccount={setAccount} T={T} />
+        <AccountSection T={T} provider={provider} setProvider={setProvider} />
 
         <div className="modal-actions">
           <button onClick={testProvider}>Test connection</button>

@@ -84,6 +84,43 @@ eq('frontier keeps a single unknown provider usable', swarm.buildRoster({
   frontierOnly: true,
 }).map((r) => r.model), ['mystery-9b']);
 
+// ------------------------------------------------- subscription (OAuth) rows
+// A ticked subscription model persists only `oauthProvider` ("<prov>:<account>").
+// main mints the bearer token and picks the endpoint at turn time, so the entry
+// has NO baseURL — the roster must still admit it, key it by binding (not by an
+// empty base), and carry oauthProvider/transport through unchanged.
+const oauthOrch = {
+  enabled: true,
+  activeIndex: 0,
+  providers: [
+    { id: 'oauth|claude:acct|claude-fable-5-2', name: 'Claude · max · Claude Fable 5.2', baseURL: '', apiKey: '', model: 'claude-fable-5-2', tier: 'critical', oauth: true, oauthProvider: 'claude:acct', transport: 'anthropic', contextWindow: 1000000 },
+    { id: 'oauth|chatgpt:acct|gpt-6-luna', name: 'ChatGPT · Free · gpt-6-luna', baseURL: '', apiKey: '', model: 'gpt-6-luna', tier: 'heavy', oauth: true, oauthProvider: 'chatgpt:acct', transport: 'codex', contextWindow: 272000 },
+  ],
+};
+const oauthRoster = swarm.buildRoster({ orchestrator: oauthOrch });
+eq('oauth roster admits baseURL-less entries', oauthRoster.length, 2);
+eq('oauth roster keeps the binding', oauthRoster.map((r) => r.oauthProvider), ['claude:acct', 'chatgpt:acct']);
+eq('oauth roster is flagged oauth', oauthRoster.every((r) => r.oauth === true), true);
+eq('oauth roster keeps transport', oauthRoster.map((r) => r.transport), ['anthropic', 'codex']);
+eq('oauth roster keeps the context window', oauthRoster.map((r) => r.contextWindow), [1000000, 272000]);
+eq('oauth entries are frontier', oauthRoster.every((r) => r.frontier), true);
+eq('critical routes to the oauth claude row', swarm.pickProvider(oauthRoster, 'critical').model, 'claude-fable-5-2');
+eq('heavy routes to the oauth chatgpt row', swarm.pickProvider(oauthRoster, 'heavy').model, 'gpt-6-luna');
+// Two accounts of the same provider with the same model must not collapse.
+const twin = swarm.buildRoster({ orchestrator: { enabled: true, providers: [
+  { id: 't1', baseURL: '', model: 'claude-fable-5-2', oauthProvider: 'claude:one', oauth: true, tier: 'heavy' },
+  { id: 't2', baseURL: '', model: 'claude-fable-5-2', oauthProvider: 'claude:two', oauth: true, tier: 'heavy' },
+] } });
+eq('same model on two accounts stays two rows', twin.length, 2);
+// A row with neither a baseURL nor a binding is still refused (real phantom).
+eq('entry with no baseURL and no binding is dropped', swarm.buildRoster({ orchestrator: { enabled: true, providers: [{ id: 'z', model: 'ghost' }] } }).length, 0);
+// Frontier regex must recognise the current subscription model ids.
+eq('claude-fable-* counts as frontier', swarm.isFrontier({ model: 'claude-fable-5-2' }), true);
+eq('gpt-reserve counts as frontier', swarm.isFrontier({ model: 'gpt-reserve' }), true);
+eq('gpt-6-luna counts as frontier', swarm.isFrontier({ model: 'gpt-6-luna' }), true);
+eq('codex-auto-review counts as frontier', swarm.isFrontier({ model: 'codex-auto-review' }), true);
+eq('local llama is not frontier', swarm.isFrontier({ model: 'llama3:8b' }), false);
+
 // ---------------------------------------------------------------- parsing
 section('plan parsing');
 const fenced = 'Sure! Here is the plan:\n```json\n{"subtasks":[{"id":"t1","title":"A","tier":"small","prompt":"do a"}],"synthesis":"merge"}\n```';

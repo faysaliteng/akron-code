@@ -90,8 +90,43 @@ function trimBase(u) { return String(u || '').replace(/\/+$/, ''); }
  * Yield the `data:` payload of each SSE event as a parsed object.
  * Tolerates CRLF, multi-line data blocks, `[DONE]`, and keep-alive comments.
  */
-async function* sseEvents(res) {
-  const reader = res.body.getReader();
+/**
+ * Servers do not always label SSE: the ChatGPT Codex subscription endpoint
+ * streams `event:`/`data:` frames with NO content-type header at all. Deciding
+ * the parse strategy from `content-type` alone silently threw the whole answer
+ * away (the frames were read as one JSON blob, parsed to null, and reported as
+ * an empty success). Peek the first chunk, classify by its content, and replay
+ * it so whichever parser runs still sees every byte.
+ *
+ * @returns {{stream: ReadableStream|null, isSse: boolean, empty: boolean}}
+ */
+async function openStream(res) {
+  const body = res && res.body;
+  if (!body || typeof body.getReader !== 'function') return { stream: null, isSse: false, empty: true };
+  const reader = body.getReader();
+  let first;
+  try { first = await reader.read(); } catch (_) { return { stream: null, isSse: false, empty: true }; }
+  if (first.done) return { stream: null, isSse: false, empty: true };
+  const head = new TextDecoder().decode(first.value, { stream: true });
+  const isSse = /^\s*(?:event|data)\s*:/.test(head);
+  const stream = new ReadableStream({
+    start(c) { c.enqueue(first.value); },
+    async pull(c) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) { c.close(); return; }
+        c.enqueue(value);
+      } catch (e) { c.error(e); }
+    },
+    cancel(reason) { try { reader.cancel(reason); } catch (_) {} },
+  });
+  return { stream, isSse, empty: false };
+}
+
+async function* sseEvents(source) {
+  const body = source && typeof source.getReader === 'function' ? source : (source && source.body);
+  if (!body || typeof body.getReader !== 'function') return;
+  const reader = body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
   while (true) {
@@ -390,7 +425,8 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   // a small turn buys nothing and can trip a stricter entitlement check; not
   // sending it on a 300k-token turn guarantees a 400.
   const estTokens = catalog.tokensForChars(payload.length);
-  const longBeta = catalog.supportsLongContext(model) && estTokens > LONG_CONTEXT_MIN_TOKENS;
+  const bigTurn = estTokens > LONG_CONTEXT_MIN_TOKENS;
+  const longBeta = catalog.supportsLongContext(model) && bigTurn;
   const shortBeta = headers['anthropic-beta'];
   if (longBeta) headers['anthropic-beta'] = shortBeta + ',' + catalog.LONG_CONTEXT_BETA;
 
@@ -399,12 +435,14 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   });
 
   let res = await post(headers);
-  if (!res.ok && longBeta && res.status === 400) {
+  if (!res.ok && bigTurn && res.status === 400) {
     const rejected = await res.text().catch(() => '');
-    // Not entitled to the beta. Retrying the identical request with the header
-    // is useless, so drop it, record the real window for the session, and send
-    // once more — the agent loop then sees an honest 200k ceiling and compacts.
-    if (/context|beta|long|1m|entitle|not available/i.test(rejected)) {
+    // The endpoint refused a turn sized for a window larger than the default.
+    // Either the beta is not entitled, or the model does not really serve the
+    // 1M its catalog advertises for this account. Retrying the identical request
+    // is useless, so drop the beta, record the honest window for the session,
+    // and send once more — the agent loop then compacts against a real ceiling.
+    if (/context|beta|long|1m|entitle|not available|too long|prompt is too/i.test(rejected)) {
       catalog.demote(providerId, model, catalog.SHORT_CONTEXT_WINDOW);
       const retryHeaders = { ...headers, 'anthropic-beta': shortBeta };
       res = await post(retryHeaders);
@@ -456,12 +494,17 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
     throw err;
   }
 
-  const ct = res.headers.get('content-type') || '';
   const message = { role: 'assistant', content: '', tool_calls: [] };
 
-  if (!ct.includes('text/event-stream')) {
+  // Classify by the body, not only the header: some backends stream SSE with no
+  // content-type. `openStream` peeks one chunk and replays it.
+  const opened = await openStream(res);
+  if (opened.empty) { message.finish_reason = 'stop'; return message; }
+  if (!opened.isSse) {
     // A proxy collapsed the stream back to one JSON body.
-    const data = await readJsonBody(res);
+    const text = await new Response(opened.stream).text().catch(() => '');
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
     if (data && Array.isArray(data.content)) {
       for (const block of data.content) {
         if (block.type === 'text') { message.content += block.text || ''; if (block.text) onDelta(block.text); }
@@ -478,7 +521,7 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   }
 
   const accs = new Map(); // block index -> tool acc
-  for await (const ev of sseEvents(res)) {
+  for await (const ev of sseEvents(opened.stream)) {
     const type = ev.type;
     if (type === 'content_block_start') {
       const block = ev.content_block || {};
@@ -594,10 +637,11 @@ async function responsesChat(o) {
   });
   if (!res.ok) throw httpError(label, res, await res.text().catch(() => ''));
 
+  const opened = await openStream(res);
+
   const message = { role: 'assistant', content: '', tool_calls: [] };
   const byItem = new Map(); // output item id -> tool acc
   const byCall = new Map(); // call id -> tool acc (stream and final body can both report it)
-  const ct = res.headers.get('content-type') || '';
 
   const addCall = (callId, name) => {
     const id = String(callId || '');
@@ -643,8 +687,12 @@ async function responsesChat(o) {
     return message;
   };
 
-  if (!ct.includes('text/event-stream')) {
-    const data = await readJsonBody(res);
+  if (opened.empty) return finish();
+
+  if (!opened.isSse) {
+    const rawText = await new Response(opened.stream).text().catch(() => '');
+    let data = null;
+    try { data = rawText ? JSON.parse(rawText) : null; } catch (_) { data = null; }
     absorb(data);
     if (!message.content) {
       for (const item of (data && data.output) || []) {
@@ -656,7 +704,7 @@ async function responsesChat(o) {
     return finish();
   }
 
-  for await (const ev of sseEvents(res)) {
+  for await (const ev of sseEvents(opened.stream)) {
     const type = ev.type || '';
     if (type === 'response.output_text.delta') {
       if (ev.delta) { message.content += ev.delta; onDelta(ev.delta); }
@@ -716,7 +764,10 @@ async function codexChat(provider, messages, tools, onDelta, signal, maxTokensOv
     authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
     originator: CODEX_ORIGINATOR,
     'openai-beta': 'responses=experimental',
-    'user-agent': 'akron-bot/1.0 (codex-transport)',
+    // Impersonating the shipped CLI here is not cosmetic: the subscription
+    // endpoint gates model entitlement on the client the request claims to be,
+    // and an unknown agent string is rejected outright.
+    'user-agent': codexUa(),
   };
   if (provider.accountId) headers['chatgpt-account-id'] = String(provider.accountId);
   if (provider.sessionId) headers.session_id = String(provider.sessionId);
@@ -979,7 +1030,6 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
     }
   };
 
-  const ct = res.headers.get('content-type') || '';
   // Gemini reports `STOP` even when the turn ends in a functionCall, so a
   // pending tool call always wins: the agent loop decides what to do next from
   // `tool_calls.length`, and a `stop` here would end the run early.
@@ -991,13 +1041,17 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
     }
     return message;
   };
-  if (!ct.includes('text/event-stream')) {
-    absorb(await readJsonBody(res));
+  const opened = await openStream(res);
+  if (opened.empty) return settle();
+  if (!opened.isSse) {
+    const text = await new Response(opened.stream).text().catch(() => '');
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+    absorb(data);
     return settle();
   }
-  for await (const ev of sseEvents(res)) {
-    if (ev.error) {
-      const err = new Error('LLM antigravity: ' + (ev.error.message || 'provider error'));
+  for await (const ev of sseEvents(opened.stream)) {
+    if (ev.error) {      const err = new Error('LLM antigravity: ' + (ev.error.message || 'provider error'));
       err.transient = true;
       throw err;
     }
@@ -1207,11 +1261,17 @@ async function listModels(provider, signal) {
     if (!res.ok) throw httpError('anthropic', res, text);
     let json = null;
     try { json = JSON.parse(text); } catch (_) { return []; }
-    // Anthropic does not return a context window; `model-catalog` documents 200k.
+    // `max_input_tokens` is the *input* window and is authoritative — measured
+    // live 2026-11-26: 15 models, 11 of them advertise 1 000 000 (the whole 5.x
+    // line plus opus/sonnet 4-6..4-8) and the 4-5 pair advertises 200 000.
+    // `max_tokens` is the output cap (128k), never a context window, so it is
+    // deliberately not used as a fallback. When the field is absent we return 0
+    // and `model-catalog`'s documented rule fills the number in.
+    const winOf = (m) => num(m.max_input_tokens || m.context_window || m.max_context_window || m.contextWindow);
     return (json.data || []).map((m) => ({
       id: String(m.id || ''),
       label: String(m.display_name || m.id || ''),
-      contextWindow: 0,
+      contextWindow: winOf(m),
       thinking: true,
     })).filter((m) => m.id);
   }
@@ -1225,7 +1285,10 @@ async function listModels(provider, signal) {
       'user-agent': codexUa(),
     };
     if (provider.accountId) headers['chatgpt-account-id'] = String(provider.accountId);
-    const res = await fetch(base + '/models', { headers, signal });
+    // Field-verified: `/codex/models` without `client_version` answers
+    // 400 `missing query param client_version`; with the shipped CLI's own
+    // version it returns the models this account is actually entitled to.
+    const res = await fetch(base + '/models?client_version=' + encodeURIComponent(clientVersions.codex), { headers, signal });
     const text = await res.text().catch(() => '');
     if (!res.ok) throw httpError('codex', res, text);
     let json = null;

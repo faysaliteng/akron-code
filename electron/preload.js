@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('autobot', {
   providerStatus: () => ipcRenderer.invoke('autobot:providerStatus'),
   providerModels: (id) => ipcRenderer.invoke('autobot:providerModels', id),
   providerSignIn: (id) => ipcRenderer.invoke('autobot:providerSignIn', id),
+  providerSignInCancel: (id) => ipcRenderer.invoke('autobot:providerSignInCancel', id),
+  providerSignInState: (id) => ipcRenderer.invoke('autobot:providerSignInState', id),
   providerSignInManual: (id) => ipcRenderer.invoke('autobot:providerSignInManual', id),
   providerSubmitCode: (flowId, code) => ipcRenderer.invoke('autobot:providerSubmitCode', flowId, code),
   onProviderManualResult: (cb) => {
@@ -56,6 +58,26 @@ contextBridge.exposeInMainWorld('autobot', {
   },
   providerSignOut: (id, account) => ipcRenderer.invoke('autobot:providerSignOut', id, account),
   providerImport: () => ipcRenderer.invoke('autobot:providerImport'),
+  providerAdoptClaude: () => ipcRenderer.invoke('autobot:providerAdoptClaude'),
+  // Claude reconnect always goes through the owner (Claude Code CLI) so the two
+  // never hold competing refresh tokens.
+  providerReconnectClaude: () => ipcRenderer.invoke('autobot:providerReconnectClaude'),
+  providerReconnectClaudeCode: (flowId, code) => ipcRenderer.invoke('autobot:providerReconnectClaudeCode', flowId, code),
+  providerReconnectClaudeCancel: () => ipcRenderer.invoke('autobot:providerReconnectClaudeCancel'),
+  providerReconnectState: () => ipcRenderer.invoke('autobot:providerReconnectState'),
+  onProviderReconnectResult: (cb) => {
+    const h = (e, flowId, result) => { try { cb(flowId, result); } catch (_) {} };
+    ipcRenderer.on('autobot:providerReconnectResult', h);
+    return () => ipcRenderer.removeListener('autobot:providerReconnectResult', h);
+  },
+  // The CLI's live chatter while a paste is being judged ("copy all of it…").
+  // A rejected paste leaves the process waiting and emits no result event, so
+  // without this the panel would show nothing at all.
+  onProviderReconnectLine: (cb) => {
+    const h = (e, flowId, payload) => { try { cb(flowId, payload); } catch (_) {} };
+    ipcRenderer.on('autobot:providerReconnectLine', h);
+    return () => ipcRenderer.removeListener('autobot:providerReconnectLine', h);
+  },
   providerAddBearer: (id, token, label) => ipcRenderer.invoke('autobot:providerAddBearer', id, token, label),
   providerSetActive: (id, account) => ipcRenderer.invoke('autobot:providerSetActive', id, account),
 

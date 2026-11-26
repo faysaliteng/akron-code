@@ -605,9 +605,10 @@ const noop = () => {};
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
           data: [
-            { id: 'claude-fable-5-2', display_name: 'Claude Fable 5.2' },
-            { id: 'claude-haiku-5-5', display_name: 'Claude Haiku 5.5' },
-            { id: 'claude-sonnet-5-5', display_name: 'Claude Sonnet 5.5' },
+            { id: 'claude-fable-5-2', display_name: 'Claude Fable 5.2', max_input_tokens: 1000000, max_tokens: 128000 },
+            { id: 'claude-haiku-5-5', display_name: 'Claude Haiku 5.5', max_input_tokens: 1000000, max_tokens: 128000 },
+            { id: 'claude-opus-4-5-20251101', display_name: 'Claude Opus 4.5', max_input_tokens: 200000, max_tokens: 64000 },
+            { id: 'claude-unwindowed', display_name: 'No window advertised' },
           ],
           has_more: false,
         }));
@@ -617,9 +618,15 @@ const noop = () => {};
     });
     const list = await t.listModels({ transport: 'anthropic', baseURL: s.base, accessToken: 'sk-ant-oat01-abc' });
     eq('anthropic listModels returns every advertised model', list.map((m) => m.id),
-      ['claude-fable-5-2', 'claude-haiku-5-5', 'claude-sonnet-5-5']);
+      ['claude-fable-5-2', 'claude-haiku-5-5', 'claude-opus-4-5-20251101', 'claude-unwindowed']);
     eq('anthropic listModels keeps display labels', list[0].label, 'Claude Fable 5.2');
-    eq('anthropic listModels reports window 0 so model-catalog decides', list[0].contextWindow, 0);
+    // Live 2026-11-26: `/v1/models` publishes `max_input_tokens`, and it is the
+    // input window — 1M on the 5.x line, 200k on the 4-5 pair. `max_tokens`
+    // (128k) is the output cap and must never be mistaken for a window.
+    eq('anthropic listModels reads max_input_tokens as the window', list[0].contextWindow, 1000000);
+    eq('anthropic listModels keeps a 200k model at 200k', list[2].contextWindow, 200000);
+    ok('anthropic listModels never uses the output cap as a window', list[0].contextWindow !== 128000);
+    eq('anthropic listModels leaves an absent window at 0 for model-catalog', list[3].contextWindow, 0);
     const areq = s.seen.requests[0];
     eq('anthropic listModels asks /v1/models', areq.url, '/v1/models?limit=100');
     ok('anthropic listModels sends the oauth bearer', String(areq.headers.authorization || '').includes('sk-ant-oat01-abc'));
@@ -642,12 +649,14 @@ const noop = () => {};
 
   {
     const s = await server((req, res) => {
-      if (req.url.endsWith('/models')) {
+      // `/codex/models` requires `?client_version=`; match on the path so the
+      // required query string does not turn the fixture into a 404.
+      if (String(req.url).split('?')[0].endsWith('/models')) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
           data: [
-            { id: 'gpt-5.1-codex-max', display_name: 'GPT-5.1 Codex Max', context_window: 400000 },
-            { id: 'gpt-5.1', context_window: 400000 },
+            { id: 'gpt-reserve', display_name: 'GPT-Reserve', context_window: 272000 },
+            { id: 'gpt-6-luna', context_window: 272000 },
           ],
         }));
         return;
@@ -660,10 +669,13 @@ const noop = () => {};
       accessToken: 'tok-2',
       accountId: 'acct-9',
     });
-    eq('codex listModels parses ids', list.map((m) => m.id), ['gpt-5.1-codex-max', 'gpt-5.1']);
-    eq('codex listModels carries the advertised window', list[0].contextWindow, 400000);
+    eq('codex listModels parses ids', list.map((m) => m.id), ['gpt-reserve', 'gpt-6-luna']);
+    eq('codex listModels carries the advertised window', list[0].contextWindow, 272000);
     const req1 = s.seen.requests[0];
-    eq('codex listModels derives /models from the responses URL', req1.url, '/backend-api/codex/models');
+    eq('codex listModels derives /models from the responses URL',
+      String(req1.url).split('?')[0], '/backend-api/codex/models');
+    ok('codex listModels sends the required client_version',
+      /[?&]client_version=/.test(String(req1.url)), req1.url);
     eq('codex listModels sends chatgpt-account-id', req1.headers['chatgpt-account-id'], 'acct-9');
     ok('codex listModels identifies as the Codex originator', String(req1.headers.originator || '').startsWith('codex'));
     await s.close();

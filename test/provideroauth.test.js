@@ -12,6 +12,16 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+
+// Point the store at a scratch home BEFORE the module is required: the
+// quarantine test below deliberately writes `{not json` to the index, and that
+// must never be the user's real ~/.autobot/provider-oauth.json.
+const SCRATCH_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'autobot-po-'));
+process.env.AUTOBOT_HOME = SCRATCH_HOME;
+const REAL_INDEX = path.join(os.homedir(), '.autobot', 'provider-oauth.json');
+const realIndexBefore = fs.existsSync(REAL_INDEX) ? fs.readFileSync(REAL_INDEX) : null;
+const realDirBefore = fs.existsSync(path.dirname(REAL_INDEX)) ? fs.readdirSync(path.dirname(REAL_INDEX)).sort() : [];
+
 const po = require('../electron/provider-oauth');
 const I = po._internal;
 
@@ -268,9 +278,44 @@ const jwt = (claims) => 'h.' + b64url(claims) + '.sig';
     ok('redirect uri is loopback with the right path', /^http:\/\/localhost:\d+\/cb$/.test(srv.redirectUri), srv.redirectUri);
     const res = await fetch(srv.redirectUri.replace('localhost', '127.0.0.1') + '?code=abc&state=xyz');
     eq('listener answers 200', res.status, 200);
-    ok('listener serves the human page', /Signed in/.test(await res.text()));
+    // A code in the callback is not a finished sign-in. Without a verifier the
+    // page must not claim success.
+    const page = await res.text();
+    ok('listener does not claim success without a verifier', !/Signed in/.test(page) && /Finishing sign-in/.test(page));
     eq('code and state are handed back', await srv.wait(), { code: 'abc', state: 'xyz', error: null, errorDescription: null });
     srv.close();
+  }
+  {
+    // A callback minted by someone else must not consume the flow.
+    const srv = await I.startLoopbackServer({ path: '/cb', timeoutMs: 5000, state: 'mine' });
+    const res = await fetch('http://127.0.0.1:' + srv.port + '/cb?code=abc&state=theirs');
+    eq('a foreign state is refused', res.status, 400);
+    ok('and says the app is still waiting', /still waiting/.test(await res.text()));
+    const good = await fetch('http://127.0.0.1:' + srv.port + '/cb?code=abc&state=mine');
+    eq('the real callback still lands', good.status, 200);
+    eq('with our own code', (await srv.wait()).code, 'abc');
+    srv.close();
+  }
+  {
+    // The page reports the token exchange verdict, not the presence of a code.
+    const bad = await I.startLoopbackServer({
+      path: '/cb', timeoutMs: 5000, state: 's',
+      verify: async () => ({ ok: false, detail: 'invalid_grant' }),
+    });
+    const badRes = await fetch('http://127.0.0.1:' + bad.port + '/cb?code=c&state=s');
+    const badPage = await badRes.text();
+    ok('a refused exchange is not called success', !/Signed in/.test(badPage) && /did not complete/.test(badPage));
+    ok('and the provider reason is shown', /invalid_grant/.test(badPage));
+    const badPayload = await bad.wait();
+    eq('the caller learns why', [badPayload.error, /invalid_grant/.test(badPayload.errorDescription)], ['exchange_failed', true]);
+
+    const good = await I.startLoopbackServer({
+      path: '/cb', timeoutMs: 5000, state: 's',
+      verify: async () => ({ ok: true, record: { id: 'claude:x' } }),
+    });
+    const goodPage = await (await fetch('http://127.0.0.1:' + good.port + '/cb?code=c&state=s')).text();
+    ok('a proven exchange is called success', /Signed in/.test(goodPage));
+    eq('and the record travels back', (await good.wait()).verified.record.id, 'claude:x');
   }
   {
     const srv = await I.startLoopbackServer({ path: '/cb', timeoutMs: 5000 });
@@ -416,6 +461,38 @@ const jwt = (claims) => 'h.' + b64url(claims) + '.sig';
     eq('a plain 400 tries both encodings only', s.seen.requests.length, 2);
     await s.close();
   }
+  {
+    // Live-verified 2026-11-25 on platform.claude.com/v1/oauth/token: the same
+    // body answered 429 `rate_limit_error` with no User-Agent and 400
+    // `invalid_grant` with a CLI User-Agent. Losing the UA turns a permanent
+    // "sign in again" into a transient throttle, which is how a dead credential
+    // became an endless retry loop.
+    const s = await server((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"access_token":"at"}');
+    });
+    const prov = Object.assign({}, po.provider('claude'), { tokenUrl: s.base + '/token' });
+    await I.postToken(prov, { grant_type: 'refresh_token', refresh_token: 'r', client_id: 'c' }, { retries: 0 });
+    const ua = String(s.seen.requests[0].headers['user-agent'] || '');
+    ok('the token request presents a Claude CLI user-agent', /^claude-cli\/\d+\.\d+\.\d+ \(external, cli\)$/.test(ua));
+    await s.close();
+  }
+  {
+    // A refresh grant the provider has already rejected is not an encoding
+    // complaint: resending it costs a second request against a rate-limited
+    // endpoint and holds the same single-use token.
+    const s = await server((req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end('{"error":"invalid_grant","error_description":"Refresh token not found or invalid"}');
+    });
+    const prov = Object.assign({}, po.provider('claude'), { tokenUrl: s.base + '/token' });
+    let err = null;
+    try { await I.postToken(prov, { grant_type: 'refresh_token', refresh_token: 'r', client_id: 'c' }, { retries: 0 }); } catch (e) { err = e; }
+    ok('a dead refresh grant throws', !!err);
+    eq('a dead refresh grant is not transient', err && err.transient, false);
+    eq('a dead refresh grant is sent exactly once', s.seen.requests.length, 1);
+    await s.close();
+  }
 
   // -------------------------------------------------------------------------
   console.log('\nidentity resolution');
@@ -462,23 +539,27 @@ const jwt = (claims) => 'h.' + b64url(claims) + '.sig';
   console.log('\nindex file is non-secret and private');
   // -------------------------------------------------------------------------
   {
-    const realFile = path.join(os.homedir(), '.autobot', 'provider-oauth.json');
-    const backup = fs.existsSync(realFile) ? fs.readFileSync(realFile) : null;
-    try {
-      I.writeDb({ accounts: [{ provider: 'claude', account: 'tmp-test', label: 'x', expiresAt: 1 }] });
-      const mode = fs.statSync(realFile).mode & 0o777;
-      eq('the index is written 0600', mode, 0o600);
-      const back = I.readDb();
-      eq('the index round-trips', back.accounts[0].account, 'tmp-test');
-      eq('the index carries a version', back.version, 1);
-      ok('no token-shaped value is stored in the index', !/sk-ant|access_token|refresh_token/i.test(fs.readFileSync(realFile, 'utf8')));
-      fs.writeFileSync(realFile, '{not json');
-      eq('a corrupt index degrades to empty instead of throwing', I.readDb().accounts, []);
-    } finally {
-      if (backup) { fs.writeFileSync(realFile, backup); try { fs.chmodSync(realFile, 0o600); } catch (_) {} }
-      else { try { fs.unlinkSync(realFile); } catch (_) {} }
-    }
-    if (backup) eq('the real index was restored byte for byte', fs.readFileSync(realFile).equals(backup), true);
+    const realFile = path.join(SCRATCH_HOME, 'provider-oauth.json');
+    I.writeDb({ accounts: [{ provider: 'claude', account: 'tmp-test', label: 'x', expiresAt: 1 }] });
+    const mode = fs.statSync(realFile).mode & 0o777;
+    eq('the index is written 0600', mode, 0o600);
+    const back = I.readDb();
+    eq('the index round-trips', back.accounts[0].account, 'tmp-test');
+    eq('the index carries a version', back.version, 1);
+    ok('no token-shaped value is stored in the index', !/sk-ant|access_token|refresh_token/i.test(fs.readFileSync(realFile, 'utf8')));
+    // A corrupt index must degrade to empty AND quarantine itself next to the
+    // index — inside the scratch home, never in the user's real directory.
+    fs.writeFileSync(realFile, '{not json');
+    eq('a corrupt index degrades to empty instead of throwing', I.readDb().accounts, []);
+    ok('the corrupt index is quarantined beside the scratch index',
+      fs.readdirSync(SCRATCH_HOME).some((n) => /^provider-oauth\.json\.corrupt-\d+$/.test(n)));
+    const realIndexAfter = fs.existsSync(REAL_INDEX) ? fs.readFileSync(REAL_INDEX) : null;
+    ok('the real ~/.autobot index was not touched by this suite',
+      (realIndexBefore === null ? realIndexAfter === null : realIndexAfter !== null && realIndexAfter.equals(realIndexBefore)));
+    ok('no quarantine file appeared in the real ~/.autobot',
+      JSON.stringify(fs.readdirSync(path.dirname(REAL_INDEX)).sort()) === JSON.stringify(realDirBefore));
+    // Leave the scratch index usable: later blocks in this file keep writing.
+    fs.unlinkSync(realFile);
   }
 
   // -------------------------------------------------------------------------
@@ -645,6 +726,125 @@ const jwt = (claims) => 'h.' + b64url(claims) + '.sig';
         writeDb: () => {},
       });
       eq('no credential on disk means no adoption', out, null);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\nverification badge + live entitlement');
+  // -------------------------------------------------------------------------
+  {
+    // The picker must stop calling an adapter "unverified" as soon as a real
+    // call answered. `verifyAccount` alone never runs on a healthy row, so the
+    // catalog path needs its own, side-effect-light marker.
+    po.addAccount('chatgpt', {
+      account: 'unit-mark',
+      label: 'Chat Unit',
+      plan: 'free',
+      tokens: { accessToken: 'at-unit', refreshToken: 'rt-unit' },
+    });
+    eq('a fresh row has never been verified', po.getAccount('chatgpt', 'unit-mark').verifiedAt, 0);
+    eq('markVerified accepts a live answer', po.markVerified('chatgpt', 'unit-mark'), true);
+    ok('markVerified stamps a timestamp the bridge may carry',
+      po.getAccount('chatgpt', 'unit-mark').verifiedAt > 0);
+    eq('markVerified on an unknown account is a loud false, not a throw',
+      po.markVerified('chatgpt', 'no-such-row'), false);
+
+    // ChatGPT's token need not carry a plan claim; the account endpoint is the
+    // only honest source. A stale default is corrected, not displayed forever.
+    let asked = '';
+    const fake = async (url) => {
+      asked = String(url);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          accounts: {
+            'acct-1': { account: { plan_type: 'plus', plan_display_name: 'Plus' } },
+          },
+        }),
+      };
+    };
+    const did = await po.refreshEntitlement('chatgpt', 'unit-mark', { fetchImpl: fake });
+    eq('refreshEntitlement reads the account endpoint', did, true);
+    ok('it asks accounts/check', /\/backend-api\/accounts\/check\//.test(asked), asked);
+    eq('the plan slug becomes the live one', po.getAccount('chatgpt', 'unit-mark').plan, 'plus');
+    eq('the human plan name is kept for the UI', po.getAccount('chatgpt', 'unit-mark').planName, 'Plus');
+
+    let touched = 0;
+    const never = async () => { touched++; return { ok: true, status: 200, json: async () => ({}) }; };
+    eq('other providers have no entitlement endpoint to poll',
+      await po.refreshEntitlement('claude', 'unit-mark', { fetchImpl: never }), false);
+    eq('and it does not spend a request to find that out', touched, 0);
+
+    const failing = async () => ({ ok: false, status: 500, json: async () => ({}) });
+    eq('a failed entitlement check leaves the label alone',
+      await po.refreshEntitlement('chatgpt', 'unit-mark', { fetchImpl: failing }), false);
+    eq('the previously known plan survives a failure', po.getAccount('chatgpt', 'unit-mark').plan, 'plus');
+
+    const throws = async () => { throw new Error('ENOTFOUND'); };
+    eq('an offline entitlement check is not fatal',
+      await po.refreshEntitlement('chatgpt', 'unit-mark', { fetchImpl: throws }), false);
+
+    po.removeAccount('chatgpt', 'unit-mark');
+    eq('the fixture account is gone', po.getAccount('chatgpt', 'unit-mark'), null);
+  }
+
+  // -------------------------------------------------------------------------
+  // A registered redirect URI is one exact address (OpenAI: localhost:1455).
+  // -------------------------------------------------------------------------
+  // Live-measured 2026-11-26: auth.openai.com answers the authorize request
+  // with `302 -> /log-in` for port 1455 and `400 invalid_authorize_request` for
+  // every other port. The listener therefore may not "helpfully" move to an
+  // ephemeral port: that produced a blank error page instead of a sign-in.
+  {
+    const chatgpt = po.provider('chatgpt');
+    eq('chatgpt declares the port it cannot move off', chatgpt.fixedRedirectPort, true);
+    eq('chatgpt carries the redirect port it registered', chatgpt.redirectPort, 1455);
+    eq('the authorize URL matches the shipped Codex CLI', chatgpt.extraAuthParams.originator, 'codex_cli_rs');
+    const url = I.buildAuthorizeUrl(chatgpt, {
+      redirectUri: 'http://localhost:1455/auth/callback', state: 's'.repeat(22), challenge: 'c'.repeat(43), nonce: '',
+    });
+    ok('the built URL keeps the registered redirect URI', url.includes('redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback'), url);
+    ok('and carries originator', url.includes('originator=codex_cli_rs'), url);
+
+    const claude = po.provider('claude');
+    ok('claude is not pinned to a port (it accepts any loopback port)', !claude.fixedRedirectPort);
+
+    // Occupy 1455, then require a typed, self-explaining failure.
+    const blocker = await new Promise((resolve) => {
+      const s = http.createServer((_q, r) => r.end('held'));
+      s.once('error', () => resolve(null));
+      s.listen(1455, '127.0.0.1', () => resolve(s));
+    });
+    if (blocker) {
+      let opened = '';
+      let err = null;
+      try {
+        await po.authorize('chatgpt', { openExternal: (u) => { opened = u; }, timeoutMs: 800 });
+      } catch (e) { err = e; }
+      eq('a busy registered port is a typed failure', err && err.code, 'redirect_port_busy');
+      ok('the message names the URI OpenAI accepts',
+        /only accepts http:\/\/localhost:1455\/auth\/callback/.test(String(err && err.message)), err && err.message);
+      ok('the message names who holds the port', /is held by /.test(String(err && err.message)), err && err.message);
+      eq('no unusable authorize URL is opened', opened, '');
+      eq('the failure carries the port for the UI', err && err.port, 1455);
+
+      // The listener itself must refuse rather than rebind.
+      let strictErr = null;
+      try {
+        const loop = await I.startLoopbackServer({ path: '/auth/callback', port: 1455, redirectHost: 'localhost', strictPort: true, timeoutMs: 300, state: 's' });
+        loop.close();
+      } catch (e) { strictErr = e; }
+      eq('a strict listener reports EADDRINUSE', strictErr && strictErr.code, 'EADDRINUSE');
+
+      // Providers that accept any loopback port keep the ephemeral fallback.
+      const loop2 = await I.startLoopbackServer({ path: '/callback', port: 1455, redirectHost: 'localhost', timeoutMs: 300, state: 's' });
+      ok('a non-strict listener still finds a free port', loop2.port > 0 && loop2.port !== 1455, loop2.port);
+      loop2.close();
+      blocker.close();
+      await new Promise((r) => setTimeout(r, 50));
+    } else {
+      ok('port 1455 was occupiable for the strict-port test', false, 'listen failed');
     }
   }
 

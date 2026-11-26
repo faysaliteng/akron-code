@@ -34,7 +34,7 @@ function normalizeTier(t, fallback) {
 // explicit `frontier: true` flag or by matching a known frontier model family.
 // Cheap/local models never enter a swarm roster (they remain fair game for the
 // automatic Task/Agent multi-agent path).
-const FRONTIER_RE = /(kimi|moonshot|deepseek|glm|zhipu|chatgpt|gpt-?[45]|\bo[1-4]\b|anthropic|sonnet|opus|haiku|gemini[- ]?(pro|ultra)|qwen.*(max|235b)|grok|command-r-plus|mistral-large|frontier)/i;
+const FRONTIER_RE = /(kimi|moonshot|deepseek|glm|zhipu|chatgpt|gpt-?[3-9]|codex|\bo[1-4]\b|anthropic|claude|fable|sonnet|opus|haiku|gemini[- ]?(pro|ultra)|qwen.*(max|235b)|grok|command-r-plus|mistral-large|frontier|terra|luna|reserve)/i;
 function isFrontier(p) {
   if (!p) return false;
   if (p.frontier === true) return true;
@@ -46,25 +46,44 @@ function isFrontier(p) {
 // is the pool; each entry may carry a `tier` (set in Settings). The currently
 // selected provider is always present so a swarm still works with the
 // orchestrator disabled — it simply runs every subtask on one model.
+//
+// An entry is either a gateway row (`baseURL` + optional `apiKey`) or a
+// subscription row (`oauthProvider` = "<provider>:<account>"); the latter has
+// no baseURL because main mints the bearer token and picks the endpoint at
+// turn time, so the guard below must admit it or every signed-in model would
+// silently vanish from the roster.
 function buildRoster(opts = {}) {
   const { orchestrator, provider, frontierOnly } = opts;
   const roster = [];
   const seen = new Set();
   const add = (p, fallbackTier, role) => {
-    if (!p || !p.baseURL) return;
-    const key = String(p.baseURL) + '|' + String(p.model || '');
+    if (!p) return;
+    const isOauth = !!p.oauthProvider;
+    if (!p.baseURL && !isOauth) return;
+    const key = isOauth
+      ? 'oauth|' + p.oauthProvider + '|' + String(p.model || '')
+      : String(p.baseURL) + '|' + String(p.model || '');
     if (seen.has(key)) return;
     seen.add(key);
     roster.push({
       id: p.id || key,
       name: p.name || p.model || 'model',
-      baseURL: p.baseURL,
+      baseURL: p.baseURL || '',
       apiKey: p.apiKey || '',
       model: p.model || '',
       temperature: p.temperature,
       maxTokens: p.maxTokens,
       reasoningLevel: p.reasoningLevel,
       supportsTools: p.supportsTools !== false,
+      // Subscription rows resolve their credential in main, so carry the
+      // binding through instead of rewriting it as an anonymous endpoint.
+      oauthProvider: p.oauthProvider || '',
+      transport: p.transport || '',
+      oauth: !!p.oauth || isOauth,
+      accessToken: p.accessToken || '',
+      account: p.account || '',
+      accountId: p.accountId || '',
+      contextWindow: Number(p.contextWindow) || 0,
       frontier: isFrontier(p),
       tier: normalizeTier(p.tier, fallbackTier),
       role,
@@ -504,8 +523,11 @@ async function swarm(goal, opts = {}) {
   if (!supervisor) throw new Error('swarm has no model to run on (configure a provider or an orchestrator tier)');
   // The supervisor is normally already in the roster; only append it when the
   // topology has no critical-tier entry (single-model setups).
-  const supKey = String(supervisor.baseURL || '') + '|' + String(supervisor.model || '');
-  if (!roster.some((r) => String(r.baseURL || '') + '|' + String(r.model || '') === supKey)) {
+  const keyOf = (r) => (r && r.oauthProvider
+    ? 'oauth|' + r.oauthProvider + '|' + String(r.model || '')
+    : String((r && r.baseURL) || '') + '|' + String((r && r.model) || ''));
+  const supKey = keyOf(supervisor);
+  if (!roster.some((r) => keyOf(r) === supKey)) {
     roster.push({ ...supervisor, tier: 'critical', role: 'supervisor' });
   }
 
@@ -739,7 +761,7 @@ async function swarm(goal, opts = {}) {
 }
 
 module.exports = {
-  TIER_RANK, normalizeTier, buildRoster, pickProvider, rosterSummary,
+  TIER_RANK, normalizeTier, buildRoster, pickProvider, rosterSummary, isFrontier,
   extractJSON, normalizePlan, swarm, decompose,
   createBoard, boardTools, STALL_NOTE,
   SUPERVISOR_PLAN_PROMPT, SUPERVISOR_MERGE_PROMPT,

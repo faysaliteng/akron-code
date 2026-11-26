@@ -54,6 +54,27 @@ ok('only Sonnet 4.x advertises the 1M beta', () => {
   assert.strictEqual(cat.LONG_CONTEXT_BETA, 'context-1m-2025-08-07');
 });
 
+ok('cold catalog matches the live /v1/models windows (measured 2026-11-26)', () => {
+  // Before the account's catalog lands, the id rules must not under-budget a
+  // 1M model by 5×: the whole 5.x line is 1M, as are opus/sonnet 4-6..4-8.
+  for (const m of [
+    'claude-fable-5-2', 'claude-fable-5-1', 'claude-fable-5',
+    'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5',
+    'claude-opus-5', 'claude-sonnet-5',
+    'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-4-6', 'claude-opus-4-6',
+  ]) {
+    assert.strictEqual(cat.contextWindowFor(m), 1000000, m);
+  }
+  // The 4-5 pair really is 200k — do not inflate it.
+  assert.strictEqual(cat.contextWindowFor('claude-opus-4-5-20251101'), 200000);
+  assert.strictEqual(cat.contextWindowFor('claude-haiku-4-5-20251001'), 200000);
+  // A live catalog still wins over the rule in both directions.
+  cat.register('claude', [{ id: 'claude-fable-5-2', contextWindow: 200000 }]);
+  assert.strictEqual(cat.contextWindowFor('claude-fable-5-2', 'claude'), 200000);
+  cat.clear('claude');
+  assert.strictEqual(cat.contextWindowFor('claude-fable-5-2', 'claude'), 1000000);
+});
+
 ok('GPT-5 family is 400k, GPT-4.1 is 1 047 576', () => {
   assert.strictEqual(cat.contextWindowFor('gpt-5.1-codex-max'), 400000);
   assert.strictEqual(cat.contextWindowFor('gpt-5'), 400000);

@@ -65,7 +65,14 @@ const RULES = [
   [/\bgemini-3(\.\d+)?\b/i, 1048576],
   [/\bgemini-2\.5\b/i, 1048576],
   [/\bgemini/i, 1048576],
-  // Anthropic first-party. Sonnet 4.x = 1M via beta (see LONG_CONTEXT_BETA).
+  // Anthropic first-party. `/v1/models` publishes `max_input_tokens`, and the
+  // live catalog is installed verbatim, so these rules only cover the window
+  // before that call lands (and accounts whose token cannot list). Measured
+  // live 2026-11-26 over all 15 models: the 5.x line plus opus/sonnet 4-6..4-8
+  // advertise 1 000 000; the 4-5 pair advertises 200 000.
+  [/^claude-(?:fable|opus|sonnet|haiku)-5(?:[.\-]|$)/i, 1000000],
+  [/^claude-(?:opus|sonnet)-4-(?:6|7|8)(?:[.\-]|$)/i, 1000000],
+  // Sonnet 4.x = 1M via beta (see LONG_CONTEXT_BETA).
   [/^claude-sonnet-4(?:[.\-]|$)/i, LONG_CONTEXT_WINDOW],
   [/\bclaude-(opus|sonnet|haiku)-4/i, SHORT_CONTEXT_WINDOW],
   [/\bclaude|opus|sonnet|haiku/i, SHORT_CONTEXT_WINDOW],

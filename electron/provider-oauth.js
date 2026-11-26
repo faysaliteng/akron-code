@@ -34,7 +34,13 @@ const { execFileSync } = require('child_process');
 const mcpoauth = require('./mcpoauth');
 const secretstore = require('./secretstore');
 
-const DIR = path.join(os.homedir(), '.autobot');
+// `AUTOBOT_HOME` relocates every file this module owns (index, rotation
+// journal, CLAUDE_LOCK). The test suite points it at a scratch directory so a
+// quarantine test can corrupt its index without ever touching the real one —
+// the live store must never be writable from a test.
+const DIR = process.env.AUTOBOT_HOME
+  ? path.resolve(process.env.AUTOBOT_HOME)
+  : path.join(os.homedir(), '.autobot');
 const FILE = path.join(DIR, 'provider-oauth.json');
 const VERSION = 1;
 const KEY_PREFIX = 'provider-oauth:';
@@ -135,26 +141,36 @@ const PROVIDERS = {
     clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
     scopes: ['openid', 'profile', 'email', 'offline_access', 'api.connectors.read', 'api.connectors.invoke'],
     redirectPort: 1455,
-    // OpenAI registered `http://localhost:<port>/auth/callback` with a fallback
-    // port; the loopback listener retries on an ephemeral port if 1455 is busy.
+    // OpenAI registered exactly `http://localhost:1455/auth/callback` for this
+    // client id. Live-measured 2026-11-26: the authorize endpoint answers
+    // `400 {"code":"invalid_authorize_request"}` for *any* other port (1456,
+    // 3000, 54321) and `302 -> /log-in` for 1455. So the listener must own 1455
+    // or the sign-in cannot start — never fall back to an ephemeral port.
+    fixedRedirectPort: true,
     redirectHost: 'localhost',
     redirectPath: '/auth/callback',
     // Codex flags the binary passes on the authorize URL. `codex_cli_simplified_flow`
     // is what selects the loopback (non-workspace) consent screen, and
     // `id_token_add_organizations` puts the org claim on the id_token.
+    // `originator` is what the shipped CLI 0.135.0 sends; without it the grant
+    // is not attributed to the Codex client.
     extraAuthParams: {
       code_challenge_method: 'S256',
       id_token_add_organizations: 'true',
       codex_cli_simplified_flow: 'true',
+      originator: 'codex_cli_rs',
     },
     // Verified against the binary: the CLI revokes here on sign-out.
     revokeUrl: 'https://auth.openai.com/oauth/revoke',
+    // The account's live entitlement, read from `/backend-api/codex/models`
+    // (verified 2026-11-26). The picked default must come from the live catalog
+    // so a shipped list that goes stale cannot offer a model the grant lacks.
     models: [
-      { id: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
-      { id: 'gpt-5.1-codex', label: 'GPT-5.1 Codex' },
-      { id: 'gpt-5.1', label: 'GPT-5.1' },
-      { id: 'gpt-5', label: 'GPT-5' },
-      { id: 'gpt-5-codex', label: 'GPT-5 Codex' },
+      { id: 'gpt-reserve', label: 'GPT-Reserve' },
+      { id: 'gpt-6-luna', label: 'GPT-6-Luna' },
+      { id: 'gpt-5.6-terra', label: 'GPT-5.6-Terra' },
+      { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
+      { id: 'codex-auto-review', label: 'Codex Auto Review' },
     ],
     docs: 'https://platform.openai.com/docs',
   },
@@ -256,17 +272,73 @@ function providerIds() { return Object.keys(PROVIDERS); }
 // ---------------------------------------------------------------------------
 // On-disk index (non-secret)
 // ---------------------------------------------------------------------------
+let brokenIndex = { stamp: '', path: '' };
+
+/**
+ * Read the account index.
+ *
+ * "There is no file yet" and "the file is there but I cannot read it" are
+ * different facts and must not collapse into the same empty list: the UI shows
+ * zero accounts for both, but only the first one is true. A transient read (the
+ * atomic rename of a concurrent write, a slow disk) is retried; a file that
+ * still will not parse is copied aside for inspection and reported as
+ * `unreadable` so `writeDb()` refuses to erase it.
+ */
 function readDb() {
+  let raw;
   try {
-    const raw = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-    if (!raw || typeof raw !== 'object') return { version: VERSION, accounts: [] };
-    return { version: raw.version || VERSION, accounts: Array.isArray(raw.accounts) ? raw.accounts : [] };
-  } catch (_) {
-    return { version: VERSION, accounts: [] };
+    raw = fs.readFileSync(FILE, 'utf8');
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { version: VERSION, accounts: [], missing: true };
+    try { raw = fs.readFileSync(FILE, 'utf8'); } catch (_) {
+      console.warn('[provider-oauth] index unreadable:', e && e.message);
+      return { version: VERSION, accounts: [], unreadable: true, error: e && e.message };
+    }
   }
+  let data = null;
+  let err = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { data = JSON.parse(raw); err = null; break; } catch (e) {
+      err = e;
+      // A half-visible file may be replaced by the writer's rename; re-read once.
+      try { raw = fs.readFileSync(FILE, 'utf8'); } catch (_) {}
+    }
+  }
+  if (err) {
+    // One copy per broken file, not one per read: status() polls this often and
+    // would otherwise litter the directory with identical snapshots.
+    let stamp = '';
+    try { const st = fs.statSync(FILE); stamp = st.size + ':' + st.mtimeMs; } catch (_) {}
+    let quarantine = '';
+    if (brokenIndex.stamp === stamp && brokenIndex.path) quarantine = brokenIndex.path;
+    else {
+      quarantine = FILE + '.corrupt-' + Date.now();
+      try { fs.copyFileSync(FILE, quarantine); } catch (_) { quarantine = ''; }
+      brokenIndex = { stamp, path: quarantine };
+      console.warn('[provider-oauth] index parse failed (' + err.message + ')');
+    }
+    return { version: VERSION, accounts: [], unreadable: true, error: err.message, quarantine };
+  }
+  if (!data || typeof data !== 'object') return { version: VERSION, accounts: [] };
+  return { version: data.version || VERSION, accounts: Array.isArray(data.accounts) ? data.accounts : [] };
 }
 
 function writeDb(db) {
+  // Refuse to overwrite an index that cannot be parsed. Writing here is how a
+  // single bad read silently unlinks every account: the empty list returned
+  // above gets persisted and the original rows are gone for good.
+  try {
+    const cur = fs.readFileSync(FILE, 'utf8');
+    if (cur.trim()) {
+      try { JSON.parse(cur); } catch (e) {
+        const quarantine = FILE + '.corrupt-' + Date.now();
+        try { fs.writeFileSync(quarantine, cur, { mode: 0o600 }); } catch (_) {}
+        throw new Error('refusing to overwrite unreadable provider index (copy at ' + quarantine + '): ' + e.message);
+      }
+    }
+  } catch (e) {
+    if (e && e.code !== 'ENOENT') throw e;
+  }
   fs.mkdirSync(DIR, { recursive: true });
   const tmp = FILE + '.' + process.pid + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify({ version: VERSION, accounts: db.accounts }, null, 2), { mode: 0o600 });
@@ -361,12 +433,19 @@ function readClaudeCodeCredentials() {
  * Reads the current item first and merges, so unrelated material (`mcpOAuth`,
  * `organizationUuid`) is preserved, and returns false if the readback does not
  * match — a lost rotation is recoverable only while we still hold it in memory.
+ *
+ * `expect` is the refresh token the keychain held when the rotation was
+ * requested. If the item now holds a different one, another writer (the CLI)
+ * rotated in the meantime and writing ours would burn the live credential, so
+ * the write is refused and the caller adopts the keychain pair instead.
  */
-function writeBackClaudeCode(oauth) {
+function writeBackClaudeCode(oauth, expect) {
   const current = readClaudeCodeCredentials();
   if (!current || !current.raw) return false;
+  const cur = current.raw.claudeAiOauth || {};
+  if (expect && cur.refreshToken && cur.refreshToken !== expect) return false;
   const merged = Object.assign({}, current.raw);
-  merged.claudeAiOauth = Object.assign({}, current.raw.claudeAiOauth || {}, oauth);
+  merged.claudeAiOauth = Object.assign({}, cur, oauth);
   const payload = JSON.stringify(merged);
   const ok = keychainWrite('Claude Code-credentials', payload);
   if (!ok) {
@@ -374,6 +453,290 @@ function writeBackClaudeCode(oauth) {
     return keychainWrite('Claude Code-credentials', payload);
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code owns the Claude credential
+//
+// The refresh token is single-use. Whoever rotates it invalidates it for
+// everyone else, so a second app that refreshes on its own is a footgun: one
+// lost or late write-back signs the user out of Claude Code itself. Observed on
+// this machine 2026-11-25 — the keychain held a 30-minute token whose rotation
+// never made it back, and `claude -p` has answered 401 ever since.
+//
+// The rules below are the fix, not politeness:
+//   1. Adopt before rotating. If the CLI refreshed since we imported, take its
+//      pair and send no token request at all.
+//   2. Journal before writing back. The instant a rotation exists it is on disk,
+//      so a crash between "we own the new token" and "the keychain has it" is
+//      replayable instead of fatal.
+//   3. Write back before trusting. A CLI-owned rotation is committed locally
+//      only after the keychain readback proves it landed.
+//   4. One refresher at a time. A lock file serialises our own callers.
+// ---------------------------------------------------------------------------
+const ROTATION_JOURNAL = path.join(DIR, 'claude-rotation.json');
+const CLAUDE_LOCK = path.join(DIR, 'claude-cred.lock');
+const CLAUDE_LOCK_STALE_MS = 120 * 1000;
+
+/** The pair the owner (Claude Code CLI) currently holds, or null. */
+function keychainPair() {
+  const c = readClaudeCodeCredentials();
+  const o = (c && c.oauth) || null;
+  if (!o || !o.refreshToken) return null;
+  return {
+    accessToken: o.accessToken || '',
+    refreshToken: o.refreshToken,
+    expiresAt: msFromEpoch(o.expiresAt, 0),
+  };
+}
+
+function readRotationJournal() {
+  try {
+    const j = JSON.parse(fs.readFileSync(ROTATION_JOURNAL, 'utf8'));
+    return j && j.refreshToken ? j : null;
+  } catch (_) { return null; }
+}
+
+function writeRotationJournal(j) {
+  try {
+    fs.mkdirSync(DIR, { recursive: true });
+    const tmp = ROTATION_JOURNAL + '.' + process.pid + '.tmp';
+    const fd = fs.openSync(tmp, 'w', 0o600);
+    fs.writeSync(fd, JSON.stringify(j));
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmp, ROTATION_JOURNAL);
+    return true;
+  } catch (_) { return false; }
+}
+
+function clearRotationJournal() {
+  try { fs.unlinkSync(ROTATION_JOURNAL); } catch (_) {}
+}
+
+/**
+ * Finish a rotation whose keychain write-back was interrupted.
+ *
+ * Runs at boot and before the next Claude refresh. It only acts when the
+ * keychain still holds the token the rotation replaced, or holds a strictly
+ * older grant — never when the CLI has written something newer, because that
+ * token is the live one.
+ */
+function replayRotationJournal() {
+  const j = readRotationJournal();
+  if (!j) return false;
+  const k = keychainPair();
+  if (k && k.refreshToken === j.refreshToken) { clearRotationJournal(); return true; }
+  const stale = !k || k.refreshToken === j.previousRefreshToken || (k.expiresAt || 0) <= (j.expiresAt || 0);
+  if (!stale) { clearRotationJournal(); return false; }
+  const ok = writeBackClaudeCode(
+    { accessToken: j.accessToken, refreshToken: j.refreshToken, expiresAt: j.expiresAt },
+    j.previousRefreshToken,
+  );
+  if (ok) clearRotationJournal();
+  return !!ok;
+}
+
+/**
+ * Serialise our own refreshers. A held lock belongs to a refresh that is already
+ * running, and waiting is strictly better than starting a second rotation with
+ * the same single-use token. Waits are bounded: a stuck lockfile must never
+ * stall a turn.
+ */
+async function withClaudeLock(fn) {
+  const deadline = Date.now() + 5000;
+  let fd = null;
+  while (fd === null) {
+    try {
+      fd = fs.openSync(CLAUDE_LOCK, 'wx', 0o600);
+      break;
+    } catch (e) {
+      if (e.code !== 'EEXIST') break;
+      let st = null;
+      try { st = fs.statSync(CLAUDE_LOCK); } catch (_) {}
+      if (st && Date.now() - st.mtimeMs > CLAUDE_LOCK_STALE_MS) {
+        try { fs.unlinkSync(CLAUDE_LOCK); } catch (_) {}
+        continue;
+      }
+      if (Date.now() > deadline) break;
+      await sleep(150);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} }
+    try { fs.unlinkSync(CLAUDE_LOCK); } catch (_) {}
+  }
+}
+
+/**
+ * Take the owner's credential when it is newer than ours.
+ *
+ * This is the case that makes the two apps coexist: the CLI rotates on its own
+ * schedule, and the moment it does, our stored pair is stale. Refreshing with a
+ * stale pair would rotate again for no reason and burn a token nobody needed.
+ */
+function adoptKeychainIfNewer(provId, acc, t) {
+  const k = keychainPair();
+  if (!k) return null;
+  if (t && k.refreshToken === t.refreshToken) return null;
+  const merged = {
+    accessToken: k.accessToken || (t && t.accessToken) || '',
+    refreshToken: k.refreshToken,
+    tokenType: (t && t.tokenType) || 'Bearer',
+    expiresAt: k.expiresAt || (t && t.expiresAt) || 0,
+    scopes: (t && t.scopes) || [],
+    organizationUuid: (t && t.organizationUuid) || '',
+    accountId: (t && t.accountId) || '',
+  };
+  saveTokens(provId, acc, merged);
+  const db = readDb();
+  const row = db.accounts.find((a) => a.provider === provId && a.account === acc);
+  if (row) {
+    row.expiresAt = merged.expiresAt;
+    row.updatedAt = Date.now();
+    delete row.needsSignIn;
+    writeDb(db);
+  }
+  return merged;
+}
+
+/**
+ * Refresh a Claude account without ever signing out the owner.
+ *
+ * `invalid_grant` is recorded on the row as `needsSignIn` so the UI can stop
+ * pretending the account is merely throttled. Before this existed the missing
+ * User-Agent turned that permanent answer into a 429 and the app retried a dead
+ * credential forever.
+ */
+async function refreshClaudeAccount(provId, acc, t, opts) {
+  const prov = provider(provId);
+  const db0 = readDb();
+  const row0 = db0.accounts.find((a) => a.provider === provId && a.account === acc);
+  const cliOwned = !!(row0 && row0.source === 'claude-code');
+
+  // A rotation that never reached the keychain is still ours to finish.
+  replayRotationJournal();
+
+  return withClaudeLock(async () => {
+    // 1. Take the owner's pair if it moved on without us: no network, no risk.
+    const adopted = adoptKeychainIfNewer(provId, acc, t);
+    if (adopted && adopted.accessToken &&
+        (!adopted.expiresAt || adopted.expiresAt - Date.now() > REFRESH_SKEW_MS)) {
+      return {
+        accessToken: adopted.accessToken,
+        expiresAt: adopted.expiresAt,
+        refreshed: false,
+        adopted: true,
+        mirrored: true,
+      };
+    }
+    const base = adopted || t;
+
+    let json;
+    try {
+      json = await postToken(prov, {
+        grant_type: 'refresh_token',
+        refresh_token: base.refreshToken,
+        client_id: prov.clientId,
+        client_secret: prov.clientSecret,
+      }, opts);
+    } catch (e) {
+      if (e && e.status === 400 && /invalid_grant/i.test(String(e.message || ''))) {
+        const db = readDb();
+        const row = db.accounts.find((a) => a.provider === provId && a.account === acc);
+        if (row) { row.needsSignIn = Date.now(); writeDb(db); }
+        e.code = 'invalid_grant';
+        e.needsSignIn = true;
+        e.human = true;
+        if (cliOwned && !/claude code/i.test(String(e.message || ''))) {
+          e.message = 'Claude Code session expired — reconnect Claude in Accounts';
+        }
+      }
+      throw e;
+    }
+
+    const next = normalizeTokens(prov, json);
+    const merged = {
+      accessToken: next.accessToken || base.accessToken,
+      refreshToken: next.refreshToken || base.refreshToken,
+      tokenType: next.tokenType || base.tokenType || 'Bearer',
+      expiresAt: next.expiresAt || base.expiresAt,
+      scopes: next.scopes || base.scopes || [],
+      organizationUuid: base.organizationUuid || '',
+      accountId: base.accountId || '',
+    };
+
+    // 2. Journal the rotation in the same tick it exists, but only for a
+    // credential the CLI owns: replaying our own OAuth token into the CLI's
+    // keychain would be exactly the interference this section prevents.
+    if (cliOwned) {
+      writeRotationJournal({
+        provider: provId,
+        account: acc,
+        accessToken: merged.accessToken,
+        refreshToken: merged.refreshToken,
+        expiresAt: merged.expiresAt,
+        previousRefreshToken: base.refreshToken,
+        at: Date.now(),
+      });
+    }
+
+    // 3. The keychain has to hold it before we consider the rotation safe.
+    let mirrored = null;
+    if (cliOwned) {
+      mirrored = writeBackClaudeCode({
+        accessToken: merged.accessToken,
+        refreshToken: merged.refreshToken,
+        expiresAt: merged.expiresAt,
+      }, base.refreshToken);
+      // The CLI rotated concurrently: its pair is the live one, keep ours in
+      // the journal for nothing and adopt instead.
+      if (!mirrored) {
+        const k = keychainPair();
+        if (k && k.refreshToken && k.refreshToken !== base.refreshToken) {
+          clearRotationJournal();
+          saveTokens(provId, acc, Object.assign({}, merged, {
+            accessToken: k.accessToken || merged.accessToken,
+            refreshToken: k.refreshToken,
+            expiresAt: k.expiresAt || merged.expiresAt,
+          }));
+          const db = readDb();
+          const row = db.accounts.find((a) => a.provider === provId && a.account === acc);
+          if (row) { row.expiresAt = k.expiresAt || merged.expiresAt; row.updatedAt = Date.now(); delete row.needsSignIn; writeDb(db); }
+          return {
+            accessToken: k.accessToken || merged.accessToken,
+            expiresAt: k.expiresAt || merged.expiresAt,
+            refreshed: true,
+            adopted: true,
+            mirrored: true,
+          };
+        }
+      }
+    }
+
+    saveTokens(provId, acc, merged);
+    if (cliOwned && mirrored) clearRotationJournal();
+
+    const db2 = readDb();
+    const row = db2.accounts.find((a) => a.provider === provId && a.account === acc);
+    if (row) {
+      row.expiresAt = merged.expiresAt;
+      row.updatedAt = Date.now();
+      delete row.needsSignIn;
+      if (merged.scopes && merged.scopes.length) row.scopes = merged.scopes;
+      if (cliOwned && !mirrored) row.mirrorError = Date.now();
+      else delete row.mirrorError;
+      writeDb(db2);
+    }
+    return {
+      accessToken: merged.accessToken,
+      expiresAt: merged.expiresAt,
+      refreshed: true,
+      mirrored: cliOwned ? !!mirrored : true,
+    };
+  });
 }
 
 function readCodexAuth() {
@@ -521,10 +884,23 @@ function publicRecord(r) {
     account: r.account,
     label: r.label,
     plan: r.plan || '',
+    // The provider's own human name for the plan ("Free", "Plus", "Max") when
+    // it told us one. The internal slug stays in `plan` for matching/compat.
+    planName: r.planName || '',
     source: r.source || '',
     scopes: r.scopes || [],
     expiresAt: r.expiresAt || 0,
     expired: isExpired(r),
+    // The token endpoint said `invalid_grant`: only a fresh sign-in fixes this,
+    // so the UI must offer one instead of "try again later".
+    needsSignIn: !!r.needsSignIn,
+    // A CLI-owned rotation that did not reach the keychain. The credential still
+    // works for us; Claude Code will not, until the write-back is replayed.
+    mirrorPending: !!r.mirrorError,
+    // A real probe answered for this account, so the adapter is verified by
+    // evidence rather than by its unit tests. Only the timestamp crosses the
+    // bridge — never the token.
+    verifiedAt: r.verifiedAt || 0,
     // Never leak the token itself into the renderer or logs.
     hasToken: true,
   };
@@ -601,6 +977,79 @@ async function verifyAccount(provId, account, opts) {
   }
 }
 
+/**
+ * Record that a real API call answered for this account.
+ *
+ * `verifyAccount` is only consulted when a row looks expired; a healthy account
+ * would therefore keep `verifiedAt: 0` forever and the picker would keep calling
+ * its adapter "unverified" even after a live catalog came back. The catalog path
+ * calls this on success so the badge is cleared by evidence, not by a hardcoded
+ * list of provider ids in the renderer.
+ */
+function markVerified(provId, account) {
+  const acc = account ? slug(account) : activeAccount(provId);
+  if (!acc) return false;
+  const db = readDb();
+  const row = db.accounts.find((a) => a.provider === provId && a.account === acc);
+  if (!row) return false;
+  row.verifiedAt = Date.now();
+  writeDb(db);
+  return true;
+}
+
+/**
+ * Correct the plan label from the provider's live entitlement.
+ *
+ * ChatGPT's token often omits the plan claim entirely (the account on the
+ * verification machine had no id_token at all, so every refresh kept the
+ * sign-up default). `/backend-api/accounts/check` reports the real thing, so it
+ * is the only honest source for "is this account free/plus/pro/team". Best
+ * effort and never fatal: a failure leaves the previous label in place.
+ */
+async function refreshEntitlement(provId, account, opts) {
+  const o = opts || {};
+  const acc = account ? slug(account) : activeAccount(provId);
+  if (!acc || provId !== 'chatgpt') return false;
+  const t = loadTokens(provId, acc);
+  if (!t || !t.accessToken) return false;
+  const before = readDb().accounts.find((a) => a.provider === provId && a.account === acc);
+  const headers = {
+    accept: 'application/json',
+    authorization: 'Bearer ' + t.accessToken,
+    originator: 'codex_cli_rs',
+    'user-agent': 'codex-cli/0.172.0',
+  };
+  if (before && before.accountId) headers['chatgpt-account-id'] = before.accountId;
+  try {
+    const res = await (o.fetchImpl || fetch)('https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27', {
+      headers,
+      signal: o.signal,
+    });
+    if (!res || !res.ok) return false;
+    const j = await res.json();
+    const table = (j && j.accounts) || {};
+    // Our own workspace when we know its id, else the only real workspace.
+    const keys = Object.keys(table).filter((k) => k !== 'default');
+    const pick = (before && before.accountId && table[before.accountId])
+      || (keys.length === 1 ? table[keys[0]] : table.default)
+      || null;
+    const a = (pick && pick.account) || {};
+    const plan = String(a.plan_type || '').trim();
+    const planName = String(a.plan_display_name || '').trim();
+    if (!plan && !planName) return false;
+    const db = readDb();
+    const row = db.accounts.find((x) => x.provider === provId && x.account === acc);
+    if (!row) return false;
+    let changed = false;
+    if (plan && row.plan !== plan) { row.plan = plan; changed = true; }
+    if (planName && row.planName !== planName) { row.planName = planName; changed = true; }
+    if (changed) writeDb(db);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function removeAccount(provId, account) {
   const db = readDb();
   const acc = slug(account);
@@ -655,6 +1104,29 @@ function normalizeTokens(prov, body) {
 function sleep(ms) { return new Promise((r) => setTimeout(r, Math.max(0, ms))); }
 
 /**
+ * The User-Agent to present to a provider's token endpoint.
+ *
+ * Live-verified 2026-11-25 on platform.claude.com/v1/oauth/token: the exact same
+ * JSON body answered HTTP 429 `rate_limit_error` with no User-Agent and HTTP 400
+ * `invalid_grant` with this one. The first-party endpoints gate on the client
+ * identity they were built for, so mirror the CLI that owns the grant. Versions
+ * come from the transport module (main.js injects the on-disk runtime versions).
+ */
+function tokenUserAgent(prov) {
+  const id = (prov && prov.id) || '';
+  try {
+    const t = require('./providertransport');
+    if (id === 'claude' && t.claudeUa) return t.claudeUa();
+    if (id === 'chatgpt' && t.codexUa) return t.codexUa();
+    if (id === 'grok' && t.grokUa) return t.grokUa();
+  } catch (_) { /* transport not loaded: use the version floor below */ }
+  if (id === 'claude') return 'claude-cli/2.1.332 (external, cli)';
+  if (id === 'chatgpt') return 'codex-cli/0.172.0';
+  if (id === 'grok') return 'grok/1.0.92 (macos; aarch64)';
+  return 'akron-bot/1.0';
+}
+
+/**
  * POST a token grant.
  *
  * Two provider realities are encoded here because both were observed live:
@@ -671,7 +1143,14 @@ async function postToken(prov, params, opts) {
   for (const [k, v] of Object.entries(params)) if (v != null && v !== '') clean[k] = v;
 
   const attempt = async (format) => {
-    const headers = { accept: 'application/json' };
+    // Verified live 2026-11-25 against platform.claude.com/v1/oauth/token:
+    // a request with no User-Agent gets HTTP 429 `rate_limit_error` no matter
+    // whether the refresh token is valid or garbage. The identical body sent
+    // with this UA answers the truth (HTTP 400 `invalid_grant`). Without it the
+    // app mistook a permanent "sign in again" for a transient throttle and
+    // retried forever, which is exactly how a dead credential looked like a
+    // busy server and the user was never told to re-authenticate.
+    const headers = { accept: 'application/json', 'user-agent': tokenUserAgent(prov) };
     let body;
     if (format === 'json') {
       headers['content-type'] = 'application/json';
@@ -693,9 +1172,14 @@ async function postToken(prov, params, opts) {
   let last = null;
 
   for (let i = 0; i <= retries; i++) {
-    // Encoding: preferred first, then the alternative once.
+    // Encoding: preferred first, then the alternative once. A grant that is
+    // already answered `invalid_grant` is not an encoding complaint, and the
+    // endpoint is rate-limited per client — do not spend a second request
+    // re-sending a token the provider has just declared dead.
     let out = await attempt(primary);
-    if (!out.res.ok && out.res.status >= 400 && out.res.status < 500 &&
+    const deadGrant = clean.grant_type === 'refresh_token' &&
+      !!(out.json && /invalid_grant/i.test(String(out.json.error || out.json.message || '')));
+    if (!deadGrant && !out.res.ok && out.res.status >= 400 && out.res.status < 500 &&
         out.res.status !== 429 && out.res.status !== 401 && out.res.status !== 403) {
       const alt = await attempt(secondary);
       if (alt.res.ok) out = alt;
@@ -716,9 +1200,17 @@ async function postToken(prov, params, opts) {
     await sleep(wait);
   }
 
-  const err = new Error('token endpoint ' + last.res.status);
+  // Surface the provider's own reason. "token endpoint 400" tells the user
+  // nothing; "invalid_grant — the code was already used" tells them what to do.
+  const body = last.json || {};
+  const rawReason = String(
+    (body && (body.error_description || body.error || body.message || body.detail)) || ''
+  );
+  const reason = rawReason.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const err = new Error(reason ? reason : 'the provider refused the token request (HTTP ' + last.res.status + ')');
   err.status = last.res.status;
   err.body = last.json || String(last.text || '').slice(0, 300);
+  err.human = true;
   // A 429 is a "try later", never a "this account is dead" — the agent loop
   // must be able to tell the two apart.
   err.transient = last.res.status === 429 || last.res.status >= 500;
@@ -744,6 +1236,9 @@ async function refreshAccount(provId, account, opts) {
     err.code = 'no_refresh_token';
     throw err;
   }
+  // Claude's grant is owned by the Claude Code CLI; that path has its own
+  // adopt/journal/write-back rules and must not share the generic flow.
+  if (provId === 'claude') return refreshClaudeAccount(provId, acc, t, opts);
   const params = {
     grant_type: 'refresh_token',
     refresh_token: t.refreshToken,
@@ -823,6 +1318,7 @@ async function ensureToken(provId, account, opts) {
       expiresAt: t.expiresAt,
       refreshed: false,
       stale: true,
+      needsSignIn: !!(e && e.needsSignIn),
       refreshError: (e && e.message) || String(e),
     };
   });
@@ -850,6 +1346,13 @@ function callbackPage(payload) {
   const detail = ok
     ? 'Akron Bot can close this tab and keep working.'
     : escapeHtml(payload.errorDescription || payload.error || 'no authorization code was returned');
+  return renderPage(title, detail);
+}
+
+// One page renderer for every outcome, so the browser tab can never claim more
+// than the app actually knows. A "code" in the callback is not a finished
+// sign-in: the token exchange still has to succeed.
+function renderPage(title, detail) {
   return '<!doctype html><meta charset="utf-8"><title>' + escapeHtml(title) + '</title>' +
     '<style>body{font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;' +
     'background:#F5FAF8;color:#12211c;display:grid;place-items:center;height:100vh;margin:0}' +
@@ -880,6 +1383,23 @@ function corsHeaders(origin) {
     'access-control-max-age': '600',
     vary: 'Origin',
   };
+}
+
+// Who, if anyone, owns a TCP port. Read-only (`lsof`), best-effort: an empty or
+// unavailable answer is reported as "unknown", never as "free".
+function portOwner(port) {
+  return new Promise((resolve) => {
+    let cp = null;
+    try { cp = require('child_process'); } catch (_) { resolve(null); return; }
+    try {
+      cp.execFile('lsof', ['-nP', '-iTCP:' + port, '-sTCP:LISTEN'], { timeout: 4000 }, (err, stdout) => {
+        const rows = String(stdout || '').trim().split('\n').filter(Boolean);
+        if (rows.length < 2) { resolve(null); return; }
+        const cols = rows[1].split(/\s+/);
+        resolve({ command: cols[0] || '', pid: cols[1] || '' });
+      });
+    } catch (_) { resolve(null); }
+  });
 }
 
 function startLoopbackServer(opts) {
@@ -932,15 +1452,68 @@ function startLoopbackServer(opts) {
         error: u.searchParams.get('error'),
         errorDescription: u.searchParams.get('error_description') || u.searchParams.get('error_message'),
       };
-      res.writeHead(200, Object.assign({
-        'content-type': 'text/html; charset=utf-8',
-        'cache-control': 'no-store',
-      }, cors));
-      res.end(callbackPage(payload));
-      stop();
-      settle(payload);
+      // A callback carrying a state we did not mint does not belong to this
+      // attempt. Refuse it in the browser and keep the listener open for the
+      // real redirect instead of consuming the flow with a garbage code.
+      if (o.state && payload.state && payload.state !== o.state) {
+        res.writeHead(400, Object.assign({ 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }, cors));
+        res.end(renderPage('Sign-in did not complete', escapeHtml('That callback did not belong to this sign-in attempt. Akron Bot is still waiting — finish signing in from the window it opened.')));
+        return;
+      }
+      const respond = (title, detailHtml, after) => {
+        let done = false;
+        const once = () => { if (done) return; done = true; if (typeof after === 'function') after(); };
+        res.writeHead(200, Object.assign({
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+        }, cors));
+        res.end(renderPage(title, detailHtml));
+        // Let the browser finish reading the page before the listener closes,
+        // otherwise the tab shows a reset instead of the verdict.
+        res.on('finish', once);
+        res.on('close', once);
+      };
+      // When the caller can prove the code is good (the token exchange), show
+      // that verdict instead of optimistically declaring success on any `code`.
+      if (typeof o.verify === 'function') {
+        Promise.resolve()
+          .then(() => o.verify(payload))
+          .then((verdict) => {
+            const v = verdict || {};
+            if (v.ok) {
+              respond('Signed in', 'Akron Bot can close this tab and keep working.', () => {
+                stop();
+                settle(Object.assign({}, payload, { verified: v }));
+              });
+            } else {
+              const detail = v.detail || 'the provider refused the sign-in';
+              respond('Sign-in did not complete', escapeHtml(detail), () => {
+                stop();
+                settle(Object.assign({}, payload, { error: payload.error || 'exchange_failed', errorDescription: detail }));
+              });
+            }
+          })
+          .catch((e) => {
+            const msg = String((e && e.message) || 'sign-in failed').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
+            respond('Sign-in did not complete', escapeHtml(msg), () => {
+              stop();
+              settle(Object.assign({}, payload, { error: 'exchange_failed', errorDescription: msg }));
+            });
+          });
+        return;
+      }
+      // No verifier supplied: never claim success on a bare code.
+      respond('Finishing sign-in', 'Akron Bot is completing the sign-in. You can close this tab.', () => {
+        stop();
+        settle(payload);
+      });
     };
 
+    // A provider whose console registered one exact redirect URI (OpenAI:
+    // `http://localhost:1455/auth/callback`) refuses every other port, so a
+    // busy port is a hard failure there — pretending to sign in on an ephemeral
+    // port only produces the provider's bare `invalid_authorize_request` page.
+    const strictPort = !!(o.strictPort && wantPort > 0);
     // Bind every requested host on one shared port. The first host picks the
     // port: a fixed port that is busy falls back to an ephemeral one (claude
     // and google accept any loopback port), and an ephemeral port is reused by
@@ -967,8 +1540,20 @@ function startLoopbackServer(opts) {
         const i = servers.indexOf(server);
         if (i >= 0) servers.splice(i, 1);
         if (servers.length === 0) {
-          // Nothing bound yet: a busy requested port retries on an ephemeral one.
-          if (err && err.code === 'EADDRINUSE' && port !== 0) { bindAll(hosts, 0); return; }
+          // Nothing bound yet. A registered port cannot move: report who owns
+          // it instead of handing the provider a redirect_uri it will reject.
+          if (err && err.code === 'EADDRINUSE' && port !== 0) {
+            if (strictPort) {
+              stop();
+              const e = new Error('port ' + port + ' is already in use');
+              e.code = 'EADDRINUSE';
+              e.port = port;
+              reject(e);
+              return;
+            }
+            bindAll(hosts, 0);
+            return;
+          }
           stop();
           reject(err);
           return;
@@ -1131,6 +1716,23 @@ async function authorize(provId, opts) {
   const { verifier, challenge } = mcpoauth.pkce();
   const state = mcpoauth.randomState();
   const nonce = prov.authNonce ? mcpoauth.randomState() : '';
+  // A browser sign-in can be abandoned — the user clicks the wrong provider,
+  // or the browser never comes back. Without a cancel handle the caller stays
+  // busy until the 10-minute timeout, so honour an AbortSignal and unwind the
+  // listener immediately.
+  const signal = o.signal || null;
+  const cancelled = () => {
+    const err = new Error('sign-in cancelled');
+    err.code = 'signin_cancelled';
+    return err;
+  };
+  const abortPromise = signal ? new Promise((_, rej) => {
+    if (signal.aborted) return rej(cancelled());
+    signal.addEventListener('abort', () => rej(cancelled()), { once: true });
+  }) : null;
+  // Keep an unhandled rejection from the losing side of a race off the process.
+  if (abortPromise) abortPromise.catch(() => {});
+  if (signal && signal.aborted) throw cancelled();
   // Manual mode: no loopback listener. The provider shows the code on its own
   // page and the caller hands it back through `waitForCode`. This is the only
   // path that works when the browser cannot reach 127.0.0.1 (containers,
@@ -1138,16 +1740,103 @@ async function authorize(provId, opts) {
   const manual = !!(o.manual && prov.manualRedirectUrl && typeof o.waitForCode === 'function');
   let loop = null;
   let redirectUri = '';
+  // The browser page must report what actually happened, so the token exchange
+  // runs inside the listener and its verdict becomes the page the user sees.
+  let verified = null;
+  const exchange = async (code, st) => {
+    const body = {
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+      client_id: prov.clientId,
+      client_secret: prov.clientSecret,
+      code_verifier: verifier,
+    };
+    if (prov.echoState) body.state = state;
+    const json = await postToken(prov, body, { fetchImpl: o.fetchImpl });
+    const tokens = normalizeTokens(prov, json);
+    if (!tokens.accessToken) throw new Error('the provider returned no access token');
+    const ident = await identify(provId, tokens, { fetchImpl: o.fetchImpl });
+    return addAccount(provId, {
+      account: ident.account,
+      label: o.label || ident.label,
+      plan: ident.plan,
+      source: 'oauth',
+      tokens: Object.assign({}, tokens, {
+        organizationUuid: ident.organizationUuid,
+        accountId: ident.accountId,
+      }),
+    });
+  };
   if (manual) {
     redirectUri = prov.manualRedirectUrl;
   } else {
+    // A registered redirect URI means one exact port. Check it before we open
+    // anything so the failure names the culprit instead of ending in the
+    // provider's bare `invalid_authorize_request` page.
+    if (prov.fixedRedirectPort) {
+      const holder = await portOwner(prov.redirectPort);
+      if (holder) {
+        const where = 'http://' + prov.redirectHost + ':' + prov.redirectPort + prov.redirectPath;
+        const who = (holder.command ? holder.command + ' (pid ' + holder.pid + ')' : 'another program');
+        const err = new Error(
+          prov.label + ' only accepts ' + where + ' as its redirect URI, but port ' +
+          prov.redirectPort + ' is held by ' + who + '. Quit that process — a finished ' +
+          '`codex login`, or a previous sign-in attempt still waiting — then retry.',
+        );
+        err.code = 'redirect_port_busy';
+        err.port = prov.redirectPort;
+        err.redirectUri = where;
+        err.holder = holder;
+        throw err;
+      }
+    }
     // Listen before we open the browser: the redirect can land instantly.
     loop = await startLoopbackServer({
       path: prov.redirectPath,
       port: prov.redirectPort,
+      // OpenID providers that registered one exact redirect URI reject the
+      // whole request when the port differs, so fail loudly on a busy port.
+      strictPort: !!prov.fixedRedirectPort,
       redirectHost: prov.redirectHost,
       timeoutMs: o.timeoutMs || 10 * 60 * 1000,
+      state,
+      verify: async (payload) => {
+        if (payload.error) return { ok: false, detail: payload.errorDescription || payload.error };
+        if (!payload.code) return { ok: false, detail: 'the provider returned no authorization code' };
+        try {
+          verified = await exchange(payload.code, payload.state);
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, detail: String((e && e.message) || 'the provider refused the sign-in').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300) };
+        }
+      },
+    }).catch((e) => {
+      if (e && e.code === 'EADDRINUSE') {
+        const where = 'http://' + prov.redirectHost + ':' + prov.redirectPort + prov.redirectPath;
+        const err = new Error(
+          prov.label + ' only accepts ' + where + ' as its redirect URI, but port ' +
+          prov.redirectPort + ' is already in use — so the browser request cannot be started. ' +
+          'Quit whatever owns the port (usually a running `codex login`, or a previous attempt ' +
+          'that is still waiting) and retry.',
+        );
+        err.code = 'redirect_port_busy';
+        err.port = prov.redirectPort;
+        err.redirectUri = where;
+        throw err;
+      }
+      throw e;
     });
+    redirectUri = loop.redirectUri;
+    // Belt and braces: whatever the listener reports must be the URI the
+    // provider registered. A mismatch is caught here instead of becoming an
+    // opaque `invalid_authorize_request` page in the user's browser.
+    if (prov.fixedRedirectPort && redirectUri !== 'http://' + prov.redirectHost + ':' + prov.redirectPort + prov.redirectPath) {
+      const err = new Error(prov.label + ' redirected to the wrong address (' + redirectUri + ') — refusing to open a sign-in that cannot complete.');
+      err.code = 'redirect_uri_mismatch';
+      try { loop.close(); } catch (_) {}
+      throw err;
+    }
     redirectUri = loop.redirectUri;
   }
   const url = buildAuthorizeUrl(prov, { redirectUri, state, challenge, nonce });
@@ -1156,14 +1845,18 @@ async function authorize(provId, opts) {
   if (manual) {
     let pasted = '';
     try {
-      pasted = await o.waitForCode({ url, state });
+      const wait = Promise.resolve().then(() => o.waitForCode({ url, state }));
+      wait.catch(() => {});
+      pasted = await (abortPromise ? Promise.race([wait, abortPromise]) : wait);
     } finally {
       if (loop) loop.close();
     }
     cb = parseManualCode(pasted, state);
   } else {
     try {
-      cb = await loop.wait();
+      const wait = loop.wait();
+      wait.catch(() => {});
+      cb = await (abortPromise ? Promise.race([wait, abortPromise]) : wait);
     } finally {
       loop.close();
     }
@@ -1177,31 +1870,10 @@ async function authorize(provId, opts) {
   if (cb.state && cb.state !== state) {
     throw new Error('sign-in state mismatch — the callback did not belong to this attempt');
   }
-
-  const body = {
-    grant_type: 'authorization_code',
-    code: cb.code,
-    redirect_uri: redirectUri,
-    client_id: prov.clientId,
-    client_secret: prov.clientSecret,
-    code_verifier: verifier,
-  };
-  if (prov.echoState) body.state = state;
-  const json = await postToken(prov, body, { fetchImpl: o.fetchImpl });
-
-  const tokens = normalizeTokens(prov, json);
-  if (!tokens.accessToken) throw new Error('sign-in succeeded but no access token was returned');
-  const ident = await identify(provId, tokens, { fetchImpl: o.fetchImpl });
-  return addAccount(provId, {
-    account: ident.account,
-    label: o.label || ident.label,
-    plan: ident.plan,
-    source: 'oauth',
-    tokens: Object.assign({}, tokens, {
-      organizationUuid: ident.organizationUuid,
-      accountId: ident.accountId,
-    }),
-  });
+  // The loopback path already exchanged the code (that is what the browser page
+  // reported). Only the manual path still has to do it here.
+  if (verified) return verified;
+  return exchange(cb.code, cb.state);
 }
 
 // ---------------------------------------------------------------------------
@@ -1380,6 +2052,12 @@ async function importLocal(opts) {
 function status() {
   const db = readDb();
   const out = { version: VERSION, secretBackend: secretstore.status(), providers: [] };
+  // An unreadable index is not an empty app. Report it so the UI can say so
+  // instead of showing zero accounts as though that were the truth.
+  if (db.unreadable) {
+    out.storeError = db.error || 'the account index could not be read';
+    out.storeQuarantine = db.quarantine || '';
+  }
   for (const id of providerIds()) {
     const prov = PROVIDERS[id];
     out.providers.push({
@@ -1449,6 +2127,94 @@ function adoptLocalCredentials(provId, acc, opts) {
   return tokens;
 }
 
+/**
+ * Re-import the Claude credential after the owner (Claude Code CLI) re-signed in.
+ *
+ * The app never runs its own Claude OAuth: a second flow would mint a refresh
+ * token the CLI does not know about, and the first rotation on either side
+ * would sign the other out. The correct reconnect is the CLI's own login, then
+ * this adoption.
+ *
+ * A stale account whose grant the CLI has replaced is removed, because its
+ * refresh token is dead by construction and keeping the row would show the user
+ * two Claude accounts, one of which can never work.
+ */
+async function adoptClaudeFromCli(opts) {
+  const o = opts || {};
+  const cc = readClaudeCodeCredentials();
+  if (!cc || !cc.oauth || !cc.oauth.accessToken) {
+    const e = new Error('Claude Code has no saved sign-in on this machine — run `claude` and finish its sign-in first');
+    e.code = 'provider_needs_signin';
+    e.human = true;
+    throw e;
+  }
+  const tokens = {
+    accessToken: cc.oauth.accessToken,
+    refreshToken: cc.oauth.refreshToken || '',
+    tokenType: 'Bearer',
+    expiresAt: epochToMs(cc.oauth.expiresAt),
+    scopes: cc.oauth.scopes || [],
+    organizationUuid: cc.organizationUuid || '',
+    accountId: '',
+  };
+  const sub = cc.oauth.subscriptionType || 'subscription';
+  const existing = readDb().accounts.filter((a) => a.provider === 'claude');
+  const previous = existing.length === 1 ? existing[0] : null;
+
+  // The keychain can hold a token the CLI never managed to refresh. Adopting it
+  // would clear the sign-in flag without a working credential, so ask the API
+  // first: 401 means the CLI is still signed out, and only a transport failure
+  // (where the answer is genuinely unknown) falls back to offline adoption.
+  const doFetch = o.fetchImpl || fetch;
+  try {
+    const res = await doFetch('https://api.anthropic.com/v1/models?limit=1', {
+      headers: {
+        authorization: 'Bearer ' + tokens.accessToken,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'oauth-2025-04-20',
+        accept: 'application/json',
+        'user-agent': 'claude-cli/2.1.332 (external, cli)',
+      },
+    });
+    if (res && (res.status === 401 || res.status === 403)) {
+      const e = new Error('Claude Code is still signed out — finish its sign-in, then reconnect');
+      e.code = 'provider_needs_signin';
+      e.human = true;
+      throw e;
+    }
+  } catch (e) {
+    if (e && e.code === 'provider_needs_signin') throw e;
+    /* network below us: adopt the credential we have and let the next turn test it */
+  }
+
+  // The profile probe names the account. If it is unavailable the credential is
+  // still adopted under the row we already track, so a flaky network can never
+  // cost the user their sign-in.
+  let account = '';
+  let plan = '';
+  try {
+    const ident = await identify('claude', tokens, { fetchImpl: o.fetchImpl });
+    account = ident.account || '';
+    plan = ident.plan || '';
+  } catch (_) { /* offline adoption is fine */ }
+  account = account || (previous && previous.account) || slug('claude');
+  plan = plan || (previous && previous.plan) || sub;
+
+  const rec = addAccount('claude', {
+    account,
+    label: 'Claude · ' + (cc.oauth.subscriptionType || (previous && previous.plan) || 'subscription'),
+    plan,
+    source: 'claude-code',
+    tokens,
+  });
+  // The CLI signed into a different account: retire the row whose grant is gone.
+  if (previous && previous.account !== account) {
+    try { removeAccount('claude', previous.account); } catch (_) {}
+  }
+  try { setActive('claude', account); } catch (_) {}
+  return rec;
+}
+
 /** Resolve a `provider:account` id into everything the transport needs. */
 async function resolve(id, opts) {
   const raw = String(id || '');
@@ -1491,6 +2257,10 @@ module.exports = {
   listAccounts,
   getAccount,
   verifyAccount,
+  /** A live call answered: clear the "unverified" badge from evidence. */
+  markVerified,
+  /** Ask the provider for the real plan name and correct a stale label. */
+  refreshEntitlement,
   addAccount,
   addBearer,
   removeAccount,
@@ -1501,12 +2271,22 @@ module.exports = {
   refreshAccount,
   authorize,
   resolve,
+  /** Finish a Claude rotation whose keychain write-back was interrupted. */
+  replayRotationJournal,
+  /** The credential the Claude Code CLI owns (keychain), or null. */
+  readClaudeCodeCredentials,
+  /** Adopt the current Claude Code keychain credential (no OAuth of our own). */
+  adoptClaudeFromCli,
   // exposed for tests
   _internal: {
     readDb, writeDb, slotKey, slug, jwtPayload, msFromEpoch, epochToMs, fingerprint,
     normalizeTokens, buildAuthorizeUrl, startLoopbackServer, readClaudeCodeCredentials,
+    portOwner,
     readCodexAuth, readGeminiCreds, readGrokConfig, callbackPage, publicRecord,
     adoptLocalCredentials, parseManualCode,
     postToken, identify, REFRESH_SKEW_MS,
+    tokenUserAgent, keychainPair, writeBackClaudeCode, replayRotationJournal,
+    writeRotationJournal, readRotationJournal, withClaudeLock, adoptKeychainIfNewer,
+    refreshClaudeAccount, refreshEntitlement, markVerified, ROTATION_JOURNAL, CLAUDE_LOCK,
   },
 };
