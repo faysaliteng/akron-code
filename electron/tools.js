@@ -2142,6 +2142,17 @@ async function runToolInner(name, args, ctx) {
       if (ctx.allowRichRead) finalArgs._allowRichRead = true;
     }
     if (!finalArgs.cwd && ctx.cwd) finalArgs.cwd = ctx.cwd;
+    if (!(ctx && ctx.forceLocal) && ['bash', 'read_file', 'write_file', 'edit_file', 'multi_edit', 'glob', 'grep'].includes(execName)) {
+      try {
+        const environments = require('./environments');
+        if (environments.isRemoteActive()) {
+          const remoteOut = await withTimeout(environments.runActiveTool(execName, finalArgs), toolTimeoutMs(name, finalArgs), name);
+          return { content: String(remoteOut == null ? '' : remoteOut) };
+        }
+      } catch (remErr) {
+        return { content: 'Remote environment error: ' + (remErr && remErr.message ? remErr.message : String(remErr)), isError: true };
+      }
+    }
     const content = await withTimeout(fn(finalArgs, { signal: ctx.signal, cwd: finalArgs.cwd, emit: ctx.emit, currentToolId: ctx.currentToolId }), toolTimeoutMs(name, finalArgs), name);
     if (content && typeof content === 'object' && (content.isError || typeof content.content === 'string')) return content;
     return { content: String(content) };

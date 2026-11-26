@@ -376,4 +376,21 @@ contextBridge.exposeInMainWorld('autobot', {
   ideGitBranches: (payload) => ipcRenderer.invoke('ide:gitBranches', payload),
   ideGitCheckout: (payload) => ipcRenderer.invoke('ide:gitCheckout', payload),
   ideGitFileAtHead: (payload) => ipcRenderer.invoke('ide:gitFileAtHead', payload),
+
+  // ---- Execution Environments (This Computer / SSH Host / Remote Server) ----
+  envGetState: () => ipcRenderer.invoke('autobot:envGetState'),
+  envSetActive: (spec) => ipcRenderer.invoke('autobot:envSetActive', spec),
+  envSaveSsh: (profile) => ipcRenderer.invoke('autobot:envSaveSsh', profile),
+  envDeleteSsh: (id) => ipcRenderer.invoke('autobot:envDeleteSsh', id),
+  envTestSsh: (profileOrId) => ipcRenderer.invoke('autobot:envTestSsh', profileOrId),
+  envSaveRemote: (profile) => ipcRenderer.invoke('autobot:envSaveRemote', profile),
+  envDeleteRemote: (id) => ipcRenderer.invoke('autobot:envDeleteRemote', id),
+  envTestRemote: (profileOrId) => ipcRenderer.invoke('autobot:envTestRemote', profileOrId),
+  envToggleHostServer: (enabled, opts) => ipcRenderer.invoke('autobot:envToggleHostServer', enabled, opts),
+  envGetHostToken: () => ipcRenderer.invoke('autobot:envGetHostToken'),
+  onEnvChanged: (cb) => {
+    const h = (e, state) => cb(state);
+    ipcRenderer.on('autobot:envChanged', h);
+    return () => ipcRenderer.removeListener('autobot:envChanged', h);
+  },
 });

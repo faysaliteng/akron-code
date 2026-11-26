@@ -801,6 +801,48 @@ export default function App() {
   const [planMode, setPlanMode] = useState(null); // active plan-mode banner { active, file }
   const [gdriveModalOpen, setGdriveModalOpen] = useState(false);
   const [gdriveState, setGdriveState] = useState({ connected: false, mode: null, detectedLocalFolders: [] });
+  const [envState, setEnvState] = useState({
+    active: { kind: 'local', id: null, label: 'This Computer', cwd: '' },
+    sshProfiles: [],
+    remoteProfiles: [],
+    sshConfigHosts: [],
+    hostServer: { enabled: false, port: 9477, running: false },
+  });
+
+  const refreshEnvState = useCallback(async () => {
+    try {
+      if (window.autobot && window.autobot.envGetState) {
+        const st = await window.autobot.envGetState();
+        if (st && st.active) setEnvState(st);
+      }
+    } catch (_) {}
+  }, []);
+  useEffect(() => {
+    refreshEnvState();
+    if (window.autobot && window.autobot.onEnvChanged) {
+      return window.autobot.onEnvChanged((st) => {
+        if (st && st.active) {
+          setEnvState(st);
+          if ((st.active.kind === 'ssh' || st.active.kind === 'remote') && st.active.cwd) {
+            setCwd(st.active.cwd);
+          }
+        }
+      });
+    }
+    return undefined;
+  }, [refreshEnvState]);
+
+  const switchEnvironment = useCallback(async (spec) => {
+    if (!window.autobot || !window.autobot.envSetActive) return;
+    const r = await window.autobot.envSetActive(spec);
+    if (r && r.ok && r.state) {
+      setEnvState(r.state);
+      if (r.active && r.active.cwd) setCwd(r.active.cwd);
+      setNotice(`Environment: ${r.active?.label || 'This Computer'}`);
+    } else if (r && r.error) {
+      setError(r.error);
+    }
+  }, []);
 
   const refreshGdriveStatus = useCallback(async () => {
     try {
@@ -3175,6 +3217,9 @@ export default function App() {
                   lastUsage={lastUsage}
                   gdriveState={gdriveState}
                   onOpenGdrive={() => setGdriveModalOpen(true)}
+                  envState={envState}
+                  onSwitchEnvironment={switchEnvironment}
+                  onOpenEnvironments={() => openSettingsAt('environments')}
                   T={T}
                 />
               </>
@@ -3404,6 +3449,9 @@ export default function App() {
             lastUsage={lastUsage}
             gdriveState={gdriveState}
             onOpenGdrive={() => setGdriveModalOpen(true)}
+            envState={envState}
+            onSwitchEnvironment={switchEnvironment}
+            onOpenEnvironments={() => openSettingsAt('environments')}
             T={T}
           />
         </main>
@@ -3428,6 +3476,11 @@ export default function App() {
           cwd={cwd} setCwd={setCwd}
           onOpenGdrive={() => setGdriveModalOpen(true)}
           gdriveState={gdriveState}
+          envState={envState}
+          refreshEnvState={refreshEnvState}
+          onSwitchEnvironment={switchEnvironment}
+          setError={setError}
+          setNotice={setNotice}
         />
       )}
 
@@ -7445,7 +7498,175 @@ const BUILTIN_MENTION_AGENTS = [
   { name: 'Plan', kind: 'agent', description: 'Read-only planning & design subagent' },
 ];
 
-function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, editQueued, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, T }) {
+function EnvironmentPicker({ envState, onSwitchEnvironment, onOpenEnvironments }) {
+  const [open, setOpen] = useState(false);
+  const [sshOpen, setSshOpen] = useState(false);
+  const [remoteOpen, setRemoteOpen] = useState(false);
+  const [sshQuery, setSshQuery] = useState('');
+  const wrapRef = useRef(null);
+  useDismiss(open, [wrapRef], () => { setOpen(false); setSshOpen(false); setRemoteOpen(false); });
+
+  const active = (envState && envState.active) || { kind: 'local', id: null, label: 'This Computer' };
+  const isRemote = active.kind === 'ssh' || active.kind === 'remote';
+  const sshAll = [
+    ...((envState && envState.sshConfigHosts) || []),
+    ...((envState && envState.sshProfiles) || []),
+  ];
+  const sshFiltered = sshQuery.trim()
+    ? sshAll.filter((h) => (`${h.name} ${h.host} ${h.username}`).toLowerCase().includes(sshQuery.trim().toLowerCase()))
+    : sshAll;
+  const remotes = (envState && envState.remoteProfiles) || [];
+
+  return (
+    <div className="env-picker-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className={'env-picker-btn' + (isRemote ? ' remote' : '')}
+        onClick={() => { setOpen((v) => !v); setSshOpen(false); setRemoteOpen(false); }}
+        title="Switch execution environment (This Computer · SSH Host · Remote Server)"
+      >
+        <span className={'env-status-dot' + (isRemote ? ' on' : '')} />
+        <Icon name={active.kind === 'remote' ? 'Globe' : (active.kind === 'ssh' ? 'CommandLine' : 'Window')} size={12} />
+        <span>{active.label || 'This Computer'}</span>
+        <span style={{ fontSize: 9, opacity: 0.7 }}>▾</span>
+      </button>
+
+      {open && (
+        <div className="env-menu" role="menu">
+          <button
+            type="button"
+            className={'env-menu-row' + (active.kind === 'local' ? ' on' : '')}
+            onClick={() => { onSwitchEnvironment && onSwitchEnvironment({ kind: 'local' }); setOpen(false); }}
+          >
+            <Icon name="Window" size={14} />
+            <div className="env-menu-row-meta">
+              <span className="env-menu-row-title">This Computer</span>
+              <span className="env-menu-row-sub">Runs on this machine</span>
+            </div>
+            {active.kind === 'local' && <Icon name="Check" size={13} />}
+          </button>
+
+          <button
+            type="button"
+            className={'env-menu-row' + (active.kind === 'remote' || remoteOpen ? ' on' : '')}
+            onClick={() => { setRemoteOpen((v) => !v); setSshOpen(false); }}
+          >
+            <Icon name="Globe" size={14} />
+            <div className="env-menu-row-meta">
+              <span className="env-menu-row-title">Remote</span>
+              <span className="env-menu-row-sub">{remotes.length ? `${remotes.length} configured server(s)` : 'Runs in a cloud environment'}</span>
+            </div>
+            <span style={{ opacity: 0.65 }}>›</span>
+          </button>
+
+          <button
+            type="button"
+            className={'env-menu-row' + (active.kind === 'ssh' || sshOpen ? ' on' : '')}
+            onClick={() => { setSshOpen((v) => !v); setRemoteOpen(false); }}
+          >
+            <Icon name="CommandLine" size={14} />
+            <div className="env-menu-row-meta">
+              <span className="env-menu-row-title">SSH Host</span>
+              <span className="env-menu-row-sub">{sshAll.length ? `${sshAll.length} host(s) available` : 'Connect via SSH'}</span>
+            </div>
+            <span style={{ opacity: 0.65 }}>›</span>
+          </button>
+
+          {sshOpen && (
+            <div className="env-flyout">
+              <div className="env-flyout-search">
+                <Icon name="Search" size={12} />
+                <input
+                  value={sshQuery}
+                  onChange={(e) => setSshQuery(e.target.value)}
+                  placeholder="Search Hosts..."
+                  autoFocus
+                />
+              </div>
+              {sshFiltered.some((h) => h.source === 'ssh-config') && (
+                <div className="env-flyout-sect">SSH Config</div>
+              )}
+              {sshFiltered.filter((h) => h.source === 'ssh-config').map((h) => (
+                <button
+                  key={h.id}
+                  type="button"
+                  className={'env-menu-row' + (active.kind === 'ssh' && active.id === h.id ? ' on' : '')}
+                  onClick={() => { onSwitchEnvironment && onSwitchEnvironment({ kind: 'ssh', id: h.id, cwd: h.remoteCwd || '' }); setOpen(false); }}
+                >
+                  <Icon name="CommandLine" size={13} />
+                  <div className="env-menu-row-meta">
+                    <span className="env-menu-row-title">{h.name}</span>
+                    <span className="env-menu-row-sub">{h.username ? `${h.username}@` : ''}{h.host}</span>
+                  </div>
+                  {active.kind === 'ssh' && active.id === h.id && <Icon name="Check" size={12} />}
+                </button>
+              ))}
+              {sshFiltered.some((h) => h.source !== 'ssh-config') && (
+                <div className="env-flyout-sect">Saved Hosts</div>
+              )}
+              {sshFiltered.filter((h) => h.source !== 'ssh-config').map((h) => (
+                <button
+                  key={h.id}
+                  type="button"
+                  className={'env-menu-row' + (active.kind === 'ssh' && active.id === h.id ? ' on' : '')}
+                  onClick={() => { onSwitchEnvironment && onSwitchEnvironment({ kind: 'ssh', id: h.id, cwd: h.remoteCwd || '' }); setOpen(false); }}
+                >
+                  <Icon name="CommandLine" size={13} />
+                  <div className="env-menu-row-meta">
+                    <span className="env-menu-row-title">{h.name}</span>
+                    <span className="env-menu-row-sub">{h.username ? `${h.username}@` : ''}{h.host}</span>
+                  </div>
+                  {active.kind === 'ssh' && active.id === h.id && <Icon name="Check" size={12} />}
+                </button>
+              ))}
+              <div className="env-sep" />
+              <button
+                type="button"
+                className="env-menu-row"
+                onClick={() => { setOpen(false); onOpenEnvironments && onOpenEnvironments(); }}
+              >
+                <Icon name="Add" size={13} />
+                <span className="env-menu-row-title">Connect to SSH Host...</span>
+              </button>
+            </div>
+          )}
+
+          {remoteOpen && (
+            <div className="env-flyout">
+              <div className="env-flyout-sect">Remote Servers</div>
+              {remotes.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  className={'env-menu-row' + (active.kind === 'remote' && active.id === r.id ? ' on' : '')}
+                  onClick={() => { onSwitchEnvironment && onSwitchEnvironment({ kind: 'remote', id: r.id, cwd: r.remoteCwd || '' }); setOpen(false); }}
+                >
+                  <Icon name="Globe" size={13} />
+                  <div className="env-menu-row-meta">
+                    <span className="env-menu-row-title">{r.name}</span>
+                    <span className="env-menu-row-sub">{r.url}</span>
+                  </div>
+                  {active.kind === 'remote' && active.id === r.id && <Icon name="Check" size={12} />}
+                </button>
+              ))}
+              <div className="env-sep" />
+              <button
+                type="button"
+                className="env-menu-row"
+                onClick={() => { setOpen(false); onOpenEnvironments && onOpenEnvironments(); }}
+              >
+                <Icon name="Add" size={13} />
+                <span className="env-menu-row-title">Connect to Remote Server...</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, editQueued, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -8201,8 +8422,17 @@ function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, 
   return (
     <div className={'inputbar' + (dragOver ? ' drag-over' : '')} onDragOver={(e) => { e.preventDefault(); setDragOver(true); }} onDragLeave={(e) => { e.preventDefault(); setDragOver(false); }} onDrop={onDropFiles}>
       <div className="cwdbar">
+        <EnvironmentPicker
+          envState={envState}
+          onSwitchEnvironment={onSwitchEnvironment}
+          onOpenEnvironments={onOpenEnvironments}
+        />
         <span className="cwd"><Icon name="Folder" size={13} /> {cwd || '~'}</span>
-        <button className="cwd-pick" onClick={async () => { const d = await window.autobot.pickFolder(); if (d) { setCwd(d); const id = loadJSON('autobot:activeId', null); if (id) window.autobot.setWorkspace(id, d).catch(() => {}); } }}>Change</button>
+        {(!envState || !envState.active || envState.active.kind === 'local') ? (
+          <button className="cwd-pick" onClick={async () => { const d = await window.autobot.pickFolder(); if (d) { setCwd(d); const id = loadJSON('autobot:activeId', null); if (id) window.autobot.setWorkspace(id, d).catch(() => {}); } }}>Change</button>
+        ) : (
+          <button className="cwd-pick" onClick={() => onSwitchEnvironment && onSwitchEnvironment({ kind: 'local' })}>Disconnect</button>
+        )}
       </div>
 
       {queued && queued.length > 0 && (
@@ -9977,10 +10207,242 @@ function RolePoolsEditor({ orchestrator, saveOrch }) {
   );
 }
 
+function EnvironmentsSection({ envState, refreshEnvState, onSwitchEnvironment, setError, setNotice, cwd }) {
+  const [sshDraft, setSshDraft] = useState({ name: '', host: '', port: 22, username: '', identityFile: '', remoteCwd: '', secret: '' });
+  const [remDraft, setRemDraft] = useState({ name: '', url: '', token: '', remoteCwd: '' });
+  const [busy, setBusy] = useState('');
+  const [statusOut, setStatusOut] = useState('');
+  const [remoteWsList, setRemoteWsList] = useState([]);
+  const [hostTokenShown, setHostTokenShown] = useState('');
+
+  const active = (envState && envState.active) || { kind: 'local', label: 'This Computer' };
+  const sshProfiles = (envState && envState.sshProfiles) || [];
+  const sshConfigHosts = (envState && envState.sshConfigHosts) || [];
+  const remoteProfiles = (envState && envState.remoteProfiles) || [];
+  const hostServer = (envState && envState.hostServer) || {};
+
+  const saveSsh = async (e) => {
+    e && e.preventDefault();
+    if (!sshDraft.host.trim()) return;
+    setBusy('save-ssh');
+    try {
+      const r = await window.autobot.envSaveSsh(sshDraft);
+      if (r && r.ok) {
+        setSshDraft({ name: '', host: '', port: 22, username: '', identityFile: '', remoteCwd: '', secret: '' });
+        setStatusOut(`Saved SSH host "${r.profile.name}". Passphrase/password stored in encrypted keychain.`);
+        refreshEnvState && refreshEnvState();
+      } else setStatusOut((r && r.error) || 'Failed to save SSH host');
+    } finally { setBusy(''); }
+  };
+
+  const runTestSsh = async (profOrId) => {
+    setBusy('test-ssh');
+    setStatusOut('Testing SSH connection…');
+    try {
+      const r = await window.autobot.envTestSsh(profOrId);
+      if (r && r.ok) setStatusOut(`✅ SSH connected in ${r.latencyMs}ms · ${r.uname} · pwd: ${r.remoteCwd}`);
+      else setStatusOut(`❌ SSH failed (${r?.latencyMs || 0}ms): ${r?.error || 'unknown error'}`);
+    } finally { setBusy(''); }
+  };
+
+  const saveRemote = async (e) => {
+    e && e.preventDefault();
+    if (!remDraft.url.trim()) return;
+    setBusy('save-rem');
+    try {
+      const r = await window.autobot.envSaveRemote(remDraft);
+      if (r && r.ok) {
+        setRemDraft({ name: '', url: '', token: '', remoteCwd: '' });
+        setStatusOut(`Saved Remote Server "${r.profile.name}". Auth token encrypted in secret store.`);
+        refreshEnvState && refreshEnvState();
+      } else setStatusOut((r && r.error) || 'Failed to save Remote Server');
+    } finally { setBusy(''); }
+  };
+
+  const runTestRemote = async (profOrId) => {
+    setBusy('test-rem');
+    setStatusOut('Testing Remote Server connection…');
+    try {
+      const r = await window.autobot.envTestRemote(profOrId);
+      if (r && r.ok) {
+        setRemoteWsList(r.workspaces || []);
+        setStatusOut(`✅ Remote Server ready in ${r.latencyMs}ms · ${r.hostname} (${r.platform}) · ${r.workspaces?.length || 0} workspace(s)`);
+      } else {
+        setStatusOut(`❌ Remote Server failed (${r?.latencyMs || 0}ms): ${r?.error || 'unreachable'}`);
+      }
+    } finally { setBusy(''); }
+  };
+
+  const toggleHostSrv = async () => {
+    setBusy('host-srv');
+    try {
+      const r = await window.autobot.envToggleHostServer(!hostServer.running, { workspaceRoot: cwd || undefined });
+      if (r && r.token) setHostTokenShown(r.token);
+      setStatusOut(r && r.running ? `✅ Remote Server host listening at ${r.url}` : 'Host Remote Server stopped');
+      refreshEnvState && refreshEnvState();
+    } finally { setBusy(''); }
+  };
+
+  return (
+    <>
+      <div className="settings-card">
+        <h3>Active Execution Environment</h3>
+        <div className={'env-prof-row' + (active.kind !== 'local' ? ' active' : '')}>
+          <div className="env-prof-meta">
+            <span className="env-prof-title">{active.label || 'This Computer'}</span>
+            <span className="env-prof-sub">Mode: {active.kind} · Workspace: {active.cwd || cwd || '~'} · Secrets: {envState?.secretStatus?.backend || 'safeStorage'}</span>
+          </div>
+          <div className="env-prof-actions">
+            {active.kind !== 'local' && (
+              <button type="button" className="btn-mini primary" onClick={() => onSwitchEnvironment({ kind: 'local' })}>
+                Switch to This Computer
+              </button>
+            )}
+          </div>
+        </div>
+        {statusOut && <p className="muted" style={{ marginTop: 10 }}>{statusOut}</p>}
+      </div>
+
+      <div className="settings-card">
+        <h3>SSH Hosts</h3>
+        <form onSubmit={saveSsh}>
+          <div className="row">
+            <label>Display name<input value={sshDraft.name} onChange={(e) => setSshDraft({ ...sshDraft, name: e.target.value })} placeholder="prod-gpu" /></label>
+            <label>Hostname / IP<input value={sshDraft.host} onChange={(e) => setSshDraft({ ...sshDraft, host: e.target.value })} placeholder="192.168.1.50" /></label>
+          </div>
+          <div className="row">
+            <label>Username<input value={sshDraft.username} onChange={(e) => setSshDraft({ ...sshDraft, username: e.target.value })} placeholder="ubuntu" /></label>
+            <label>Port<input type="number" value={sshDraft.port} onChange={(e) => setSshDraft({ ...sshDraft, port: Number(e.target.value) || 22 })} /></label>
+          </div>
+          <div className="row">
+            <label>Identity key path (optional)<input value={sshDraft.identityFile} onChange={(e) => setSshDraft({ ...sshDraft, identityFile: e.target.value })} placeholder="~/.ssh/id_ed25519" /></label>
+            <label>Remote workspace path<input value={sshDraft.remoteCwd} onChange={(e) => setSshDraft({ ...sshDraft, remoteCwd: e.target.value })} placeholder="/home/ubuntu/app" /></label>
+          </div>
+          <label>Password / key passphrase (stored encrypted in OS keychain)
+            <input type="password" value={sshDraft.secret} onChange={(e) => setSshDraft({ ...sshDraft, secret: e.target.value })} placeholder="Optional when using SSH key or agent" />
+          </label>
+          <div className="row-actions" style={{ marginTop: 6 }}>
+            <button type="submit" className="btn-mini primary" disabled={!sshDraft.host.trim() || busy === 'save-ssh'}>Save SSH Host</button>
+            <button type="button" className="btn-mini" disabled={!sshDraft.host.trim() || busy === 'test-ssh'} onClick={() => runTestSsh(sshDraft)}>Test Connection</button>
+          </div>
+        </form>
+
+        {(sshProfiles.length > 0 || sshConfigHosts.length > 0) && (
+          <div className="env-prof-list">
+            {[...sshProfiles, ...sshConfigHosts].map((p) => {
+              const isAct = active.kind === 'ssh' && active.id === p.id;
+              return (
+                <div key={p.id} className={'env-prof-row' + (isAct ? ' active' : '')}>
+                  <div className="env-prof-meta">
+                    <span className="env-prof-title">{p.name} {p.source === 'ssh-config' ? '(~/.ssh/config)' : ''}</span>
+                    <span className="env-prof-sub">{p.username ? `${p.username}@` : ''}{p.host}:{p.port} {p.remoteCwd ? `· ${p.remoteCwd}` : ''}</span>
+                  </div>
+                  <div className="env-prof-actions">
+                    <button type="button" className="btn-mini" onClick={() => runTestSsh(p.id)}>Test</button>
+                    <button
+                      type="button"
+                      className={'btn-mini ' + (isAct ? '' : 'primary')}
+                      onClick={() => onSwitchEnvironment(isAct ? { kind: 'local' } : { kind: 'ssh', id: p.id, cwd: p.remoteCwd || '' })}
+                    >
+                      {isAct ? 'Disconnect' : 'Connect'}
+                    </button>
+                    {p.source !== 'ssh-config' && (
+                      <button type="button" className="btn-mini" onClick={async () => { await window.autobot.envDeleteSsh(p.id); refreshEnvState && refreshEnvState(); }}>Delete</button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="settings-card">
+        <h3>Remote Servers</h3>
+        <form onSubmit={saveRemote}>
+          <div className="row">
+            <label>Server name<input value={remDraft.name} onChange={(e) => setRemDraft({ ...remDraft, name: e.target.value })} placeholder="Akron Cloud Runner" /></label>
+            <label>Server URL<input value={remDraft.url} onChange={(e) => setRemDraft({ ...remDraft, url: e.target.value })} placeholder="http://127.0.0.1:9477" /></label>
+          </div>
+          <div className="row">
+            <label>Auth Bearer token (stored encrypted)<input type="password" value={remDraft.token} onChange={(e) => setRemDraft({ ...remDraft, token: e.target.value })} placeholder="Bearer token" /></label>
+            <label>Remote workspace path<input value={remDraft.remoteCwd} onChange={(e) => setRemDraft({ ...remDraft, remoteCwd: e.target.value })} placeholder="/workspace/project" /></label>
+          </div>
+          <div className="row-actions" style={{ marginTop: 6 }}>
+            <button type="submit" className="btn-mini primary" disabled={!remDraft.url.trim() || busy === 'save-rem'}>Save Remote Server</button>
+            <button type="button" className="btn-mini" disabled={!remDraft.url.trim() || busy === 'test-rem'} onClick={() => runTestRemote(remDraft)}>Test Connection</button>
+          </div>
+        </form>
+
+        {remoteWsList.length > 0 && (
+          <div className="row" style={{ marginTop: 10 }}>
+            <label>Discovered remote workspaces
+              <select value={remDraft.remoteCwd} onChange={(e) => setRemDraft({ ...remDraft, remoteCwd: e.target.value })}>
+                <option value="">Select workspace…</option>
+                {remoteWsList.map((w) => <option key={w.path} value={w.path}>{w.name} ({w.path})</option>)}
+              </select>
+            </label>
+          </div>
+        )}
+
+        {remoteProfiles.length > 0 && (
+          <div className="env-prof-list">
+            {remoteProfiles.map((r) => {
+              const isAct = active.kind === 'remote' && active.id === r.id;
+              return (
+                <div key={r.id} className={'env-prof-row' + (isAct ? ' active' : '')}>
+                  <div className="env-prof-meta">
+                    <span className="env-prof-title">{r.name}</span>
+                    <span className="env-prof-sub">{r.url} {r.remoteCwd ? `· ${r.remoteCwd}` : ''}</span>
+                  </div>
+                  <div className="env-prof-actions">
+                    <button type="button" className="btn-mini" onClick={() => runTestRemote(r.id)}>Test</button>
+                    <button
+                      type="button"
+                      className={'btn-mini ' + (isAct ? '' : 'primary')}
+                      onClick={() => onSwitchEnvironment(isAct ? { kind: 'local' } : { kind: 'remote', id: r.id, cwd: r.remoteCwd || '' })}
+                    >
+                      {isAct ? 'Disconnect' : 'Connect'}
+                    </button>
+                    <button type="button" className="btn-mini" onClick={async () => { await window.autobot.envDeleteRemote(r.id); refreshEnvState && refreshEnvState(); }}>Delete</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="settings-card">
+        <h3>Host Akron Remote Server on This Machine</h3>
+        <p className="muted">Expose this computer&apos;s workspace over an encrypted-token HTTP/WebSocket endpoint on port {hostServer.port || 9477}.</p>
+        <div className="row-actions">
+          <button type="button" className={'btn-mini ' + (hostServer.running ? '' : 'primary')} onClick={toggleHostSrv}>
+            {hostServer.running ? 'Stop Remote Host' : 'Start Remote Host'}
+          </button>
+          {hostServer.running && (
+            <button
+              type="button"
+              className="btn-mini"
+              onClick={async () => {
+                const tok = hostTokenShown || (await window.autobot.envGetHostToken());
+                if (tok) { navigator.clipboard?.writeText(tok).catch(() => {}); setNotice && setNotice('Remote host token copied'); }
+              }}
+            >
+              Copy Auth Token
+            </button>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
 const SETTINGS_SECTIONS = [
   { id: 'providers', group: 'ai', label: 'Models & Providers', icon: 'Sparkles', sub: 'Primary endpoints, presets, local Ollama, and subscription sign-in.', keys: 'model provider ollama api key preset subscription oauth temperature token' },
   { id: 'orchestrator', group: 'ai', label: 'Orchestrator & Pools', icon: 'Orbit', sub: 'DeepSeek Harness profiles, multi-model failover tiers, and role pools.', keys: 'orchestrator pool planner coder vision fast longctx failover swarm profile harness' },
   { id: 'notifications', group: 'ai', label: 'Notifications', icon: 'Notification', sub: 'Choose when to receive desktop notifications and hear synthesized sounds.', keys: 'notifications sound chime staplebops alert agent permissions questions errors' },
+  { id: 'environments', group: 'workspace', label: 'Environments', icon: 'Globe', sub: 'Execute locally, over SSH Hosts, or on an authenticated Remote Server.', keys: 'environment ssh host remote server cloud secret keychain' },
   { id: 'worktrees', group: 'workspace', label: 'Worktrees', icon: 'GitBranch', sub: 'Create and switch isolated git worktree checkouts for parallel branches.', keys: 'git worktree branch checkout parallel workspace' },
   { id: 'skills', group: 'workspace', label: 'Skills & Plugins', icon: 'Lightbulb', sub: 'Manage SKILL.md packs, agent capabilities, and plugins.', keys: 'skills plugins packs extensions' },
   { id: 'mcp', group: 'workspace', label: 'MCP Connectors', icon: 'Connectors', sub: 'Connect external Model Context Protocol servers & tools.', keys: 'mcp connectors servers tools' },
@@ -10005,6 +10467,7 @@ function SettingsModal({
   notebooks = [], activeNotebook, notebookCells = [], setNotebookCells, openNotebook, newNotebook, saveActiveNotebook, deleteActiveNotebook,
   cwd, setCwd,
   onOpenGdrive, gdriveState,
+  envState, refreshEnvState, onSwitchEnvironment, setError, setNotice,
 }) {
   const [section, setSection] = useState(initialSection || 'providers');
   const [navFilter, setNavFilter] = useState('');
@@ -10177,6 +10640,7 @@ function SettingsModal({
     if (id === 'providers') return provider.model ? '' : 'Setup';
     if (id === 'notifications') return notifCfg.agent ? 'On' : 'Off';
     if (id === 'orchestrator') return (orchestrator.pools && orchestrator.pools.enabled) ? 'Pools' : (orchestrator.enabled ? 'On' : '');
+    if (id === 'environments') return envState && envState.active && envState.active.kind !== 'local' ? envState.active.kind.toUpperCase() : 'Local';
     if (id === 'worktrees') return wtInfo.worktrees && wtInfo.worktrees.length ? `${wtInfo.worktrees.length}` : '';
     if (id === 'skills') { const n = skills.filter((s) => s.enabled !== false).length; return n > 0 ? `${n}` : ''; }
     if (id === 'mcp') return mcpServers.length > 0 ? `${mcpServers.length}` : '';
@@ -10669,6 +11133,17 @@ function SettingsModal({
                   )}
                 </div>
               </>
+            )}
+
+            {section === 'environments' && (
+              <EnvironmentsSection
+                envState={envState}
+                refreshEnvState={refreshEnvState}
+                onSwitchEnvironment={onSwitchEnvironment}
+                setError={setError}
+                setNotice={setNotice}
+                cwd={cwd}
+              />
             )}
 
             {section === 'security' && (

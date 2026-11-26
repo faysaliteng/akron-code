@@ -7,6 +7,7 @@ const lspMod = require('./lsp');
 const aiInline = require('./ai-inline');
 const git = require('../git');
 const { humanizeLLMError } = require('../llm');
+const environments = require('../environments');
 
 const inlineEditControllers = new Map();
 
@@ -23,15 +24,37 @@ function register({ ipcMain, normalizeProvider, hydrateProvider, hydrateOrchestr
   };
 
   // ---- File Tree & File CRUD + Watcher ----
-  ipcMain.handle('ide:readTree', (e, payload) => fsWatcher.readTree(payload && payload.cwd, payload || {}));
-  ipcMain.handle('ide:readFile', (e, payload) => fsWatcher.readFile(payload && payload.path, payload || {}));
-  ipcMain.handle('ide:writeFile', (e, payload) => fsWatcher.writeFile(payload && payload.path, payload && payload.content));
-  ipcMain.handle('ide:createEntry', (e, payload) => fsWatcher.createEntry(payload && payload.path, payload && payload.kind));
-  ipcMain.handle('ide:renameEntry', (e, payload) => fsWatcher.renameEntry(payload && payload.oldPath, payload && payload.newPath));
-  ipcMain.handle('ide:duplicateEntry', (e, payload) => fsWatcher.duplicateEntry(payload && payload.path));
-  ipcMain.handle('ide:deleteEntry', (e, payload) => fsWatcher.deleteEntry(payload && payload.path));
+  ipcMain.handle('ide:readTree', (e, payload) => {
+    if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'readTree', payload || {});
+    return fsWatcher.readTree(payload && payload.cwd, payload || {});
+  });
+  ipcMain.handle('ide:readFile', (e, payload) => {
+    if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'readFile', payload || {});
+    return fsWatcher.readFile(payload && payload.path, payload || {});
+  });
+  ipcMain.handle('ide:writeFile', (e, payload) => {
+    if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'writeFile', payload || {});
+    return fsWatcher.writeFile(payload && payload.path, payload && payload.content);
+  });
+  ipcMain.handle('ide:createEntry', (e, payload) => {
+    if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'createEntry', payload || {});
+    return fsWatcher.createEntry(payload && payload.path, payload && payload.kind);
+  });
+  ipcMain.handle('ide:renameEntry', (e, payload) => {
+    if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'renameEntry', payload || {});
+    return fsWatcher.renameEntry(payload && payload.oldPath, payload && payload.newPath);
+  });
+  ipcMain.handle('ide:duplicateEntry', (e, payload) => {
+    if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'duplicateEntry', payload || {});
+    return fsWatcher.duplicateEntry(payload && payload.path);
+  });
+  ipcMain.handle('ide:deleteEntry', (e, payload) => {
+    if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'deleteEntry', payload || {});
+    return fsWatcher.deleteEntry(payload && payload.path);
+  });
   ipcMain.handle('ide:revealInOS', (e, payload) => fsWatcher.revealInOS(payload && payload.path));
   ipcMain.handle('ide:watchWorkspace', (e, payload) => {
+    if (environments.isRemoteActive()) return { ok: true, remote: true };
     const cwd = payload && payload.cwd;
     return fsWatcher.watchWorkspace(cwd, (events) => {
       sendToSender(e, 'ide:fsChanged', { cwd, events });
@@ -43,8 +66,14 @@ function register({ ipcMain, normalizeProvider, hydrateProvider, hydrateOrchestr
   });
 
   // ---- Search & Replace ----
-  ipcMain.handle('ide:search', (e, payload) => search.searchWorkspace(payload || {}));
-  ipcMain.handle('ide:replace', (e, payload) => search.replaceInWorkspace(payload || {}));
+  ipcMain.handle('ide:search', (e, payload) => {
+    if (environments.isRemoteActive()) return environments.dispatchIde('search', 'search', payload || {});
+    return search.searchWorkspace(payload || {});
+  });
+  ipcMain.handle('ide:replace', (e, payload) => {
+    if (environments.isRemoteActive()) return environments.dispatchIde('search', 'replace', payload || {});
+    return search.replaceInWorkspace(payload || {});
+  });
 
   // ---- Real Interactive PTY ----
   const senderPtys = new Map(); // webContents -> Set<ptyId>
@@ -167,15 +196,15 @@ function register({ ipcMain, normalizeProvider, hydrateProvider, hydrateOrchestr
   });
 
   // ---- Extended Git Source Control ----
-  ipcMain.handle('ide:gitStatus', (e, payload) => git.gitStatusDetailed(payload && payload.cwd));
-  ipcMain.handle('ide:gitStage', (e, payload) => git.stageFiles(payload && payload.cwd, payload && payload.files));
-  ipcMain.handle('ide:gitUnstage', (e, payload) => git.unstageFiles(payload && payload.cwd, payload && payload.files));
-  ipcMain.handle('ide:gitStagePatch', (e, payload) => git.stagePatch(payload && payload.cwd, payload && payload.patch, !!(payload && payload.reverse)));
-  ipcMain.handle('ide:gitDiscard', (e, payload) => git.discardFiles(payload && payload.cwd, payload && payload.files));
-  ipcMain.handle('ide:gitCommit', (e, payload) => git.commitChanges(payload && payload.cwd, payload && payload.message));
-  ipcMain.handle('ide:gitBranches', (e, payload) => git.listBranches(payload && payload.cwd));
-  ipcMain.handle('ide:gitCheckout', (e, payload) => git.checkoutBranch(payload && payload.cwd, payload && payload.branch, !!(payload && payload.createNew)));
-  ipcMain.handle('ide:gitFileAtHead', (e, payload) => git.fileAtHead(payload && payload.cwd, payload && payload.path));
+  ipcMain.handle('ide:gitStatus', (e, payload) => environments.isRemoteActive() ? environments.dispatchIde('git', 'status', payload || {}) : git.gitStatusDetailed(payload && payload.cwd));
+  ipcMain.handle('ide:gitStage', (e, payload) => environments.isRemoteActive() ? environments.dispatchIde('git', 'stage', payload || {}) : git.stageFiles(payload && payload.cwd, payload && payload.files));
+  ipcMain.handle('ide:gitUnstage', (e, payload) => environments.isRemoteActive() ? environments.dispatchIde('git', 'unstage', payload || {}) : git.unstageFiles(payload && payload.cwd, payload && payload.files));
+  ipcMain.handle('ide:gitStagePatch', (e, payload) => environments.isRemoteActive() ? environments.dispatchIde('git', 'stagePatch', payload || {}) : git.stagePatch(payload && payload.cwd, payload && payload.patch, !!(payload && payload.reverse)));
+  ipcMain.handle('ide:gitDiscard', (e, payload) => environments.isRemoteActive() ? environments.dispatchIde('git', 'discard', payload || {}) : git.discardFiles(payload && payload.cwd, payload && payload.files));
+  ipcMain.handle('ide:gitCommit', (e, payload) => environments.isRemoteActive() ? environments.dispatchIde('git', 'commit', payload || {}) : git.commitChanges(payload && payload.cwd, payload && payload.message));
+  ipcMain.handle('ide:gitBranches', (e, payload) => environments.isRemoteActive() ? environments.dispatchIde('git', 'branches', payload || {}) : git.listBranches(payload && payload.cwd));
+  ipcMain.handle('ide:gitCheckout', (e, payload) => environments.isRemoteActive() ? environments.dispatchIde('git', 'checkout', payload || {}) : git.checkoutBranch(payload && payload.cwd, payload && payload.branch, !!(payload && payload.createNew)));
+  ipcMain.handle('ide:gitFileAtHead', (e, payload) => environments.isRemoteActive() ? environments.dispatchIde('git', 'fileAtHead', payload || {}) : git.fileAtHead(payload && payload.cwd, payload && payload.path));
 }
 
 function hasActivePtys() {

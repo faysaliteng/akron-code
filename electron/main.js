@@ -3249,6 +3249,51 @@ ipcMain.handle('autobot:gitRun', async (e, cwd, args) => {
 });
 ipcMain.handle('autobot:diff', async (e, oldText, newText, label) => git.unifiedDiff(oldText, newText, label));
 
+// ---- Execution Environments (This Computer · SSH Host · Remote Server) ----
+const environments = require('./environments');
+function broadcastEnvChanged(state) {
+  const s = state || environments.getState();
+  for (const w of windows) {
+    if (w && !w.isDestroyed()) {
+      try { w.webContents.send('autobot:envChanged', s); } catch (_) {}
+    }
+  }
+}
+ipcMain.handle('autobot:envGetState', () => environments.getState());
+ipcMain.handle('autobot:envSetActive', (e, spec) => {
+  const res = environments.setActive(spec || { kind: 'local' });
+  if (res && res.ok) broadcastEnvChanged(res.state);
+  return res;
+});
+ipcMain.handle('autobot:envSaveSsh', (e, profile) => {
+  const res = environments.saveSshProfile(profile || {});
+  if (res && res.ok) broadcastEnvChanged(res.state);
+  return res;
+});
+ipcMain.handle('autobot:envDeleteSsh', (e, id) => {
+  const res = environments.deleteSshProfile(id);
+  if (res && res.ok) broadcastEnvChanged(res.state);
+  return res;
+});
+ipcMain.handle('autobot:envTestSsh', (e, profileOrId) => environments.testSsh(profileOrId));
+ipcMain.handle('autobot:envSaveRemote', (e, profile) => {
+  const res = environments.saveRemoteProfile(profile || {});
+  if (res && res.ok) broadcastEnvChanged(res.state);
+  return res;
+});
+ipcMain.handle('autobot:envDeleteRemote', (e, id) => {
+  const res = environments.deleteRemoteProfile(id);
+  if (res && res.ok) broadcastEnvChanged(res.state);
+  return res;
+});
+ipcMain.handle('autobot:envTestRemote', (e, profileOrId) => environments.testRemote(profileOrId));
+ipcMain.handle('autobot:envToggleHostServer', async (e, enabled, opts) => {
+  const res = await environments.toggleHostServer(!!enabled, opts || {});
+  broadcastEnvChanged(res && res.state);
+  return res;
+});
+ipcMain.handle('autobot:envGetHostToken', () => environments.getHostServerToken());
+
 // Built-in Browser (renderer <webview> registers its guest WebContents; the
 // agent tools in tools.js control it through the same controller).
 // If an agent tool needs the browser and the pane is closed, ask every renderer
@@ -4015,6 +4060,7 @@ app.on('before-quit', (e) => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   try { ideIpc.cleanup(); } catch (_) {}
+  try { environments.toggleHostServer(false).catch(() => {}); } catch (_) {}
   try { scheduler.stop(); } catch (_) {}
   try { extHost.stopBridge(); } catch (_) {}
   try { require('./extbridge').stop(); } catch (_) {}

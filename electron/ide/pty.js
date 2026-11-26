@@ -278,8 +278,149 @@ function ensureWorker() {
   return child;
 }
 
+function createRemotePty(id, opts, handlers) {
+  const environments = require('../environments');
+  const active = environments.getActive();
+  const cols = Math.max(20, Math.min(400, Number(opts.cols) || 100));
+  const rows = Math.max(5, Math.min(200, Number(opts.rows) || 28));
+  const cwd = opts.cwd || active.cwd || '';
+  const onData = typeof handlers.onData === 'function' ? handlers.onData : () => {};
+  const onExit = typeof handlers.onExit === 'function' ? handlers.onExit : () => {};
+  const pendingWrites = [];
+  let pendingResize = null;
+  let closed = false;
+
+  if (active.kind === 'remote') {
+    const WebSocket = require('ws');
+    let ws = null;
+    try {
+      const { wsUrl, token } = environments.getRemoteWsUrl(active.id, { cwd, cols, rows });
+      ws = new WebSocket(wsUrl, { headers: { Authorization: 'Bearer ' + token } });
+      ws.on('message', (raw) => {
+        try {
+          const msg = JSON.parse(String(raw || '{}'));
+          if (msg.type === 'data' && msg.data) onData(id, msg.data);
+          else if (msg.type === 'exit') {
+            sessions.delete(id);
+            if (!closed) { closed = true; onExit(id, msg.exitCode || 0); }
+          }
+        } catch (_) {}
+      });
+      ws.on('open', () => {
+        if (pendingResize) {
+          try { ws.send(JSON.stringify({ type: 'resize', cols: pendingResize[0], rows: pendingResize[1] })); } catch (_) {}
+          pendingResize = null;
+        }
+        while (pendingWrites.length) {
+          try { ws.send(JSON.stringify({ type: 'write', data: pendingWrites.shift() })); } catch (_) {}
+        }
+      });
+      ws.on('error', (err) => {
+        onData(id, `\r\n[Remote PTY error: ${err.message}]\r\n`);
+      });
+      ws.on('close', () => {
+        sessions.delete(id);
+        if (!closed) { closed = true; onExit(id, 0); }
+      });
+    } catch (err) {
+      onData(id, `\r\n[Remote PTY failed: ${err.message}]\r\n`);
+    }
+    const rec = {
+      id,
+      backend: 'remote-ws-pty',
+      cwd,
+      shell: 'remote',
+      write: (d) => {
+        if (ws && ws.readyState === ws.OPEN) {
+          try { ws.send(JSON.stringify({ type: 'write', data: d })); } catch (_) {}
+        } else {
+          pendingWrites.push(d);
+        }
+      },
+      resize: (c, r) => {
+        const cc = Math.max(20, Number(c) || cols);
+        const rr = Math.max(5, Number(r) || rows);
+        if (ws && ws.readyState === ws.OPEN) {
+          try { ws.send(JSON.stringify({ type: 'resize', cols: cc, rows: rr })); } catch (_) {}
+        } else {
+          pendingResize = [cc, rr];
+        }
+      },
+      kill: () => {
+        closed = true;
+        sessions.delete(id);
+        try { if (ws) ws.close(); } catch (_) {}
+      },
+    };
+    sessions.set(id, rec);
+    return { ok: true, id, backend: rec.backend, cwd, shell: rec.shell };
+  }
+
+  // SSH Host PTY
+  let sshConn = null;
+  let sshStream = null;
+  environments.openSshShell(active.id, { cwd, cols, rows })
+    .then(({ conn, stream }) => {
+      if (closed) { try { conn.end(); } catch (_) {} return; }
+      sshConn = conn;
+      sshStream = stream;
+      stream.on('data', (chunk) => onData(id, chunk.toString('utf8')));
+      stream.stderr.on('data', (chunk) => onData(id, chunk.toString('utf8')));
+      stream.on('close', () => {
+        sessions.delete(id);
+        try { conn.end(); } catch (_) {}
+        if (!closed) { closed = true; onExit(id, 0); }
+      });
+      if (pendingResize) {
+        try { stream.setWindow(pendingResize[1], pendingResize[0], 0, 0); } catch (_) {}
+        pendingResize = null;
+      }
+      while (pendingWrites.length) {
+        try { stream.write(pendingWrites.shift()); } catch (_) {}
+      }
+    })
+    .catch((err) => {
+      onData(id, `\r\n[SSH PTY error: ${err && err.message ? err.message : String(err)}]\r\n`);
+      sessions.delete(id);
+      if (!closed) { closed = true; onExit(id, 1); }
+    });
+
+  const rec = {
+    id,
+    backend: 'ssh-pty',
+    cwd,
+    shell: 'ssh',
+    write: (d) => {
+      if (sshStream) { try { sshStream.write(d); } catch (_) {} }
+      else pendingWrites.push(d);
+    },
+    resize: (c, r) => {
+      const cc = Math.max(20, Number(c) || cols);
+      const rr = Math.max(5, Number(r) || rows);
+      if (sshStream) { try { sshStream.setWindow(rr, cc, 0, 0); } catch (_) {} }
+      else pendingResize = [cc, rr];
+    },
+    kill: () => {
+      closed = true;
+      sessions.delete(id);
+      try { if (sshStream) sshStream.end(); } catch (_) {}
+      try { if (sshConn) sshConn.end(); } catch (_) {}
+    },
+  };
+  sessions.set(id, rec);
+  return { ok: true, id, backend: rec.backend, cwd, shell: rec.shell };
+}
+
 function createPty(opts = {}, handlers = {}) {
   const id = `pty-${seq++}`;
+  if (!opts.localOnly && !opts.forceFallback) {
+    try {
+      const environments = require('../environments');
+      if (environments.isRemoteActive()) {
+        return createRemotePty(id, opts, handlers);
+      }
+    } catch (_) {}
+  }
   const cwd = opts.cwd && fs.existsSync(opts.cwd) ? opts.cwd : os.homedir();
   const cols = Math.max(20, Math.min(400, Number(opts.cols) || 100));
   const rows = Math.max(5, Math.min(200, Number(opts.rows) || 28));
