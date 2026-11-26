@@ -752,9 +752,17 @@ button { font-family: inherit; letter-spacing: inherit; }
 }
 [data-theme="light"] .errorbar { background: #f6d8d8; color: var(--red-strong); }
 .noticebar {
+  display: flex; align-items: flex-start; gap: 10px;
   padding: 10px 24px; background: var(--accent-soft); color: var(--accent-text);
   border-top: 1px solid var(--border); font-size: var(--fs-footnote); white-space: pre-wrap;
 }
+.noticebar-text { flex: 1 1 auto; min-width: 0; }
+.noticebar-x {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; margin-top: -2px; padding: 0; cursor: pointer;
+  border: 0; border-radius: 4px; background: transparent; color: inherit; opacity: 0.65;
+}
+.noticebar-x:hover { background: rgba(255, 255, 255, 0.10); opacity: 1; }
 
 /* Opaque, with a soft fade above it. Without this, scrolled chat text shows
    through the settings row and the composer box whenever the app paints on a
@@ -1113,10 +1121,47 @@ button { font-family: inherit; letter-spacing: inherit; }
   margin: 4px 6px 2px; padding: 6px 8px; border-radius: var(--radius-sm);
   background: rgba(254, 129, 129, 0.10); color: var(--text-100);
   font-size: var(--fs-caption); line-height: 1.35; word-break: break-word;
+  display: flex; align-items: flex-start; gap: 8px;
 }
+.prov-notice-text { flex: 1 1 auto; min-width: 0; }
+.prov-notice-x {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-top: -1px; padding: 0; cursor: pointer;
+  border: 0; border-radius: 4px; background: transparent; color: var(--text-300);
+}
+.prov-notice-x:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-100); }
 /* A store that could not be read outranks a transient sign-in notice, and the
    modifier is what the probes and the user can actually tell apart. */
 .prov-notice.warn { border: 1px solid rgba(254, 129, 129, 0.35); }
+
+/* ---------- context-pressure toast ---------- */
+/* Fixed to the window (not the composer) so a scrolling chat or an open pane
+   cannot push it out of view, and narrow enough that it never covers the
+   message box. */
+.ctx-toast {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+  z-index: 60; display: flex; align-items: flex-start; gap: 10px;
+  width: min(460px, calc(100vw - 32px)); padding: 10px 10px 10px 12px;
+  border-radius: 12px; border: 1px solid var(--border);
+  background: var(--bg-100); color: var(--text-100);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  animation: ctx-toast-in 160ms ease-out;
+}
+@keyframes ctx-toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.ctx-toast.warm { border-color: rgba(234, 179, 8, 0.45); }
+.ctx-toast.hot { border-color: rgba(254, 129, 129, 0.55); }
+.ctx-toast-ico { flex: 0 0 auto; display: inline-flex; margin-top: 1px; color: var(--text-200); }
+.ctx-toast.warm .ctx-toast-ico { color: #eab308; }
+.ctx-toast.hot .ctx-toast-ico { color: #fe8181; }
+.ctx-toast-main { flex: 1 1 auto; min-width: 0; }
+.ctx-toast-title { font-size: var(--fs-footnote); font-weight: 600; line-height: 1.3; }
+.ctx-toast-sub { font-size: var(--fs-caption); color: var(--text-300); margin-top: 2px; word-break: break-word; }
+.ctx-toast-x {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; cursor: pointer;
+  border: 0; border-radius: 6px; background: transparent; color: var(--text-300);
+}
+.ctx-toast-x:hover { background: var(--bg-200); color: var(--text-100); }
 
 /* Ollama: "Connect" row in the picker + model list in Settings */
 .model-opt.model-connect { color: var(--accent-text); }

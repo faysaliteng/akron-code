@@ -482,6 +482,28 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
           beta: headers['anthropic-beta'],
           ua: headers['user-agent'],
           xapp: headers['x-app'],
+          // Which credential was actually sent, fingerprinted rather than
+          // stored: comparing sha12/len against the account store is how a
+          // "the token works everywhere except in the app" bug gets pinned
+          // without ever writing a bearer token to disk.
+          auth: (() => {
+            const tok = String(provider.accessToken || provider.apiKey || '');
+            return {
+              source: provider.accessToken ? 'accessToken' : (provider.apiKey ? 'apiKey' : 'none'),
+              len: tok.length,
+              sha12: require('crypto').createHash('sha256').update(tok).digest('hex').slice(0, 12),
+            };
+          })(),
+          provider: {
+            oauthProvider: provider.oauthProvider || '',
+            account: provider.account || '',
+            transport: provider.transport || '',
+            model: provider.model || '',
+            oauth: !!provider.oauth,
+            tokenLen: String(provider.accessToken || '').length,
+            apiKeyLen: String(provider.apiKey || '').length,
+          },
+          bodyModel: body.model,
           bodyChars: payload.length,
           rejected: errText.slice(0, 800),
         }, null, 2));
@@ -495,6 +517,15 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
       if (hint) {
         err.hint = hint;
         if (/ 100% used/.test(hint)) err.retryHopeless = true;
+      }
+      // Anthropic answers a long-context request that the plan allowance does
+      // not cover with `429 rate_limit_error: "Usage credits are required for
+      // long context requests"`. No plan window will satisfy that, so the five
+      // backoff rounds only burn ~40 s before printing the same sentence. Say it
+      // once, in prose, and name the way out.
+      if (/usage credits|credits? (?:are|is) required/i.test(err.body || errText)) {
+        err.hint = 'Long context needs usage credits on this account — the plan allowance does not cover a request this large. Send a shorter conversation, or pick a model whose window fits it';
+        err.retryHopeless = true;
       }
     }
     throw err;
@@ -963,6 +994,123 @@ async function googleModels(provider, signal) {
   return list;
 }
 
+// ── Gemini function declarations ───────────────────────────────────────────
+// `tools[].functionDeclarations[].parameters` on the Cloud Code endpoint is an
+// OpenAPI 3.0 *subset*, not JSON Schema. Anything outside that subset makes the
+// whole request fail with 400 INVALID_ARGUMENT *after* it parses — reported as
+// `value.enum[0]: ...` / `value.required[13]: ...` with no tool name attached,
+// which is exactly the error that used to kill every Antigravity turn. The
+// lowering below is deliberately lossy for the model but lossless for dispatch:
+// tool arguments are validated on our side, so dropping a schema keyword never
+// makes a call uncallable.
+const GEMINI_TYPES = new Set(['string', 'number', 'integer', 'boolean', 'array', 'object']);
+const GEMINI_BOUNDS = ['minimum', 'maximum', 'minItems', 'maxItems', 'minProperties', 'maxProperties'];
+// Gemini matches declaration names against this before it validates anything
+// else in the schema.
+const GEMINI_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+
+function geminiEnumValue(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'object') {
+    try { return JSON.stringify(v); } catch (_) { return ''; }
+  }
+  // Gemini only models string enums: `type: 'boolean'` with `enum: [true]`
+  // (and numeric enums) are rejected outright.
+  return String(v);
+}
+
+function toGeminiSchema(schema, depth) {
+  const d = depth || 0;
+  if (d > 8) return {};
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return {};
+
+  // Unions: Gemini has no anyOf/oneOf. Keep the branch that carries the shape
+  // and remember a null branch as `nullable` instead of a second type.
+  let nullable = schema.nullable === true;
+  for (const key of ['anyOf', 'oneOf', 'allOf']) {
+    const branches = Array.isArray(schema[key]) ? schema[key] : null;
+    if (!branches || !branches.length) continue;
+    const isNull = (b) => b && (b.type === 'null' || (Array.isArray(b.type) && b.type.includes('null')));
+    if (branches.some(isNull)) nullable = true;
+    const typed = branches.filter((b) => b && typeof b === 'object' && b.type !== 'null');
+    if (typed.length > 1 && typed.every((b) => Array.isArray(b.enum))) {
+      const vals = [];
+      for (const b of typed) for (const v of b.enum) { const s = geminiEnumValue(v); if (!vals.includes(s)) vals.push(s); }
+      const merged = { type: 'string' };
+      if (vals.length) merged.enum = vals;
+      if (nullable) merged.nullable = true;
+      return merged;
+    }
+    const out = toGeminiSchema(typed[0] || branches[0], d + 1);
+    if (nullable) out.nullable = true;
+    return out;
+  }
+
+  // A JSON-Schema `type` may be an array (`['string','object']`, `['string','null']`).
+  let type = Array.isArray(schema.type)
+    ? schema.type.find((t) => t && t !== 'null')
+    : schema.type;
+  if (Array.isArray(schema.type) && schema.type.includes('null')) nullable = true;
+  if (!type && schema.properties) type = 'object';
+  if (!type && schema.items) type = 'array';
+  if (!type && Array.isArray(schema.enum) && schema.enum.length) type = 'string';
+  const enumVals = Array.isArray(schema.enum) && schema.enum.length
+    ? [...new Set(schema.enum.map(geminiEnumValue))]
+    : null;
+  if (enumVals) type = 'string';
+  if (!GEMINI_TYPES.has(type)) type = undefined;
+
+  const out = {};
+  if (type) out.type = type;
+  if (nullable) out.nullable = true;
+  if (enumVals && enumVals.length) out.enum = enumVals;
+  if (typeof schema.description === 'string' && schema.description.trim()) {
+    out.description = schema.description.trim().slice(0, 900);
+  }
+
+  if (out.type === 'object') {
+    const props = schema.properties && typeof schema.properties === 'object' ? schema.properties : null;
+    if (props) {
+      const lowered = {};
+      for (const [k, v] of Object.entries(props)) lowered[k] = toGeminiSchema(v, d + 1);
+      if (Object.keys(lowered).length) {
+        out.properties = lowered;
+        // `required` must name a property that actually survived the lowering —
+        // Gemini 400s the whole request on one stale entry.
+        const req = Array.isArray(schema.required)
+          ? schema.required.filter((k) => typeof k === 'string' && lowered[k])
+          : [];
+        if (req.length) out.required = req;
+      }
+    }
+  } else if (out.type === 'array') {
+    out.items = toGeminiSchema(schema.items || {}, d + 1);
+  }
+  for (const k of GEMINI_BOUNDS) {
+    if (typeof schema[k] === 'number' && Number.isFinite(schema[k])) out[k] = schema[k];
+  }
+  return out;
+}
+
+// One advertised tool → one Gemini declaration, or null when the name cannot be
+// represented (a 400 for the whole request is worse than losing one tool).
+function toGeminiDeclarations(tools) {
+  const out = [];
+  const seen = new Set();
+  for (const t of tools || []) {
+    const fn = (t && (t.function || t)) || null;
+    const name = String((fn && fn.name) || '');
+    if (!GEMINI_NAME.test(name) || seen.has(name)) continue;
+    seen.add(name);
+    out.push({
+      name,
+      description: String((fn.description) || '').replace(/\s+/g, ' ').trim().slice(0, 900),
+      parameters: toGeminiSchema(fn.parameters || { type: 'object', properties: {} }),
+    });
+  }
+  return out;
+}
+
 async function googleChat(provider, messages, tools, onDelta, signal, maxTokensOverride) {
   const { systemParts, contents } = toGeminiContents(messages);
   const want = Number(maxTokensOverride || provider.maxTokens) > 0
@@ -970,16 +1118,8 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
   const request = { contents, generationConfig: { maxOutputTokens: want } };
   if (systemParts.length) request.systemInstruction = { parts: systemParts };
   if (tools && tools.length) {
-    request.tools = [{
-      functionDeclarations: tools.map((t) => {
-        const fn = t.function || t;
-        return {
-          name: fn.name,
-          description: fn.description || '',
-          parameters: fn.parameters || { type: 'object', properties: {} },
-        };
-      }),
-    }];
+    const declarations = toGeminiDeclarations(tools);
+    if (declarations.length) request.tools = [{ functionDeclarations: declarations }];
   }
   // Verified live against `daily-cloudcode-pa`: no `project` field is needed
   // (sending one is what produced the old `403 The caller does not have
@@ -1347,6 +1487,7 @@ module.exports = {
     sseEvents, toAnthropicBody, anthropicAuth, anthropicFinish,
     toCodexInput, toCodexTools, toGeminiContents, geminiFinish, responsesChat,
     googleModels, googleModelList, ANTIGRAVITY_UA,
+    toGeminiSchema, toGeminiDeclarations,
     claudeUa, codexUa, grokUa, clientVersions, setClientVersions, DEFAULT_CLIENT_VERSIONS,
     CODEX_RESPONSES_URL, GROK_RESPONSES_URL, CLOUDCODE_BASE, DEFAULT_ANTHROPIC_BASE, cloudcodeBase,
     grokHeaders, GROK_PRODUCT, GROK_CREDITS_URL, grokCreditHint,

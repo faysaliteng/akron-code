@@ -71,6 +71,10 @@ async function ev(cdp, expression) {
   })()`);
   console.log('catalog:', JSON.stringify(before));
 
+  // Orchestrator Mode is on in the live store and it overrides the provider, so
+  // without this the probe would have proved 1M on whatever row the pool was
+  // pointing at, not on the id it printed. Off by default.
+  const ORCH_ON = process.env.LC_ORCH === '1';
   const TOKEN = 'LONGPASS' + Math.floor(Math.random() * 1e6);
   // ≈ 660 000 chars ≈ 194k tokens at the app's 3.4 chars/token estimate.
   const LINES = Number(process.env.LC_LINES || 6600);
@@ -84,7 +88,18 @@ async function ev(cdp, expression) {
     const off = window.autobot.onEvent((e) => {
       if (!e || !e.runId || e.runId !== window.__lcRun) return;
       if (e.type === 'usage' && e.usage) window.__lc.usage = e.usage;
-      window.__lc.events.push({ type: e.type, text: e.text ? String(e.text).slice(0, 120) : '', error: e.error || null, phase: e.phase || null });
+      // The failure reason arrives in e.message (main.js sends
+      // { type: 'error', message }); reading only e.text printed an empty
+      // error and hid the provider's own words. Record both, plus the fields
+      // that carry a diagnosis.
+      const words = e.message || e.text || '';
+      window.__lc.events.push({
+        type: e.type,
+        text: words ? String(words).slice(0, 400) : '',
+        message: e.message ? String(e.message).slice(0, 400) : '',
+        error: e.error ? String(e.error).slice(0, 400) : null,
+        phase: e.phase || null,
+      });
       if (e.type === 'complete' || e.type === 'error') { window.__lc.done = true; off(); }
       if (e.type === 'complete' && e.messages) {
         const last = e.messages[e.messages.length - 1];
@@ -96,6 +111,11 @@ async function ev(cdp, expression) {
       runId: window.__lcRun,
       messages: [{ role: 'user', content: ${JSON.stringify(pad + '\n\nIgnore every filler line above. Reply with exactly this token and nothing else: ' + TOKEN + '. Do not call any tool.')} }],
       provider: { oauthProvider: '${ACCOUNT}', model: '${MODEL}', supportsTools: true, reasoningLevel: 'auto' },
+      // Orchestrator Mode ignores the provider above and runs the pool's active
+      // row, which is a different model than the one this probe names. Send an
+      // explicitly disabled pool so the turn really runs ${MODEL}; LC_ORCH=1
+      // exercises the pool path instead.
+      orchestrator: { enabled: ${ORCH_ON}, providers: [] },
       permissions: 'auto',
       title: 'long-context check',
     }).catch((e) => { window.__lc.events.push({ type: 'error', error: String(e && e.message || e) }); window.__lc.done = true; });
@@ -124,6 +144,11 @@ async function ev(cdp, expression) {
   console.log('seconds          :', secs);
   console.log('done             :', snap.done);
   console.log('errors           :', JSON.stringify(errs).slice(0, 600));
+  // A refusal from the provider is not the app failing. Say which this was, so a
+  // red PASS is never mistaken for a regression in the beta path.
+  const errText = errs.map((e) => e.message || e.text || e.error || '').join(' | ');
+  const blocked = /usage credits|out of credit|credits? (?:are|is) required|insufficient credit/i.test(errText);
+  if (blocked) console.log('blocked          : provider refused long context (needs usage credits) — not an app failure');
   console.log('answer has token :', text.includes(TOKEN));
   console.log('answer tail      :', JSON.stringify(text.slice(-120)));
   console.log('usage            :', JSON.stringify(usage));
@@ -131,7 +156,14 @@ async function ev(cdp, expression) {
   console.log('prompt_tokens    :', inTok);
   console.log('window before    :', before.model && before.model.windowLabel, before.model && before.model.contextWindow);
   console.log('window after     :', after && after.windowLabel, after && after.contextWindow);
+  // Which model actually answered. With the pool disabled this must be the id
+  // the probe asked for; a mismatch means something overrode the request.
+  const served = String(usage.model || '');
+  const modelOk = !ORCH_ON ? served === MODEL : true;
+  console.log('model asked      :', MODEL);
+  console.log('model served     :', served || '(not reported)');
+  console.log('model match      :', modelOk);
   console.log('PASS             :', !!snap.done && !errs.length && text.includes(TOKEN)
-    && inTok > 190000);
+    && inTok > 190000 && modelOk);
   cdp.close();
 })().catch((e) => { console.error('FATAL', e.message); process.exit(1); });

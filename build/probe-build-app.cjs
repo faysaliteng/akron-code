@@ -100,15 +100,16 @@ function readIf(p) {
   await cdp.send('Page.enable');
   await cdp.send('Runtime.enable');
 
-  const providerObj = {
-    baseURL: BASEURL,
-    apiKey: '',
-    model: MODEL,
-    supportsTools: true,
-    temperature: 0.4,
-    maxTokens: 8000,
-    reasoningLevel: 'auto',
-  };
+  // Same two shapes probe-capability uses: a bare OpenAI-compatible gateway, or
+  // an in-app OAuth account (Claude/ChatGPT/Grok/Antigravity). Passing an
+  // account used to be ignored, so every "build an app" run silently went to
+  // the FreeLLMAPI gateway and failed on the Claude model name.
+  const providerObj = ACCOUNT
+    ? { baseURL: '', apiKey: '', model: MODEL, supportsTools: true,
+        oauthProvider: ACCOUNT, transport: TRANSPORT, oauth: true,
+        accessToken: '', temperature: 0.4, maxTokens: 8000, reasoningLevel: 'auto' }
+    : { baseURL: BASEURL, apiKey: '', model: MODEL, supportsTools: true,
+        temperature: 0.4, maxTokens: 8000, reasoningLevel: 'auto' };
   await ev(cdp, `localStorage.setItem('autobot:provider', ${JSON.stringify(JSON.stringify(providerObj))}); 'set'`);
   await cdp.send('Page.reload');
   await sleep(5500);

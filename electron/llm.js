@@ -634,11 +634,19 @@ function humanizeLLMError(e) {
     const sentence = body.charAt(0).toUpperCase() + body.slice(1);
     return sentence.length > 200 ? sentence.slice(0, 197).trimEnd() + '…' : sentence;
   }
+  // A 429 that names a credit wall is not a rate limit to wait out. Anthropic
+  // answers a long-context request above the plan allowance with
+  // `429 rate_limit_error: "Usage credits are required for long context
+  // requests."` — telling the user their key is being throttled would send them
+  // to retry a request that cannot succeed until credits are added.
+  const creditWall = status === 429 &&
+    /usage credits|credits? (?:are|is) required|out of credit|insufficient (?:credit|balance)|credit balance|billing (?:hard )?limit/i.test(body);
+  const friendlyText = creditWall ? 'This account needs usage credits for that request' : friendly;
   // The hint is our own prose and may already lead with the friendly phrase
   // ("This account is out of credit for that provider — …"), which the earlier
   // dedupe could not see. Strip it again so the banner never repeats itself.
-  if (friendly && body.toLowerCase().startsWith(friendly.toLowerCase())) {
-    body = body.slice(friendly.length).replace(/^\s*[—–-]+\s*/, '');
+  if (friendlyText && body.toLowerCase().startsWith(friendlyText.toLowerCase())) {
+    body = body.slice(friendlyText.length).replace(/^\s*[—–-]+\s*/, '');
   }
   if (body.length > 200) body = body.slice(0, 197).trimEnd() + '…';
   // A 404 is the only status whose prose cannot be trusted on its own: "model
@@ -652,8 +660,8 @@ function humanizeLLMError(e) {
       where = ' (asked ' + u.host + u.pathname + ')';
     } catch (_) {}
   }
-  const head = friendly
-    ? friendly + where
+  const head = friendlyText
+    ? friendlyText + where
     : (status ? `The provider returned HTTP ${status}` : raw.split('\n')[0].slice(0, 120));
   // Only append the scrubbed detail when it is prose, not boilerplate. Gateway
   // pages are the status phrase repeated a few times with the server name, so

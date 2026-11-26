@@ -9,6 +9,7 @@ import { t as _t, LOCALES, localeDir } from './i18n.js';
 import { stripToolProtocol } from './textproto.mjs';
 import { normBase, LOCAL_BASE, KEY_STATUS_TTL, keySig, statusOf, presetStatus } from './providerstatus-ui.mjs';
 import { hydrateProvider } from './providerhydrate.mjs';
+import { ctxToastState } from './ctx-toast.mjs';
 import ConnectorLogo from './ConnectorLogo.jsx';
 
 // ---------- Anthropicons (Example's icon font, PUA U+E000+) ----------
@@ -28,6 +29,53 @@ function Icon({ name, size = 16, className = '', title, style }) {
     >
       {iconChar(name)}
     </span>
+  );
+}
+
+// ---------- provider notices ----------
+// Every banner in the account/picker surface is dismissible. The dismissed
+// value is the banner's own text, so hiding "Imported 2 accounts" can never
+// also hide the next, different message — a new failure always speaks up.
+// `storeError` stays honest: dismissal is per surface and per mounted
+// component, so it never clears the underlying error, only this rendering of it.
+function ProvNotice({ text, warn, className }) {
+  const [closed, setClosed] = useState(null);
+  if (!text) return null;
+  if (closed === text) return null;
+  return (
+    <div className={'prov-notice' + (warn ? ' warn' : '') + (className ? ' ' + className : '')}>
+      <span className="prov-notice-text">{text}</span>
+      <button
+        type="button"
+        className="prov-notice-x"
+        title="Dismiss"
+        aria-label="Dismiss"
+        onClick={(e) => { e.stopPropagation(); setClosed(text); }}
+      ><Icon name="X" size={11} /></button>
+    </div>
+  );
+}
+
+// ---------- chat notice bar ----------
+// The bar above the composer carries compaction notes, goal echoes and the
+// orchestrator-pool drop ("Left 1 orchestrator model out of this turn — …").
+// It used to be unclosable, so one failover line sat there for the rest of the
+// session. Dismissal is keyed on the bar's own text: closing this message can
+// never swallow the next, different one.
+function ChatNoticeBar({ text }) {
+  const [closed, setClosed] = useState(null);
+  if (!text || closed === text) return null;
+  return (
+    <div className="noticebar">
+      <span className="noticebar-text">{text}</span>
+      <button
+        type="button"
+        className="noticebar-x"
+        title="Dismiss"
+        aria-label="Dismiss"
+        onClick={() => setClosed(text)}
+      ><Icon name="X" size={12} /></button>
+    </div>
   );
 }
 
@@ -2280,7 +2328,7 @@ export default function App() {
           </div>
 
           {error && <div className="errorbar">{error}</div>}
-          {notice && <div className="noticebar">{notice}</div>}
+          <ChatNoticeBar text={notice} />
 
           <InputBar
             streaming={streaming} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
@@ -2338,6 +2386,12 @@ export default function App() {
       {showFind && (
         <FindBar query={findQuery} setQuery={setFindQuery} messages={messages} onClose={() => { setShowFind(false); setFindQuery(''); }} />
       )}
+
+      <ContextLimitToast
+        lastUsage={lastUsage}
+        model={(lastUsage && lastUsage.model) || (provider && provider.model) || ''}
+        T={T}
+      />
     </div>
   );
 }
@@ -2634,6 +2688,75 @@ function ContextMeter({ used, win, size = 44 }) {
       </svg>
       <span className="ctx-pct">{Math.round(pct)}%</span>
     </span>
+  );
+}
+
+// ---------- context pressure toast ----------
+// The ring in the composer/Environment pane is easy to miss while typing, and
+// running out of context mid-turn is the one failure a user cannot retry away.
+// This is a small fixed toast at the bottom of the window that appears once the
+// last turn's *context* size crosses the warm threshold, for every provider
+// (the window comes from the model in the usage record, not from a hardcoded
+// table). It never prints provider token-limit wording: it reports pressure and
+// offers the same action the Environment pane does.
+function ContextLimitToast({ lastUsage, model, T }) {
+  const win = contextWindowFor(model);
+  const used = usedTokens(lastUsage);
+  // Dismissal is keyed to the tone, so hiding the 70 % warning does not
+  // suppress the 90 % one — and a fresh conversation starts clean. The rule
+  // lives in ./ctx-toast.mjs so it can be tested without a DOM.
+  const [closedTone, setClosedTone] = useState(null);
+  const [closedAt, setClosedAt] = useState(0);
+  const seenAt = Number(lastUsage && lastUsage.at) || 0;
+  const { tone, pct, visible } = ctxToastState({ used, win, closedTone, closedAt, seenAt });
+  // Sit *above* the composer, never on top of it. The message box grows with
+  // every line typed, so the offset is measured, not guessed: a fixed 18px
+  // toast covered the bottom of the input on this very screen.
+  const [lift, setLift] = useState(0);
+  useEffect(() => {
+    if (!visible) return;
+    const measure = () => {
+      const box = document.querySelector('.composer');
+      if (!box) { setLift(0); return; }
+      const r = box.getBoundingClientRect();
+      // Distance from the composer's top edge to the bottom of the window,
+      // plus a 10px breather. 0 when the composer is not laid out yet.
+      const next = Math.max(0, Math.round(window.innerHeight - r.top) + 10);
+      setLift((cur) => (cur === next ? cur : next));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    const box = document.querySelector('.composer');
+    const ro = box && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    if (ro) ro.observe(box);
+    return () => {
+      window.removeEventListener('resize', measure);
+      if (ro) ro.disconnect();
+    };
+  }, [visible]);
+  if (!visible) return null;
+  const label = String(model || '').split('/').pop();
+  return (
+    <div className={'ctx-toast ' + tone} role="status" aria-live="polite" style={lift ? { bottom: lift } : undefined}>
+      <span className="ctx-toast-ico"><Icon name={tone === 'hot' ? 'Warning' : 'Info'} size={15} /></span>
+      <div className="ctx-toast-main">
+        <div className="ctx-toast-title">
+          {tone === 'hot'
+            ? (T('ctx.hot') || 'Almost out of room in this conversation')
+            : (T('ctx.warm') || 'This conversation is getting long')}
+        </div>
+        <div className="ctx-toast-sub">
+          {pct}% of the window used{label ? ' · ' + label : ''}
+        </div>
+      </div>
+      <button
+        type="button"
+        className="ctx-toast-x"
+        title="Dismiss"
+        aria-label="Dismiss"
+        onClick={() => { setClosedTone(tone); setClosedAt(seenAt); }}
+      ><Icon name="X" size={12} /></button>
+    </div>
   );
 }
 
@@ -5818,7 +5941,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                       {/* An index that could not be parsed is not "no accounts":
                           say so here too, where the user picks a model. */}
                       {provOauth.storeError && (
-                        <div className="prov-notice warn">{T('account.storeError')}</div>
+                        <ProvNotice warn text={T('account.storeError')} />
                       )}
                       {provOauth.providers.map((pv) => {
                         const accounts = pv.accounts || [];
@@ -5908,7 +6031,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                               />
                             )}
                             {pv.id === 'claude' && claudeSignIn.notice && (
-                              <div className="prov-notice">{claudeSignIn.notice}</div>
+                              <ProvNotice text={claudeSignIn.notice} />
                             )}
                             {provManual && provManual.provId === pv.id && (
                               <div className="prov-token prov-manual">
@@ -5973,7 +6096,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                         <Icon name="Plug" size={14} />
                         <span className="model-opt-name">{provBusy === 'import:' ? 'Scanning this Mac…' : 'Import accounts from this Mac'}</span>
                       </button>
-                      {provNotice && <div className="prov-notice">{provNotice}</div>}
+                      <ProvNotice text={provNotice} />
                     </>
                   )}
                   <div className="model-menu-divider" />
@@ -6374,7 +6497,7 @@ function AccountSection({ T, provider, setProvider }) {
       {/* An index that cannot be parsed is not "no accounts". Say so instead of
           rendering an empty list the user would read as their sign-ins being gone. */}
       {st && st.storeError && (
-        <p className="prov-notice warn">{T('account.storeError')}</p>
+        <ProvNotice warn text={T('account.storeError')} />
       )}
 
       {st && providers.map((pv) => (
@@ -6494,7 +6617,7 @@ function AccountSection({ T, provider, setProvider }) {
         </div>
       )}
 
-      {(notice || claude.notice) && <div className="prov-notice">{notice || claude.notice}</div>}
+      <ProvNotice text={notice || claude.notice} />
     </div>
   );
 }

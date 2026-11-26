@@ -1881,3 +1881,331 @@ All suites green in the standalone tree after a clean `npm ci` (578 packages),
 `test/provideroauth.test.js` sets `AUTOBOT_HOME` to a scratch dir before `require`
 and asserts the real `~/.autobot/provider-oauth.json` bytes are unchanged — that
 suite had been corrupting the live store.
+
+## 36. The Gemini 400 was our own JSON Schema (2026-11-26)
+
+### 36.1 Symptom
+
+Every Antigravity turn came back `400 Invalid JSON payload received`, and the
+provider's message blamed a deep path inside our own request:
+
+```
+Unknown name "type" at
+'request.tools[0].function_declarations[0].parameters.properties[2].value.items'
+```
+
+`googleChat()` was putting the tool's JSON Schema straight into
+`functionDeclarations[].parameters`. The Cloud Code endpoint accepts only an
+OpenAPI 3.0 *subset* and rejects the whole request over one unknown keyword — so
+every tool we advertise had to be legal, not just the one that failed first.
+
+### 36.2 Fix
+
+`toGeminiSchema(schema, depth)` and `toGeminiDeclarations(tools)` in
+`electron/providertransport.js` lower each schema to that subset:
+
+- whitelist only — `type`, `description`, `nullable`, `enum`, `items`,
+  `properties`, `required`, `minimum`, `maximum`, `minItems`, `maxItems`,
+  `minProperties`, `maxProperties`;
+- drop `additionalProperties`, `$ref`, `const`, `format`, `default`, `pattern`,
+  `$schema`;
+- enum members are stringified and an enum schema is forced to `type: 'string'`;
+- `required` is filtered to keys that survived; `anyOf`/`oneOf`/`allOf` collapse
+  to the first non-null branch (`nullable` when a null branch existed); sibling
+  enum branches merge; `type` arrays collapse; missing types are inferred;
+- depth capped at 8, names failing `/^[A-Za-z_][A-Za-z0-9_.-]*$/` and duplicates
+  are skipped.
+
+### 36.3 Causal A/B (`build/probe-antigravity-ab.cjs`)
+
+Same tool, same model, same account; only the schema differs.
+
+| body | result |
+|---|---|
+| raw JSON Schema (pre-fix wire shape) | **400** `INVALID_ARGUMENT` |
+| lowered to the OpenAPI subset | **200** |
+
+```
+raw=400 lowered=200 → CAUSAL: the lowering is the fix
+```
+
+### 36.4 End to end (`build/probe-antigravity-turn.cjs`, 10/10)
+
+A real turn through `transport.chatCompletion()` with the real advertised surface:
+
+```
+PASS safeStorage can decrypt this profile  — app "Akron Bot"
+PASS antigravity has a stored account  — 6969loavbal-gmail-com, antigravity-e7a9a81a
+PASS a live access token was resolved  — 6969loavbal-gmail-com
+PASS the advertised tool surface is non-empty  — 141 tools
+PASS every tool survives the Gemini lowering  — 141 / 141
+PASS the turn was accepted by the Cloud Code endpoint  — 3619 ms
+PASS the model answered with text  — antigravity-path-ok
+```
+
+`test/gemini-schema.test.js` lowers all 141 built-in tool definitions and asserts
+2748 properties.
+
+## 37. A notice you can close, and a toast before the window fills (2026-11-26)
+
+### 37.1 Dismissible notices
+
+One component — `ProvNotice({text, warn, className})` — renders every
+`.prov-notice`: `.prov-notice-text` plus a `.prov-notice-x` button labelled
+`Dismiss`. Dismissal is keyed on the banner's **own text** and the state lives in
+the mounted component, so (a) hiding one message can never hide the next
+different one, and (b) a remount re-arms it. `onClick` stops propagation so the X
+inside the model picker does not also select the row underneath.
+
+`storeError` is the single overloaded case: it is dismissible per mounted surface
+and the underlying error is never cleared, so the truth is still there on the next
+mount. Only `.prov-notice.warn` means a store failure; every other notice is
+informational or an error banner.
+
+### 37.2 Context-pressure toast
+
+`ContextLimitToast({lastUsage, model, T})` is the last child of `.app`, and its
+rule lives in `src/ctx-toast.mjs` so it is testable without a DOM:
+
+- `TOAST_WARM = 70`, `TOAST_HOT = 90`, percent from `usedTokens(lastUsage)` over
+  `contextWindowFor(model)` — so it fires for every provider, not just Claude;
+- dismissal keyed on `(tone, lastUsage.at)`: a 70 % dismissal still lets the
+  90 % warning through, and a new turn revives it;
+- unknown window (`0`/`NaN`) yields `cool` and no toast — the old shape divided
+  by zero, went `Infinity`, and stayed "hot" forever;
+- wording is `78% of the window used · gemini-4-neon-high`, never a raw
+  token-limit string.
+
+Placement is measured, not guessed: a `ResizeObserver` on `.composer` plus a
+`window` resize listener sets an inline `bottom` of
+`window.innerHeight - composerRect.top + 10`. The previous CSS `bottom: 18px`
+put the toast *over* the message box.
+
+### 37.3 Live proof in the running renderer (`build/probe-notices-toast.cjs`, 36/36)
+
+Against the built bundle, driving the real DOM over CDP:
+
+| case | measured |
+|---|---|
+| 50 % of the window | no `.ctx-toast` |
+| 78 % | warm toast, `78% of the window used · gemini-4-neon-high` |
+| placement | `position: fixed` at `bottom: 125px`; toast `619–678` vs composer `688–783` — **no overlap** |
+| close | button labelled `Dismiss`, click removes the toast |
+| 95 % | hot tone, different wording, dismissible |
+| usage cleared | toast gone |
+| real app notice | picker's “Import accounts from this Mac” → `Imported 2 · already present 2.` renders `.prov-notice-x`; click hides it; reopening the picker shows a fresh notice |
+
+`test/ctx-toast.test.js` — 34 assertions, exit 0.
+
+## 38. The “tokenless” account was the probe's app name (2026-11-26)
+
+A probe kept reporting `no stored tokens for antigravity:…` for accounts that the
+running app used without complaint. The store was fine. On macOS `safeStorage`
+keys its Keychain entry on the *application name* — `<productName> Safe Storage`
+— so a bare `./node_modules/.bin/electron build/x.cjs` decrypts under
+`Electron Safe Storage` and gets a decryption error for every row:
+
+```
+encryptionAvailable true
+provider-oauth:antigravity:… => DECRYPT-ERR Error while decrypting the ciphertext …
+```
+
+With `app.setName(require('../package.json').productName)` before `whenReady`,
+every row decrypts (claude 490 chars, chatgpt 2190, grok 1109, antigravity 811
+and 813). Both `build/probe-antigravity-turn.cjs` and
+`build/probe-antigravity-ab.cjs` now set the name and relaunch themselves under
+Electron when started with plain `node`, so a probe can no longer report a dead
+account that is alive.
+
+**Consequence for triage:** a `no stored tokens` result from a plain-`node`
+probe is a probe artifact, not a finding. Verify through the app's runtime.
+
+## 39. “Claude needs to be signed in again” was an empty bearer (2026-11-26)
+
+The 1M long-context proof failed with `401 authentication_error: Invalid bearer
+token` while `/tmp/which-token.cjs` replayed the *same dumped body* against
+`api.anthropic.com` with the stored token and got `200 message_start`. The
+credential was valid; the request was not.
+
+An `AUTOBOT_REQDUMP` meta block, extended for this round with a credential
+fingerprint (no token is ever written — length and a 12-hex sha256 prefix only),
+named the culprit on the first run:
+
+```json
+"auth":     { "source": "none", "len": 0, "sha12": "e3b0c44298fc" },
+"provider": { "oauthProvider": "claude:rxpromedbd-gmail-com", "tokenLen": 0, "apiKeyLen": 0 }
+```
+
+`source: "none"` is `sha256("")`. The request carried `Authorization: Bearer `
+with nothing after it.
+
+**Where it came from.** `~/.autobot/orchestrator.json` stores `oauthProvider` +
+`model` per row and never a token (`~/.autobot/secrets.json` holds those, keyed
+by account). `autobot:run` hydrated the pool only when the renderer *sent* one.
+A turn that arrives with just the selected provider — every CDP probe, every
+scheduled task — fell through to `store.getOrchestrator()`, which was handed
+straight to `runAgent`. `normalizeProvider()` defaults `accessToken` to `''` and
+`anthropicAuth()` reads `accessToken || apiKey`, so the empty string was never
+replaced: `Bearer ` + empty. Anthropic answers `401 Invalid bearer token` and the
+app translated that into "Claude needs to be signed in again".
+
+**Fix.** `electron/orch-hydrate.js` (new, dependency-injected so it is unit
+testable) resolves every row through the same `hydrateProvider()` a single
+provider already went through, and both turn paths call it:
+
+| site | change |
+| ---- | ------ |
+| `autobot:run` | `orchSource = orchestrator || store.getOrchestrator()` and `hydrateOrchestrator(orchSource, hydrateProvider)` before `runAgent`, so the persisted pool is minted too |
+| scheduled runner | `hydrateOrchestrator(orch, hydrateProvider)` before `validateOrchestrator()` |
+| dead row | dropped from *this turn only*, with one notice: `Left 1 orchestrator model out of this turn — … needs to be signed in again. The saved row is untouched; sign in again in Settings.` |
+| `activeIndex` | re-anchored by which row survived, so a dead row above the active one cannot silently switch models |
+| on-disk pool | never mutated; the test asserts the input JSON is byte-identical afterwards |
+
+**Live proof** (dev app, port 9333, Orchestrator Mode enabled with the stale
+anonymous Ollama row still first in the store):
+
+```
+claude-sonnet-4-6 => OK [{"role":"assistant","content":"PING46"}]
+claude-opus-4-5   => OK [{"role":"assistant","content":"PING45"}]
+```
+
+and the 1M proof then passed for the first time:
+
+```
+pad chars: 819999
+prompt_tokens : 344416   (LC_LINES=10000, ≈820 KB of filler)
+window before : 1M 1000000
+window after  : 1M 1000000
+PASS          : true
+```
+
+**Regression guard.** `test/orch-hydrate.test.js` — 33 assertions, exit 0:
+empty pools pass through untouched, a missing resolver is a `TypeError` rather
+than a silent pass, every row is resolved in order, the saved pool is never
+mutated, a dead row is dropped *and named* while the active slot keeps the same
+model, an all-dead pool returns an empty provider list rather than throwing, and
+the notice is singular/plural/anonymous-correct and never carries raw JSON.
+`verify-release.sh` now asserts `hydrateOrchestrator` in both the module and
+`main.js` (both call sites), the notice wording, and the `sha12` fingerprint.
+
+**Triage note.** `401 Invalid bearer token` on a subscription row is a *hydration*
+bug until the fingerprint says otherwise — the stored token may be perfectly
+valid. The dump's `auth.source`/`sha12` decides in one request.
+
+## 40. The orchestrator drop notice was permanent (2026-11-26)
+
+With Orchestrator Mode on and one stale row in the pool, every turn surfaced:
+
+> Left 1 orchestrator model out of this turn — claude-fable-5-2
+> (http://localhost:11434/v1/models serves 2 models and claude-fable-5-2 is not
+> one of them). The saved row is untouched; remove it in Settings if that
+> gateway no longer serves it.
+
+…as `.noticebar`, a green strip pinned above the composer. It had no close
+button, so a single failover line stayed on screen for the rest of the session.
+The per-turn notice was correct; its lifecycle was not.
+
+**Fix.** `ChatNoticeBar` (new component next to `ProvNotice`, `src/App.jsx`)
+renders `.noticebar` + `.noticebar-text` + `.noticebar-x` and keeps its own
+dismissal state, keyed on the bar's own text. The rule is the same one the
+provider notices already follow: closing *this* message can never swallow the
+next, different one. Because the key is the text, a repeat of the identical
+orchestrator complaint stays closed instead of re-announcing itself every turn —
+which is what the user asked for.
+
+| aspect | behaviour |
+| --- | --- |
+| layout | `.noticebar` is `display:flex`; the text takes the row, the button is `flex:0 0 auto` at the top-right |
+| affordance | 20×20 px button, `title`/`aria-label` `Dismiss`, `Icon name="X"`, hover surface |
+| scope | per mounted bar; the `notice` state itself is untouched, so nothing silently loses the information |
+| new message | different text mounts a fresh bar (asserted) |
+
+**Live proof** — `build/probe-noticebar.cjs [port]`, driven only through the
+app's own `/goal` slash command (same `notice` state the pool drop uses):
+
+```
+  ok   no notice bar on a fresh renderer
+  ok   /goal reaches the composer
+  ok   the app renders a notice bar
+  ok   the bar carries the message
+  ok   the bar has a close button
+  ok   the close button is labelled for screen readers
+  ok   the close button is a real hit target (>=16px)
+  ok   the close button sits inside the bar
+  ok   clicking close hides the bar
+  ok   a different notice is not swallowed by the old dismissal
+  ok   the bar sits above the composer, no overlap
+15 passed, 0 failed
+```
+
+Run once on the dev app (port 9333) and again against the packaged app
+(port 9444). `verify-release.sh` now asserts `noticebar-x` in both the renderer
+bundle and the CSS.
+
+## 41. A long-context refusal was reported as a throttled key (2026-11-26)
+
+The packaged 1M probe was re-run and the turn failed with:
+
+```
+errors: [{"type":"error","text":"","error":null,"phase":null}]
+PASS  : false
+```
+
+Two defects, both in the *reporting* of a provider decision, not in the beta path:
+
+1. `build/probe-longctx.cjs` collected `e.text` while `main.js` sends
+   `{ type: 'error', message }`. The probe printed an empty string for the one
+   field that explains the failure. It also computed
+   `ORCH_ON = … ? 'true' : 'false'` — a **string**, so `!ORCH_ON` was always
+   false and it reported `model match : true` while `model served` was blank.
+   Both are fixed: the probe records `message`, and `ORCH_ON` is a real boolean.
+2. The request dump showed what the provider actually said:
+
+```json
+{ "type": "error",
+  "error": { "type": "rate_limit_error",
+             "message": "Usage credits are required for long context requests." },
+  "request_id": "req_011ChQjpsFodf64MrFbEgPvQ" }
+```
+
+A 429, so `humanizeLLMError` led with *"The provider is rate limiting this key"*
+— advice to retry something that cannot succeed until credits are added — and
+`isRateLimitError` retried it five times (~39 s) before printing that.
+
+**Not a regression.** The same 1M request succeeded twice earlier today
+(`prompt_tokens 344425`, window `1M`), so the beta path works; this account's
+long-context credit allowance is now the limit.
+
+**Fix, in two places.**
+
+| where | change |
+| --- | --- |
+| `llm.js humanizeLLMError` | a 429 whose body names a credit wall is headlined *"This account needs usage credits for that request"* instead of "rate limiting this key"; the provider's own sentence is still quoted |
+| `providertransport.js` (anthropic 429) | the same body sets `retryHopeless` + a prose hint ("Long context needs usage credits on this account — the plan allowance does not cover a request this large. Send a shorter conversation, or pick a model whose window fits it"), so the ladder throws once instead of backing off five times |
+| `build/probe-longctx.cjs` | reads `message`, honest `model match`, and prints `blocked : provider refused long context (needs usage credits) — not an app failure` |
+
+`test/error-banner.test.js` grew from 8 to 11 assertions: the credit-wall 429 is
+named as a credit wall (and never as rate limiting), a per-minute 429 keeps its
+wording, and the banner does not repeat itself. Full suite: 37 suites, 0 failing.
+
+**Shipped proof — final packaged artifact (`SHA256SUMS.txt`
+`1c5d9935df608dc8fe6a7d3c88c981b448a4af8acfaec1c4789937058061777f`).** Same
+1M request, after the fix:
+
+```
+seconds          : 1
+errors           : Long context needs usage credits on this account — the plan allowance does not cover a request this large. Send a shorter conversation, or pick a model whose window fits it
+blocked          : provider refused long context (needs usage credits) — not an app failure
+PASS             : false
+```
+
+`seconds : 1` (was `39` with `gave up after 5 attempts`): the ladder now throws on
+the first refusal, and the banner is the transport's own sentence instead of the
+generic "rate limiting this key". The provider decision is unchanged — this
+account cannot run a request that large without credits — but the app now says
+so in one line, once.
+
+`test/error-banner.test.js` is 12 assertions (added the exact shipped sentence,
+asserting it is not worded as throttling). Full suite: 37 suites, 0 failing. The
+packaged proof matrix (`build/run-package-matrix.sh 9444`) is 9/9 probes green on
+the same artifact.

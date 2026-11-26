@@ -1702,3 +1702,19 @@ moving the labelled settings (Thinking level, Swarm, tools popover) into
 Positions were preserved; measured at 940–1440 px with and without the
 Environment pane: `BAD_CONTROLS 0 · actionsOverflow 0 · footOverflow 0`, all
 eight controls `hitInside: true`.
+
+### XIII. Provider notices, context toast, Gemini schema (2026-11-26)
+
+| Item | State |
+|---|---|
+| Gemini/Antigravity 400 | **Fixed + causal A/B**: raw JSON Schema → 400 `Unknown name "type" … value.items`; lowered → 200. 141/141 tools survive lowering; a live turn answered `antigravity-path-ok` in 3.6 s. |
+| Notices | **Fixed**: every `.prov-notice` carries `.prov-notice-x` (`Dismiss`); dismissal keyed on the banner text and held per mount, so the next different message still appears. |
+| Context toast | **Fixed**: warm at ≥70 %, hot at ≥90 %, tone from `usedTokens/contextWindowFor` so it covers all providers; dismissed per `(tone, turn)`; positioned from the measured composer rect (125 px, no overlap), not a CSS guess. |
+| Probe false negative | **Closed**: `safeStorage` on macOS is keyed to `<productName> Safe Storage`. A plain-`node`/bare-`electron` probe decrypts nothing and reports `no stored tokens` for a healthy account. Both Antigravity probes now set the app name and relaunch under Electron. |
+| Tokenless Antigravity row | **Not a defect.** Both rows decrypt and resolve; no row needed removing. |
+| Claude turn >200K at 1M | **Closed**: `LC_LINES=10000 node build/probe-longctx.cjs 9333 claude-sonnet-4-6` → `prompt_tokens 344425`, window `1M → 1M`, `PASS true`. The beta is accepted; the earlier failure was not the beta. |
+| “Claude needs to be signed in again” (401 `Invalid bearer token`) | **Closed**: the request carried `Authorization: Bearer ` (empty). A persisted orchestrator pool holds no token, and a turn that arrived with only the selected provider fell back to `store.getOrchestrator()` un-hydrated. `electron/orch-hydrate.js` now mints every row (turn + scheduled runner); dead rows are dropped per turn with a notice; the saved pool is never mutated. Fingerprint in the `AUTOBOT_REQDUMP` meta (`auth.source`/`sha12`) made this a one-request diagnosis. See VERIFICATION §39. |
+| 1M long-context proof on the packaged build | **Blocked by provider**: `429 rate_limit_error: Usage credits are required for long context requests` (`req_011ChQjpsFodf64MrFbEgPvQ`). The same request passed twice today (`prompt_tokens 344425`), so the beta path is proven; the account's long-context credit allowance is now the limit. Banner now says "needs usage credits" instead of "rate limiting", and the ladder throws once. See VERIFICATION §41. |
+| Orchestrator drop notice stuck on screen | **Closed**: `.noticebar` had no close button. `ChatNoticeBar` now renders `.noticebar-x`, dismissal keyed on the bar's text (a different notice still appears). `build/probe-noticebar.cjs` 15/15 on dev + packaged. See VERIFICATION §40. |
+| Grok live turns | **Blocked by allowance**, resets 2026-12-01 (100 % used, $0 prepaid). |
+| Real-user browser approval (ChatGPT authorize / Claude reconnect) | **Only a human can complete.** Everything the app controls is asserted; the last leg is the login itself. |

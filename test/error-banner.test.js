@@ -77,6 +77,48 @@ t('a 429 still never mentions an endpoint', () => {
   assert.match(banner, /rate limiting/i, banner);
 });
 
+// Anthropic's long-context wall arrives as a 429, so the generic 429 line told
+// the user their key was being throttled. It is not throttling: no retry can
+// succeed until credits are added. This is the banner the packaged long-context
+// probe actually produced (request_id req_011ChQjpsFodf64MrFbEgPvQ).
+t('a 429 that names a credit wall is not called rate limiting', () => {
+  const banner = humanizeLLMError(err(429, JSON.stringify({
+    type: 'error',
+    error: { type: 'rate_limit_error', message: 'Usage credits are required for long context requests.' },
+  })));
+  assert.match(banner, /^This account needs usage credits for that request/, banner);
+  assert.strictEqual(/rate limiting/i.test(banner), false, banner);
+  // The provider's own words are still quoted, not replaced.
+  assert.match(banner, /Usage credits are required for long context requests/, banner);
+});
+
+t('a plain token-per-minute 429 keeps the rate-limit wording', () => {
+  const banner = humanizeLLMError(err(429, '{"type":"error","error":{"message":"Number of request tokens has exceeded your per-minute rate limit"}}'));
+  assert.match(banner, /rate limiting/i, banner);
+  assert.strictEqual(/usage credits/i.test(banner), false, banner);
+});
+
+t('a credit-wall banner does not repeat itself', () => {
+  const banner = humanizeLLMError(err(429, '{"error":{"message":"Your credit balance is too low"}}'));
+  const hits = (banner.match(/credit/gi) || []).length;
+  assert.ok(hits <= 2, banner);
+});
+
+// The transport now stops the retry ladder for a long-context credit wall and
+// hands us its own prose. Prove the shipped sentence is what the user sees, and
+// that it is not dressed up as throttling.
+t('a long-context credit wall shows the transport prose, not "rate limiting"', () => {
+  const banner = humanizeLLMError(err(429, JSON.stringify({
+    type: 'error',
+    error: { type: 'rate_limit_error', message: 'Usage credits are required for long context requests.' },
+  }), {
+    hint: 'Long context needs usage credits on this account — the plan allowance does not cover a request this large. Send a shorter conversation, or pick a model whose window fits it',
+    retryHopeless: true,
+  }));
+  assert.match(banner, /^Long context needs usage credits/, banner);
+  assert.strictEqual(/rate limiting/i.test(banner), false, banner);
+});
+
 t('the allowance hint still wins over everything (no endpoint appended)', () => {
   const banner = humanizeLLMError(err(429, '{"type":"rate_limit_error"}', {
     hint: "the Claude plan's 5-hour allowance is 100% used (resets 2:29 AM, in 65 min); send this request again after the reset — nothing in the conversation is lost",

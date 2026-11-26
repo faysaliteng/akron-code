@@ -35,6 +35,7 @@ const windowstate = require('./windowstate');
 const freellm = require('./freellm');
 const { createRuntimes } = require('./runtimes');
 const orchPool = require('./orch-pool');
+const { hydrateOrchestrator, poolDeadNotice } = require('./orch-hydrate');
 
 // ---------------------------------------------------------------------------
 // Rebrand migration: user data used to live under "Helio Bot".
@@ -826,14 +827,16 @@ async function validateOrchestrator(orch, emit) {
 
 ipcMain.handle('autobot:run', async (event, payload) => {
   let { runId, messages, provider, cwd, useMemory, maxSteps, orchestrator, permissions, title, convId, swarm } = payload || {};
+  // The pool this turn will actually run against: the renderer's when it sent
+  // one, otherwise the persisted one. Both need the same token resolution.
+  const orchSource = orchestrator || store.getOrchestrator();
+  let poolDead = [];
   // Resolve subscription accounts into a live bearer token before the turn.
   try {
     provider = await hydrateProvider(provider);
-    if (orchestrator && Array.isArray(orchestrator.providers)) {
-      orchestrator = Object.assign({}, orchestrator, {
-        providers: await Promise.all(orchestrator.providers.map((p) => hydrateProvider(p))),
-      });
-    }
+    const hy = await hydrateOrchestrator(orchSource, hydrateProvider);
+    orchestrator = hy.orch;
+    poolDead = hy.dead;
   } catch (e) {
     // The run never started, so nothing else will ever clear the renderer's
     // streaming state. Emit the failure as a normal run event *and* return it,
@@ -860,8 +863,10 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   };
   const emit = (evt) => send(evt);
 
+  if (poolDead.length) emit({ type: 'notice', text: poolDeadNotice(poolDead) });
+
   // Kick off pool validation now so its network wait overlaps MCP discovery.
-  const orchInput = orchestrator || store.getOrchestrator();
+  const orchInput = orchestrator || orchSource;
   const orchReady = validateOrchestrator(orchInput, emit).catch(() => orchInput);
 
   // gather MCP tools across connected servers
@@ -3041,7 +3046,10 @@ async function runScheduledPrompt({ task }) {
   let out = '';
   // The pool is shared with interactive turns, so a stale row would break a
   // scheduled task too — and a scheduled run has no window to complain into.
+  // A scheduled run has no window to complain into, so a row it cannot mint a
+  // token for is simply left out — but it must be *minted*, not taken from disk.
   let orch = store.getOrchestrator();
+  try { orch = (await hydrateOrchestrator(orch, hydrateProvider)).orch; } catch (_) { /* keep the pool as stored */ }
   try { orch = await validateOrchestrator(orch, () => {}); } catch (_) { /* keep the pool as stored */ }
   const finalMessages = await runAgent({
     provider,
