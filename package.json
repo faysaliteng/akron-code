@@ -8,6 +8,7 @@
   "license": "SEE LICENSE IN LICENSE.md",
   "scripts": {
     "build": "vite build",
+    "typecheck": "node scripts/typecheck.js",
     "start": "electron .",
     "dev": "vite --host 127.0.0.1",
     "brand:seal": "node scripts/seal-brand.js",

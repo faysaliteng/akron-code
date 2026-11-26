@@ -8,6 +8,7 @@ import { TerminalPanel } from './TerminalPanel';
 import { ProblemsPanel } from './ProblemsPanel';
 import { QuickOpenModal } from './QuickOpenModal';
 import { IdeStatusBar } from './IdeStatusBar';
+import { MindMapView } from './MindMapView';
 import { shortcutLabels } from './shortcuts';
 import './ide.css';
 
@@ -57,6 +58,7 @@ export function IdeWorkbench({
 
   const [quickOpen, setQuickOpen] = useState(null); // { mode: 'files'|'symbols'|'commands', initialQuery, symbols }
   const [ghostEnabled, setGhostEnabled] = useState(false);
+  const [showMindMap, setShowMindMap] = useState(false);
 
   const [monacoMarkers, setMonacoMarkers] = useState([]);
   const [lspMarkers, setLspMarkers] = useState([]);
@@ -407,6 +409,7 @@ export function IdeWorkbench({
     { id: 'search', title: 'Project Search & Replace', shortcut: sc.globalSearch, run: () => setLeftTab('search') },
     { id: 'changes', title: 'Review Agent Changes', shortcut: '', run: () => setLeftTab('changes') },
     { id: 'git', title: 'Source Control (Git)', shortcut: '', run: () => setLeftTab('git') },
+    { id: 'mindmap', title: 'Toggle Interactive Mind Map', shortcut: '', run: () => setShowMindMap((v) => !v) },
     { id: 'ghost', title: 'Toggle AI Ghost Autocomplete', shortcut: '', run: () => setGhostEnabled((v) => !v) },
     ...(activeTab ? [{ id: 'save', title: `Save ${activeTab.name}`, shortcut: sc.save, run: () => saveTab(activeTab.path) }] : []),
     ...(onOpenEnvironments ? [{ id: 'envs', title: 'Open Execution Environments (Local / SSH / Remote)', shortcut: '', run: onOpenEnvironments }] : []),
@@ -447,12 +450,21 @@ export function IdeWorkbench({
           </button>
           <button
             type="button"
-            className={'ide-act-btn' + (leftTab === 'changes' ? ' on' : '')}
+            className={'ide-act-btn' + (leftTab === 'changes' && !showMindMap ? ' on' : '')}
             title="Agent Changes (Accept / Reject)"
-            onClick={() => setLeftTab((t) => (t === 'changes' ? null : 'changes'))}
+            onClick={() => { setShowMindMap(false); setLeftTab((t) => (t === 'changes' ? null : 'changes')); }}
           >
             <Icon name="Sparkles" size={17} />
             {changesBadgeCount > 0 && <span className="ide-act-badge">{changesBadgeCount}</span>}
+          </button>
+          <button
+            type="button"
+            className={'ide-act-btn' + (showMindMap ? ' on' : '')}
+            title="Interactive Project Mind Map"
+            data-testid="ide-mindmap-btn"
+            onClick={() => setShowMindMap((v) => !v)}
+          >
+            <Icon name="Grid" size={17} />
           </button>
 
           <div className="ide-act-spacer" />
@@ -549,6 +561,17 @@ export function IdeWorkbench({
         {/* Zone 2 & 3: Center Editor + Bottom Terminal/Problems Drawer */}
         <div className="ide-center-col">
           <div className="ide-editor-area">
+            {showMindMap ? (
+              <MindMapView
+                cwd={cwd}
+                theme={theme}
+                onOpenFile={(fp, ln) => {
+                  setShowMindMap(false);
+                  openFile(fp, ln || null);
+                }}
+                onClose={() => setShowMindMap(false)}
+              />
+            ) : (
             <MonacoPane
               cwd={cwd}
               theme={theme}
@@ -589,6 +612,7 @@ export function IdeWorkbench({
               orchestrator={orchestrator}
               Icon={Icon}
             />
+            )}
           </div>
 
           {bottomTab && (

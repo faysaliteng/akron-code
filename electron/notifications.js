@@ -69,12 +69,13 @@ function resolveAppIconPath({
   return resolveNotificationIconPath({ isPackaged, resourcesPath, appRoot, fsMod });
 }
 
-function buildWindowsToastXml({ title = 'Akron Code', subtitle = '', body = '', iconPath = null } = {}) {
+function buildWindowsToastXml({ title = 'Akron Code', subtitle = '', body = '', iconPath = null, sound = false } = {}) {
   const logoTag = iconPath
     ? `<image placement="appLogoOverride" src="${escapeXml(toFileUri(iconPath))}"/>`
     : '';
   const subTag = subtitle ? `<text>${escapeXml(subtitle)}</text>` : '';
   const bodyTag = body ? `<text>${escapeXml(body)}</text>` : '';
+  const audioTag = sound ? '' : '<audio silent="true"/>';
   return (
     `<toast>` +
       `<visual>` +
@@ -85,7 +86,7 @@ function buildWindowsToastXml({ title = 'Akron Code', subtitle = '', body = '', 
           bodyTag +
         `</binding>` +
       `</visual>` +
-      `<audio silent="true"/>` +
+      audioTag +
     `</toast>`
   );
 }
@@ -96,16 +97,18 @@ function buildNotificationOptions({
   body = '',
   platform = process.platform,
   iconPath = null,
+  sound = false,
 } = {}) {
   const cleanTitle = String(title || 'Akron Code').slice(0, 120);
   const cleanSubtitle = String(subtitle || '').slice(0, 120);
   const cleanBody = String(body || '').slice(0, 240);
+  const silent = !sound;
 
   if (platform === 'win32') {
     const opts = {
       title: cleanTitle,
       body: cleanBody,
-      silent: true,
+      silent,
     };
     if (iconPath) {
       opts.icon = iconPath;
@@ -114,6 +117,7 @@ function buildNotificationOptions({
         subtitle: cleanSubtitle,
         body: cleanBody,
         iconPath,
+        sound: !!sound,
       });
     }
     return opts;
@@ -123,7 +127,7 @@ function buildNotificationOptions({
     const opts = {
       title: cleanTitle,
       body: cleanBody,
-      silent: true,
+      silent,
     };
     if (iconPath) opts.icon = iconPath;
     return opts;
@@ -132,7 +136,7 @@ function buildNotificationOptions({
   const darwinOpts = {
     title: cleanTitle,
     body: cleanBody,
-    silent: true,
+    silent,
   };
   if (cleanSubtitle) darwinOpts.subtitle = cleanSubtitle;
   return darwinOpts;
@@ -154,6 +158,7 @@ function isAnyWindowFocused(wins) {
 
 function createNotificationService({
   platform = process.platform,
+  env = process.env,
   isPackaged = () => false,
   resourcesPath = () => process.resourcesPath,
   appRoot = path.join(__dirname, '..'),
@@ -211,8 +216,12 @@ function createNotificationService({
     const { Notification, app } = getElectronBindings();
 
     const focused = isAnyWindowFocused(listWindows());
-    if (focused && !p.force) {
+    if (focused && !p.force && !p.notifyWhenFocused) {
       return { ok: true, shown: false, reason: 'focused' };
+    }
+
+    if (platform === 'linux' && (!env || (!env.DISPLAY && !env.WAYLAND_DISPLAY))) {
+      return { ok: false, shown: false, reason: 'headless_linux' };
     }
 
     if (!Notification || (typeof Notification.isSupported === 'function' && !Notification.isSupported())) {
@@ -234,6 +243,7 @@ function createNotificationService({
       body: p.body || '',
       platform,
       iconPath,
+      sound: !!p.sound,
     });
 
     let notif;

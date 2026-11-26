@@ -2733,6 +2733,22 @@ ipcMain.handle('autobot:secretStatus', () => secretstore.status());
 // ── Transcript / workspace search & SQLite session store ──
 ipcMain.handle('autobot:searchAll', (e, payload) => search.searchAll(payload || {}));
 ipcMain.handle('autobot:searchFiles', (e, payload) => search.searchFiles(payload || {}));
+ipcMain.handle('autobot:getMindmap', (e, cwd, mode) => {
+  try {
+    const dir = cwd ? path.resolve(String(cwd)) : '';
+    const mmPath = dir ? path.join(dir, mindmap.FILENAME) : '';
+    const exists = !!(mmPath && fs.existsSync(mmPath));
+    return {
+      ok: true,
+      cwd: dir,
+      path: mmPath,
+      exists,
+      markdown: mindmap.buildWorkspaceMarkdown(dir, mode || 'auto'),
+    };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err), markdown: '# Mind Map\n- Error reading workspace' };
+  }
+});
 ipcMain.handle('autobot:dbMigrate', (e, convs) => sessionDb.migrateFromLocalStorage(convs || []));
 ipcMain.handle('autobot:dbListConvs', (e, opts) => sessionDb.listConversations(opts || {}));
 ipcMain.handle('autobot:dbGetConv', (e, id) => sessionDb.getConversation(id));

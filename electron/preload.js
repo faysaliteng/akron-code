@@ -115,6 +115,7 @@ contextBridge.exposeInMainWorld('autobot', {
   secretStatus: () => ipcRenderer.invoke('autobot:secretStatus'),
   searchAll: (payload) => ipcRenderer.invoke('autobot:searchAll', payload),
   searchFiles: (payload) => ipcRenderer.invoke('autobot:searchFiles', payload),
+  getMindmap: (cwd, mode) => ipcRenderer.invoke('autobot:getMindmap', cwd, mode),
   dbMigrate: (convs) => ipcRenderer.invoke('autobot:dbMigrate', convs),
   dbListConvs: (opts) => ipcRenderer.invoke('autobot:dbListConvs', opts),
   dbGetConv: (id) => ipcRenderer.invoke('autobot:dbGetConv', id),
