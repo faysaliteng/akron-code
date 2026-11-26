@@ -8,10 +8,14 @@ const aiInline = require('./ai-inline');
 const git = require('../git');
 const { humanizeLLMError } = require('../llm');
 const environments = require('../environments');
+const layoutStore = require('./layout-store');
 
 const inlineEditControllers = new Map();
 
 function register({ ipcMain, normalizeProvider, hydrateProvider, hydrateOrchestrator, store, broadcast }) {
+  // ---- Per-Workspace IDE Layout Persistence ----
+  ipcMain.handle('ide:loadLayout', (e, payload) => layoutStore.loadLayout(payload && payload.cwd));
+  ipcMain.handle('ide:saveLayout', (e, payload) => layoutStore.saveLayout(payload && payload.cwd, payload && payload.layout));
   const sendToSender = (event, channel, payload) => {
     try {
       const win = event && event.sender ? BrowserWindow.fromWebContents(event.sender) : null;

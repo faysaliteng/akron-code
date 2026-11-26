@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { shortcutLabels } from './shortcuts';
 
 function buildInlineDiffLines(oldText, newText) {
   const a = String(oldText || '').split('\n');
@@ -94,6 +95,7 @@ export function InlineEditWidget({
   };
 
   const diffLines = hasProposal ? buildInlineDiffLines(state.selectionText || '', proposed) : [];
+  const sc = shortcutLabels();
 
   return (
     <div
@@ -107,12 +109,12 @@ export function InlineEditWidget({
       }}
     >
       <form className="ide-inline-edit-bar" onSubmit={submit}>
-        <span className="ide-inline-kbd">⌘K</span>
+        <span className="ide-inline-kbd">{sc.inlineEdit}</span>
         <input
           ref={inputRef}
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          placeholder={hasProposal ? 'Follow-up instruction (or ⌘⏎ to accept)…' : 'Edit selection or generate code…'}
+          placeholder={hasProposal ? `Follow-up instruction (or ${sc.submit} to accept)…` : 'Edit selection or generate code…'}
         />
         {provider?.model && <span className="ide-inline-model">{provider.model}</span>}
         <button type="submit" className="ide-primary-btn" disabled={streaming || !instruction.trim()}>
@@ -145,7 +147,7 @@ export function InlineEditWidget({
                 disabled={streaming}
                 onClick={() => onAccept && onAccept(proposed, state.range)}
               >
-                Accept (⌘⏎)
+                Accept ({sc.submit})
               </button>
             </div>
           </div>

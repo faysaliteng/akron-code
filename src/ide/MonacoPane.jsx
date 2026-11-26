@@ -7,6 +7,7 @@ import {
   monaco,
 } from './monacoSetup';
 import { InlineEditWidget } from './InlineEditWidget';
+import { shortcutLabels } from './shortcuts';
 
 export function extractSymbolsFromModel(model) {
   if (!model) return [];
@@ -56,8 +57,11 @@ export function MonacoPane({
   onMarkersChange,
   onFixWithAgent,
   onOpenQuickOpen,
+  onOpenCommandCenter,
   onOpenSymbols,
   pendingReveal = null, // { path, line, col }
+  viewStates = {},
+  onViewStateChange,
   provider,
   orchestrator,
   Icon,
@@ -73,6 +77,8 @@ export function MonacoPane({
   const [inlineEdit, setInlineEdit] = useState(null);
   const [activeSymbol, setActiveSymbol] = useState('');
   const [lineChanges, setLineChanges] = useState([]);
+  const [activeHunkIdx, setActiveHunkIdx] = useState(0);
+  const sc = shortcutLabels();
 
   const activeTab = tabs.find((t) => t.path === activeTabPath) || null;
   const splitTab = splitTabPath ? tabs.find((t) => t.path === splitTabPath) : null;
@@ -112,6 +118,7 @@ export function MonacoPane({
     onMarkersChange,
     onOpenQuickOpen,
     onOpenSymbols,
+    onViewStateChange,
     openCmdK,
   };
 
@@ -218,6 +225,24 @@ export function MonacoPane({
           language: model.getLanguageId(),
         });
       }
+      if (r.onViewStateChange && r.activeTabPath && pos) {
+        r.onViewStateChange(r.activeTabPath, {
+          line: pos.lineNumber,
+          column: pos.column,
+          scrollTop: ed.getScrollTop(),
+        });
+      }
+    });
+    const dScroll = ed.onDidScrollChange(() => {
+      const r = latestRef.current;
+      const pos = ed.getPosition();
+      if (r.onViewStateChange && r.activeTabPath) {
+        r.onViewStateChange(r.activeTabPath, {
+          line: pos ? pos.lineNumber : 1,
+          column: pos ? pos.column : 1,
+          scrollTop: ed.getScrollTop(),
+        });
+      }
     });
 
     const dMarkers = monaco.editor.onDidChangeMarkers(() => {
@@ -238,6 +263,7 @@ export function MonacoPane({
     return () => {
       try { dContent.dispose(); } catch (_) {}
       try { dCursor.dispose(); } catch (_) {}
+      try { dScroll.dispose(); } catch (_) {}
       try { dMarkers.dispose(); } catch (_) {}
       try { ed.dispose(); } catch (_) {}
       editorRef.current = null;
@@ -255,6 +281,13 @@ export function MonacoPane({
       }
       if (ed.getValue() !== activeTab.content) {
         ed.setValue(activeTab.content || '');
+      }
+      const vs = viewStates && viewStates[activeTab.path];
+      if (vs) {
+        try {
+          if (vs.line) ed.setPosition({ lineNumber: vs.line, column: vs.column || 1 });
+          if (typeof vs.scrollTop === 'number') ed.setScrollTop(vs.scrollTop);
+        } catch (_) {}
       }
     }
   }, [activeTab?.path, activeTab?.content, activeTab?.language]);
@@ -341,13 +374,24 @@ export function MonacoPane({
     };
   }, [diffMode, activeTab?.path, diffOriginal]);
 
+  const navigateHunk = (dir) => {
+    const ded = diffEditorRef.current;
+    if (!ded || !lineChanges.length) return;
+    const nextIdx = (activeHunkIdx + dir + lineChanges.length) % lineChanges.length;
+    setActiveHunkIdx(nextIdx);
+    const h = lineChanges[nextIdx];
+    const line = Math.max(1, h.modifiedStartLineNumber || h.originalStartLineNumber || 1);
+    try { ded.getModifiedEditor().revealLineInCenter(line); } catch (_) {}
+  };
+
   const applyHunk = async (hunkIdx, action) => {
     const ded = diffEditorRef.current;
     if (!ded) return;
     const orig = ded.getOriginalEditor().getModel();
     const mod = ded.getModifiedEditor().getModel();
     const changes = ded.getLineChanges() || [];
-    const h = changes[hunkIdx];
+    const safeIdx = Math.max(0, Math.min(changes.length - 1, hunkIdx));
+    const h = changes[safeIdx];
     if (!orig || !mod || !h) return;
     if (action === 'reject') {
       const origRange = h.originalEndLineNumber >= h.originalStartLineNumber && h.originalStartLineNumber > 0
@@ -360,8 +404,11 @@ export function MonacoPane({
         ? new monaco.Range(modStart, 1, modEnd, mod.getLineMaxColumn(modEnd))
         : new monaco.Range(modStart, 1, modStart, 1);
       mod.pushEditOperations([], [{ range: targetRange, text: origText }], () => null);
-    } else if (action === 'accept' && window.autobot?.ideGitStage && cwd && activeTab?.relPath) {
+    } else if (action === 'accept' && activeTab) {
       await onSaveTab(activeTab.path);
+      if (window.autobot?.ideGitStage && cwd && activeTab.relPath) {
+        await window.autobot.ideGitStage({ cwd, files: [activeTab.relPath] });
+      }
     }
   };
 
@@ -402,8 +449,17 @@ export function MonacoPane({
           ))}
         </div>
         <div className="ide-editor-tools">
-          <button type="button" className="ide-mini-action" title="Quick Open (⌘P)" onClick={() => onOpenQuickOpen && onOpenQuickOpen()}>
-            ⌘P
+          <button
+            type="button"
+            className="ide-command-center"
+            title={`Command Center (${sc.quickOpen} files, > commands, @ symbols)`}
+            onClick={() => (onOpenCommandCenter ? onOpenCommandCenter() : (onOpenQuickOpen && onOpenQuickOpen()))}
+          >
+            <Icon name="Search" size={11} />
+            <span>Search ({sc.quickOpen}), &gt; cmd, @ sym</span>
+          </button>
+          <button type="button" className="ide-mini-action" title={`Quick Open (${sc.quickOpen})`} onClick={() => onOpenQuickOpen && onOpenQuickOpen()}>
+            {sc.quickOpen}
           </button>
           <button
             type="button"
@@ -434,15 +490,15 @@ export function MonacoPane({
             <button
               type="button"
               className="ide-mini-action"
-              title="Open Inline Edit (⌘K)"
+              title={`Open Inline Edit (${sc.inlineEdit})`}
               onClick={() => openCmdK(editorRef.current)}
             >
-              ⌘K
+              {sc.inlineEdit}
             </button>
           )}
           {activeTab && activeTab.dirty && (
             <button type="button" className="ide-primary-btn" onClick={() => onSaveTab && onSaveTab(activeTab.path)}>
-              Save ⌘S
+              Save {sc.save}
             </button>
           )}
         </div>
@@ -467,11 +523,16 @@ export function MonacoPane({
           )}
           {diffMode && (
             <div className="ide-diff-controls">
-              <span className="ide-diff-label">{diffTitle || 'Diff'} ({lineChanges.length} hunks)</span>
+              <span className="ide-diff-label">
+                {diffTitle || 'Diff'} ({lineChanges.length ? `${Math.min(activeHunkIdx + 1, lineChanges.length)}/${lineChanges.length}` : '0 hunks'})
+              </span>
               {lineChanges.length > 0 && (
-                <button type="button" className="ide-mini-action" onClick={() => applyHunk(0, 'reject')} title="Reject first hunk">
-                  Reject Hunk #1
-                </button>
+                <>
+                  <button type="button" className="ide-mini-action" onClick={() => navigateHunk(-1)} title="Previous Hunk">↑</button>
+                  <button type="button" className="ide-mini-action" onClick={() => navigateHunk(1)} title="Next Hunk">↓</button>
+                  <button type="button" className="ide-mini-action" onClick={() => applyHunk(activeHunkIdx, 'accept')} title="Accept & save active hunk">Accept Hunk</button>
+                  <button type="button" className="ide-mini-action" onClick={() => applyHunk(activeHunkIdx, 'reject')} title="Reject active hunk">Reject Hunk</button>
+                </>
               )}
               {onRejectAllDiff && (
                 <button type="button" className="ide-mini-action" onClick={onRejectAllDiff}>Reject File</button>
@@ -500,12 +561,12 @@ export function MonacoPane({
           <div className="ide-editor-welcome">
             <div className="ide-welcome-card">
               <h3>Akron Code IDE</h3>
-              <p>Select a file from the Explorer or press <kbd>⌘P</kbd> to Quick Open.</p>
+              <p>Select a file from the Explorer or press <kbd>{sc.quickOpen}</kbd> to Quick Open.</p>
               <div className="ide-welcome-shortcuts">
-                <span><kbd>⌘K</kbd> Inline AI Edit</span>
-                <span><kbd>⇧⌘F</kbd> Project Search</span>
-                <span><kbd>⇧⌘O</kbd> Go to Symbol</span>
-                <span><kbd>⌘J</kbd> Toggle Terminal</span>
+                <span><kbd>{sc.inlineEdit}</kbd> Inline AI Edit</span>
+                <span><kbd>{sc.globalSearch}</kbd> Project Search</span>
+                <span><kbd>{sc.goToSymbol}</kbd> Go to Symbol</span>
+                <span><kbd>{sc.toggleTerminal}</kbd> Toggle Terminal</span>
               </div>
             </div>
           </div>

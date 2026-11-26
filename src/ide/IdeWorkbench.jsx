@@ -2,10 +2,13 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { FileTree } from './FileTree';
 import { SearchPanel } from './SearchPanel';
 import { GitPanel } from './GitPanel';
+import { AgentChangesPanel } from './AgentChangesPanel';
 import { MonacoPane } from './MonacoPane';
 import { TerminalPanel } from './TerminalPanel';
 import { ProblemsPanel } from './ProblemsPanel';
 import { QuickOpenModal } from './QuickOpenModal';
+import { IdeStatusBar } from './IdeStatusBar';
+import { shortcutLabels } from './shortcuts';
 import './ide.css';
 
 function relPathOf(cwd, filePath) {
@@ -22,16 +25,21 @@ export function IdeWorkbench({
   theme = 'dark',
   provider,
   orchestrator,
+  envState,
+  contextPct = null,
   setError,
   setNotice,
   onAttachToChat,
   onSendToAgent,
   onOpenSettings,
+  onOpenEnvironments,
+  onOpenRuntimes,
+  onSwitchToAgent,
   renderAgentDock,
   externalOpenFile = null, // { path, diff, at } when Agent Review opens a file in IDE
   Icon,
 }) {
-  const [leftTab, setLeftTab] = useState('explorer'); // 'explorer' | 'search' | 'git' | null
+  const [leftTab, setLeftTab] = useState('explorer'); // 'explorer' | 'search' | 'git' | 'changes' | null
   const [leftW, setLeftW] = useState(244);
   const [bottomTab, setBottomTab] = useState('terminal'); // 'terminal' | 'problems' | 'output' | null
   const [bottomH, setBottomH] = useState(210);
@@ -46,7 +54,7 @@ export function IdeWorkbench({
   const [diffState, setDiffState] = useState(null); // { path, original, title }
   const [pendingReveal, setPendingReveal] = useState(null);
 
-  const [quickOpen, setQuickOpen] = useState(null); // { mode: 'files'|'symbols', symbols: [] }
+  const [quickOpen, setQuickOpen] = useState(null); // { mode: 'files'|'symbols'|'commands', initialQuery, symbols }
   const [ghostEnabled, setGhostEnabled] = useState(false);
 
   const [monacoMarkers, setMonacoMarkers] = useState([]);
@@ -56,9 +64,15 @@ export function IdeWorkbench({
 
   const [cursorCtx, setCursorCtx] = useState(null);
   const [ctxFlags, setCtxFlags] = useState({ file: true, selection: true, problems: false });
+  const [viewStates, setViewStates] = useState({});
+  const [initialTermBuffer, setInitialTermBuffer] = useState('');
+  const [layoutLoadedCwd, setLayoutLoadedCwd] = useState(null);
 
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  const termSerializedRef = useRef('');
+  const layoutSaveTimerRef = useRef(null);
+  const sc = shortcutLabels();
 
   const logOutput = useCallback((line) => {
     setOutputLogs((prev) => [...prev.slice(-120), `[${new Date().toLocaleTimeString()}] ${line}`]);
@@ -76,33 +90,22 @@ export function IdeWorkbench({
     setGitStatus(st);
   }, [cwd]);
 
-  useEffect(() => {
-    if (!cwd) return;
-    refreshTree();
-    refreshGit();
-    window.autobot?.ideLspStatus?.({ cwd }).then((st) => st && setLspInfo(st)).catch(() => {});
-    window.autobot?.ideWatchWorkspace?.({ cwd }).catch(() => {});
-    return () => {
-      window.autobot?.ideUnwatchWorkspace?.({ cwd }).catch(() => {});
-    };
-  }, [cwd, refreshTree, refreshGit]);
-
-  const openFile = useCallback(async (filePath, line = null, col = null) => {
+  const openFile = useCallback(async (filePath, line = null, col = null, opts = {}) => {
     if (!filePath || !window.autobot?.ideReadFile) return;
     const existing = tabsRef.current.find((t) => t.path === filePath);
     if (existing) {
-      setActiveTabPath(filePath);
+      if (!opts.silent) setActiveTabPath(filePath);
       setDiffState(null);
       if (line) setPendingReveal({ path: filePath, line, col: col || 1, at: Date.now() });
       return;
     }
     const r = await window.autobot.ideReadFile({ path: filePath });
     if (!r || !r.ok) {
-      setError && setError('❌ ' + (r?.error || 'Could not open file'));
+      if (!opts.silent) setError && setError('❌ ' + (r?.error || 'Could not open file'));
       return;
     }
     if (r.binary) {
-      setNotice && setNotice(`Binary file (${r.size} bytes) cannot be edited in text mode.`);
+      if (!opts.silent) setNotice && setNotice(`Binary file (${r.size} bytes) cannot be edited in text mode.`);
       return;
     }
     const name = filePath.split(/[\\/]/).pop() || filePath;
@@ -114,13 +117,12 @@ export function IdeWorkbench({
       content: r.content || '',
       savedContent: r.content || '',
       dirty: false,
-      pinned: false,
+      pinned: !!opts.pinned,
     };
-    setTabs((prev) => [...prev, tab]);
-    setActiveTabPath(r.path);
+    setTabs((prev) => (prev.some((t) => t.path === r.path) ? prev : [...prev, tab]));
+    if (!opts.silent) setActiveTabPath(r.path);
     setDiffState(null);
     if (line) setPendingReveal({ path: r.path, line, col: col || 1, at: Date.now() });
-    // Notify LSP best-effort
     window.autobot?.ideLspNotify?.({
       cwd,
       language: tab.language,
@@ -128,6 +130,86 @@ export function IdeWorkbench({
       params: { file: tab.path, textDocument: { languageId: tab.language, version: 1, text: tab.content } },
     }).catch(() => {});
   }, [cwd, setError, setNotice]);
+
+  // Workspace bootstrap + layout restoration
+  useEffect(() => {
+    if (!cwd) return undefined;
+    let cancelled = false;
+    setLayoutLoadedCwd(null);
+    refreshTree();
+    refreshGit();
+    window.autobot?.ideLspStatus?.({ cwd }).then((st) => !cancelled && st && setLspInfo(st)).catch(() => {});
+    window.autobot?.ideWatchWorkspace?.({ cwd }).catch(() => {});
+
+    (async () => {
+      try {
+        if (!window.autobot?.ideLoadLayout) {
+          if (!cancelled) setLayoutLoadedCwd(cwd);
+          return;
+        }
+        const res = await window.autobot.ideLoadLayout({ cwd });
+        const ly = res && res.layout;
+        if (!cancelled && ly) {
+          if (ly.leftTab !== undefined) setLeftTab(ly.leftTab);
+          if (typeof ly.leftW === 'number') setLeftW(ly.leftW);
+          if (ly.bottomTab !== undefined) setBottomTab(ly.bottomTab);
+          if (typeof ly.bottomH === 'number') setBottomH(ly.bottomH);
+          if (typeof ly.rightOpen === 'boolean') setRightOpen(ly.rightOpen);
+          if (typeof ly.rightW === 'number') setRightW(ly.rightW);
+          if (typeof ly.ghostEnabled === 'boolean') setGhostEnabled(ly.ghostEnabled);
+          if (ly.viewStates) setViewStates(ly.viewStates);
+          if (typeof ly.terminalSerialized === 'string') {
+            setInitialTermBuffer(ly.terminalSerialized);
+            termSerializedRef.current = ly.terminalSerialized;
+          }
+          if (Array.isArray(ly.openTabs) && ly.openTabs.length) {
+            for (const ot of ly.openTabs) {
+              if (cancelled) break;
+              await openFile(ot.path, null, null, { silent: true, pinned: !!ot.pinned });
+            }
+            if (!cancelled && ly.activeTabPath) setActiveTabPath(ly.activeTabPath);
+            if (!cancelled && ly.splitTabPath) setSplitTabPath(ly.splitTabPath);
+          }
+        }
+      } catch (_) {}
+      if (!cancelled) setLayoutLoadedCwd(cwd);
+    })();
+
+    return () => {
+      cancelled = true;
+      window.autobot?.ideUnwatchWorkspace?.({ cwd }).catch(() => {});
+    };
+  }, [cwd, refreshTree, refreshGit]);
+
+  const scheduleLayoutSave = useCallback(() => {
+    if (!cwd || layoutLoadedCwd !== cwd || !window.autobot?.ideSaveLayout) return;
+    if (layoutSaveTimerRef.current) clearTimeout(layoutSaveTimerRef.current);
+    layoutSaveTimerRef.current = setTimeout(() => {
+      layoutSaveTimerRef.current = null;
+      const payload = {
+        openTabs: tabsRef.current.map((t) => ({ path: t.path, pinned: !!t.pinned })),
+        activeTabPath,
+        splitTabPath,
+        viewStates,
+        leftTab,
+        leftW,
+        bottomTab,
+        bottomH,
+        rightOpen,
+        rightW,
+        ghostEnabled,
+        terminalSerialized: termSerializedRef.current || '',
+      };
+      window.autobot.ideSaveLayout({ cwd, layout: payload }).catch(() => {});
+    }, 450);
+  }, [cwd, layoutLoadedCwd, activeTabPath, splitTabPath, viewStates, leftTab, leftW, bottomTab, bottomH, rightOpen, rightW, ghostEnabled]);
+
+  useEffect(() => {
+    scheduleLayoutSave();
+    return () => {
+      if (layoutSaveTimerRef.current) clearTimeout(layoutSaveTimerRef.current);
+    };
+  }, [tabs, activeTabPath, splitTabPath, viewStates, leftTab, leftW, bottomTab, bottomH, rightOpen, rightW, ghostEnabled, scheduleLayoutSave]);
 
   const openDiffForFile = useCallback(async (filePath, relPath) => {
     await openFile(filePath);
@@ -140,12 +222,20 @@ export function IdeWorkbench({
     });
   }, [cwd, openFile]);
 
-  // External open request (e.g. clicking a changed file in Agent Review)
   useEffect(() => {
     if (!externalOpenFile || !externalOpenFile.path) return;
     if (externalOpenFile.diff) openDiffForFile(externalOpenFile.path);
     else openFile(externalOpenFile.path, externalOpenFile.line || null, 1);
   }, [externalOpenFile, openFile, openDiffForFile]);
+
+  const reloadOpenFile = useCallback(async (filePath) => {
+    const r = await window.autobot?.ideReadFile?.({ path: filePath });
+    if (r && r.ok && !r.binary) {
+      setTabs((prev) => prev.map((t) => (t.path === filePath ? { ...t, content: r.content, savedContent: r.content, dirty: false } : t)));
+    } else if (r && !r.ok) {
+      setTabs((prev) => prev.filter((t) => t.path !== filePath));
+    }
+  }, []);
 
   // Auto-reload clean tabs when disk changes (e.g. Agent/Swarm wrote files)
   useEffect(() => {
@@ -214,13 +304,16 @@ export function IdeWorkbench({
     setTabs((prev) => prev.map((t) => (t.path === filePath ? { ...t, content, dirty: content !== t.savedContent } : t)));
   }, []);
 
+  const handleViewStateChange = useCallback((filePath, vs) => {
+    setViewStates((prev) => ({ ...prev, [filePath]: vs }));
+  }, []);
+
   const pickFolder = async () => {
     if (!window.autobot?.pickFolder) return;
     const dir = await window.autobot.pickFolder();
     if (dir && setCwd) setCwd(dir);
   };
 
-  // Drag-resize helper
   const startDrag = (axis, initialVal, setter, minVal, maxVal, invert = false) => (e) => {
     e.preventDefault();
     const start = axis === 'x' ? e.clientX : e.clientY;
@@ -237,14 +330,17 @@ export function IdeWorkbench({
     window.addEventListener('mouseup', onUp);
   };
 
-  // IDE shortcuts (⌘P, ⇧⌘F, ⌘J, ⌘B)
+  // IDE shortcuts (Ctrl/Cmd + P, Shift+F, J, B)
   useEffect(() => {
     const onKey = (e) => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       if ((e.key === 'p' || e.key === 'P') && !e.shiftKey) {
         e.preventDefault();
-        setQuickOpen({ mode: 'files', symbols: [] });
+        setQuickOpen({ mode: 'files', initialQuery: '', symbols: [] });
+      } else if ((e.key === 'f' || e.key === 'F') && e.shiftKey) {
+        e.preventDefault();
+        setLeftTab('search');
       } else if ((e.key === 'j' || e.key === 'J') && !e.shiftKey) {
         e.preventDefault();
         setBottomTab((b) => (b ? null : 'terminal'));
@@ -262,8 +358,18 @@ export function IdeWorkbench({
   const gitBadgeCount = gitStatus && gitStatus.isRepo
     ? (gitStatus.staged?.length || 0) + (gitStatus.unstaged?.length || 0) + (gitStatus.untracked?.length || 0)
     : 0;
+  const changesBadgeCount = gitBadgeCount + tabs.filter((t) => t.dirty).length;
 
-  // Build dynamic Editor Context block for Agent composer
+  const toggleActiveTabEol = () => {
+    if (!activeTab) return;
+    const isCrlf = /\r\n/.test(activeTab.content || '');
+    const next = isCrlf
+      ? String(activeTab.content || '').replace(/\r\n/g, '\n')
+      : String(activeTab.content || '').replace(/\r?\n/g, '\r\n');
+    changeTabContent(activeTab.path, next);
+    setNotice && setNotice(`Converted ${activeTab.name} line endings to ${isCrlf ? 'LF' : 'CRLF'}.`);
+  };
+
   const buildEditorContext = () => {
     const parts = [];
     if (ctxFlags.file && activeTab) {
@@ -294,265 +400,329 @@ export function IdeWorkbench({
     onSendToAgent && onSendToAgent(`Fix these ${list.length} workspace diagnostics:\n${summary}`);
   };
 
+  const ideCommands = [
+    { id: 'toggle-term', title: 'Toggle Terminal Panel', shortcut: sc.toggleTerminal, run: () => setBottomTab((b) => (b ? null : 'terminal')) },
+    { id: 'toggle-agent', title: 'Toggle Akron Agent Dock', shortcut: sc.toggleAgent, run: () => setRightOpen((r) => !r) },
+    { id: 'search', title: 'Project Search & Replace', shortcut: sc.globalSearch, run: () => setLeftTab('search') },
+    { id: 'changes', title: 'Review Agent Changes', shortcut: '', run: () => setLeftTab('changes') },
+    { id: 'git', title: 'Source Control (Git)', shortcut: '', run: () => setLeftTab('git') },
+    { id: 'ghost', title: 'Toggle AI Ghost Autocomplete', shortcut: '', run: () => setGhostEnabled((v) => !v) },
+    ...(activeTab ? [{ id: 'save', title: `Save ${activeTab.name}`, shortcut: sc.save, run: () => saveTab(activeTab.path) }] : []),
+    ...(onOpenEnvironments ? [{ id: 'envs', title: 'Open Execution Environments (Local / SSH / Remote)', shortcut: '', run: onOpenEnvironments }] : []),
+    ...(onOpenRuntimes ? [{ id: 'runtimes', title: 'Open Runtimes & Updates', shortcut: '', run: onOpenRuntimes }] : []),
+    ...(onOpenSettings ? [{ id: 'settings', title: 'Open Settings', shortcut: sc.settings, run: onOpenSettings }] : []),
+    ...(onSwitchToAgent ? [{ id: 'agent-mode', title: 'Switch to Full Agent Workspace', shortcut: '', run: onSwitchToAgent }] : []),
+  ];
+
   return (
     <div className="ide-workbench">
-      {/* Zone 1: Left Activity Bar + Sidebar */}
-      <div className="ide-activity-bar">
-        <button
-          type="button"
-          className={'ide-act-btn' + (leftTab === 'explorer' ? ' on' : '')}
-          title="Explorer"
-          onClick={() => setLeftTab((t) => (t === 'explorer' ? null : 'explorer'))}
-        >
-          <Icon name="Files" size={18} />
-        </button>
-        <button
-          type="button"
-          className={'ide-act-btn' + (leftTab === 'search' ? ' on' : '')}
-          title="Search & Replace (⇧⌘F)"
-          onClick={() => setLeftTab((t) => (t === 'search' ? null : 'search'))}
-        >
-          <Icon name="Search" size={18} />
-        </button>
-        <button
-          type="button"
-          className={'ide-act-btn' + (leftTab === 'git' ? ' on' : '')}
-          title="Source Control (Git)"
-          onClick={() => setLeftTab((t) => (t === 'git' ? null : 'git'))}
-        >
-          <Icon name="GitBranch" size={18} />
-          {gitBadgeCount > 0 && <span className="ide-act-badge">{gitBadgeCount}</span>}
-        </button>
-
-        <div className="ide-act-spacer" />
-
-        <button
-          type="button"
-          className={'ide-act-btn' + (bottomTab ? ' on' : '')}
-          title="Toggle Terminal / Problems (⌘J)"
-          onClick={() => setBottomTab((b) => (b ? null : 'terminal'))}
-        >
-          <Icon name="CommandLine" size={17} />
-        </button>
-        <button
-          type="button"
-          className={'ide-act-btn' + (rightOpen ? ' on' : '')}
-          title="Toggle Akron Code Agent (⌘B)"
-          onClick={() => setRightOpen((r) => !r)}
-        >
-          <Icon name="Agent" size={17} />
-        </button>
-        {onOpenSettings && (
+      <div className="ide-workbench-body">
+        {/* Zone 1: Left Activity Bar + Sidebar */}
+        <div className="ide-activity-bar">
           <button
             type="button"
-            className="ide-act-btn"
-            title="Settings"
-            aria-label="Settings"
-            onClick={onOpenSettings}
+            className={'ide-act-btn' + (leftTab === 'explorer' ? ' on' : '')}
+            title="Explorer"
+            onClick={() => setLeftTab((t) => (t === 'explorer' ? null : 'explorer'))}
           >
-            <Icon name="Settings" size={17} />
+            <Icon name="Files" size={18} />
           </button>
-        )}
-      </div>
+          <button
+            type="button"
+            className={'ide-act-btn' + (leftTab === 'search' ? ' on' : '')}
+            title={`Search & Replace (${sc.globalSearch})`}
+            onClick={() => setLeftTab((t) => (t === 'search' ? null : 'search'))}
+          >
+            <Icon name="Search" size={18} />
+          </button>
+          <button
+            type="button"
+            className={'ide-act-btn' + (leftTab === 'git' ? ' on' : '')}
+            title="Source Control (Git)"
+            onClick={() => setLeftTab((t) => (t === 'git' ? null : 'git'))}
+          >
+            <Icon name="GitBranch" size={18} />
+            {gitBadgeCount > 0 && <span className="ide-act-badge">{gitBadgeCount}</span>}
+          </button>
+          <button
+            type="button"
+            className={'ide-act-btn' + (leftTab === 'changes' ? ' on' : '')}
+            title="Agent Changes (Accept / Reject)"
+            onClick={() => setLeftTab((t) => (t === 'changes' ? null : 'changes'))}
+          >
+            <Icon name="Sparkles" size={17} />
+            {changesBadgeCount > 0 && <span className="ide-act-badge">{changesBadgeCount}</span>}
+          </button>
 
-      {leftTab && (
-        <>
-          <aside className="ide-left-sidebar" style={{ width: leftW }}>
-            {leftTab === 'explorer' && (
-              <FileTree
-                cwd={cwd}
-                nodes={treeNodes}
-                gitStatus={gitStatus}
-                activeFile={activeTabPath}
-                onOpenFile={(p) => openFile(p)}
-                onRefresh={() => { refreshTree(); refreshGit(); }}
-                onPickFolder={pickFolder}
-                onAddToChat={(node) => {
-                  setRightOpen(true);
-                  onAttachToChat && onAttachToChat({ name: node.name, path: node.path, relPath: node.relPath });
-                }}
-                onNotify={(msg) => setNotice && setNotice(msg)}
-                Icon={Icon}
-              />
-            )}
-            {leftTab === 'search' && (
-              <SearchPanel
-                cwd={cwd}
-                onOpenMatch={(f, l, c) => openFile(f, l, c)}
-                onNotify={(m) => setNotice && setNotice(m)}
-                onFilesMutated={() => { refreshTree(); refreshGit(); }}
-                Icon={Icon}
-              />
-            )}
-            {leftTab === 'git' && (
-              <GitPanel
-                cwd={cwd}
-                gitStatus={gitStatus}
-                onRefreshGit={refreshGit}
-                onOpenDiff={(p, rel) => openDiffForFile(p, rel)}
-                onNotify={(m) => setNotice && setNotice(m)}
-                onSwitchWorkspace={setCwd}
-                provider={provider}
-                orchestrator={orchestrator}
-                Icon={Icon}
-              />
-            )}
-          </aside>
-          <div className="ide-resizer-v" onMouseDown={startDrag('x', leftW, setLeftW, 170, 460)} />
-        </>
-      )}
+          <div className="ide-act-spacer" />
 
-      {/* Zone 2 & 3: Center Editor + Bottom Terminal/Problems Drawer */}
-      <div className="ide-center-col">
-        <div className="ide-editor-area">
-          <MonacoPane
-            cwd={cwd}
-            theme={theme}
-            tabs={tabs}
-            activeTabPath={activeTabPath}
-            onSelectTab={(p) => { setActiveTabPath(p); setDiffState(null); }}
-            onCloseTab={closeTab}
-            onPinTab={(p) => setTabs((prev) => prev.map((t) => (t.path === p ? { ...t, pinned: !t.pinned } : t)))}
-            onChangeTabContent={changeTabContent}
-            onSaveTab={saveTab}
-            diffMode={Boolean(diffState && activeTab && diffState.path === activeTab.path)}
-            diffOriginal={diffState?.original || ''}
-            diffTitle={diffState?.title || ''}
-            onCloseDiff={() => setDiffState(null)}
-            onAcceptAllDiff={() => activeTab && saveTab(activeTab.path).then(() => setDiffState(null))}
-            onRejectAllDiff={async () => {
-              if (!activeTab || !gitStatus?.root) return;
-              await window.autobot.ideGitDiscard({ cwd, files: [activeTab.relPath] });
-              const fresh = await window.autobot.ideReadFile({ path: activeTab.path });
-              if (fresh && fresh.ok) {
-                setTabs((prev) => prev.map((t) => (t.path === activeTab.path ? { ...t, content: fresh.content, savedContent: fresh.content, dirty: false } : t)));
-              }
-              refreshGit();
-              setDiffState(null);
-            }}
-            splitTabPath={splitTabPath}
-            onSetSplitTab={setSplitTabPath}
-            ghostEnabled={ghostEnabled}
-            onToggleGhost={() => setGhostEnabled((v) => !v)}
-            onCursorContext={setCursorCtx}
-            onMarkersChange={setMonacoMarkers}
-            onFixWithAgent={fixProblemWithAgent}
-            onOpenQuickOpen={() => setQuickOpen({ mode: 'files', symbols: [] })}
-            onOpenSymbols={(syms) => setQuickOpen({ mode: 'symbols', symbols: syms || [] })}
-            pendingReveal={pendingReveal}
-            provider={provider}
-            orchestrator={orchestrator}
-            Icon={Icon}
-          />
+          <button
+            type="button"
+            className={'ide-act-btn' + (bottomTab ? ' on' : '')}
+            title={`Toggle Terminal / Problems (${sc.toggleTerminal})`}
+            onClick={() => setBottomTab((b) => (b ? null : 'terminal'))}
+          >
+            <Icon name="CommandLine" size={17} />
+          </button>
+          <button
+            type="button"
+            className={'ide-act-btn' + (rightOpen ? ' on' : '')}
+            title={`Toggle Akron Code Agent (${sc.toggleAgent})`}
+            onClick={() => setRightOpen((r) => !r)}
+          >
+            <Icon name="Agent" size={17} />
+          </button>
+          {onOpenSettings && (
+            <button
+              type="button"
+              className="ide-act-btn"
+              title={`Settings (${sc.settings})`}
+              aria-label="Settings"
+              onClick={onOpenSettings}
+            >
+              <Icon name="Settings" size={17} />
+            </button>
+          )}
         </div>
 
-        {bottomTab && (
+        {leftTab && (
           <>
-            <div className="ide-resizer-h" onMouseDown={startDrag('y', bottomH, setBottomH, 110, 460, true)} />
-            <div className="ide-bottom-drawer" style={{ height: bottomH }}>
-              <div className="ide-drawer-head">
-                <div className="ide-drawer-tabs">
-                  <button type="button" className={bottomTab === 'terminal' ? 'on' : ''} onClick={() => setBottomTab('terminal')}>
-                    Terminal
-                  </button>
-                  <button type="button" className={bottomTab === 'problems' ? 'on' : ''} onClick={() => setBottomTab('problems')}>
-                    Problems {allProblems.length > 0 && <span className="ide-prob-pill">{allProblems.length}</span>}
-                  </button>
-                  <button type="button" className={bottomTab === 'output' ? 'on' : ''} onClick={() => setBottomTab('output')}>
-                    Output
+            <aside className="ide-left-sidebar" style={{ width: leftW }}>
+              {leftTab === 'explorer' && (
+                <FileTree
+                  cwd={cwd}
+                  nodes={treeNodes}
+                  gitStatus={gitStatus}
+                  activeFile={activeTabPath}
+                  onOpenFile={(p) => openFile(p)}
+                  onRefresh={() => { refreshTree(); refreshGit(); }}
+                  onPickFolder={pickFolder}
+                  onAddToChat={(node) => {
+                    setRightOpen(true);
+                    onAttachToChat && onAttachToChat({ name: node.name, path: node.path, relPath: node.relPath });
+                  }}
+                  onNotify={(msg) => setNotice && setNotice(msg)}
+                  Icon={Icon}
+                />
+              )}
+              {leftTab === 'search' && (
+                <SearchPanel
+                  cwd={cwd}
+                  onOpenMatch={(f, l, c) => openFile(f, l, c)}
+                  onNotify={(m) => setNotice && setNotice(m)}
+                  onFilesMutated={() => { refreshTree(); refreshGit(); }}
+                  Icon={Icon}
+                />
+              )}
+              {leftTab === 'git' && (
+                <GitPanel
+                  cwd={cwd}
+                  gitStatus={gitStatus}
+                  onRefreshGit={refreshGit}
+                  onOpenDiff={(p, rel) => openDiffForFile(p, rel)}
+                  onNotify={(m) => setNotice && setNotice(m)}
+                  onSwitchWorkspace={setCwd}
+                  provider={provider}
+                  orchestrator={orchestrator}
+                  Icon={Icon}
+                />
+              )}
+              {leftTab === 'changes' && (
+                <AgentChangesPanel
+                  cwd={cwd}
+                  gitStatus={gitStatus}
+                  tabs={tabs}
+                  onOpenDiff={(p, rel) => openDiffForFile(p, rel)}
+                  onSaveTab={saveTab}
+                  onReloadFile={reloadOpenFile}
+                  onRefreshGit={() => { refreshTree(); refreshGit(); }}
+                  onNotify={(m) => setNotice && setNotice(m)}
+                  Icon={Icon}
+                />
+              )}
+            </aside>
+            <div className="ide-resizer-v" onMouseDown={startDrag('x', leftW, setLeftW, 170, 460)} />
+          </>
+        )}
+
+        {/* Zone 2 & 3: Center Editor + Bottom Terminal/Problems Drawer */}
+        <div className="ide-center-col">
+          <div className="ide-editor-area">
+            <MonacoPane
+              cwd={cwd}
+              theme={theme}
+              tabs={tabs}
+              activeTabPath={activeTabPath}
+              onSelectTab={(p) => { setActiveTabPath(p); setDiffState(null); }}
+              onCloseTab={closeTab}
+              onPinTab={(p) => setTabs((prev) => prev.map((t) => (t.path === p ? { ...t, pinned: !t.pinned } : t)))}
+              onChangeTabContent={changeTabContent}
+              onSaveTab={saveTab}
+              diffMode={Boolean(diffState && activeTab && diffState.path === activeTab.path)}
+              diffOriginal={diffState?.original || ''}
+              diffTitle={diffState?.title || ''}
+              onCloseDiff={() => setDiffState(null)}
+              onAcceptAllDiff={() => activeTab && saveTab(activeTab.path).then(() => setDiffState(null))}
+              onRejectAllDiff={async () => {
+                if (!activeTab || !gitStatus?.root) return;
+                await window.autobot.ideGitDiscard({ cwd, files: [activeTab.relPath] });
+                await reloadOpenFile(activeTab.path);
+                refreshGit();
+                setDiffState(null);
+              }}
+              splitTabPath={splitTabPath}
+              onSetSplitTab={setSplitTabPath}
+              ghostEnabled={ghostEnabled}
+              onToggleGhost={() => setGhostEnabled((v) => !v)}
+              onCursorContext={setCursorCtx}
+              onMarkersChange={setMonacoMarkers}
+              onFixWithAgent={fixProblemWithAgent}
+              onOpenQuickOpen={() => setQuickOpen({ mode: 'files', initialQuery: '', symbols: [] })}
+              onOpenCommandCenter={() => setQuickOpen({ mode: 'files', initialQuery: '>', symbols: [] })}
+              onOpenSymbols={(syms) => setQuickOpen({ mode: 'symbols', initialQuery: '@', symbols: syms || [] })}
+              pendingReveal={pendingReveal}
+              viewStates={viewStates}
+              onViewStateChange={handleViewStateChange}
+              provider={provider}
+              orchestrator={orchestrator}
+              Icon={Icon}
+            />
+          </div>
+
+          {bottomTab && (
+            <>
+              <div className="ide-resizer-h" onMouseDown={startDrag('y', bottomH, setBottomH, 110, 460, true)} />
+              <div className="ide-bottom-drawer" style={{ height: bottomH }}>
+                <div className="ide-drawer-head">
+                  <div className="ide-drawer-tabs">
+                    <button type="button" className={bottomTab === 'terminal' ? 'on' : ''} onClick={() => setBottomTab('terminal')}>
+                      Terminal
+                    </button>
+                    <button type="button" className={bottomTab === 'problems' ? 'on' : ''} onClick={() => setBottomTab('problems')}>
+                      Problems {allProblems.length > 0 && <span className="ide-prob-pill">{allProblems.length}</span>}
+                    </button>
+                    <button type="button" className={bottomTab === 'output' ? 'on' : ''} onClick={() => setBottomTab('output')}>
+                      Output
+                    </button>
+                  </div>
+                  <button type="button" className="ide-icon-btn" title={`Close Panel (${sc.toggleTerminal})`} onClick={() => setBottomTab(null)}>
+                    <Icon name="X" size={12} />
                   </button>
                 </div>
-                <button type="button" className="ide-icon-btn" title="Close Panel (⌘J)" onClick={() => setBottomTab(null)}>
+                <div className="ide-drawer-body">
+                  {bottomTab === 'terminal' && (
+                    <TerminalPanel
+                      cwd={cwd}
+                      theme={theme}
+                      initialBuffer={initialTermBuffer}
+                      onSerializeChange={(s) => {
+                        termSerializedRef.current = s || '';
+                      }}
+                      onSendToAgent={(snippet) => {
+                        setRightOpen(true);
+                        onSendToAgent && onSendToAgent(`Explain or fix this terminal output:\n\`\`\`\n${snippet}\n\`\`\``);
+                      }}
+                      Icon={Icon}
+                    />
+                  )}
+                  {bottomTab === 'problems' && (
+                    <ProblemsPanel
+                      problems={allProblems}
+                      onSelectProblem={(p) => openFile(p.file, p.line, p.col)}
+                      onFixProblem={fixProblemWithAgent}
+                      onFixAll={fixAllProblemsWithAgent}
+                      Icon={Icon}
+                    />
+                  )}
+                  {bottomTab === 'output' && (
+                    <div className="ide-output-panel">
+                      <div className="ide-output-lsp">
+                        LSP Bridges: {Object.entries(lspInfo).map(([k, v]) => `${k}: ${v.available ? (v.running ? 'running' : 'ready') : 'built-in Monaco'}`).join(' · ')}
+                      </div>
+                      <pre>{outputLogs.join('\n') || 'Workspace watcher and Monaco workers ready.'}</pre>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Zone 4: Right Akron Code Agent & Swarm Dock */}
+        {rightOpen && (
+          <>
+            <div className="ide-resizer-v" onMouseDown={startDrag('x', rightW, setRightW, 300, 620, true)} />
+            <aside className="ide-agent-dock" style={{ width: rightW }}>
+              <div className="ide-dock-head">
+                <div className="ide-dock-title">
+                  <Icon name="Agent" size={14} /> <span>Akron Code Agent</span>
+                </div>
+                <div className="ide-ctx-pills" title="Toggle editor context shared with Agent">
+                  <button
+                    type="button"
+                    className={'ide-ctx-pill' + (ctxFlags.file && activeTab ? ' on' : '')}
+                    onClick={() => setCtxFlags((f) => ({ ...f, file: !f.file }))}
+                    disabled={!activeTab}
+                  >
+                    {activeTab ? `@${activeTab.name}` : '@file'}
+                  </button>
+                  <button
+                    type="button"
+                    className={'ide-ctx-pill' + (ctxFlags.selection && cursorCtx?.selection ? ' on' : '')}
+                    onClick={() => setCtxFlags((f) => ({ ...f, selection: !f.selection }))}
+                  >
+                    {cursorCtx?.selection ? `L${cursorCtx.startLine}-${cursorCtx.endLine}` : 'Cursor'}
+                  </button>
+                  <button
+                    type="button"
+                    className={'ide-ctx-pill' + (ctxFlags.problems && allProblems.length ? ' on' : '')}
+                    onClick={() => setCtxFlags((f) => ({ ...f, problems: !f.problems }))}
+                  >
+                    {allProblems.length} {allProblems.length === 1 ? 'problem' : 'problems'}
+                  </button>
+                </div>
+                <button type="button" className="ide-icon-btn" title={`Collapse Agent Dock (${sc.toggleAgent})`} onClick={() => setRightOpen(false)}>
                   <Icon name="X" size={12} />
                 </button>
               </div>
-              <div className="ide-drawer-body">
-                {bottomTab === 'terminal' && (
-                  <TerminalPanel
-                    cwd={cwd}
-                    theme={theme}
-                    onSendToAgent={(snippet) => {
-                      setRightOpen(true);
-                      onSendToAgent && onSendToAgent(`Explain or fix this terminal output:\n\`\`\`\n${snippet}\n\`\`\``);
-                    }}
-                    Icon={Icon}
-                  />
-                )}
-                {bottomTab === 'problems' && (
-                  <ProblemsPanel
-                    problems={allProblems}
-                    onSelectProblem={(p) => openFile(p.file, p.line, p.col)}
-                    onFixProblem={fixProblemWithAgent}
-                    onFixAll={fixAllProblemsWithAgent}
-                    Icon={Icon}
-                  />
-                )}
-                {bottomTab === 'output' && (
-                  <div className="ide-output-panel">
-                    <div className="ide-output-lsp">
-                      LSP Bridges: {Object.entries(lspInfo).map(([k, v]) => `${k}: ${v.available ? (v.running ? 'running' : 'ready') : 'built-in Monaco'}`).join(' · ')}
-                    </div>
-                    <pre>{outputLogs.join('\n') || 'Workspace watcher and Monaco workers ready.'}</pre>
-                  </div>
-                )}
+              <div className="ide-dock-body">
+                {renderAgentDock && renderAgentDock({
+                  editorContextXml: buildEditorContext(),
+                  onOpenFileDiff: (fp) => openDiffForFile(fp),
+                })}
               </div>
-            </div>
+            </aside>
           </>
         )}
       </div>
 
-      {/* Zone 4: Right Akron Code Agent & Swarm Dock */}
-      {rightOpen && (
-        <>
-          <div className="ide-resizer-v" onMouseDown={startDrag('x', rightW, setRightW, 300, 620, true)} />
-          <aside className="ide-agent-dock" style={{ width: rightW }}>
-            <div className="ide-dock-head">
-              <div className="ide-dock-title">
-                <Icon name="Agent" size={14} /> <span>Akron Code Agent</span>
-              </div>
-              <div className="ide-ctx-pills" title="Toggle editor context shared with Agent">
-                <button
-                  type="button"
-                  className={'ide-ctx-pill' + (ctxFlags.file && activeTab ? ' on' : '')}
-                  onClick={() => setCtxFlags((f) => ({ ...f, file: !f.file }))}
-                  disabled={!activeTab}
-                >
-                  {activeTab ? `@${activeTab.name}` : '@file'}
-                </button>
-                <button
-                  type="button"
-                  className={'ide-ctx-pill' + (ctxFlags.selection && cursorCtx?.selection ? ' on' : '')}
-                  onClick={() => setCtxFlags((f) => ({ ...f, selection: !f.selection }))}
-                >
-                  {cursorCtx?.selection ? `L${cursorCtx.startLine}-${cursorCtx.endLine}` : 'Cursor'}
-                </button>
-                <button
-                  type="button"
-                  className={'ide-ctx-pill' + (ctxFlags.problems && allProblems.length ? ' on' : '')}
-                  onClick={() => setCtxFlags((f) => ({ ...f, problems: !f.problems }))}
-                >
-                  {allProblems.length} {allProblems.length === 1 ? 'problem' : 'problems'}
-                </button>
-              </div>
-              <button type="button" className="ide-icon-btn" title="Collapse Agent Dock (⌘B)" onClick={() => setRightOpen(false)}>
-                <Icon name="X" size={12} />
-              </button>
-            </div>
-            <div className="ide-dock-body">
-              {renderAgentDock && renderAgentDock({
-                editorContextXml: buildEditorContext(),
-                onOpenFileDiff: (fp) => openDiffForFile(fp),
-              })}
-            </div>
-          </aside>
-        </>
-      )}
+      <IdeStatusBar
+        cwd={cwd}
+        envState={envState}
+        onOpenEnvironments={onOpenEnvironments}
+        gitStatus={gitStatus}
+        onRefreshGit={refreshGit}
+        onNotify={(m) => setNotice && setNotice(m)}
+        problems={allProblems}
+        onOpenProblems={() => setBottomTab((b) => (b === 'problems' ? null : 'problems'))}
+        activeTab={activeTab}
+        cursorCtx={cursorCtx}
+        onToggleEol={toggleActiveTabEol}
+        ghostEnabled={ghostEnabled}
+        onToggleGhost={() => setGhostEnabled((v) => !v)}
+        modelLabel={(provider && provider.model) || 'auto'}
+        contextPct={contextPct}
+        onOpenProviders={onOpenSettings}
+        Icon={Icon}
+      />
 
       {quickOpen && (
         <QuickOpenModal
           mode={quickOpen.mode}
+          initialQuery={quickOpen.initialQuery || ''}
           treeNodes={treeNodes}
           symbols={quickOpen.symbols}
+          commands={ideCommands}
           onSelectFile={(p) => openFile(p)}
           onSelectSymbol={(s) => activeTabPath && setPendingReveal({ path: activeTabPath, line: s.line, col: s.col || 1, at: Date.now() })}
           onClose={() => setQuickOpen(null)}

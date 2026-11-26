@@ -239,7 +239,25 @@ function revealInOS(targetPath) {
   }
 }
 
-const watchers = new Map(); // cwd -> { watcher, timer, pending }
+function loadParcelWatcher() {
+  try {
+    return require('@parcel/watcher');
+  } catch (_) {
+    try {
+      const resolved = require.resolve('@parcel/watcher').replace(/app\.asar([\\/])/i, 'app.asar.unpacked$1');
+      if (fs.existsSync(resolved)) return require(resolved);
+    } catch (__) {}
+    return null;
+  }
+}
+
+const parcelWatcher = loadParcelWatcher();
+
+function watcherBackend() {
+  return parcelWatcher ? 'parcel' : 'fs.watch';
+}
+
+const watchers = new Map(); // cwd -> { watcher, sub, timer, pending, backend }
 
 function unwatchWorkspace(cwd) {
   if (!cwd) return;
@@ -247,7 +265,8 @@ function unwatchWorkspace(cwd) {
   const rec = watchers.get(key);
   if (!rec) return;
   if (rec.timer) clearTimeout(rec.timer);
-  try { rec.watcher.close(); } catch (_) {}
+  try { if (rec.watcher) rec.watcher.close(); } catch (_) {}
+  try { if (rec.sub && typeof rec.sub.unsubscribe === 'function') rec.sub.unsubscribe().catch(() => {}); } catch (_) {}
   watchers.delete(key);
 }
 
@@ -259,10 +278,9 @@ function watchWorkspace(cwd, onChange) {
   if (!cwd) return { ok: false, error: 'cwd required' };
   const root = path.resolve(cwd);
   if (!fs.existsSync(root)) return { ok: false, error: 'Workspace missing' };
-  if (watchers.has(root)) return { ok: true, cwd: root, alreadyWatching: true };
+  if (watchers.has(root)) return { ok: true, cwd: root, alreadyWatching: true, backend: watchers.get(root).backend };
 
   const pending = new Map(); // relPath -> eventType
-  let watcher = null;
   const flush = () => {
     rec.timer = null;
     const events = [...pending.entries()].map(([relPath, eventType]) => ({
@@ -276,19 +294,40 @@ function watchWorkspace(cwd, onChange) {
       try { onChange(events); } catch (_) {}
     }
   };
-  const rec = { watcher: null, timer: null, pending };
-  try {
-    watcher = fs.watch(root, { recursive: process.platform !== 'linux' }, (eventType, filename) => {
-      const rel = filename ? String(filename).replace(/\\/g, '/') : '';
-      if (rel && /(?:^|\/)(?:\.git|node_modules|dist|release)(?:\/|$)/.test(rel)) return;
-      pending.set(rel, eventType || 'change');
-      if (rec.timer) clearTimeout(rec.timer);
-      rec.timer = setTimeout(flush, 120);
-      if (rec.timer && typeof rec.timer.unref === 'function') rec.timer.unref();
-    });
-    rec.watcher = watcher;
+  const scheduleEvent = (rel, eventType) => {
+    if (rel && /(?:^|\/)(?:\.git|node_modules|dist|release|build|\.next|__pycache__)(?:\/|$)/.test(rel)) return;
+    pending.set(rel, eventType || 'change');
+    if (rec.timer) clearTimeout(rec.timer);
+    rec.timer = setTimeout(flush, 120);
+    if (rec.timer && typeof rec.timer.unref === 'function') rec.timer.unref();
+  };
+  const rec = { watcher: null, sub: null, timer: null, pending, backend: 'fs.watch' };
+
+  if (parcelWatcher && typeof parcelWatcher.subscribe === 'function') {
+    rec.backend = 'parcel';
     watchers.set(root, rec);
-    return { ok: true, cwd: root };
+    parcelWatcher.subscribe(root, (err, events) => {
+      if (err || !Array.isArray(events)) return;
+      for (const ev of events) {
+        const rel = ev && ev.path ? path.relative(root, ev.path).replace(/\\/g, '/') : '';
+        scheduleEvent(rel, ev && ev.type ? ev.type : 'change');
+      }
+    }, {
+      ignore: ['.git', 'node_modules', 'dist', 'release', 'build', '.next', '__pycache__'],
+    }).then((sub) => {
+      if (watchers.get(root) === rec) rec.sub = sub;
+      else sub.unsubscribe().catch(() => {});
+    }).catch(() => {});
+    return { ok: true, cwd: root, backend: 'parcel' };
+  }
+
+  try {
+    rec.watcher = fs.watch(root, { recursive: process.platform !== 'linux' }, (eventType, filename) => {
+      const rel = filename ? String(filename).replace(/\\/g, '/') : '';
+      scheduleEvent(rel, eventType || 'change');
+    });
+    watchers.set(root, rec);
+    return { ok: true, cwd: root, backend: 'fs.watch' };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -307,4 +346,5 @@ module.exports = {
   unwatchWorkspace,
   unwatchAll,
   detectLanguage,
+  watcherBackend,
 };

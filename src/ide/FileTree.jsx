@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { shortcutLabels } from './shortcuts';
 
 function badgeForRel(relPath, statusMap) {
   if (!relPath || !statusMap) return null;
@@ -208,9 +209,9 @@ export function FileTree({
               <button type="button" className="danger" onClick={async () => { const p = ctxMenu.node.path; setCtxMenu(null); await window.autobot.ideDeleteEntry({ path: p }); onRefresh && onRefresh(); }}>Delete</button>
               <div className="ide-ctx-sep" />
               <button type="button" onClick={() => { navigator.clipboard?.writeText(ctxMenu.node.path).catch(() => {}); setCtxMenu(null); }}>Copy Path</button>
-              <button type="button" onClick={() => { window.autobot.ideRevealInOS({ path: ctxMenu.node.path }); setCtxMenu(null); }}>Reveal in Finder/Explorer</button>
+              <button type="button" onClick={() => { window.autobot.ideRevealInOS({ path: ctxMenu.node.path }); setCtxMenu(null); }}>{shortcutLabels().revealLabel}</button>
               {!ctxMenu.node.isDir && (
-                <button type="button" onClick={() => { onAddToChat && onAddToChat(ctxMenu.node); setCtxMenu(null); }}>Add to Chat (@file)</button>
+                <button type="button" onClick={() => { onAddToChat && onAddToChat(ctxMenu.node); setCtxMenu(null); }}>Add @file to Agent</button>
               )}
             </>
           )}

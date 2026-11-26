@@ -1,12 +1,27 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon } from '@xterm/addon-search';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
+import { shortcutLabels } from './shortcuts';
 
-function XtermInstance({ ptyId, theme, onSelectionChange, registerReader }) {
+function XtermInstance({
+  ptyId,
+  theme,
+  initialBuffer = '',
+  onSelectionChange,
+  registerReader,
+  registerSearch,
+  onSerialize,
+  onOpenSearch,
+}) {
   const hostRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
+  const searchRef = useRef(null);
+  const serializeRef = useRef(null);
 
   useEffect(() => {
     const el = hostRef.current;
@@ -23,10 +38,38 @@ function XtermInstance({ ptyId, theme, onSelectionChange, registerReader }) {
       scrollback: 5000,
     });
     const fit = new FitAddon();
+    const searchAddon = new SearchAddon();
+    const serializeAddon = new SerializeAddon();
+    const webLinks = new WebLinksAddon((_event, uri) => {
+      if (uri && window.autobot?.openExternal) {
+        window.autobot.openExternal(uri);
+      } else if (uri) {
+        window.open(uri, '_blank', 'noopener');
+      }
+    });
+
     term.loadAddon(fit);
+    term.loadAddon(searchAddon);
+    term.loadAddon(serializeAddon);
+    term.loadAddon(webLinks);
     term.open(el);
+
+    if (initialBuffer) {
+      try { term.write(initialBuffer + '\r\n\x1b[90m--- restored session ---\x1b[0m\r\n'); } catch (_) {}
+    }
+
     termRef.current = term;
     fitRef.current = fit;
+    searchRef.current = searchAddon;
+    serializeRef.current = serializeAddon;
+
+    term.attachCustomKeyEventHandler((e) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+        if (e.type === 'keydown') onOpenSearch && onOpenSearch();
+        return false;
+      }
+      return true;
+    });
 
     const doFit = () => {
       try {
@@ -45,9 +88,33 @@ function XtermInstance({ ptyId, theme, onSelectionChange, registerReader }) {
       onSelectionChange && onSelectionChange(term.getSelection() || '');
     });
 
+    // <=16ms batched PTY stream writer so heavy builds keep UI responsive
+    let pendingBuf = '';
+    let flushTimer = null;
+    let serTimer = null;
+    const scheduleSerialize = () => {
+      if (!onSerialize) return;
+      if (serTimer) clearTimeout(serTimer);
+      serTimer = setTimeout(() => {
+        serTimer = null;
+        try { onSerialize(serializeAddon.serialize({ scrollback: 250 })); } catch (_) {}
+      }, 900);
+    };
+    const flushWrites = () => {
+      flushTimer = null;
+      if (!pendingBuf) return;
+      const chunk = pendingBuf;
+      pendingBuf = '';
+      try { term.write(chunk); } catch (_) {}
+      scheduleSerialize();
+    };
+
     const offPtyData = window.autobot && window.autobot.onIdePtyData
       ? window.autobot.onIdePtyData((evt) => {
-          if (evt && evt.id === ptyId && evt.data) term.write(evt.data);
+          if (evt && evt.id === ptyId && evt.data) {
+            pendingBuf += evt.data;
+            if (!flushTimer) flushTimer = setTimeout(flushWrites, 14);
+          }
         })
       : () => {};
 
@@ -69,8 +136,14 @@ function XtermInstance({ ptyId, theme, onSelectionChange, registerReader }) {
         return lines.join('\n').trim();
       });
     }
+    if (registerSearch) {
+      registerSearch(ptyId, searchAddon);
+    }
 
     return () => {
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+      if (serTimer) { clearTimeout(serTimer); serTimer = null; }
+      try { if (onSerialize && serializeRef.current) onSerialize(serializeRef.current.serialize({ scrollback: 250 })); } catch (_) {}
       try { ro.disconnect(); } catch (_) {}
       try { offPtyData(); } catch (_) {}
       try { onDataDisp.dispose(); } catch (_) {}
@@ -78,6 +151,8 @@ function XtermInstance({ ptyId, theme, onSelectionChange, registerReader }) {
       try { term.dispose(); } catch (_) {}
       termRef.current = null;
       fitRef.current = null;
+      searchRef.current = null;
+      serializeRef.current = null;
     };
   }, [ptyId]);
 
@@ -93,23 +168,32 @@ function XtermInstance({ ptyId, theme, onSelectionChange, registerReader }) {
   return <div ref={hostRef} className="ide-xterm-host" />;
 }
 
-export function TerminalPanel({ cwd, theme, onSendToAgent, Icon }) {
+export function TerminalPanel({ cwd, theme, initialBuffer = '', onSerializeChange, onSendToAgent, Icon }) {
   const [tabs, setTabs] = useState([]); // [{ id, shell, title }]
   const [activeId, setActiveId] = useState(null);
   const [splitId, setSplitId] = useState(null);
   const [selection, setSelection] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const readersRef = useRef({});
+  const searchersRef = useRef({});
   const initStartedRef = useRef(false);
+  const searchInRef = useRef(null);
+  const sc = shortcutLabels();
 
   const registerReader = useCallback((id, fn) => {
     readersRef.current[id] = fn;
+  }, []);
+
+  const registerSearch = useCallback((id, addon) => {
+    searchersRef.current[id] = addon;
   }, []);
 
   const createTab = useCallback(async (asSplit = false) => {
     if (!window.autobot || !window.autobot.idePtyCreate) return null;
     const res = await window.autobot.idePtyCreate({ cwd });
     if (res && res.ok && res.id) {
-      setTabs((prev) => [...prev, { id: res.id, shell: res.shell || 'shell', title: `${res.shell || 'zsh'} #${prev.length + 1}` }]);
+      setTabs((prev) => [...prev, { id: res.id, shell: res.shell || 'shell', title: `${res.shell || 'shell'} #${prev.length + 1}` }]);
       if (asSplit) setSplitId(res.id);
       else setActiveId(res.id);
       return res.id;
@@ -142,6 +226,18 @@ export function TerminalPanel({ cwd, theme, onSendToAgent, Icon }) {
     });
   }, []);
 
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    setTimeout(() => searchInRef.current && searchInRef.current.focus(), 20);
+  }, []);
+
+  const findInTerm = (dir) => {
+    const addon = searchersRef.current[activeId];
+    if (!addon || !searchQuery) return;
+    if (dir === 'prev') addon.findPrevious(searchQuery);
+    else addon.findNext(searchQuery);
+  };
+
   const sendSnippetToAgent = () => {
     const reader = readersRef.current[activeId];
     const txt = (selection && selection.trim()) || (reader ? reader() : '');
@@ -167,7 +263,39 @@ export function TerminalPanel({ cwd, theme, onSendToAgent, Icon }) {
             <Icon name="Add" size={12} />
           </button>
         </div>
+
+        {searchOpen && (
+          <div className="ide-term-find">
+            <input
+              ref={searchInRef}
+              value={searchQuery}
+              onChange={(e) => {
+                const q = e.target.value;
+                setSearchQuery(q);
+                const addon = searchersRef.current[activeId];
+                if (addon && q) addon.findNext(q);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { e.preventDefault(); setSearchOpen(false); }
+                if (e.key === 'Enter') { e.preventDefault(); findInTerm(e.shiftKey ? 'prev' : 'next'); }
+              }}
+              placeholder="Find in terminal…"
+            />
+            <button type="button" className="ide-icon-btn" title="Previous Match" onClick={() => findInTerm('prev')}>↑</button>
+            <button type="button" className="ide-icon-btn" title="Next Match" onClick={() => findInTerm('next')}>↓</button>
+            <button type="button" className="ide-icon-btn" title="Close Find" onClick={() => setSearchOpen(false)}>×</button>
+          </div>
+        )}
+
         <div className="ide-term-actions">
+          <button
+            type="button"
+            className={'ide-icon-btn' + (searchOpen ? ' active' : '')}
+            title={`Find in Terminal (${sc.find})`}
+            onClick={() => (searchOpen ? setSearchOpen(false) : openSearch())}
+          >
+            <Icon name="Search" size={12} />
+          </button>
           <button
             type="button"
             className="ide-mini-action"
@@ -189,12 +317,30 @@ export function TerminalPanel({ cwd, theme, onSendToAgent, Icon }) {
 
       <div className={'ide-term-panes' + (splitId ? ' split' : '')}>
         {activeId ? (
-          <XtermInstance key={activeId} ptyId={activeId} theme={theme} onSelectionChange={setSelection} registerReader={registerReader} />
+          <XtermInstance
+            key={activeId}
+            ptyId={activeId}
+            theme={theme}
+            initialBuffer={tabs[0]?.id === activeId ? initialBuffer : ''}
+            onSelectionChange={setSelection}
+            registerReader={registerReader}
+            registerSearch={registerSearch}
+            onSerialize={onSerializeChange}
+            onOpenSearch={openSearch}
+          />
         ) : (
           <div className="ide-empty-note">Click + to launch a terminal.</div>
         )}
         {splitId && splitId !== activeId && (
-          <XtermInstance key={splitId} ptyId={splitId} theme={theme} onSelectionChange={setSelection} registerReader={registerReader} />
+          <XtermInstance
+            key={splitId}
+            ptyId={splitId}
+            theme={theme}
+            onSelectionChange={setSelection}
+            registerReader={registerReader}
+            registerSearch={registerSearch}
+            onOpenSearch={openSearch}
+          />
         )}
       </div>
     </div>

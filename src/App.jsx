@@ -16,6 +16,7 @@ import { LiveChecklistCard, LiveToolActivityCard, StickyLiveToolBar, FilesChange
 import { CodeReviewPane } from './components/CodeReviewPane.jsx';
 import { deriveSubAgents } from './review-helpers.mjs';
 import { IdeWorkbench } from './ide/IdeWorkbench.jsx';
+import { shortcutLabels } from './ide/shortcuts';
 
 // ---------- Anthropicons (Example's icon font, PUA U+E000+) ----------
 const iconChar = (name) => {
@@ -3145,6 +3146,12 @@ export default function App() {
           theme={settings.theme}
           provider={provider}
           orchestrator={orchestrator}
+          envState={envState}
+          contextPct={(() => {
+            const win = contextWindowFor((lastUsage && lastUsage.model) || (provider && provider.model) || '');
+            const used = usedTokens(lastUsage);
+            return win > 0 && used > 0 ? Math.min(100, Math.round((used / win) * 100)) : null;
+          })()}
           setError={setError}
           setNotice={setNotice}
           externalOpenFile={ideExternalOpenFile}
@@ -3153,6 +3160,9 @@ export default function App() {
           }}
           onSendToAgent={(prompt) => send(prompt)}
           onOpenSettings={() => openSettingsAt('providers')}
+          onOpenEnvironments={() => openSettingsAt('environments')}
+          onOpenRuntimes={() => openSettingsAt('runtimes')}
+          onSwitchToAgent={() => setWorkbenchMode('agent')}
           renderAgentDock={({ editorContextXml, onOpenFileDiff }) => {
             editorContextXmlRef.current = editorContextXml || '';
             return (
@@ -11486,29 +11496,35 @@ function SettingsModal({
               </div>
             )}
 
-            {section === 'shortcuts' && (
-              <div>
-                <h3 className="oc-sec-title">Keyboard Shortcuts</h3>
-                <div className="oc-group">
-                  {[
-                    ['New conversation tab', '⌘ / Ctrl + N'],
-                    ['Command palette', '⌘ / Ctrl + K'],
-                    ['Search conversations', '⌘ / Ctrl + Shift + F'],
-                    ['Find in chat', '⌘ / Ctrl + F'],
-                    ['Toggle sidebar', '⌘ / Ctrl + B'],
-                    ['Open Settings', '⌘ / Ctrl + ,'],
-                    ['Slash actions & skills menu', '/'],
-                    ['File & agent @mentions', '@'],
-                    ['Quick Entry global launcher', '⌘ / Ctrl + Shift + Space'],
-                  ].map(([title, kbd]) => (
-                    <div key={title} className="oc-row">
-                      <div className="oc-row-meta"><div className="oc-row-title">{title}</div></div>
-                      <div className="oc-row-ctrl"><span className="oc-kbd">{kbd}</span></div>
-                    </div>
-                  ))}
+            {section === 'shortcuts' && (() => {
+              const sc = shortcutLabels();
+              return (
+                <div>
+                  <h3 className="oc-sec-title">Keyboard Shortcuts</h3>
+                  <div className="oc-group">
+                    {[
+                      ['New conversation tab', sc.newTab],
+                      ['Quick Open / Command Center', sc.quickOpen],
+                      ['Inline AI Edit', sc.inlineEdit],
+                      ['Project Search & Replace', sc.globalSearch],
+                      ['Go to Symbol in Editor', sc.goToSymbol],
+                      ['Toggle Terminal / Problems', sc.toggleTerminal],
+                      ['Toggle Sidebar / Agent Dock', sc.toggleAgent],
+                      ['Find in Chat / Terminal', sc.find],
+                      ['Open Settings', sc.settings],
+                      ['Slash actions & skills menu', '/'],
+                      ['File & agent @mentions', '@'],
+                      ['Quick Entry global launcher', sc.quickEntry],
+                    ].map(([title, kbd]) => (
+                      <div key={title} className="oc-row">
+                        <div className="oc-row-meta"><div className="oc-row-title">{title}</div></div>
+                        <div className="oc-row-ctrl"><span className="oc-kbd">{kbd}</span></div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {section === 'runtimes' && (
               <>

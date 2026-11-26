@@ -376,6 +376,8 @@ contextBridge.exposeInMainWorld('autobot', {
   ideGitBranches: (payload) => ipcRenderer.invoke('ide:gitBranches', payload),
   ideGitCheckout: (payload) => ipcRenderer.invoke('ide:gitCheckout', payload),
   ideGitFileAtHead: (payload) => ipcRenderer.invoke('ide:gitFileAtHead', payload),
+  ideLoadLayout: (payload) => ipcRenderer.invoke('ide:loadLayout', payload),
+  ideSaveLayout: (payload) => ipcRenderer.invoke('ide:saveLayout', payload),
 
   // ---- Execution Environments (This Computer / SSH Host / Remote Server) ----
   envGetState: () => ipcRenderer.invoke('autobot:envGetState'),
