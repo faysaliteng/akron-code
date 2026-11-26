@@ -51,13 +51,13 @@ jobs:
         include:
           - os: macos-latest
             platform: mac
-            cmd: npm run build && npx electron-builder --mac dmg zip -c.compression=normal --publish never
+            cmd: npm run build && npx electron-builder --mac dmg zip --config.compression=normal --publish never
           - os: windows-latest
             platform: win
-            cmd: npm run build && npx electron-builder --win -c.compression=normal --publish never
+            cmd: npm run build && npx electron-builder --win --config.compression=normal --publish never
           - os: ubuntu-latest
             platform: linux
-            cmd: npm run build && npx electron-builder --linux AppImage -c.compression=normal --publish never
+            cmd: npm run build && npx electron-builder --linux AppImage --config.compression=normal --publish never
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -75,7 +75,7 @@ jobs:
         run: ${{ matrix.cmd }}
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-      - name: Verify Electron Fuses, codesign & clean cold boot (macOS)
+      - name: Verify Electron Fuses, codesign & ASAR brand seal (macOS)
         if: matrix.platform == 'mac'
         shell: bash
         run: |
@@ -90,23 +90,18 @@ jobs:
             if (!ok) process.exit(1);
           });
           "
-          APP_PATH="$APP_PATH" node -e "
-          const fs = require('fs');
-          const os = require('os');
-          const path = require('path');
-          const { spawnSync } = require('child_process');
-          const freshHome = fs.mkdtempSync(path.join(os.tmpdir(), 'akron-ci-boot-'));
-          const exe = path.join(process.env.APP_PATH, 'Contents', 'MacOS', 'Akron Code');
-          const res = spawnSync(exe, ['--disable-gpu'], {
-            timeout: 30000,
-            encoding: 'utf8',
-            env: { ...process.env, HOME: freshHome, AKRON_COLD_BOOT_CHECK: '1', AKRON_NO_DIALOG: '1' }
+          ASAR_TMP=$(mktemp -d)
+          npx --yes @electron/asar extract "$APP_PATH/Contents/Resources/app.asar" "$ASAR_TMP"
+          ASAR_TMP="$ASAR_TMP" RES_DIR="$APP_PATH/Contents/Resources" node -e "
+          const r = require('./electron/brand-guard').verifyBrandIntegrity({
+            appRoot: process.env.ASAR_TMP,
+            resourcesPath: process.env.RES_DIR
           });
-          console.log(res.stdout || '');
-          if (res.stderr) console.error(res.stderr);
-          fs.rmSync(freshHome, { recursive: true, force: true });
-          if (res.status !== 0 || !(res.stdout || '').includes('COLD_BOOT_OK')) process.exit(1);
+          console.log('MAC_ASAR_BRAND_OK:', r.ok, 'checkedFiles:', r.checkedFiles);
+          if (!r.ok) { console.error(r.problems); process.exit(1); }
           "
+          [ "$(find "$ASAR_TMP" -name '*.map' | wc -l | tr -d ' ')" -eq 0 ]
+          rm -rf "$ASAR_TMP"
       - name: Verify Electron Fuses (Windows)
         if: matrix.platform == 'win'
         shell: pwsh
