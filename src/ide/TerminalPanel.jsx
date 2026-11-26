@@ -6,10 +6,12 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 import { shortcutLabels } from './shortcuts';
+import { normalizeTypography, resolveMonoFontStack } from '../typography.js';
 
 function XtermInstance({
   ptyId,
   theme,
+  typography = null,
   initialBuffer = '',
   onSelectionChange,
   registerReader,
@@ -27,11 +29,12 @@ function XtermInstance({
     const el = hostRef.current;
     if (!el || !ptyId) return;
     const isLight = theme === 'light';
+    const typo = normalizeTypography(typography);
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 12.5,
+      fontSize: Math.max(10.5, (typo.monoSize || 13) - 0.5),
       lineHeight: 1.35,
-      fontFamily: "'SF Mono', 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
+      fontFamily: resolveMonoFontStack(typo),
       theme: isLight
         ? { background: '#fafafa', foreground: '#18181b', cursor: '#059669', selectionBackground: '#05966933' }
         : { background: '#0e0e11', foreground: '#e4e4ea', cursor: '#10b981', selectionBackground: '#10b98133' },
@@ -165,10 +168,19 @@ function XtermInstance({
       : { background: '#0e0e11', foreground: '#e4e4ea', cursor: '#10b981', selectionBackground: '#10b98133' };
   }, [theme]);
 
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const typo = normalizeTypography(typography);
+    term.options.fontFamily = resolveMonoFontStack(typo);
+    term.options.fontSize = Math.max(10.5, (typo.monoSize || 13) - 0.5);
+    try { if (fitRef.current) fitRef.current.fit(); } catch (_) {}
+  }, [typography]);
+
   return <div ref={hostRef} className="ide-xterm-host" />;
 }
 
-export function TerminalPanel({ cwd, theme, initialBuffer = '', onSerializeChange, onSendToAgent, Icon }) {
+export function TerminalPanel({ cwd, theme, typography = null, initialBuffer = '', onSerializeChange, onSendToAgent, Icon }) {
   const [tabs, setTabs] = useState([]); // [{ id, shell, title }]
   const [activeId, setActiveId] = useState(null);
   const [splitId, setSplitId] = useState(null);
@@ -321,6 +333,7 @@ export function TerminalPanel({ cwd, theme, initialBuffer = '', onSerializeChang
             key={activeId}
             ptyId={activeId}
             theme={theme}
+            typography={typography}
             initialBuffer={tabs[0]?.id === activeId ? initialBuffer : ''}
             onSelectionChange={setSelection}
             registerReader={registerReader}
@@ -336,6 +349,7 @@ export function TerminalPanel({ cwd, theme, initialBuffer = '', onSerializeChang
             key={splitId}
             ptyId={splitId}
             theme={theme}
+            typography={typography}
             onSelectionChange={setSelection}
             registerReader={registerReader}
             registerSearch={registerSearch}

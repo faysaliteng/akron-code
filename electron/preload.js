@@ -134,6 +134,8 @@ contextBridge.exposeInMainWorld('autobot', {
   listAgentDefs: (cwd) => ipcRenderer.invoke('autobot:listAgents', cwd),
   getProjectMemory: (cwd) => ipcRenderer.invoke('autobot:getProjectMemory', cwd),
   getPermissions: (cwd) => ipcRenderer.invoke('autobot:getPermissions', cwd),
+  addPermissionRule: (payload) => ipcRenderer.invoke('autobot:addPermissionRule', payload),
+  removePermissionRule: (payload) => ipcRenderer.invoke('autobot:removePermissionRule', payload),
   checkPermission: (toolName, toolArgs, cwd, mode) => ipcRenderer.invoke('autobot:checkPermission', toolName, toolArgs, cwd, mode),
   listCheckpoints: (convId) => ipcRenderer.invoke('autobot:listCheckpoints', convId),
   rewind: (convId, checkpointId) => ipcRenderer.invoke('autobot:rewind', convId, checkpointId),
@@ -178,7 +180,7 @@ contextBridge.exposeInMainWorld('autobot', {
   mcpConfig: (cwd) => ipcRenderer.invoke('autobot:mcpConfig', cwd),
 
   answerQuestion: (id, answer) => ipcRenderer.invoke('autobot:answerQuestion', id, answer),
-  answerPermission: (id, allow) => ipcRenderer.invoke('autobot:answerPermission', id, allow),
+  answerPermission: (id, payload) => ipcRenderer.invoke('autobot:answerPermission', id, payload),
 
   listNotebooks: () => ipcRenderer.invoke('autobot:listNotebooks'),
   getNotebook: (name) => ipcRenderer.invoke('autobot:getNotebook', name),

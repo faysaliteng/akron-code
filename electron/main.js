@@ -290,9 +290,9 @@ function summarizeTool(name, args) {
 let pendingQuestions = new Map();
 let nextQuestionId = 1;
 
-// Pending write/bash permission prompts (B8 Claude Code mode) (id -> resolver).
-let pendingPermissions = new Map();
-let nextPermissionId = 1;
+// Pending write/bash permission prompts (B8 Claude Code mode, FIFO gate with AbortSignal cleanup).
+const { createPermissionGate } = require('./perm-gate');
+const permGate = createPermissionGate();
 
 // Pending Computer Use consent prompts (Desktop `computer:request_*`). Only one
 // can be outstanding at a time, so a boolean-once resolver is enough.
@@ -1109,6 +1109,12 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     return `Resource not found: ${uri}`;
   };
 
+  // The run must write where the conversation lives. If the renderer did not
+  // send a folder (new conversation, mid-switch, stale state), resolve it from
+  // the conversation itself instead of falling back to a shared scratch dir —
+  // that mismatch is what made a generated site "disappear".
+  const runCwd = cwd || (convId ? workspace.ensure(convId, title).dir : workspace.scratch());
+
   // B8 Claude Code mode: prompt for approval before mutating tools (Bash/Write/Edit).
   // Permission modes: 'auto' (allow all), 'ask' (prompt for every mutating tool),
   // 'acceptEdits' (auto-allow file edits, prompt for shell/terminal), 'plan' (deny all
@@ -1116,21 +1122,16 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   // 'bypass' (allow everything with no prompts at all — equivalent to auto, kept
   // distinct so the UI can surface the elevated-trust state).
   const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'mcp__workspace__write_file', 'mcp__workspace__edit_file']);
-  const promptPermission = (toolName, toolArgs) => {
-    const id = 'p' + nextPermissionId++;
-    const summary = summarizeTool(toolName, toolArgs);
-    const reply = new Promise((resolve) => {
-      pendingPermissions.set(id, resolve);
-      send({ type: 'permission', id, tool: toolName, args: toolArgs, summary });
-      setTimeout(() => {
-        if (pendingPermissions.has(id)) {
-          pendingPermissions.delete(id);
-          resolve(false);
-        }
-      }, 300000);
-    });
-    return reply;
-  };
+  const promptPermission = (toolName, toolArgs) => permGate.prompt({
+    runId,
+    convId,
+    toolName,
+    args: toolArgs,
+    summary: summarizeTool(toolName, toolArgs),
+    cwd: runCwd,
+    signal: ac.signal,
+    emit: send,
+  });
   const approveTool = async (toolName, toolArgs) => {
     // Computer Use consent (Desktop `computer:request_access` /
     // `request_full_control`). Nothing touches the user's machine until a tier
@@ -1172,22 +1173,15 @@ ipcMain.handle('autobot:run', async (event, payload) => {
         send({ type: 'notice', text: `Blocked: ${toolName} — ${verdict.reason}` });
         return false;
       }
-      if (verdict.decision === 'allow') return true;
-      // 'ask': fall through to a real prompt, but never auto-allow in a mode that
-      // would otherwise skip prompting.
-      if (verdict.rule) return await promptPermission(toolName, toolArgs);
+      if (verdict.decision === 'allow' && verdict.rule) return true;
+      if (verdict.decision === 'ask' && verdict.rule) return await promptPermission(toolName, toolArgs);
     } catch (_) {}
+    if (permGate.checkConversationAllow(convId, toolName, toolArgs || {}, runCwd)) return true;
     if (mode === 'auto' || mode === 'bypass') return true;
     if (mode === 'plan') return false;
     if (mode === 'acceptEdits' && EDIT_TOOLS.has(toolName)) return true;
     return await promptPermission(toolName, toolArgs);
   };
-
-  // The run must write where the conversation lives. If the renderer did not
-  // send a folder (new conversation, mid-switch, stale state), resolve it from
-  // the conversation itself instead of falling back to a shared scratch dir —
-  // that mismatch is what made a generated site "disappear".
-  const runCwd = cwd || (convId ? workspace.ensure(convId, title).dir : workspace.scratch());
 
   // Bring up any `.mcp.json` / `~/.claude.json` servers declared for this
   // project before the turn starts, and expose their tools to the model.
@@ -1261,6 +1255,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     send({ type: 'error', message });
     return { ok: false, error: message };
   } finally {
+    permGate.clearRun(runId, 'run_ended');
     runs.delete(runId);
     slog.close();
   }
@@ -1284,6 +1279,7 @@ ipcMain.handle('autobot:resume', async (event, runId, steeringNote) => {
 });
 
 ipcMain.handle('autobot:cancel', async (event, runId) => {
+  permGate.clearRun(runId, 'cancelled');
   const entry = runs.get(runId);
   if (entry) {
     const ac = entry.ac || entry;
@@ -2946,6 +2942,12 @@ ipcMain.handle('autobot:getProjectMemory', (e, cwd) => {
 ipcMain.handle('autobot:getPermissions', (e, cwd) => {
   try { return require('./permissions').loadPermissions(cwdFor(cwd)); } catch (_) { return { allow: [], deny: [], ask: [], defaultMode: 'auto' }; }
 });
+ipcMain.handle('autobot:addPermissionRule', (e, payload) => {
+  try { return require('./permissions').savePermissionRule(payload || {}); } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('autobot:removePermissionRule', (e, payload) => {
+  try { return require('./permissions').removePermissionRule(payload || {}); } catch (err) { return { ok: false, error: err.message }; }
+});
 ipcMain.handle('autobot:checkPermission', (e, toolName, toolArgs, cwd, mode) => {
   try { return require('./permissions').decide(require('./permissions').loadPermissions(cwdFor(cwd)), toolName, toolArgs || {}, { cwd: cwdFor(cwd), mode: mode || store.getSettings().permissionMode || 'auto' }); } catch (_) { return { decision: 'ask' }; }
 });
@@ -3278,15 +3280,9 @@ ipcMain.handle('autobot:answerQuestion', async (e, id, answer) => {
   return { ok: false, error: 'question not found (timed out?)' };
 });
 
-// B8 permission prompts (approve/deny a mutating tool call).
-ipcMain.handle('autobot:answerPermission', async (e, id, allow) => {
-  const resolve = pendingPermissions.get(id);
-  if (resolve) {
-    pendingPermissions.delete(id);
-    resolve(!!allow);
-    return { ok: true };
-  }
-  return { ok: false, error: 'permission not found (timed out?)' };
+// B8 permission prompts (approve/deny/scope/feedback for a mutating tool call).
+ipcMain.handle('autobot:answerPermission', async (e, id, payload) => {
+  return permGate.answer(id, payload);
 });
 
 // Notebooks

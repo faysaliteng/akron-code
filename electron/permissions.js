@@ -19,6 +19,9 @@
 // Precedence (matches Claude Code): deny > ask > allow > defaultMode.
 // Everything here is pure so the parity gate can exercise it.
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const cc = require('./claudeconfig');
 
 const MODES = ['auto', 'manual', 'acceptEdits', 'plan', 'bypass', 'planMode'];
@@ -337,9 +340,153 @@ function decide(perms, toolName, args, { cwd = null, mode = 'auto' } = {}) {
   return { decision: 'ask', reason: 'manual approval', rule: null };
 }
 
+const DANGEROUS_BASH_VERBS = new Set([
+  'rm', 'rmdir', 'del', 'erase', 'sudo', 'su', 'doas', 'dd', 'mkfs', 'fdisk', 'parted',
+  'diskutil', 'shutdown', 'reboot', 'halt', 'poweroff', 'kill', 'pkill', 'killall',
+  'chmod', 'chown', 'chgrp', 'mv', 'curl', 'wget', 'nc', 'netcat', 'ncat',
+  'eval', 'exec', 'sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'csh', 'powershell', 'pwsh', 'cmd',
+  'format', 'reg', 'sc', 'schtasks', 'crontab', 'launchctl', 'systemctl',
+]);
+
+const SUBCOMMAND_CLI_TOOLS = new Set([
+  'git', 'npm', 'npx', 'yarn', 'pnpm', 'bun', 'cargo', 'pip', 'pip3', 'uv',
+  'docker', 'podman', 'kubectl', 'helm', 'gh', 'brew', 'apt', 'apt-get', 'go',
+]);
+
+function defaultUserSettingsPath() {
+  const dir = cc.AUTOBOT_DIR || path.join(os.homedir(), '.autobot');
+  return path.join(dir, 'settings.json');
+}
+
+function tokenizeSimpleCmd(seg) {
+  const out = [];
+  const re = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(String(seg || '')))) {
+    out.push(m[1] ?? m[2] ?? m[3]);
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+// Compute a safe, scoped allow rule string for `Yes, and always allow` / `Yes, and always allow in this conversation`.
+// Returns null when the call should NOT be auto-wildcarded (compound chains, redirections, subshells, dangerous verbs, external/sensitive paths).
+function suggestSafeAllowRule(toolName, args, cwd = null) {
+  const name = String(toolName || '').trim();
+  if (!name) return null;
+  const a = args || {};
+
+  if (name === 'Bash') {
+    const raw = String(primaryArg('Bash', a) || '').trim();
+    if (!raw) return null;
+    if (/[\r\n`]|\$\(|>>?|<</.test(raw)) return null;
+    const segs = splitCommand(raw);
+    if (segs.length !== 1) return null;
+    const tokens = tokenizeSimpleCmd(segs[0]);
+    if (!tokens.length) return null;
+
+    // Skip leading plain ENV=val assignments when checking executable
+    let idx = 0;
+    while (idx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx])) idx++;
+    if (idx > 0 || idx >= tokens.length) return null;
+
+    const firstToken = tokens[idx];
+    const baseVerb = path.basename(firstToken).replace(/\.(exe|cmd|bat)$/i, '').toLowerCase();
+    if (!baseVerb || /[()[\]{}*?$\\/]/.test(firstToken) || DANGEROUS_BASH_VERBS.has(baseVerb)) {
+      return null;
+    }
+
+    if (SUBCOMMAND_CLI_TOOLS.has(baseVerb) && tokens[idx + 1] && /^[A-Za-z][A-Za-z0-9_-]{0,30}$/.test(tokens[idx + 1])) {
+      return `Bash(${firstToken} ${tokens[idx + 1]}:*)`;
+    }
+    return `Bash(${firstToken}:*)`;
+  }
+
+  if (name.startsWith('mcp__')) {
+    return name;
+  }
+
+  if (EDIT_TOOLS.has(name) || READ_ONLY_TOOLS.has(name)) {
+    const rawPath = String(primaryArg(name, a) || '').trim();
+    if (!rawPath) return name;
+    if (/[*?\r\n()]/.test(rawPath)) return null;
+    const norm = rawPath.replace(/\\/g, '/');
+    const base = path.posix.basename(norm).toLowerCase();
+    if (base === '.env' || base.startsWith('.env.') || norm.includes('/.git/') || norm.endsWith('/.git')) {
+      return null;
+    }
+    if (cwd) {
+      try {
+        const absCwd = path.resolve(cwd);
+        const absTarget = path.resolve(absCwd, rawPath);
+        const rel = path.relative(absCwd, absTarget).replace(/\\/g, '/');
+        if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+        return `${name}(${rel})`;
+      } catch (_) {
+        return null;
+      }
+    }
+    if (!path.isAbsolute(rawPath) && !norm.startsWith('..')) {
+      return `${name}(${norm.replace(/^\.\//, '')})`;
+    }
+    return null;
+  }
+
+  return null;
+}
+
+function readJsonSettings(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return {};
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeJsonSettings(filePath, data) {
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmp, filePath);
+}
+
+function savePermissionRule({ rule, list = 'allow', settingsPath = null } = {}) {
+  const clean = String(rule || '').trim();
+  const targetList = (list === 'deny' || list === 'ask') ? list : 'allow';
+  if (!clean) return { ok: false, error: 'empty rule' };
+  const filePath = settingsPath || defaultUserSettingsPath();
+  const data = readJsonSettings(filePath);
+  const perms = (data.permissions && typeof data.permissions === 'object') ? { ...data.permissions } : {};
+  const arr = asArray(perms[targetList]);
+  if (!arr.includes(clean)) arr.push(clean);
+  perms[targetList] = arr;
+  data.permissions = perms;
+  writeJsonSettings(filePath, data);
+  return { ok: true, rule: clean, list: targetList, settingsPath: filePath, rules: arr };
+}
+
+function removePermissionRule({ rule, list = 'allow', settingsPath = null } = {}) {
+  const clean = String(rule || '').trim();
+  const targetList = (list === 'deny' || list === 'ask') ? list : 'allow';
+  if (!clean) return { ok: false, error: 'empty rule' };
+  const filePath = settingsPath || defaultUserSettingsPath();
+  const data = readJsonSettings(filePath);
+  const perms = (data.permissions && typeof data.permissions === 'object') ? { ...data.permissions } : {};
+  const prev = asArray(perms[targetList]);
+  const next = prev.filter((r) => r !== clean);
+  perms[targetList] = next;
+  data.permissions = perms;
+  writeJsonSettings(filePath, data);
+  return { ok: true, removed: prev.length !== next.length, rule: clean, list: targetList, settingsPath: filePath, rules: next };
+}
+
 module.exports = {
   MODES,
   PRIMARY_ARG,
+  DANGEROUS_BASH_VERBS,
   loadPermissions,
   decide,
   denyMatch,
@@ -351,4 +498,8 @@ module.exports = {
   matchBash,
   matchGlob,
   primaryArg,
+  suggestSafeAllowRule,
+  savePermissionRule,
+  removePermissionRule,
+  defaultUserSettingsPath,
 };

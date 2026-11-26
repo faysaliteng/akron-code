@@ -8,6 +8,7 @@ import {
 } from './monacoSetup';
 import { InlineEditWidget } from './InlineEditWidget';
 import { shortcutLabels } from './shortcuts';
+import { normalizeTypography, resolveMonoFontStack } from '../typography.js';
 
 export function extractSymbolsFromModel(model) {
   if (!model) return [];
@@ -36,6 +37,7 @@ export function extractSymbolsFromModel(model) {
 export function MonacoPane({
   cwd,
   theme,
+  typography = null,
   tabs = [],
   activeTabPath,
   onSelectTab,
@@ -170,6 +172,9 @@ export function MonacoPane({
     const container = editorContainerRef.current;
     if (!container) return undefined;
     ensureMonaco();
+    const typo = normalizeTypography(typography);
+    const monoFont = resolveMonoFontStack(typo);
+    const codeFontSize = typo.monoSize || 13.5;
     const initTab = latestRef.current.activeTab;
     const ed = monaco.editor.create(container, {
       value: initTab ? initTab.content : '',
@@ -177,9 +182,10 @@ export function MonacoPane({
       theme: theme === 'light' ? 'akron-light' : 'akron-dark',
       automaticLayout: true,
       minimap: { enabled: minimap },
-      fontSize: 13.5,
-      lineHeight: 21,
-      fontFamily: "'SF Mono', 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
+      fontSize: codeFontSize,
+      lineHeight: Math.round(codeFontSize * 1.55),
+      fontFamily: monoFont,
+      fontLigatures: !!typo.ligatures,
       scrollBeyondLastLine: false,
       smoothScrolling: true,
       tabSize: 2,
@@ -297,6 +303,17 @@ export function MonacoPane({
     if (ed) ed.updateOptions({ minimap: { enabled: minimap } });
   }, [minimap]);
 
+  useEffect(() => {
+    const typo = normalizeTypography(typography);
+    const fontFamily = resolveMonoFontStack(typo);
+    const fontSize = typo.monoSize || 13.5;
+    const lineHeight = Math.round(fontSize * 1.55);
+    const opts = { fontFamily, fontSize, lineHeight, fontLigatures: !!typo.ligatures };
+    if (editorRef.current) editorRef.current.updateOptions(opts);
+    if (splitEditorRef.current) splitEditorRef.current.updateOptions(opts);
+    if (diffEditorRef.current) diffEditorRef.current.updateOptions(opts);
+  }, [typography]);
+
   // Jump to line/column when Search/Problems/QuickOpen requests
   useEffect(() => {
     const ed = editorRef.current;
@@ -315,14 +332,18 @@ export function MonacoPane({
       return undefined;
     }
     ensureMonaco();
+    const typo = normalizeTypography(typography);
+    const codeFontSize = typo.monoSize || 13.5;
     const ed = monaco.editor.create(container, {
       value: splitTab.content || '',
       language: splitTab.language || 'plaintext',
       theme: theme === 'light' ? 'akron-light' : 'akron-dark',
       automaticLayout: true,
       minimap: { enabled: false },
-      fontSize: 13.5,
-      lineHeight: 21,
+      fontSize: codeFontSize,
+      lineHeight: Math.round(codeFontSize * 1.55),
+      fontFamily: resolveMonoFontStack(typo),
+      fontLigatures: !!typo.ligatures,
       scrollBeyondLastLine: false,
       readOnly: false,
     });
@@ -345,6 +366,8 @@ export function MonacoPane({
       return undefined;
     }
     ensureMonaco();
+    const typo = normalizeTypography(typography);
+    const codeFontSize = typo.monoSize || 13.5;
     const origModel = monaco.editor.createModel(diffOriginal || '', activeTab.language || 'plaintext');
     const modModel = monaco.editor.createModel(activeTab.content || '', activeTab.language || 'plaintext');
     const ded = monaco.editor.createDiffEditor(container, {
@@ -352,8 +375,10 @@ export function MonacoPane({
       automaticLayout: true,
       renderSideBySide: true,
       readOnly: false,
-      fontSize: 13.5,
-      lineHeight: 21,
+      fontSize: codeFontSize,
+      lineHeight: Math.round(codeFontSize * 1.55),
+      fontFamily: resolveMonoFontStack(typo),
+      fontLigatures: !!typo.ligatures,
     });
     ded.setModel({ original: origModel, modified: modModel });
     diffEditorRef.current = ded;

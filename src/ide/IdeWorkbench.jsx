@@ -23,6 +23,7 @@ export function IdeWorkbench({
   cwd,
   setCwd,
   theme = 'dark',
+  typography = null,
   provider,
   orchestrator,
   envState,
@@ -551,6 +552,7 @@ export function IdeWorkbench({
             <MonacoPane
               cwd={cwd}
               theme={theme}
+              typography={typography}
               tabs={tabs}
               activeTabPath={activeTabPath}
               onSelectTab={(p) => { setActiveTabPath(p); setDiffState(null); }}
@@ -614,6 +616,7 @@ export function IdeWorkbench({
                     <TerminalPanel
                       cwd={cwd}
                       theme={theme}
+                      typography={typography}
                       initialBuffer={initialTermBuffer}
                       onSerializeChange={(s) => {
                         termSerializedRef.current = s || '';

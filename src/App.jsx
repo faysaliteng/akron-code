@@ -16,6 +16,9 @@ import { LiveChecklistCard, LiveToolActivityCard, StickyLiveToolBar, FilesChange
 import { CodeReviewPane } from './components/CodeReviewPane.jsx';
 import { AboutSection } from './components/AboutSection.jsx';
 import { NotificationCenter, useNotificationCenter } from './components/NotificationCenter.jsx';
+import PermissionDock from './components/PermissionDock.jsx';
+import MessageQueueTray, { filterQueueForConv, pickNextRunnableQueued, moveQueueItem, stepQueueItemWithinConv } from './components/MessageQueueTray.jsx';
+import { UI_FONT_PRESETS, MONO_FONT_PRESETS, DEFAULT_TYPOGRAPHY, normalizeTypography, resolveUiFontStack, resolveMonoFontStack, applyTypographyToDocument } from './typography.js';
 import { deriveSubAgents } from './review-helpers.mjs';
 import { IdeWorkbench } from './ide/IdeWorkbench.jsx';
 import { shortcutLabels } from './ide/shortcuts';
@@ -677,6 +680,7 @@ export default function App() {
     return {
       ...base,
       harnessProfile: base.harnessProfile || 'full',
+      typography: normalizeTypography(base.typography),
       notifications: { agent: true, permissions: true, questions: true, errors: false, ...(base.notifications || {}) },
       sounds: { agent: 'staplebops-01', permissions: 'staplebops-02', questions: 'staplebops-05', errors: 'none', ...(base.sounds || {}) },
     };
@@ -723,7 +727,16 @@ export default function App() {
   const [lastUsage, setLastUsage] = useState(() => loadJSON('autobot:lastUsage', null));
   useEffect(() => { saveJSON('autobot:lastUsage', lastUsage); }, [lastUsage]);
   const [goal, setGoal] = useState('');
-  const [queued, setQueued] = useState([]); // messages typed while a reply streams
+  const [queued, setQueued] = useState(() => {
+    const saved = loadJSON('autobot:queued', []);
+    return Array.isArray(saved) ? saved : [];
+  }); // messages typed while a reply streams
+  const [queuePausedByConv, setQueuePausedByConv] = useState(() => {
+    const saved = loadJSON('autobot:queuePausedByConv', {});
+    return saved && typeof saved === 'object' ? saved : {};
+  });
+  useEffect(() => { saveJSON('autobot:queued', queued); }, [queued]);
+  useEffect(() => { saveJSON('autobot:queuePausedByConv', queuePausedByConv); }, [queuePausedByConv]);
   const [thinking, setThinking] = useState('');
   const [live, setLive] = useState(null); // { content, tools: [] }
   // The live stream is mirrored in a ref and every update goes through
@@ -810,7 +823,13 @@ export default function App() {
   const [previewUrl, setPreviewUrl] = useState(null); // file the browser pane should show (generated site)
   const [voiceMode, setVoiceMode] = useState(false); // full-duplex conversational voice session
   const [permissions, setPermissions] = useState(() => loadJSON('autobot:permissions', 'auto')); // 'auto' | 'ask' (B8 Claude Code mode)
-  const [permission, setPermission] = useState(null); // pending permission prompt { id, tool, args, summary }
+  const [permissionQueue, setPermissionQueue] = useState([]); // FIFO pending permission prompts
+  const [permError, setPermError] = useState('');
+  const [permSubmitting, setPermSubmitting] = useState(false);
+  const waitingPermissionConvIds = useMemo(
+    () => new Set(permissionQueue.map((p) => p.convId).filter(Boolean)),
+    [permissionQueue]
+  );
   const [cuConsent, setCuConsent] = useState(null); // pending Computer Use consent { id, tier, tool, sensitive }
   const [planMode, setPlanMode] = useState(null); // active plan-mode banner { active, file }
   const [gdriveModalOpen, setGdriveModalOpen] = useState(false);
@@ -945,7 +964,12 @@ export default function App() {
   // default's key and never adopt the saved one.
   const bootRef = useRef(null);
   if (bootRef.current === null) {
-    bootRef.current = { own: loadJSON('autobot:provider', null), keys: loadJSON('autobot:providerKeys', {}) };
+    const bootSettings = loadJSON('autobot:settings', null);
+    bootRef.current = {
+      own: loadJSON('autobot:provider', null),
+      keys: loadJSON('autobot:providerKeys', {}),
+      hasTypography: !!(bootSettings && bootSettings.typography),
+    };
   }
   // Main's saved provider, remembered so the mirror below can never overwrite a
   // real credential with a renderer profile that merely echoes the built-in
@@ -955,6 +979,9 @@ export default function App() {
     let cancelled = false;
     Promise.resolve(window.autobot.getSettings()).then((s) => {
       if (cancelled || !s) return;
+      if (s.typography && !(bootRef.current && bootRef.current.hasTypography)) {
+        setSettings((prev) => ({ ...prev, typography: normalizeTypography(s.typography) }));
+      }
       const saved = (s.provider) || {};
       if (saved.baseURL) savedProvRef.current = saved;
       const base = normBase(saved.baseURL);
@@ -1002,8 +1029,14 @@ export default function App() {
   }, [provider, settingsAdopted]);
   useEffect(() => {
     saveJSON('autobot:settings', settings);
-    // Push the OS-level toggle to main (it drives app.setLoginItemSettings).
-    try { window.autobot.setSettings({ launchAtLogin: !!settings.launchAtLogin }); } catch (_) {}
+    applyTypographyToDocument(settings.typography);
+    // Push OS-level & persistent settings (login item + typography) to main.
+    try {
+      window.autobot.setSettings({
+        launchAtLogin: !!settings.launchAtLogin,
+        typography: settings.typography,
+      });
+    } catch (_) {}
   }, [settings]);
   useEffect(() => { saveJSON('autobot:account', account); }, [account]);
   useEffect(() => { saveJSON('autobot:projects', projects); }, [projects]);
@@ -1305,17 +1338,23 @@ export default function App() {
         case 'done':
         case 'complete':
           setPaused(false);
+          setPermError('');
+          setPermissionQueue((q) => q.filter((p) => evt.runId && p.runId && p.runId !== evt.runId));
           if (evt && evt.usage) setLastUsage({ ...evt.usage, model: evt.usage.model || (evt.usage && evt.usage.model) || null, at: Date.now() });
           commitLive();
           sendDesktopNotification('agent', 'Akron Code', 'Agent finished working in your workspace.', settings);
           break;
         case 'cancelled':
           setPaused(false);
+          setPermError('');
+          setPermissionQueue((q) => q.filter((p) => evt.runId && p.runId && p.runId !== evt.runId));
           // Stopping keeps whatever the model had already produced.
           commitLive();
           break;
         case 'error':
           setPaused(false);
+          setPermError('');
+          setPermissionQueue((q) => q.filter((p) => evt.runId && p.runId && p.runId !== evt.runId));
           // Preserve anything already streamed, then show the failure.
           commitLive();
           setError(cleanErr(evt.message));
@@ -1332,9 +1371,28 @@ export default function App() {
           setQuestion({ id: evt.id, type: 'plan', text: evt.plan, options: [] });
           sendDesktopNotification('questions', 'Akron Code · Plan approval', 'Review proposed execution plan.', settings);
           break;
-        case 'permission':
-          setPermission({ id: evt.id, tool: evt.tool, args: evt.args || {}, summary: evt.summary || '' });
+        case 'permission': {
+          const item = {
+            id: evt.id,
+            runId: evt.runId || runIdRef.current || null,
+            convId: evt.convId || runConvRef.current || activeIdRef.current || null,
+            tool: evt.tool,
+            args: evt.args || {},
+            summary: evt.summary || '',
+            suggestedRule: evt.suggestedRule || null,
+          };
+          setPermError('');
+          setPermissionQueue((q) => (q.some((x) => x.id === item.id) ? q : [...q, item]));
           sendDesktopNotification('permissions', 'Permission required', `${evt.tool}: ${evt.summary || 'approval needed'}`, settings);
+          break;
+        }
+        case 'permissionCleared':
+          setPermError('');
+          setPermissionQueue((q) => q.filter((p) => {
+            if (evt.id) return p.id !== evt.id;
+            if (evt.runId) return p.runId !== evt.runId;
+            return false;
+          }));
           break;
         case 'computerUseConsent':
           // Desktop's `computer:request_access` / `request_full_control` /
@@ -1609,6 +1667,11 @@ export default function App() {
     setPaused(false);
     setScrolledAway(false);
     setThinking('');
+    setPermError('');
+    setPermissionQueue((q) => q.filter((p) => {
+      if (runIdRef.current && p.runId && p.runId !== runIdRef.current) return true;
+      return false;
+    }));
     const startedAt = runStartedAtRef.current;
     // Read the stream from the ref and issue two independent state updates.
     // Calling setConvs inside a setLive updater double-appended under StrictMode.
@@ -1667,7 +1730,7 @@ export default function App() {
     if (streamingRef.current) {
       if (override === undefined) inputRef.current.value = '';
       if (!Array.isArray(attsOverride)) setAttachments([]);
-      setQueued((q) => [...q, { id: uid(), text, atts, convId: activeId }]);
+      setQueued((q) => [...q, { id: uid(), text, atts, convId: activeId, paused: false }]);
       return;
     }
     if (override === undefined) inputRef.current.value = '';
@@ -1780,33 +1843,55 @@ export default function App() {
     }
   }, []);
 
-  // Example parity: anything queued while a reply was streaming is dispatched the
-  // instant that run settles — no message is ever swallowed.
+  // Auto-dispatch the first unpaused queued message once idle and its conversation queue isn't paused.
   useEffect(() => {
     if (streaming || !queued.length) return;
-    const [next, ...rest] = queued;
+    const { next, rest } = pickNextRunnableQueued(queued, queuePausedByConv);
+    if (!next) return;
     setQueued(rest);
-    // Deliver into the conversation it was typed in, but never yank the view:
-    // the user may have moved to another chat while it waited.
     send(next.text, next.atts, next.convId);
-  }, [streaming, queued, send]);
+  }, [streaming, queued, queuePausedByConv, send]);
 
   const unqueue = useCallback((id) => setQueued((q) => q.filter((x) => x.id !== id)), []);
-  const editQueued = useCallback((id) => {
-    const item = queued.find((x) => x.id === id);
-    if (!item) return;
-    setQueued((q) => q.filter((x) => x.id !== id));
-    if (inputRef.current) {
-      inputRef.current.value = item.text || '';
-      inputRef.current.dispatchEvent(new Event('input', { bubbles: true }));
-      inputRef.current.focus();
-    }
-    if (item.atts && item.atts.length) setAttachments((a) => [...a, ...item.atts]);
-  }, [queued]);
-  // Stop the live run so the queued message goes out immediately.
-  const sendQueuedNow = useCallback(() => {
-    if (runIdRef.current) window.autobot.cancel(runIdRef.current);
+  const clearQueuedForConv = useCallback((convId) => {
+    if (!convId) return;
+    setQueued((q) => q.filter((x) => x.convId !== convId));
+    setQueuePausedByConv((m) => ({ ...m, [convId]: false }));
   }, []);
+  const toggleQueuePaused = useCallback((convId) => {
+    if (!convId) return;
+    setQueuePausedByConv((m) => ({ ...m, [convId]: !m[convId] }));
+  }, []);
+  const toggleQueueItemPaused = useCallback((id) => {
+    setQueued((q) => q.map((x) => (x.id === id ? { ...x, paused: !x.paused } : x)));
+  }, []);
+  const reorderQueued = useCallback((fromId, toId) => {
+    setQueued((q) => moveQueueItem(q, fromId, toId));
+  }, []);
+  const stepQueued = useCallback((id, delta) => {
+    setQueued((q) => stepQueueItemWithinConv(q, id, delta));
+  }, []);
+  const updateQueuedText = useCallback((id, text) => {
+    setQueued((q) => q.map((x) => (x.id === id ? { ...x, text } : x)));
+  }, []);
+  // Dispatch a specific queued item immediately: if idle, send now; if streaming, move it to front and cancel live run.
+  const sendQueuedNow = useCallback((id) => {
+    const target = id ? queued.find((x) => x.id === id) : queued[0];
+    if (!target) return;
+    if (!streamingRef.current) {
+      setQueued((q) => q.filter((x) => x.id !== target.id));
+      send(target.text, target.atts, target.convId);
+      return;
+    }
+    if (target.convId) {
+      setQueuePausedByConv((m) => ({ ...m, [target.convId]: false }));
+    }
+    setQueued((q) => {
+      const unpaused = { ...target, paused: false };
+      return [unpaused, ...q.filter((x) => x.id !== target.id)];
+    });
+    if (runIdRef.current) window.autobot.cancel(runIdRef.current);
+  }, [queued, send]);
 
   // Quick Entry (menu-bar / global-hotkey) → insert or send into the composer.
   useEffect(() => {
@@ -1880,12 +1965,30 @@ export default function App() {
     await window.autobot.answerQuestion(id, ans);
   }, [question]);
 
-  const answerPermission = useCallback(async (allow) => {
-    if (!permission) return;
-    const id = permission.id;
-    setPermission(null);
-    await window.autobot.answerPermission(id, allow);
-  }, [permission]);
+  const answerPermission = useCallback(async (id, payload) => {
+    if (!id) return;
+    setPermSubmitting(true);
+    setPermError('');
+    try {
+      const res = await window.autobot.answerPermission(id, payload);
+      if (res && res.ok) {
+        setPermissionQueue((q) => q.filter((x) => x.id !== id));
+      } else {
+        const msg = (res && res.error) || 'Failed to deliver permission response.';
+        setPermError(msg);
+        setError(msg);
+        if (/not found|closed|timed out/i.test(msg)) {
+          setPermissionQueue((q) => q.filter((x) => x.id !== id));
+        }
+      }
+    } catch (err) {
+      const msg = (err && err.message) || 'Permission response failed.';
+      setPermError(msg);
+      setError(msg);
+    } finally {
+      setPermSubmitting(false);
+    }
+  }, [setError]);
 
   // Computer Use consent: allow grants the requested tier (which resolves the
   // blocked turn in the main process), deny revokes so the tool call fails fast.
@@ -3134,6 +3237,11 @@ export default function App() {
               title={tab.title || 'Untitled session'}
             >
               {streaming && runConvRef.current === tab.id && <span className="ws-tab-dot" />}
+              {waitingPermissionConvIds.has(tab.id) && (
+                <span className="conv-perm-bell" title="Waiting for permission">
+                  <Icon name="Notification" size={11} />
+                </span>
+              )}
               <span className="ws-tab-label">{tab.title || 'Untitled session'}</span>
               <button type="button" className="ws-tab-x" aria-label="Close tab" onClick={(e) => closeWorkspaceTab(tab.id, e)}>
                 <Icon name="X" size={10} />
@@ -3158,6 +3266,7 @@ export default function App() {
             }
           }}
           theme={settings.theme}
+          typography={settings.typography}
           provider={provider}
           orchestrator={orchestrator}
           envState={envState}
@@ -3222,9 +3331,23 @@ export default function App() {
                     <button type="button" className="paused-resume-btn" onClick={() => resumeRun('')}><Icon name="Play" size={12} /> Resume</button>
                   </div>
                 )}
+                <PermissionDock
+                  queue={permissionQueue.filter((p) => !p.convId || p.convId === activeId)}
+                  onRespond={answerPermission}
+                  errorMsg={permError}
+                  submitting={permSubmitting}
+                />
                 <InputBar
                   streaming={streaming} paused={paused} onPause={pauseRun} onResume={resumeRun} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
-                  queued={queued.filter((q) => q.convId === activeId)} unqueue={unqueue} editQueued={editQueued} sendQueuedNow={sendQueuedNow}
+                  queued={filterQueueForConv(queued, activeId)}
+                  queuePaused={!!(activeId && queuePausedByConv[activeId])}
+                  onToggleQueuePaused={() => toggleQueuePaused(activeId)}
+                  onClearQueue={() => clearQueuedForConv(activeId)}
+                  onToggleQueueItemPaused={toggleQueueItemPaused}
+                  onReorderQueue={reorderQueued}
+                  onStepQueueItem={stepQueued}
+                  onUpdateQueueItemText={updateQueuedText}
+                  unqueue={unqueue} sendQueuedNow={sendQueuedNow}
                   settings={settings} onVoiceError={setError}
                   provider={provider} setProvider={setProvider} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt('providers'); }}
                   providerKeys={providerKeys} setProviderKeys={setProviderKeys}
@@ -3311,6 +3434,11 @@ export default function App() {
                   {c.pinned && <span className="conv-pin" title="Pinned"><Icon name="Pin" size={12} /></span>}
                   <Icon name="Chat" size={15} className="conv-ico" />
                   <div className="conv-title">{c.title || 'Untitled'}</div>
+                  {waitingPermissionConvIds.has(c.id) && (
+                    <span className="conv-perm-bell" title="Waiting for permission approval">
+                      <Icon name="Notification" size={12} />
+                    </span>
+                  )}
                   <button className="conv-del" onClick={(e) => { e.stopPropagation(); deleteConv(c.id); }}><Icon name="Trash" size={13} /></button>
                 </div>
               ))}
@@ -3453,9 +3581,24 @@ export default function App() {
             </div>
           )}
 
+          <PermissionDock
+            queue={permissionQueue.filter((p) => !p.convId || p.convId === activeId)}
+            onRespond={answerPermission}
+            errorMsg={permError}
+            submitting={permSubmitting}
+          />
+
           <InputBar
             streaming={streaming} paused={paused} onPause={pauseRun} onResume={resumeRun} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
-            queued={queued.filter((q) => q.convId === activeId)} unqueue={unqueue} editQueued={editQueued} sendQueuedNow={sendQueuedNow}
+            queued={filterQueueForConv(queued, activeId)}
+            queuePaused={!!(activeId && queuePausedByConv[activeId])}
+            onToggleQueuePaused={() => toggleQueuePaused(activeId)}
+            onClearQueue={() => clearQueuedForConv(activeId)}
+            onToggleQueueItemPaused={toggleQueueItemPaused}
+            onReorderQueue={reorderQueued}
+            onStepQueueItem={stepQueued}
+            onUpdateQueueItemText={updateQueuedText}
+            unqueue={unqueue} sendQueuedNow={sendQueuedNow}
             settings={settings} onVoiceError={setError}
             provider={provider} setProvider={setProvider} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt('providers'); }}
             providerKeys={providerKeys} setProviderKeys={setProviderKeys}
@@ -3517,10 +3660,6 @@ export default function App() {
 
       {question && (
         <QuestionModal question={question} answer={answerQuestion} />
-      )}
-
-      {permission && (
-        <PermissionModal permission={permission} answer={answerPermission} />
       )}
 
       {cuConsent && (
@@ -7688,7 +7827,7 @@ function EnvironmentPicker({ envState, onSwitchEnvironment, onOpenEnvironments }
   );
 }
 
-function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, editQueued, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, T }) {
+function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, queuePaused, onToggleQueuePaused, onClearQueue, onToggleQueueItemPaused, onReorderQueue, onStepQueueItem, onUpdateQueueItemText, unqueue, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -8457,29 +8596,19 @@ function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, 
         )}
       </div>
 
-      {queued && queued.length > 0 && (
-        <div className="queue-bar">
-          <div className="queue-head">
-            <span className="queue-label"><Icon name="Clock" size={12} /> Queued Messages · {queued.length} <span className="muted" style={{ fontWeight: 400 }}>· Sends after agent finishes</span></span>
-            <button className="queue-sendnow" onClick={sendQueuedNow}>Send now</button>
-          </div>
-          <div className="queue-list">
-            {queued.map((q) => {
-              const label = (q.text || '').trim() || (q.atts && q.atts.length ? '📎 ' + q.atts.map((a) => a.name).join(', ') : '');
-              return (
-                <div key={q.id} className="queue-chip" title={label}>
-                  <span className="queue-text">{label.slice(0, 120)}</span>
-                  {q.atts && q.atts.length ? <span className="queue-count">{q.atts.length} file{q.atts.length > 1 ? 's' : ''}</span> : null}
-                  <span className="queue-chip-actions">
-                    {editQueued && <button className="queue-x" onClick={() => editQueued(q.id)} title="Edit in composer"><Icon name="Edit" size={11} /></button>}
-                    <button className="queue-x" onClick={() => unqueue(q.id)} title="Remove queued message"><Icon name="Trash" size={11} /></button>
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      <MessageQueueTray
+        items={queued}
+        queuePaused={queuePaused}
+        streaming={streaming}
+        onToggleQueuePaused={onToggleQueuePaused}
+        onClearAll={onClearQueue}
+        onToggleItemPaused={onToggleQueueItemPaused}
+        onReorder={onReorderQueue}
+        onStepItem={onStepQueueItem}
+        onUpdateItemText={onUpdateQueueItemText}
+        onSendNow={sendQueuedNow}
+        onDeleteItem={unqueue}
+      />
 
       {/* Settings row — outside the composer box, above it (Claude-style).
           The box itself keeps only what Claude keeps in it: the command hint,
@@ -11372,6 +11501,10 @@ function SettingsModal({
                 </div>
 
                 <div className="settings-card">
+                  <PermissionRulesSection cwd={cwd} setNotice={setNotice} />
+                </div>
+
+                <div className="settings-card">
                   <ComplianceSection compliance={compliance} setCompliance={setCompliance} />
                 </div>
               </>
@@ -11577,6 +11710,14 @@ function SettingsModal({
                 </div>
 
                 <div className="settings-card">
+                  <TypographySettingsSection
+                    typography={settings.typography}
+                    onChange={(nextTypo) => setSettings({ ...settings, typography: nextTypo })}
+                    setNotice={setNotice}
+                  />
+                </div>
+
+                <div className="settings-card">
                   <RuntimesSection />
                 </div>
               </>
@@ -11655,18 +11796,262 @@ function QuestionModal({ question, answer }) {
   );
 }
 
-// ---------- B8 permission prompt (Claude Code mode) ----------
-function PermissionModal({ permission, answer }) {
+function PermissionRulesSection({ cwd, setNotice }) {
+  const [perms, setPerms] = useState({ allow: [], deny: [], ask: [] });
+  const [ruleInput, setRuleInput] = useState('');
+  const [ruleList, setRuleList] = useState('allow');
+  const [busy, setBusy] = useState(false);
+
+  const loadRules = useCallback(async () => {
+    try {
+      if (window.autobot && window.autobot.getPermissions) {
+        const res = await window.autobot.getPermissions(cwd);
+        if (res) setPerms({ allow: res.allow || [], deny: res.deny || [], ask: res.ask || [] });
+      }
+    } catch (_) {}
+  }, [cwd]);
+
+  useEffect(() => { loadRules(); }, [loadRules]);
+
+  const handleAdd = async () => {
+    const clean = ruleInput.trim();
+    if (!clean || !window.autobot?.addPermissionRule) return;
+    setBusy(true);
+    try {
+      const res = await window.autobot.addPermissionRule({ rule: clean, list: ruleList });
+      if (res && res.ok) {
+        setRuleInput('');
+        await loadRules();
+        setNotice && setNotice(`Saved permission rule: ${clean}`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRemove = async (rule, list) => {
+    if (!window.autobot?.removePermissionRule) return;
+    setBusy(true);
+    try {
+      await window.autobot.removePermissionRule({ rule, list });
+      await loadRules();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const groups = [
+    { key: 'allow', label: 'Always Allow', rules: perms.allow || [], badge: 'allow' },
+    { key: 'ask', label: 'Always Ask', rules: perms.ask || [], badge: 'ask' },
+    { key: 'deny', label: 'Always Deny', rules: perms.deny || [], badge: 'deny' },
+  ];
+
   return (
-    <div className="modal-overlay">
-      <div className="modal">
-        <h2>Akron Code requests permission</h2>
-        <div className="perm-tool">{permission.tool}</div>
-        <pre className="perm-summary">{permission.summary}</pre>
-        <div className="modal-actions">
-          <button onClick={() => answer(false)}>Deny</button>
-          <button className="primary" onClick={() => answer(true)}>Allow</button>
+    <div className="perm-rules-card">
+      <div className="perm-rules-head">
+        <div>
+          <h3><Icon name="LockShield" size={14} /> Saved Permission Rules</h3>
+          <p className="muted">Scoped rules saved in <code>~/.autobot/settings.json</code> and project <code>.claude/settings.json</code>.</p>
         </div>
+        <button type="button" className="btn-subtle" onClick={loadRules} disabled={busy}>Refresh</button>
+      </div>
+
+      <div className="perm-rules-add-row">
+        <select value={ruleList} onChange={(e) => setRuleList(e.target.value)} aria-label="Rule list">
+          <option value="allow">Allow</option>
+          <option value="ask">Ask</option>
+          <option value="deny">Deny</option>
+        </select>
+        <input
+          type="text"
+          value={ruleInput}
+          onChange={(e) => setRuleInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAdd(); } }}
+          placeholder="e.g. Bash(lsof:*) or Edit(src/**) or mcp__rea__inspect_analysis_view"
+          aria-label="New permission rule"
+        />
+        <button type="button" className="primary" onClick={handleAdd} disabled={busy || !ruleInput.trim()}>
+          Add Rule
+        </button>
+      </div>
+
+      <div className="perm-rules-groups">
+        {groups.map((g) => (
+          <div key={g.key} className="perm-rules-group">
+            <div className="perm-rules-group-label">{g.label} <span>({g.rules.length})</span></div>
+            {g.rules.length === 0 ? (
+              <div className="perm-rules-empty">No {g.key} rules configured.</div>
+            ) : (
+              <div className="perm-rules-list">
+                {g.rules.map((r) => (
+                  <div key={`${g.key}:${r}`} className={`perm-rule-chip kind-${g.badge}`}>
+                    <code>{r}</code>
+                    <button
+                      type="button"
+                      className="perm-rule-del"
+                      onClick={() => handleRemove(r, g.key)}
+                      title={`Remove ${r}`}
+                      aria-label={`Remove rule ${r}`}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TypographySettingsSection({ typography, onChange, setNotice }) {
+  const cfg = normalizeTypography(typography);
+  const patch = (next) => onChange(normalizeTypography({ ...cfg, ...next }));
+  const resetDefaults = () => {
+    onChange({ ...DEFAULT_TYPOGRAPHY });
+    setNotice && setNotice('Typography reset to defaults');
+  };
+  const uiStack = resolveUiFontStack(cfg);
+  const monoStack = resolveMonoFontStack(cfg);
+
+  return (
+    <div className="typo-card" data-testid="typography-settings-card">
+      <div className="typo-head">
+        <div>
+          <h3><Icon name="Palette" size={14} /> Typography &amp; Fonts</h3>
+          <p className="muted">Applies live across chat messages, code blocks, Monaco editor, and integrated terminals.</p>
+        </div>
+        <button type="button" className="btn-subtle" onClick={resetDefaults}>Reset Defaults</button>
+      </div>
+
+      <div className="typo-grid">
+        <div className="typo-col">
+          <div className="typo-col-title">UI &amp; Chat Prose</div>
+          <label>
+            Font Family
+            <select
+              value={cfg.uiPreset}
+              onChange={(e) => patch({ uiPreset: e.target.value })}
+              aria-label="UI font family"
+            >
+              {UI_FONT_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </select>
+          </label>
+          {cfg.uiPreset === 'custom' && (
+            <label>
+              Custom UI Font Name
+              <input
+                type="text"
+                value={cfg.uiCustomFont}
+                onChange={(e) => patch({ uiCustomFont: e.target.value })}
+                placeholder="e.g. Plus Jakarta Sans, Helvetica Neue"
+              />
+            </label>
+          )}
+          <label>
+            UI &amp; Chat Size ({cfg.uiSize}px)
+            <div className="typo-size-row">
+              <input
+                type="range"
+                min={12}
+                max={20}
+                step={0.5}
+                value={cfg.uiSize}
+                onChange={(e) => patch({ uiSize: Number(e.target.value) })}
+                aria-label="UI font size slider"
+              />
+              <input
+                type="number"
+                min={12}
+                max={20}
+                step={0.5}
+                value={cfg.uiSize}
+                onChange={(e) => patch({ uiSize: Number(e.target.value) })}
+                aria-label="UI font size"
+                className="typo-size-num"
+              />
+            </div>
+          </label>
+        </div>
+
+        <div className="typo-col">
+          <div className="typo-col-title">Code, Editor &amp; Terminal</div>
+          <label>
+            Monospace Family
+            <select
+              value={cfg.monoPreset}
+              onChange={(e) => patch({ monoPreset: e.target.value })}
+              aria-label="Code font family"
+            >
+              {MONO_FONT_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </select>
+          </label>
+          {cfg.monoPreset === 'custom' && (
+            <label>
+              Custom Monospace Font Name
+              <input
+                type="text"
+                value={cfg.monoCustomFont}
+                onChange={(e) => patch({ monoCustomFont: e.target.value })}
+                placeholder="e.g. Berkeley Mono, Victor Mono"
+              />
+            </label>
+          )}
+          <label>
+            Code &amp; Editor Size ({cfg.monoSize}px)
+            <div className="typo-size-row">
+              <input
+                type="range"
+                min={11}
+                max={20}
+                step={0.5}
+                value={cfg.monoSize}
+                onChange={(e) => patch({ monoSize: Number(e.target.value) })}
+                aria-label="Code font size slider"
+              />
+              <input
+                type="number"
+                min={11}
+                max={20}
+                step={0.5}
+                value={cfg.monoSize}
+                onChange={(e) => patch({ monoSize: Number(e.target.value) })}
+                aria-label="Code font size"
+                className="typo-size-num"
+              />
+            </div>
+          </label>
+          <label className="check" style={{ marginTop: 6 }}>
+            <input
+              type="checkbox"
+              checked={!!cfg.ligatures}
+              onChange={(e) => patch({ ligatures: e.target.checked })}
+            />
+            Enable code font ligatures (<code>!= === =&gt; -&gt;</code>)
+          </label>
+        </div>
+      </div>
+
+      <div className="typo-preview-box">
+        <div className="typo-preview-label">Live Preview</div>
+        <div className="typo-preview-prose" style={{ fontFamily: uiStack, fontSize: `${cfg.uiSize}px` }}>
+          Akron Code updates prose and code metrics immediately — crisp, readable, zero flash on reload.
+        </div>
+        <pre
+          className="typo-preview-code"
+          style={{
+            fontFamily: monoStack,
+            fontSize: `${cfg.monoSize}px`,
+            fontVariantLigatures: cfg.ligatures ? 'normal' : 'none',
+            fontFeatureSettings: cfg.ligatures ? '"liga" 1, "calt" 1' : '"liga" 0, "calt" 0',
+          }}
+        >{`const check = (x) => x !== null && x >= 1 ? 'ready' : 'idle';`}</pre>
       </div>
     </div>
   );

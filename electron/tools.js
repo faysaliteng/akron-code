@@ -1732,8 +1732,15 @@ async function runToolInner(name, args, ctx) {
       (/^mcp__/.test(name) && /(write|edit|create|delete|remove|run|exec|move|rename|upload|patch)/i.test(name));
   };
   if (approveTool && isMutatingTool(name)) {
-    const ok = await approveTool(name, args);
-    if (!ok) return { content: `Blocked: permission not granted for ${name} (denied or disallowed in the current permission mode).`, isError: true, denied: true };
+    const verdict = await approveTool(name, args);
+    const ok = typeof verdict === 'boolean' ? verdict : !!(verdict && (verdict.allow ?? verdict.approved));
+    if (!ok) {
+      const fb = verdict && typeof verdict === 'object' && verdict.feedback ? String(verdict.feedback).trim() : '';
+      const msg = fb
+        ? `User declined this tool call (${name}) with guidance: ${fb}`
+        : `Blocked: permission not granted for ${name} (denied or disallowed in the current permission mode).`;
+      return { content: msg, isError: true, denied: true, feedback: fb || undefined };
+    }
   }
 
   // Special tools handled via context

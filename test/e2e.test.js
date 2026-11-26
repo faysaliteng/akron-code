@@ -788,8 +788,10 @@ async function main() {
     // arrow must stay available next to Stop while text is present
     assert.ok(/streaming && <button className="send stop"/.test(src), 'Stop button must render while streaming');
     assert.ok(/\(!streaming \|\| hasText\) &&/.test(src), 'send arrow must render while streaming when text exists');
-    assert.ok(/className="queue-bar"/.test(src), 'queued messages need a visible surface');
-    assert.ok(/className="queue-sendnow"/.test(src), 'a "Send now" affordance must exist');
+    const traySrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'MessageQueueTray.jsx'), 'utf8');
+    const combined = src + '\n' + traySrc;
+    assert.ok(/className=\{`queue-bar/.test(combined) || /className="queue-bar"/.test(combined), 'queued messages need a visible surface');
+    assert.ok(/onSendNow|Send now/.test(combined), 'a "Send now" affordance must exist');
   });
   await test('send() ignores non-string overrides (event objects)', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8');

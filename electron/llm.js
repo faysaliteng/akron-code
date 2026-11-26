@@ -2144,9 +2144,16 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       } catch (_) {}
     }
     if (v.needsAsk && typeof opts.approveTool === 'function') {
-      let ok = false;
-      try { ok = await opts.approveTool(name, effArgs); } catch (_) { ok = false; }
-      if (!ok) return { blocked: true, reason: `Denied at permission prompt for ${name}`, args: effArgs };
+      let verdict = false;
+      try { verdict = await opts.approveTool(name, effArgs); } catch (_) { verdict = false; }
+      const ok = typeof verdict === 'boolean' ? verdict : !!(verdict && (verdict.allow ?? verdict.approved));
+      if (!ok) {
+        const fb = verdict && typeof verdict === 'object' && verdict.feedback ? String(verdict.feedback).trim() : '';
+        const reason = fb
+          ? `User declined this tool call (${name}) with guidance: ${fb}`
+          : `Denied at permission prompt for ${name}`;
+        return { blocked: true, reason, args: effArgs };
+      }
     }
     return { args: effArgs, context: v.additionalContext || '' };
   };
