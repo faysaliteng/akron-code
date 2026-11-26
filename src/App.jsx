@@ -11318,6 +11318,7 @@ function SettingsModal({
                   </div>
                 </div>
                 <QuietHoursSection setNotice={setNotice} />
+                <MobilePushSection setNotice={setNotice} />
               </>
             )}
 
@@ -11787,6 +11788,7 @@ function SettingsModal({
                     </div>
                   </div>
                 </div>
+                <OutboundRelaySection setNotice={setNotice} />
               </div>
             )}
 
@@ -12180,6 +12182,172 @@ function QuietHoursSection({ setNotice }) {
   );
 }
 
+function MobilePushSection({ setNotice }) {
+  const [cfg, setCfg] = useState({ enabled: false, ntfy: { enabled: false, topicUrl: '' }, telegram: { enabled: false, botToken: '', chatId: '' }, webhook: { enabled: false, url: '' }, pairedDevices: [] });
+  const [pairInfo, setPairInfo] = useState(null);
+  const [status, setStatus] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        if (window.autobot && window.autobot.pushGetConfig) {
+          const c = await window.autobot.pushGetConfig();
+          if (c) setCfg(c);
+        }
+      } catch (_) {}
+    })();
+  }, []);
+
+  const savePatch = async (patch) => {
+    const next = { ...cfg, ...patch };
+    setCfg(next);
+    try {
+      if (window.autobot && window.autobot.pushSaveConfig) {
+        const r = await window.autobot.pushSaveConfig(patch);
+        if (r && r.config) setCfg(r.config);
+        setNotice && setNotice('Updated mobile push settings');
+      }
+    } catch (_) {}
+  };
+
+  const genPairing = async () => {
+    if (!window.autobot || !window.autobot.pushStartPairing) return;
+    const r = await window.autobot.pushStartPairing();
+    if (r && r.ok) setPairInfo(r);
+  };
+
+  const testPush = async () => {
+    if (!window.autobot || !window.autobot.pushTest) return;
+    const r = await window.autobot.pushTest();
+    setStatus(r && r.ok ? '✅ Test push dispatched' : `⚠ ${(r && (r.error || r.skipped)) || 'No active push endpoint'}`);
+  };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
+        <h3 className="oc-sec-title" style={{ margin: 0 }}>Mobile Push Channels (ntfy · Telegram · Webhook)</h3>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button type="button" className="btn-mini" onClick={genPairing}>6-Digit Pairing Code</button>
+          <button type="button" className="btn-mini" onClick={testPush}>Test Push</button>
+        </div>
+      </div>
+      {pairInfo && (
+        <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+          One-time pairing code: <strong><code>{pairInfo.code}</code></strong> (valid 10 min · supports remote <code>approve &lt;shortId&gt;</code> / <code>deny &lt;shortId&gt;</code>)
+        </div>
+      )}
+      {status && <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>{status}</div>}
+      <div className="oc-group">
+        <div className="oc-row">
+          <div className="oc-row-meta">
+            <div className="oc-row-title">Enable Mobile Push Alerts</div>
+            <div className="oc-row-sub">Deliver rate-limited permission, long-run (&ge;30s), and stuck-session alerts cleanly.</div>
+          </div>
+          <div className="oc-row-ctrl">
+            <button type="button" role="switch" aria-checked={!!cfg.enabled} className={'oc-switch' + (cfg.enabled ? ' on' : '')} onClick={() => savePatch({ enabled: !cfg.enabled })}>
+              <span className="oc-switch-knob" />
+            </button>
+          </div>
+        </div>
+        <div className="oc-row">
+          <div className="oc-row-meta">
+            <div className="oc-row-title">ntfy Topic URL</div>
+            <div className="oc-row-sub">Enable push via ntfy topic endpoint</div>
+          </div>
+          <div className="oc-row-ctrl" style={{ gap: 6 }}>
+            <input placeholder="https://ntfy.sh/my-akron-topic" value={(cfg.ntfy && cfg.ntfy.topicUrl) || ''} onChange={(e) => savePatch({ ntfy: { ...(cfg.ntfy || {}), enabled: !!e.target.value.trim(), topicUrl: e.target.value } })} />
+          </div>
+        </div>
+        <div className="oc-row">
+          <div className="oc-row-meta">
+            <div className="oc-row-title">Webhook URL</div>
+            <div className="oc-row-sub">JSON + HMAC-SHA256 webhook delivery endpoint</div>
+          </div>
+          <div className="oc-row-ctrl" style={{ gap: 6 }}>
+            <input placeholder="https://hooks.example/akron" value={(cfg.webhook && cfg.webhook.url) || ''} onChange={(e) => savePatch({ webhook: { ...(cfg.webhook || {}), enabled: !!e.target.value.trim(), url: e.target.value } })} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OutboundRelaySection({ setNotice }) {
+  const [st, setSt] = useState({ connected: false, relayUrl: '', killSwitchActive: false, killSwitchPath: '~/.autobot/remote.OFF' });
+  const [relayUrl, setRelayUrl] = useState('');
+  const [token, setToken] = useState('');
+
+  const refresh = useCallback(async () => {
+    try {
+      if (window.autobot && window.autobot.remoteRelayStatus) {
+        const res = await window.autobot.remoteRelayStatus();
+        if (res) {
+          setSt(res);
+          if (res.relayUrl && !relayUrl) setRelayUrl(res.relayUrl);
+        }
+      }
+    } catch (_) {}
+  }, [relayUrl]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const toggleKill = async () => {
+    if (!window.autobot || !window.autobot.remoteKillSwitch) return;
+    const r = await window.autobot.remoteKillSwitch(!st.killSwitchActive);
+    setSt((prev) => ({ ...prev, killSwitchActive: Boolean(r && r.active), connected: r && r.active ? false : prev.connected }));
+    setNotice && setNotice(r && r.active ? 'Kill switch engaged (~/.autobot/remote.OFF)' : 'Kill switch cleared');
+  };
+
+  const connectRelay = async () => {
+    if (!window.autobot || !window.autobot.remoteRelayConfigure) return;
+    const r = await window.autobot.remoteRelayConfigure({ action: 'connect', relayUrl, token });
+    setSt((prev) => ({ ...prev, ...r }));
+    if (r && r.error) setNotice && setNotice(r.error);
+  };
+
+  const disconnectRelay = async () => {
+    if (!window.autobot || !window.autobot.remoteRelayConfigure) return;
+    const r = await window.autobot.remoteRelayConfigure({ action: 'disconnect' });
+    setSt((prev) => ({ ...prev, ...r, connected: false }));
+  };
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <h3 className="oc-sec-title">Outbound Remote Relay &amp; Kill Switch</h3>
+      <div className="oc-group">
+        <div className="oc-row">
+          <div className="oc-row-meta">
+            <div className="oc-row-title">Emergency Kill Switch (<code>remote.OFF</code>)</div>
+            <div className="oc-row-sub">
+              {st.killSwitchActive ? 'ACTIVE — all remote HTTP, WS & Outbound Relay traffic blocked immediately.' : 'Off — remote monitoring allowed when enabled.'}
+            </div>
+          </div>
+          <div className="oc-row-ctrl">
+            <button type="button" className={'btn-mini ' + (st.killSwitchActive ? 'primary' : '')} onClick={toggleKill}>
+              {st.killSwitchActive ? 'Clear remote.OFF' : 'Engage Kill Switch'}
+            </button>
+          </div>
+        </div>
+        <div className="oc-row">
+          <div className="oc-row-meta">
+            <div className="oc-row-title">Outbound Relay Endpoint</div>
+            <div className="oc-row-sub">Connect outbound without opening inbound firewall ports</div>
+          </div>
+          <div className="oc-row-ctrl" style={{ gap: 6 }}>
+            <input placeholder="wss://relay.example/akron" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} />
+            <input type="password" placeholder="Bearer token" value={token} onChange={(e) => setToken(e.target.value)} style={{ width: 120 }} />
+            {st.connected ? (
+              <button type="button" className="btn-mini" onClick={disconnectRelay}>Disconnect</button>
+            ) : (
+              <button type="button" className="btn-mini primary" disabled={st.killSwitchActive || !relayUrl.trim()} onClick={connectRelay}>Connect</button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TypographySettingsSection({ typography, onChange, setNotice }) {
   const cfg = normalizeTypography(typography);
   const patch = (next) => onChange(normalizeTypography({ ...cfg, ...next }));
@@ -12232,18 +12400,18 @@ function TypographySettingsSection({ typography, onChange, setNotice }) {
               <input
                 type="range"
                 min={12}
-                max={20}
+                max={18}
                 step={0.5}
-                value={cfg.uiSize}
+                value={Math.min(18, cfg.uiSize)}
                 onChange={(e) => patch({ uiSize: Number(e.target.value) })}
                 aria-label="UI font size slider"
               />
               <input
                 type="number"
                 min={12}
-                max={20}
+                max={18}
                 step={0.5}
-                value={cfg.uiSize}
+                value={Math.min(18, cfg.uiSize)}
                 onChange={(e) => patch({ uiSize: Number(e.target.value) })}
                 aria-label="UI font size"
                 className="typo-size-num"

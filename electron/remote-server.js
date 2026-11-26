@@ -10,7 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { URL } = require('url');
-const { WebSocketServer } = require('ws');
+const { WebSocketServer, WebSocket } = require('ws');
 const fsWatcher = require('./ide/fs-watcher');
 const search = require('./ide/search');
 const git = require('./git');
@@ -18,6 +18,34 @@ const ptyMod = require('./ide/pty');
 const tools = require('./tools');
 
 const MAX_BODY = 16 * 1024 * 1024;
+
+function defaultDataDir() {
+  return path.join(os.homedir(), '.autobot');
+}
+
+function killSwitchPath(dataDir = defaultDataDir()) {
+  return path.join(dataDir || defaultDataDir(), 'remote.OFF');
+}
+
+function isKillSwitchActive(dataDir = defaultDataDir()) {
+  try { return fs.existsSync(killSwitchPath(dataDir)); } catch (_) { return false; }
+}
+
+const activeRelays = new Set();
+
+function setKillSwitch(active, dataDir = defaultDataDir()) {
+  const fp = killSwitchPath(dataDir);
+  if (active) {
+    fs.mkdirSync(path.dirname(fp), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(fp, `REMOTE_KILL_SWITCH_ACTIVE=${new Date().toISOString()}\n`, { encoding: 'utf8', mode: 0o600 });
+    for (const r of activeRelays) {
+      try { r.disconnect('kill_switch'); } catch (_) {}
+    }
+  } else {
+    try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch (_) {}
+  }
+  return { active: isKillSwitchActive(dataDir), path: fp };
+}
 
 function timingSafeBearer(authHeader, expectedToken) {
   if (!expectedToken) return false;
@@ -76,11 +104,14 @@ function listCandidateWorkspaces(rootDir) {
   return out;
 }
 
-function createRemoteServer({ port = 0, host = '127.0.0.1', token, workspaceRoot } = {}) {
+function createRemoteServer({ port = 0, host = '127.0.0.1', token, workspaceRoot, dataDir = defaultDataDir() } = {}) {
   const activeToken = String(token || '').trim() || crypto.randomBytes(24).toString('hex');
   const rootDir = path.resolve(workspaceRoot || os.homedir());
 
   const server = http.createServer(async (req, res) => {
+    if (isKillSwitchActive(dataDir)) {
+      return sendJson(res, 503, { ok: false, error: 'Remote kill switch active (remote.OFF)' });
+    }
     if (!timingSafeBearer(req.headers.authorization, activeToken)) {
       return sendJson(res, 401, { ok: false, error: 'Unauthorized' });
     }
@@ -157,6 +188,11 @@ function createRemoteServer({ port = 0, host = '127.0.0.1', token, workspaceRoot
 
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
+    if (isKillSwitchActive(dataDir)) {
+      socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     const u = new URL(req.url || '/', 'http://127.0.0.1');
     if (u.pathname !== '/v1/env/pty' || !timingSafeBearer(req.headers.authorization, activeToken)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -220,4 +256,86 @@ function createRemoteServer({ port = 0, host = '127.0.0.1', token, workspaceRoot
   };
 }
 
-module.exports = { createRemoteServer, timingSafeBearer };
+function createOutboundRelay({ relayUrl, token = '', onCommand = null, dataDir = defaultDataDir(), wsFactory = null } = {}) {
+  let ws = null;
+  let connected = false;
+  let stopped = false;
+
+  const disconnect = (reason = 'manual') => {
+    stopped = true;
+    connected = false;
+    activeRelays.delete(api);
+    if (ws) {
+      try { ws.close(1000, reason); } catch (_) {}
+      try { ws.terminate && ws.terminate(); } catch (_) {}
+      ws = null;
+    }
+    return { ok: true, connected: false, reason };
+  };
+
+  const connect = () => {
+    if (isKillSwitchActive(dataDir)) {
+      return { ok: false, connected: false, error: 'Kill switch active (remote.OFF)' };
+    }
+    if (!relayUrl) return { ok: false, connected: false, error: 'Relay URL is required.' };
+    stopped = false;
+    const makeWs = wsFactory || ((url, opts) => new WebSocket(url, opts));
+    ws = makeWs(relayUrl, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    activeRelays.add(api);
+
+    const onOpen = () => {
+      if (isKillSwitchActive(dataDir) || stopped) return disconnect('kill_switch');
+      connected = true;
+      try { ws.send(JSON.stringify({ type: 'hello', role: 'host', ts: Date.now() })); } catch (_) {}
+    };
+
+    const onMessage = async (raw) => {
+      if (isKillSwitchActive(dataDir)) return disconnect('kill_switch');
+      let msg;
+      try { msg = JSON.parse(String(raw || '{}')); } catch (_) { return; }
+      if (!msg || typeof msg !== 'object') return;
+      if (typeof onCommand === 'function') {
+        try {
+          const result = await onCommand(msg);
+          if (msg.id && ws) ws.send(JSON.stringify({ id: msg.id, ok: true, result }));
+        } catch (err) {
+          if (msg.id && ws) ws.send(JSON.stringify({ id: msg.id, ok: false, error: err.message }));
+        }
+      }
+    };
+
+    const onClose = () => {
+      connected = false;
+      activeRelays.delete(api);
+    };
+
+    if (typeof ws.on === 'function') {
+      ws.on('open', onOpen);
+      ws.on('message', onMessage);
+      ws.on('close', onClose);
+      ws.on('error', () => { connected = false; });
+    }
+    return { ok: true, connecting: true };
+  };
+
+  const status = () => ({
+    connected,
+    relayUrl: relayUrl || '',
+    killSwitchActive: isKillSwitchActive(dataDir),
+    killSwitchPath: killSwitchPath(dataDir),
+  });
+
+  const api = { connect, disconnect, status };
+  return api;
+}
+
+module.exports = {
+  createRemoteServer,
+  createOutboundRelay,
+  timingSafeBearer,
+  killSwitchPath,
+  isKillSwitchActive,
+  setKillSwitch,
+};

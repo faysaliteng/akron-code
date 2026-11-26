@@ -1039,6 +1039,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   const pauseCtrl = createPauseController();
   const owner = winFor(event); // route streaming events back to the originating window
   const turnId = 't' + Date.now();
+  const runStartedMs = Date.now();
   // Event-sourced run log (DeepSeek-harness style): every structural event of
   // the turn is appended to ~/.autobot/sessions/<conv>/<turn>.jsonl so a run
   // can be inspected and replayed after the fact.
@@ -1163,7 +1164,21 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     summary: summarizeTool(toolName, toolArgs),
     cwd: runCwd,
     signal: ac.signal,
-    emit: send,
+    emit: (evt) => {
+      send(evt);
+      if (evt && evt.type === 'permission' && evt.id) {
+        try {
+          const push = require('./push-channels');
+          const sid = push.registerShortPermission(evt.id);
+          push.sendPushAlert({
+            kind: 'permission',
+            title: 'Akron Code · Permission Needed',
+            body: `${evt.tool || toolName}: ${evt.summary || summarizeTool(toolName, toolArgs)}`,
+            shortId: sid,
+          }).catch(() => {});
+        } catch (_) {}
+      }
+    },
   });
   const approveTool = async (toolName, toolArgs) => {
     // Computer Use consent (Desktop `computer:request_access` /
@@ -1311,6 +1326,16 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     send({ type: 'error', message });
     return { ok: false, error: message };
   } finally {
+    const elapsedMs = Date.now() - runStartedMs;
+    if (elapsedMs >= 30000) {
+      try {
+        require('./push-channels').sendPushAlert({
+          kind: 'longRun',
+          title: 'Akron Code · Long Run Complete',
+          body: `${title || convId || 'Session'} finished in ${Math.round(elapsedMs / 1000)}s.`,
+        }).catch(() => {});
+      } catch (_) {}
+    }
     permGate.clearRun(runId, 'run_ended');
     runs.delete(runId);
     slog.close();
@@ -3208,6 +3233,75 @@ ipcMain.handle('autobot:learnSkill', async (e, payload = {}) => {
   } catch (err) {
     return { ok: false, error: oneLine(err) };
   }
+});
+
+let activeOutboundRelay = null;
+ipcMain.handle('autobot:pushGetConfig', () => {
+  try { return require('./push-channels').loadConfig(); } catch (_) { return { enabled: false }; }
+});
+ipcMain.handle('autobot:pushSaveConfig', (e, patch = {}) => {
+  try { return { ok: true, config: require('./push-channels').saveConfig(patch) }; } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:pushStartPairing', () => {
+  try { return require('./push-channels').startPairing(); } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:pushVerifyPairing', (e, { code, deviceMeta } = {}) => {
+  try { return require('./push-channels').completePairing(code, deviceMeta || {}); } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:pushTest', async () => {
+  try {
+    return await require('./push-channels').sendPushAlert({
+      kind: 'info',
+      title: 'Akron Code · Test Push Alert',
+      body: 'Mobile push alert routing is active.',
+      force: true,
+    });
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+ipcMain.handle('autobot:pushCommand', (e, text) => {
+  try { return require('./push-channels').handleInboundPushCommand(text, permGate); } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:remoteRelayStatus', () => {
+  try {
+    const rs = require('./remote-server');
+    return {
+      ...(activeOutboundRelay ? activeOutboundRelay.status() : { connected: false, relayUrl: '' }),
+      killSwitchActive: rs.isKillSwitchActive(),
+      killSwitchPath: rs.killSwitchPath(),
+    };
+  } catch (err) {
+    return { connected: false, killSwitchActive: false, error: oneLine(err) };
+  }
+});
+ipcMain.handle('autobot:remoteRelayConfigure', (e, { action, relayUrl, token } = {}) => {
+  try {
+    const rs = require('./remote-server');
+    if (action === 'disconnect') {
+      if (activeOutboundRelay) activeOutboundRelay.disconnect('user');
+      return { ok: true, ...(activeOutboundRelay ? activeOutboundRelay.status() : { connected: false, relayUrl: '' }) };
+    }
+    if (activeOutboundRelay) activeOutboundRelay.disconnect('reconfigure');
+    activeOutboundRelay = rs.createOutboundRelay({
+      relayUrl: relayUrl || '',
+      token: token || '',
+      onCommand: async (msg) => {
+        if (msg && msg.action === 'ping') return { pong: true, ts: Date.now() };
+        if (msg && (msg.action === 'approve' || msg.action === 'deny')) {
+          return require('./push-channels').handleInboundPushCommand(`${msg.action} ${msg.shortId || ''} ${msg.feedback || ''}`.trim(), permGate);
+        }
+        return { ok: true };
+      },
+    });
+    const res = activeOutboundRelay.connect();
+    return { ...res, ...activeOutboundRelay.status() };
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+ipcMain.handle('autobot:remoteKillSwitch', (e, active) => {
+  try { return { ok: true, ...require('./remote-server').setKillSwitch(Boolean(active)) }; } catch (err) { return { ok: false, error: oneLine(err) }; }
 });
 ipcMain.handle('autobot:extBridgeStatus', () => {
   try { return require('./extbridge').status(); } catch (e) { return { running: false, error: e.message, tabs: [] }; }
