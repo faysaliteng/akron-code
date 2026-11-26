@@ -14,7 +14,7 @@ function layoutsDir() {
 
 function normalizeCwdKey(cwd) {
   const clean = String(cwd || '').trim().replace(/[\\/]+$/, '');
-  const norm = process.platform === 'win32' ? clean.toLowerCase() : clean;
+  const norm = (process.platform === 'win32' || /^[A-Za-z]:/.test(clean)) ? clean.toLowerCase() : clean;
   return crypto.createHash('sha256').update(norm || 'default').digest('hex').slice(0, 16);
 }
 

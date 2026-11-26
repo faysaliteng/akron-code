@@ -1,3 +1,29 @@
+# Akron Code (`v1.0.0`) — Production Release Verification (2026-11-26)
+
+**Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.0.0`)
+
+## Production Gate Summary (Phases 1–7)
+
+| Gate | Command / Platform | Result |
+|---|---|---|
+| Full Unit & Integration Suite | `for f in test/*.test.js; do node "$f"; done` | ✅ **56 / 56 test files passed (0 failures)** |
+| Cross-Platform Audit | `node test/cross-platform-audit.test.js` | ✅ `CROSS_PLATFORM_AUDIT_ALL_PASS` (0 `.map` files, 0 hardcoded user paths, 0 secrets) |
+| Cryptographic Brand Seal | `npm run brand:seal && npm run brand:check && node test/brand-integrity.test.js` | ✅ `BRAND_SEAL_OK 12`, `BRAND_INTEGRITY_ALL_PASS` |
+| Live Electron E2E & UI Screenshots | `npx electron test/live/production-gate-e2e.cjs` | ✅ `PRODUCTION_GATE_E2E_ALL_PASS` (Dark + Light Agent & IDE, Browser Inspect + Exit DOM cleanup verified, Environments, Runtimes & Updates, 0 page errors) |
+| PTY Graceful Quit Regression | `npx electron test/live/pty-quit-no-crash-e2e.cjs` | ✅ `PTY_QUIT_E2E_STARTED python-pty node-pty-worker` (exit 0, 0 crash reports) |
+| Packaged macOS ARM64 Build + Fuses + Codesign | `npm run dist:mac && ./verify-release.sh` | ✅ `VERIFY_RELEASE_DONE` (all 6 Electron Fuses verified, `codesign --verify --deep --strict` OK, 0 `.map` files) |
+| Packaged macOS Cold Boot (Fresh `HOME`) | `HOME=$FRESH_HOME AKRON_COLD_BOOT_CHECK=1 ...` | ✅ `COLD_BOOT_OK {"ok":true,"brandOk":true,"domOk":true,"ipcOk":true,"checkedFiles":15,"consoleErrorCount":0}` |
+| Cross-Built Windows ARM64 NSIS + Fuses + PE Integrity | `npx electron-builder --win nsis --arm64` + `resedit` PE check | ✅ `WIN_FUSES_OK: true` (`ELECTRONASAR` `resources\\app.asar` verified) |
+| Live Parallels Windows 11 VM Verification | `python3 deploy_win11.py` (silent install + launch + screenshot) | ✅ `INSTALL_EXIT=0`, `WIN_RECT=0,0,2560,1434`, `TITLE=Akron Code` (`docs/screenshots/windows11-akron-code.png`) |
+
+### Local Verified Artifact Checksums (`release/SHA256SUMS.txt`)
+
+- `AkronCode-1.0.0-arm64.dmg`: `dfee73bfde1603628e005c9708eba5be0575bfc5398f158bc0b2d348d04eacb1`
+- `AkronCode-1.0.0-arm64.zip`: `453fdbdc06c64f25cac16dc8fa0f7826919a6a1121d68832b2297049cdf79260`
+- `AkronCode-1.0.0-win-setup-arm64.exe`: `26311c05fc6d808c976de7005355d51b1dff71404974bac0f6352c70bd7c78de`
+
+---
+
 # Akron Bot — Feature-Parity Verification Report
 
 **Demand:** "Akron Bot MUST BE 1 TO 1. EXACT SAME FEATURES AS EXAMPLE APP. NOT A SINGLE

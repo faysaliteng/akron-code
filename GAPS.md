@@ -1,3 +1,15 @@
+# Akron Code `v1.0.0` — Resolved Production Gaps (2026-11-26)
+
+All desktop IDE, cross-platform Windows 11, execution environment, dependency/updater, license/brand seal, and security Fuse items from the v1.0.0 production plan are resolved and verified:
+
+- **Built-in Browser Inspect Element & Exit Mode**: Hover highlight box, dimension tooltip, selector/style/PNG capture, **Send to Agent**, `Esc` / **Exit Inspect Mode** complete overlay DOM teardown, and Preview DevTools toggle.
+- **Execution Environments (`This Computer` · `SSH Host` · `Remote Server`)**: Local, `ssh2`, and `akron-remote-server.js` WebSocket/RPC dispatch for FS, Ripgrep, Git, PTY, and Agent tools, with encrypted keychain secret storage (`safeStorage`).
+- **Self-Contained Dependencies & SHA-256 Auto-Updater**: Bundled core stack (`7/7` healthy), optional LSP installers (`~/.autobot/lsp-servers`), and GitHub Releases auto-updater (`electron/updater.js`).
+- **IDE Polish (macOS + Windows)**: OS-aware shortcuts (`src/ide/shortcuts.js`), per-workspace layout persistence (`electron/ide/layout-store.js`), `24px` bottom status bar (`src/ide/IdeStatusBar.jsx`), `@parcel/watcher` + `fs.watch`, `≤16ms` PTY terminal batching + `SearchAddon`/`WebLinksAddon`/`SerializeAddon`, **Agent Changes** per-hunk review (`src/ide/AgentChangesPanel.jsx`), and Command Center (`>` / `@`).
+- **Windows Cross-Build `ELECTRONASAR` Integrity & Signing Status**: Normalized Windows PE `ELECTRONASAR` resource separator (`resources\\app.asar`) in `scripts/harden-fuses.js` so `EnableEmbeddedAsarIntegrityValidation=1` passes on live Windows 11. *Note:* Installers remain unsigned (ad-hoc signed on macOS; no EV Authenticode or Apple Developer ID notarization certificate configured in this environment).
+
+---
+
 # Akron Bot vs Claude Desktop — Final Verified Parity Report
 
 **Date:** 2026-11-25

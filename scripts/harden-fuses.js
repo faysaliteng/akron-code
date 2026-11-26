@@ -1,4 +1,5 @@
 'use strict';
+const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { flipFuses, FuseVersion, FuseV1Options } = require('@electron/fuses');
@@ -17,10 +18,48 @@ function resolveTargetBinary(context) {
   return path.join(appOutDir, exeName);
 }
 
+function normalizeWinAsarIntegrityPath(exePath) {
+  let resedit = null;
+  try {
+    resedit = require('resedit');
+  } catch (_) {
+    return;
+  }
+  const buf = fs.readFileSync(exePath);
+  const exe = resedit.NtExecutable.from(buf);
+  const res = resedit.NtExecutableResource.from(exe);
+  let changed = false;
+  for (const entry of res.entries) {
+    if (entry.type === 'INTEGRITY' && entry.id === 'ELECTRONASAR') {
+      const list = JSON.parse(Buffer.from(entry.bin).toString('utf8'));
+      if (Array.isArray(list)) {
+        for (const item of list) {
+          if (item && typeof item.file === 'string' && item.file.includes('/')) {
+            item.file = item.file.replace(/\//g, '\\');
+            changed = true;
+          }
+        }
+        if (changed) {
+          entry.bin = Buffer.from(JSON.stringify(list));
+        }
+      }
+    }
+  }
+  if (changed) {
+    res.outputResource(exe);
+    fs.writeFileSync(exePath, Buffer.from(exe.generate()));
+    console.log(`[harden-fuses] Normalized ELECTRONASAR PE path separators in ${exePath}`);
+  }
+}
+
 exports.default = async function afterPackHardenFuses(context) {
   const platform = context.electronPlatformName;
   const targetPath = resolveTargetBinary(context);
   console.log(`[harden-fuses] Flipping Electron Fuses on ${platform}: ${targetPath}`);
+
+  if (platform === 'win32') {
+    normalizeWinAsarIntegrityPath(targetPath);
+  }
 
   await flipFuses(targetPath, {
     version: FuseVersion.V1,

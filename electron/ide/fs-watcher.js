@@ -22,10 +22,11 @@ const EXT_LANG = {
 };
 
 function detectLanguage(filePath) {
-  const base = path.basename(String(filePath || '')).toLowerCase();
+  const normalized = String(filePath || '').replace(/\\/g, '/');
+  const base = path.posix.basename(normalized).toLowerCase();
   if (base === 'dockerfile') return 'dockerfile';
   if (base === 'makefile') return 'makefile';
-  const ext = path.extname(base);
+  const ext = path.posix.extname(base);
   return EXT_LANG[ext] || 'plaintext';
 }
 

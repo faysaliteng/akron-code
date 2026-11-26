@@ -1,319 +1,225 @@
-# ⚡ Akron Bot
+<p align="center">
+  <img src="docs/screenshots/logo-mark.svg" width="96" height="96" alt="Akron Code Logo" />
+</p>
 
-**Akron Bot** — a Claude Desktop–compatible desktop AI agent that runs
-on **any free LLM API** (OpenAI-compatible).
+<h1 align="center">Akron Code</h1>
 
-Built by reverse-engineering Claude Desktop (`/Applications/Claude.app`, Electron 45.3.3)
-with REA and reproducing its full feature surface on a pluggable local/remote LLM layer.
+<p align="center">
+  <strong>by Akronlogic.com</strong><br />
+  <em>Autonomous Multi-Agent AI Coding IDE for macOS, Windows 11/10 &amp; Linux</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/faysaliteng/akron-code/releases/latest">
+    <img src="https://img.shields.io/badge/Release-v1.0.0-10b981?style=for-the-badge" alt="Release v1.0.0" />
+  </a>
+  <a href="https://github.com/faysaliteng/akron-code/releases/latest">
+    <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-111827?style=for-the-badge&logo=apple" alt="macOS Apple Silicon" />
+  </a>
+  <a href="https://github.com/faysaliteng/akron-code/releases/latest">
+    <img src="https://img.shields.io/badge/Windows-11%20%7C%2010%20x64%20%26%20ARM64-0078D6?style=for-the-badge&logo=windows" alt="Windows 11 / 10" />
+  </a>
+  <a href="https://github.com/faysaliteng/akron-code/releases/latest">
+    <img src="https://img.shields.io/badge/Linux-AppImage-111827?style=for-the-badge&logo=linux" alt="Linux AppImage" />
+  </a>
+  <a href="./LICENSE.md">
+    <img src="https://img.shields.io/badge/Security-Electron%20Fuses%20Hardened-059669?style=for-the-badge" alt="Electron Fuses Hardened" />
+  </a>
+  <a href="./LICENSE.md">
+    <img src="https://img.shields.io/badge/License-Akron%20Open%20Ecosystem-334155?style=for-the-badge" alt="License" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/faysaliteng/akron-code/releases/latest"><strong>⬇️ Download Latest Release (v1.0.0)</strong></a>
+  ·
+  <a href="#visual-product-gallery">Screenshots</a>
+  ·
+  <a href="#system-architecture">Architecture</a>
+  ·
+  <a href="#keyboard-shortcuts-macos--windows">Shortcuts</a>
+  ·
+  <a href="#open-ecosystem-extensibility">Skills, Plugins &amp; MCP</a>
+</p>
 
 ---
 
-## Features (feature parity with Claude Desktop)
+## Downloads (Official Releases)
 
-| Example feature | Akron Bot equivalent |
-|---|---|
-| Streaming chat w/ markdown + code | ✅ SSE streaming, `marked` + `highlight.js` + DOMPurify |
-| Agent tool loop (full classic surface, **141 tools**) | ✅ built-in function-calling loop with no-tools fallback — the same definitions are translated for Anthropic (`input_schema`), OpenAI/Codex/Grok (`type:function`) and Google (`functionDeclarations`), so any capable model can write code, run a shell and drive the browser |
-| MCP (Model Context Protocol) client | ✅ stdio JSON-RPC MCP client (`initialize` / `tools/list` / `tools/call`); MCP tools + resources auto-exposed to the agent |
-| Sub-agents (`Task` / `Agent`) | ✅ parallel recursive sub-agents + `TaskStop` / `ListAgents` |
-| Interactive questions (`AskUserQuestion`) | ✅ paused-agent UI round-trip with options + 5-min auto-resolve |
-| Plan mode (`ExitPlanMode`) | ✅ agent pauses for user approval of the plan |
-| Artifacts panel | ✅ auto-extracts code blocks + explicit `Artifact` tool → tabbed viewer |
-| Long-term memory | ✅ persistent memory (`.auto-memory`) injected into prompts, list/add/clear |
-| Skills registry | ✅ built-in + custom `.md` skills, loaded by the `Skill` tool |
-| Notebooks (`NotebookRead` / `NotebookEdit`) | ✅ Notebooks panel + cell editor |
-| Terminal / shells (`KillShell` + `mcp__terminal__*`) | ✅ persistent multi-tab shell manager + Terminal view |
-| Code execution (`REPL`, `JavaScript`, `Bash`, `Cd`) | ✅ js/python/bash via local runtime; mutable cwd |
-| Provider config | ✅ OpenAI-compatible presets: Ollama, LM Studio, Groq, OpenRouter, OpenAI, Custom |
-| **Orchestrator Mode** | ✅ multi-provider/key failover — auto-switches to the next model on rate-limit / limit-reached |
-| **Feature toggles** | ✅ Computer Use, Chrome (CDP), and bot-bridge local equivalents (config-gated) |
-| Conversation persistence | ✅ `localStorage` (conversations, provider, settings, orchestrator, features) |
-| Integrations (`Jira`, `Linear`) | ✅ config-gated via env vars |
-| Slash commands | ✅ `/help /clear /compact /model /review /memory /reset /status` |
-| Context handling | ✅ **per-model** context window resolved from the provider's live catalog (`16K`–`1M`), shown in the model picker, auto-compact at 90 % of the window, and a single oversized message is trimmed head+tail (or chunked) instead of failing — see [Context windows & auto-compact](#context-windows--auto-compact) |
+All official desktop installers are built automatically via GitHub Actions (`macos-latest`, `windows-latest`, `ubuntu-latest`), hardened with Electron Fuses + cryptographic Brand Seal verification, and published with `SHA256SUMS.txt` on the [**GitHub Releases Page**](https://github.com/faysaliteng/akron-code/releases/latest).
 
-Full reverse-engineering report + feature map: [`FEATURES.md`](FEATURES.md).
+| Platform | Artifact | Notes |
+|---|---|---|
+| **macOS (Apple Silicon)** | `AkronCode-1.0.0-arm64.dmg` · `AkronCode-1.0.0-arm64.zip` | Ad-hoc signed, `RunAsNode=false` Fuse, ASAR integrity validated |
+| **Windows 11 / 10 (x64 & ARM64)** | `AkronCode-1.0.0-win-setup-x64.exe` · `AkronCode-1.0.0-win-setup-arm64.exe` | Native Windows titlebar overlay (`Ctrl+` shortcuts), ConPTY `node-pty` |
+| **Windows Portable (x64)** | `AkronCode-1.0.0-win-portable-x64.exe` | Zero-install portable executable |
+| **Linux (x64)** | `AkronCode-1.0.0.AppImage` | Single-file executable (`npmRebuild: false`, ASAR hardened) |
 
 ---
 
-## Run it
+## Executive Overview
+
+**Akron Code** unifies an autonomous multi-agent coding harness, a complete built-in IDE, remote execution environments, live browser element inspection, multi-provider LLM routing, and binary reverse-engineering tooling inside a single offline-capable desktop application:
+
+- **Autonomous Agent & Swarm Harness**: Concurrent worker pools with dependency-aware DAG task scheduling (`Task` / `Agent` / Swarm Coordinator), real-time Mission Control board, interactive Pause/Resume & steering notes, live animated tool cards, and transactional file checkpoints with instant rewind.
+- **Built-in Full IDE Workbench**: Bundled **Monaco Editor** (`⌘K` / `Ctrl+K` streaming inline diff + Tab Ghost Text autocomplete + per-hunk Accept/Reject review), **`@xterm/xterm`** PTY terminal (`≤16ms` frame batching, `SearchAddon`, `WebLinksAddon`, `SerializeAddon` session persistence), **`@vscode/ripgrep`** global search & replace, **`@parcel/watcher`** workspace filesystem watcher, Git Source Control + Worktrees + **Agent Changes** review panel, Pluggable JSON-RPC LSP diagnostics, Command Center (`⌘P` / `Ctrl+P`, `>` commands, `@` symbols), per-workspace layout persistence, and a `24px` interactive status bar.
+- **Execution Environments (`This Computer` · `SSH Host` · `Remote Server`)**: Seamlessly switch workspaces across local machine, `~/.ssh/config` SSH hosts (`ssh2`), or remote `akron-remote-server.js` hosts (WebSocket PTY + JSON-RPC FS/Search/Git), with all SSH passwords, key passphrases, and pairing tokens encrypted in the OS keychain (`safeStorage`).
+- **Built-in Browser + Inspect Element + Akron Browser Bot**: Embedded Chromium preview pane with **Inspect Element Mode** (hover bounding-box + dimensions overlay, click-to-capture selector, computed styles, cropped PNG screenshot, one-click **Send to Agent**, and clean `Esc` / **Exit Inspect Mode** DOM teardown), Preview DevTools toggle, plus the external Chrome/Brave **Akron Browser Bot** MV3 extension bridged over `127.0.0.1:8766`.
+- **Multi-Provider LLM Router & FreeLLM Pool**: Connect Anthropic Claude, OpenAI Codex/ChatGPT, Google Antigravity, xAI Grok, DeepSeek, Groq, Cerebras, OpenRouter, Ollama, or the built-in **FreeLLMAPI Unified Pool** with role-based failover across Planner, Coder, Vision, Fast, and Long-Context pools.
+- **Built-in 263-Tool Reverse Engineering (REA)**: Bundled `rea` MCP integration ready non-blockingly for native, `.NET`, Android, Electron, and browser reverse engineering alongside full MCP (`stdio` / `SSE` / `HTTP`) and 1-click plugin/skill discovery.
+- **Self-Contained & Auto-Updating**: Ships with healthy offline core dependencies (`7/7`), optional LSP auto-installer, and GitHub Releases auto-updater with streaming SHA-256 verification.
+
+---
+
+## Visual Product Gallery
+
+### 1. Autonomous Agent Workspace (Dark)
+Streamed reasoning, real-time tool execution cards, active environment switcher, model attribution (`worked for Xs`), and token context meter.
+
+![Akron Code Agent Workspace Dark](docs/screenshots/agent-dark.png)
+
+### 2. Built-in Full IDE Workbench (Dark & Light)
+Monaco Editor with inline diagnostics and diff review, `@vscode/ripgrep` search, Git & Agent Changes sidebars, persistent `zsh` / PowerShell PTY terminal, Agent Dock (`@file`, `Cursor`, `Problems`), and the `24px` bottom status bar.
+
+![Akron Code IDE Workbench Dark](docs/screenshots/ide-dark.png)
+
+![Akron Code IDE Workbench Light](docs/screenshots/ide-light.png)
+
+### 3. Built-in Browser: Inspect Element Mode & Element Capture
+Hover highlights any DOM element with dimensions, click captures selector + computed styles + cropped element PNG for one-click **Send to Agent**, and **Exit Inspect Mode** (`Esc`) cleanly strips all injected overlays.
+
+![Built-in Browser Inspect Mode](docs/screenshots/browser-inspect.png)
+
+### 4. Execution Environments (`This Computer` · `SSH Host` · `Remote Server`)
+Connect to SSH targets or remote workspace servers with OS keychain credential storage (`safeStorage`).
+
+![Execution Environments Settings](docs/screenshots/environments.png)
+
+### 5. Self-Contained Runtimes, LSP Installers & Auto-Updater
+Zero external setup required for core IDE dependencies (`7/7 bundled`), plus one-click GitHub Releases updates with SHA-256 checksum validation.
+
+![Runtimes & Updates Settings](docs/screenshots/runtimes-updates.png)
+
+### 6. Native Windows 11 Verification
+Tested end-to-end on live Windows 11 ARM64 via NSIS silent installer (`AkronCode-1.0.0-win-setup-arm64.exe`), native `titleBarOverlay`, Windows `Ctrl+` shortcut labels, and hardened Electron Fuses + PE `ELECTRONASAR` integrity validation.
+
+![Akron Code Running Natively on Windows 11](docs/screenshots/windows11-akron-code.png)
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart TD
+  UI["Akron Code Desktop UI (React 18 · Monaco · xterm.js)"] --> Preload["Preload Bridge (contextIsolation: true)"]
+  Preload --> Main["Electron Main Process & Agent Harness"]
+
+  Main --> Brand["Brand Guard & Seal Check (SHA-256 Assets + DOM Verify)"]
+  Main --> Envs["Environment Router (Local · SSH2 · Remote WS)"]
+  Main --> IDE["Built-in IDE Services (Watcher · Ripgrep · Git · LSP · PTY Worker)"]
+  Main --> Router["Multi-Provider LLM & FreeLLM Pool Router"]
+  Main --> Tools["Agent Tool Loop (FS · Bash · Browser · Checkpoints · Custom Tools)"]
+  Main --> Ext["MCP Client (stdio/SSE/HTTP · Built-in 263-tool REA · Plugins · Skills)"]
+  Main --> Bridge["Akron Browser Bot Bridge (:8766 MV3 Extension)"]
+```
+
+### Agent Execution & Environment Dispatch Flow
+
+```mermaid
+sequenceDiagram
+  participant U as "Developer"
+  participant R as "Renderer (Agent / IDE)"
+  participant M as "Electron Main"
+  participant E as "Environment (Local / SSH / Remote)"
+  participant L as "LLM / FreeLLM Pool"
+
+  U->>R: "Prompt / @file / Inspect Capture / Cmd+K"
+  R->>M: "IPC autobot:run (cwd, editorContext, attachments)"
+  M->>L: "Stream completion + tool schemas (failover pools)"
+  L-->>M: "Reasoning + streaming tool call chunks"
+  M-->>R: "Live tool card + stream deltas (throttled ~150ms)"
+  M->>E: "Execute Read/Write/Edit/Bash/PTY/Git via active Environment"
+  E-->>M: "Tool output + disk watcher refresh"
+  M-->>R: "Completion + model badge + worked duration"
+```
+
+---
+
+## Installation & Quick Start
+
+### End Users (Prebuilt Installers)
+
+1. Download the installer for your OS from [**Releases**](https://github.com/faysaliteng/akron-code/releases/latest).
+2. **macOS**: Open `AkronCode-1.0.0-arm64.dmg` and drag **Akron Code.app** into `/Applications` (or unzip `AkronCode-1.0.0-arm64.zip`).
+3. **Windows**: Run `AkronCode-1.0.0-win-setup-x64.exe` (x64) or `AkronCode-1.0.0-win-setup-arm64.exe` (ARM64), or launch `AkronCode-1.0.0-win-portable-x64.exe`.
+4. **Linux**: `chmod +x AkronCode-1.0.0.AppImage && ./AkronCode-1.0.0.AppImage`.
+
+### Remote Execution Host (`akron-remote-server.js`)
+
+Run a headless workspace host on any remote Linux/macOS/Windows server and pair it from **Settings → Environments → Remote Servers**:
 
 ```bash
-cd autobot
+node scripts/akron-remote-server.js --port 8770 --workspace /path/to/repo
+```
+
+### Build & Run from Source (Development)
+
+```bash
+git clone https://github.com/faysaliteng/akron-code.git
+cd akron-code
 npm install
 npm run build
 npm start
 ```
 
-First run: open **⚙️ Settings** and pick a provider preset (or paste your own
-OpenAI-compatible base URL + key), then **Test connection**.
-
-### Free LLM presets
-
-| Preset | Base URL | Needs key |
-|---|---|---|
-| FreeLLMAPI (local router) | `http://localhost:3001/v1` | no |
-| Ollama (local) | `http://localhost:11434/v1` | no |
-| LM Studio (local) | `http://localhost:1234/v1` | no |
-| Groq (free tier) | `https://api.groq.com/openai/v1` | yes |
-| OpenRouter (free models) | `https://openrouter.ai/api/v1` | yes |
-
-### FreeLLMAPI — seven free providers, one endpoint
-
-`localhost:3001/v1` is an OpenAI-compatible **router** that ships with the app and
-starts automatically. It fans one model string out to Groq, Google Gemini,
-Cloudflare Workers AI, NVIDIA NIM, Cohere (trial), Kilo and OpenRouter, and
-falls through to the next provider on 429 / 5xx / network error **before the
-first stream byte** — so a dead free tier never kills a turn.
+Verify brand seal integrity and run tests:
 
 ```bash
-# address a provider explicitly…
-curl -s localhost:3001/v1/chat/completions -H 'content-type: application/json' \
-  -d '{"model":"groq/llama-3.3-70b-versatile","messages":[{"role":"user","content":"hi"}]}'
-# …or let the router pick (auto | free | fast | smart)
-curl -s localhost:3001/v1/chat/completions -H 'content-type: application/json' \
-  -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'
-curl -s localhost:3001/v1/models     # merged catalogue, ~1000 ids
-curl -s localhost:3001/health        # per-provider readiness, keys redacted
+npm run brand:check
+for f in test/*.test.js; do node "$f" || exit 1; done
 ```
 
-Keys live in `~/.autobot/freellm.json` (mode `0600`) and are **never** committed —
-the repo ships `electron/freellm-config.example.json` with placeholders only.
-Run it headless with `npm run freellm`. Responses carry `x-freellm-provider` and
-`x-freellm-attempts` so you can see who answered.
+Package installers locally:
 
-### Subscription providers — sign in, don't paste
-
-Four subscription providers are first-class. Open the model menu (or **⌘K**) and
-pick the provider card; **Sign in** opens the vendor's own page in your default
-browser and catches the redirect on a loopback port. Nothing is sent to a server
-of ours — the token exchange goes straight from this machine to the vendor.
-
-| Provider | Transport | What you need | How it authenticates |
-|---|---|---|---|
-| **Claude** | `anthropic` | A Claude Pro/Max subscription | OAuth (PKCE) against `platform.claude.com/oauth/authorize` with the Claude Code CLI's own client id and 8-scope set, token exchange at `platform.claude.com/v1/oauth/token` (JSON body, no `client_secret`). The loopback callback port is **ephemeral** — the CLI passes `{port: 0}` and the listener binds `127.0.0.1` *and* `::1` on the same port, so `localhost` works on both families. If the browser cannot reach the listener, the **Paste code** path uses `platform.claude.com/oauth/code/callback` as the redirect and accepts the code shown (`code#state` or a pasted redirect URL). If the **Claude Code CLI** is already signed in on this machine, **Import** adopts the keychain item `Claude Code-credentials` with no browser round-trip (and writes rotated tokens back, so the CLI stays signed in). |
-| **ChatGPT** | `codex` | A ChatGPT Plus/Pro plan | OAuth against `auth.openai.com`, loopback port **1455**, scopes `openid profile email offline_access api.connectors.*`. The public Codex CLI client id is used, so the vendor sees the same client as `codex login`. |
-| **Grok** | `grok` | An X Premium / SuperGrok plan | OAuth against `auth.x.ai` (`openid-configuration`), userinfo at `/oauth2/userinfo`. Inference goes through the first-party CLI proxy `cli-chat-proxy.grok.com/v1` — an OAuth token is **not** an xAI API key and `api.x.ai` rejects it. |
-| **Google Antigravity** | `google` | A personal Google account with Antigravity access | Google OAuth (installed-app client, loopback), then Cloud Code at `daily-cloudcode-pa.googleapis.com/v1internal` (`fetchAvailableModels`, `streamGenerateContent?alt=sse`). The generic Gemini-CLI host answers 403 for this grant. |
-
-Two fallbacks exist for when sign-in is not possible:
-
-- **Import** scans this machine and reads an existing credential
-  (`~/.claude/.credentials.json` or the macOS keychain item
-  `Claude Code-credentials`, `~/.codex/auth.json`, …) and stores it encrypted.
-- **Add key** stores a plain bearer token. For Grok a real `x.ai` API key is also
-  a valid path (`api.x.ai/v1`), billed as API usage instead of against the plan.
-
-Tokens are encrypted with Electron `safeStorage` in `~/.autobot/secrets.json`
-(mode `0600`) and are separate from every other credential file this project
-touches. An access token whose stated `expiresAt` has passed is still tried once
-before the app asks you to sign in again — vendors frequently serve a token past
-its advertised lifetime, and a 200 is a better oracle than a timestamp.
-
-### Tool toggles
-
-The agent exposes the complete classic Claude Code tool surface (141 total definitions)
-to the model: `Bash, Edit, Write, Read, Glob, Grep, WebSearch, WebFetch, Task, Agent,
-TodoWrite, NotebookEdit, NotebookRead, AskUserQuestion, KillShell, SlashCommand, Skill,
-ExitPlanMode, MultiEdit, REPL, JavaScript, Cd, ListMcpResources, ReadMcpResource,
-TaskStop, ListAgents, SendUserMessage, SetGoal, ToolSearch, Artifact, Jira, Linear`
-— plus virtual built-in MCP namespaces (`mcp__workspace__*`, `mcp__terminal__*`,
-`mcp__memory__*`, `mcp__skills__*`, `mcp__secrets__*`) and any connected MCP server's
-tools (namespaced `mcp__<server>__<tool>`).
-
-### 🧭 Role pools (job-based routing for free gateways)
-
-When the session provider is the FreeLLMAPI router, every job gets its own
-ordered model pool that fails over **downward** (Settings → Role pools →
-*Load FreeLLMAPI preset*; stored as `pools` in `~/.autobot/orchestrator.json`):
-
-| Job | Used by | Default pool (`model @maxConcurrent`) |
-|---|---|---|
-| Planner / Reasoner | swarm supervisor (plan + read-only review), `opus` agents | `gpt-5.6-luna @1` → `glm-5.3 @1` → `nemotron-3-ultra-550b-a55b @2` |
-| Implementer / Coder | main turn, swarm workers, `Task` sub-agents (N in parallel) | `qwen3.8-flash @1` → `qwen3-coder-30b-a3b-instruct @1` → `mistral-devstral-2512 @1` → `qwen3.8-27b @3` → `nemotron-3-ultra-550b-a55b @2` → `gpt-oss-120b @3` → `kilo-auto @2` |
-| Vision | turns whose last message carries images | `qwen3.8-flash` → `qwen3.8-27b` → `glm-4.6v-flash` → `gemini-3.8-flash` |
-| Fast | `small` tier, `haiku`/Explore agents | `qwen3.8-27b` → `gpt-oss-120b` → `glm-4.7-flash` → `kilo-auto` |
-| Long context | history larger than the head model's window | `gpt-5.6-luna` → `qwen3.8-flash` → `minimax-m3` → `deepseek-v4-flash` |
-
-`electron/provider-gate.js` is shared by every agent in the process: a row that
-answers 429 is cooled for everyone until the router's `retryAtMs` / "reset ~Ns",
-a row that 404s or "lacks tool-calling" is skipped for the session, and
-`@maxConcurrent` makes parallel workers spread down the pool instead of queuing
-on ElectronHub's shared credits. Workers and sub-agents advertise a lean coding
-tool surface (~2k tokens instead of ~15k for all 141 tools — the rest stay
-callable through `ToolSearch`), which keeps Groq's per-minute token budget
-usable. Subscription sessions (Claude / ChatGPT / Gemini) ignore pools and use
-the classic orchestrator list.
-
-### 🔄 Orchestrator Mode (multi-key failover)
-
-Add **100+ API keys** in **⚙️ Settings → Orchestrator Mode** and toggle it on. When a
-provider returns a rate-limit / quota / "limit reached" error (HTTP 429, `quota`,
-`insufficient_quota`, billing/capacity/throttle messages), Akron Bot automatically fails
-over to the **next** provider+model in your list — without interrupting the stream. You
-select which models participate (each row = name + base URL + key + model) and which one
-starts first (radio `#1`, `#2`, …). Failover events are shown in-chat as
-`🔄 orchestrator: model A → model B`.
-
-### 🚀 Feature toggles (local equivalents of server-side features)
-
-| Server-side feature | Local equivalent (config-gated in Settings) |
-|---|---|
-| `mcp__computer__*` (Computer Use) | macOS screen capture + `osascript` System Events mouse/keyboard — gated by **Computer Use** toggle |
-| Chrome control (CDP) | `ws`-based CDP client (`chrome.js`) — connect to `--remote-debugging-port=9222`, gated by **Chrome** toggle (host/port configurable) |
-| `mcp__cowork__*` / `mcp__ccd_*` | cowork orchestration + cloud-continuity-drain registry (`cowork.js`) |
-| Bot bridges (`hearthbot`/`slackbot`/`teamsbot`/`webagent`) | local HTTP webhook bridge server (`cowork.js`) — gated by **Bot bridges** toggle |
-| `mcp__visualize__visualize` | built-in SVG chart renderer (`visualize.js`) |
+```bash
+npm run dist:mac     # macOS .dmg + .zip
+npm run dist:win     # Windows NSIS setup + portable .exe
+```
 
 ---
 
-## Architecture
+## Keyboard Shortcuts (macOS & Windows)
 
-```
-autobot/
-├── electron/          # Electron main process (CommonJS)
-│   ├── main.js        # window + IPC handlers + agent orchestration + feature gates
-│   ├── preload.js     # contextBridge (window.autobot.*)
-│   ├── llm.js         # OpenAI /v1/chat/completions SSE + function-calling loop + orchestrator failover
-│   ├── tools.js       # built-in tools (executors + schemas) + virtual MCP namespaces
-│   ├── mcp.js         # stdio MCP client
-│   ├── visualize.js   # SVG chart renderer (mcp__visualize__visualize)
-│   ├── computer.js    # macOS screen + input control (Computer Use, gated)
-│   ├── chrome.js      # Chrome CDP client (gated)
-│   ├── cowork.js      # cowork orchestration + CCD + bot-bridge webhook server
-│   └── store.js       # memory / settings / skills / orchestrator / features persistence (~/.autobot)
-├── src/               # React renderer (Vite)
-│   ├── main.jsx
-│   ├── App.jsx
-│   └── styles.css
-├── index.html         # CSP (allows local http/https/ws for LLM endpoints)
-└── package.json
-```
-
-Runtime data lives in `~/.autobot/` (`memory.json`, `settings.json`, `skills/`,
-`orchestrator.json`, `features.json`).
-
-### Bundled CLI runtimes
-
-The DMG ships the three subscription CLIs it drives, so a fresh install works
-offline-with-respect-to-downloads (nothing to `npm i -g`):
-
-| runtime | upstream | check |
+| Action | macOS | Windows / Linux |
 |---|---|---|
-| `claude-code` | npm `@anthropic-ai/claude-code-<platform>` (`dist.integrity` sha512) | `claude --version` |
-| `codex` | npm `@openai/codex` | `codex --version` |
-| `grok` | pointer `https://x.ai/cli/stable` → `https://x.ai/cli/grok-<ver>-<platform>` (no upstream checksum) | `grok --version` |
+| Quick Open File / Command Center (`>` cmd, `@` sym) | `⌘P` | `Ctrl+P` |
+| Inline AI Code Edit | `⌘K` | `Ctrl+K` |
+| Accept Inline AI Edit | `⌘⏎` | `Ctrl+Enter` |
+| Project Search & Replace (`@vscode/ripgrep`) | `⇧⌘F` | `Ctrl+Shift+F` |
+| Go to Symbol in Editor | `⇧⌘O` | `Ctrl+Shift+O` |
+| Toggle Terminal / Problems Drawer | `⌘J` | `Ctrl+J` |
+| Find in Terminal / Chat | `⌘F` | `Ctrl+F` |
+| Toggle Sidebar / Akron Agent Dock | `⌘B` | `Ctrl+B` |
+| Save Active File | `⌘S` | `Ctrl+S` |
+| Open Settings | `⌘,` | `Ctrl+,` |
+| Exit Browser Inspect Element Mode | `Esc` | `Esc` |
 
-They live in `vendor/runtimes/<id>/` at build time and are copied to
-`Contents/Resources/runtimes/` by `extraResources`. At run time
-`electron/runtimes.js` resolves `userData/runtimes/<id>/current` → bundled →
-`PATH`, downloads over HTTPS with a host allowlist, sha512-verifies when the
-vendor publishes one, `--version`-smoke-tests the staged binary, then atomically
-swaps the `current` symlink (keeping the previous two versions for `rollback()`).
-A deferred `updateAll()` ~20 s after boot refreshes anything the vendor moved.
+---
 
-```bash
-npm run vendor:runtimes:check   # what is vendored today
-npm run vendor:runtimes:sync    # --download --stale: refresh only if upstream moved
-npm run dist                    # predist runs the same sync, then builds dmg+zip
-```
+## Open Ecosystem Extensibility
 
-`--stale` exists because a vendored tree is otherwise trusted forever. A stale
-CLI is not a cosmetic problem: Anthropic gates **per-model** on the CLI version
-in the `user-agent`, so an old bundled binary makes the newest models answer
-`400 "Claude Code 2.1.154 does not support this model; version 2.1.290 or newer
-is required"`. For that reason `electron/providertransport.js` never hardcodes
-the fingerprint — `setClientVersions()` is refreshed from `runtimes.list()` at
-boot, after the deferred update, and after every `autobot:runtimesUpdate`.
+Akron Code keeps its extension ecosystem **100% open**:
 
-Use `--dry-run` to see the vendoring decision without downloading anything:
+- **Skills** (`~/.autobot/skills` / `~/.claude/skills`): Drop Markdown skill definitions or import them from **Settings → Skills & Plugins**.
+- **Plugins & MCP Connectors**: Connect any `stdio`, `SSE`, or streamable `HTTP` MCP server in `.mcp.json` or **Settings → MCP Connectors**.
+- **Custom Tools (`CreateCustomTool`)**: Ask the agent to build and activate custom workspace tools at runtime under **Harness & Custom Tools**.
+- **Remote Adapters**: Connect SSH hosts or custom remote endpoints using **Settings → Environments**.
 
-```text
-$ node scripts/vendor-runtimes.js --download --stale --id grok --dry-run
-  grok         0.2.2 → 1.0.92  (upstream is newer) [dry-run]
+---
 
-dry-run: nothing was downloaded.
-```
+## Security Hardening, Brand Integrity & License
 
-An offline or failed metadata lookup keeps the existing copy and never fails a
-build (`predist` falls back to plain local vendoring).
-
-### Context windows & auto-compact
-
-The Claude app compacts when the **model's own** window is nearly full. Akron Bot
-does the same, and the window is data, not a constant:
-
-| Resolution order | Source |
-|---|---|
-| 1 | live provider catalog (`/models` on Claude, `:fetchAvailableModels` on Antigravity, `/v1/models` on Grok, Codex) |
-| 2 | explicit `contextWindow` on the registry entry |
-| 3 | documented defaults in `electron/model-catalog.js` → `RULES` |
-
-`electron/main.js` warms every signed-in account's catalog 3 s after boot,
-again after a sign-in and again after a credential import, so a prompt typed in
-the first seconds after launch is already measured against the real window. The
-picker shows the resolved window (`16K`, `66K`, `200K`, `256K`, `400K`, `1M`), and
-`budgetForModel()` turns it into characters at 3.4 chars/token with an output and
-prompt reserve; compaction triggers at 90 % of that budget.
-
-Three distinct paths keep a turn from stalling:
-
-1. **Conversation too big** → earlier turns leave the working set and a one-line
-   prose notice says so (the chat history and project files are untouched).
-2. **One message too big** → `sanitizeHistory()` trims its middle (≥500 head and
-   ≥700 tail chars kept, the latest request always survives) around a visible
-   marker; `compactTo` / `shrinkLargest` fall back to 40 % head + 40 % tail.
-3. **Still bigger than what one request can carry** → `chunkText()` splits the
-   message into sequential sub-runs and the reply is stitched back.
-
-A provider's *"prompt is too long / context length exceeded"* response is
-classified as **non-transient** (`isContextOverflow`), so it never enters the
-429 backoff ladder; the loop compacts and retries immediately. Raw vendor
-wording never reaches the UI — the user sees prose.
-
-Live proof (`build/probe-compact2.cjs`, 30 000-char prompt at a 16K model):
-
-```
-pass: true · gotToken: true · liveNotices: [ "This message was longer than
-tab_flash_lite_preview's 16K context window, so its middle was trimmed — the
-beginning and your latest request were kept, and the full text stays in the chat." ]
-noticeIsProse: true · claimsZeroTurns: false · rawLimitLeak: false
-```
-
-### What is verified live, and what is not
-
-Honesty over a green table — these are the only claims backed by a probe run on
-this machine:
-
-| Claim | Evidence |
-|---|---|
-| Code + shell + browser, antigravity `gemini-3-flash` | `build/probe-capability.cjs` **pass** — `Writing:toolcap.txt`, `Running:cat toolcap.txt` → `RUN=TOOLCAP-OK`, `Browsing:https://example.com` → `Example Domain` |
-| Code + shell + browser, claude `claude-opus-4-5` | passed earlier on 2026-11-25; re-runs are blocked by the account's rate limit (`429` straight from `api.anthropic.com`) |
-| Computer Use (PC control), antigravity | `build/probe-computer.cjs` **pass** — one consent prompt, `SCREEN=1280x832` |
-| Logo animates only while working | `build/probe-logo.cjs` — 62 streaming samples on `logo-spin` / `logo-pulse`, `anim: none` when idle |
-| Auto-compact + oversized-message trim | `build/probe-compact2.cjs` **pass** (§ above) + `test/llm-context.test.js` 6/0 |
-| Grok / ChatGPT turns | **not** verified: Grok's weekly pool is spent until 2026-12-01; there is no ChatGPT account on the build machine. Their OAuth configs are vendor-validated (`build/probe-authurls.cjs`, 15/15) but no turn has completed |
-
-`GAPS.md` tracks the same list with the exact blockers.
-
-### Skill library export / import
-
-`python3 scripts/export-skills.py` writes every installed skill (bundled +
-`~/.config/opencode/skill` + `~/.claude/skills`) to `~/Example Skills/` as one
-self-contained `.md` per skill — original frontmatter, body, and any bundled
-scripts/references inlined in an appendix — plus an `INDEX.md`. To bring a file
-back in, use **Skills panel → Upload .md**, or drop it in `~/.autobot/skills/`
-(flat `.md` files are discovered directly).
-
-
-## Enterprise UI, Code Review, Voice & Browser Extension
-
-- **Live Step Checklists & Checkpoints**: Active runs stream an inline step progress card (`TodoWrite` or live milestones), live `checkpoint` notifications, and a `Files changed` summary bar with 1-click **Review** and **Rewind** actions.
-- **Side-Pane Code Review**: Inspect line-numbered file diffs (`For Turn` vs `All Changes`), search across hunks (`Aa` / `.*`), expand context blocks, hover `+` to add inline review comments (with built-in Whisper voice typing), and send all comments back to the active agent.
-- **Built-In Voice Dictation**: Offline ONNX Whisper (`public/whisper/whisper-worker.js`) plus fast gateway Whisper fallback is wired directly into the Composer and Code Review comment boxes.
-- **Zero-Key External Browser Control (`Akron Browser Bot`)**: Load `resources/akron-browser-bot` as an unpacked Chrome extension (`chrome://extensions`). It connects to `ws://127.0.0.1:8766` automatically, shares all configured Desktop models at `http://127.0.0.1:8766/v1` with zero extra API keys, and lets Desktop agents drive live browser tabs via `ext_browser`.
-
-## Building Installers (macOS & Windows)
-
-- **macOS (`.dmg` + `.zip`)**: `npm run dist:mac` (outputs to `release/AkronBot-1.0.0-arm64.dmg`)
-- **Windows (`NSIS .exe` + `Portable .exe`)**: `npm run dist:win` (or triggered automatically on every push/tag via [build-desktop.yml](.github/workflows/build-desktop.yml)).
+- **Electron Fuses Hardened in Production**: `RunAsNode=false`, `EnableNodeOptionsEnvironmentVariable=false`, `EnableNodeCliInspectArguments=false`, `OnlyLoadAppFromAsar=true`, `EnableCookieEncryption=true`, and `EnableEmbeddedAsarIntegrityValidation=true` (verified on both macOS Apple Silicon and Windows `ELECTRONASAR` PE resources).
+- **Zero Source Maps in Release**: `vite.config.mjs` sets `sourcemap: false` and build verification enforces zero `.map` files in `dist/` and `app.asar`.
+- **Encrypted Credential Storage**: API keys, OAuth tokens, SSH credentials, and remote pairing tokens are stored exclusively via `electron/secretstore.js` (`safeStorage`).
+- **License & Trademarks**: Source-available with an open ecosystem grant for Skills, Plugins, Extensions, MCP servers, and Custom Tools, while protecting **Akron Code**, **Akron Browser Bot**, **AkronLogic / akronlogic.com**, and emerald sunburst logos against removal or white-labeling. See [LICENSE.md](./LICENSE.md) and [TRADEMARKS.md](./TRADEMARKS.md).
