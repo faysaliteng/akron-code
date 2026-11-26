@@ -26,6 +26,7 @@ import { shortcutLabels } from './ide/shortcuts';
 import { Icon, iconChar, GoogleDriveIcon } from './components/Icon.jsx';
 import { QuestionModal, ComputerUseModal, CommandPalette, FindBar, GoogleDriveModal } from './features/AppModals.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from './features/WorkspacePanels.jsx';
+import { MissionControlPane } from './components/MissionControlPane.jsx';
 
 // Icon, iconChar, GoogleDriveIcon imported from ./components/Icon.jsx
 
@@ -218,7 +219,9 @@ function fmtSize(bytes) {
 function renderMarkdown(md) {
   let html;
   try { html = marked.parse(stripToolProtocol(md)); } catch { html = escapeHtml(stripToolProtocol(md)); }
-  return DOMPurify.sanitize(html);
+  return DOMPurify.sanitize(html, {
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|ftp|file|session):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
+  });
 }
 
 // ---------- Link unfurl (Claude Desktop og / twitter / xlink parity) ----------
@@ -817,6 +820,8 @@ export default function App() {
   const [permissionQueue, setPermissionQueue] = useState([]); // FIFO pending permission prompts
   const [permError, setPermError] = useState('');
   const [permSubmitting, setPermSubmitting] = useState(false);
+  const [sessionHealthMap, setSessionHealthMap] = useState({});
+  const [searchTab, setSearchTab] = useState('search'); // 'search' | 'ask'
   const waitingPermissionConvIds = useMemo(
     () => new Set(permissionQueue.map((p) => p.convId).filter(Boolean)),
     [permissionQueue]
@@ -1149,6 +1154,42 @@ export default function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [workbenchMode]);
+
+  const openSessionDeepLink = useCallback((uri) => {
+    const raw = String(uri || '').trim();
+    const m = /^session:\/\/([^?/#]+)(?:\?(.*))?$/i.exec(raw);
+    if (!m) return false;
+    const convId = decodeURIComponent(m[1]);
+    const params = new URLSearchParams(m[2] || '');
+    const focus = params.get('focus') || '';
+    const targetConv = convs.find((c) => c.id === convId);
+    if (targetConv) {
+      setActiveId(convId);
+      setPanel('chats');
+      if (focus) {
+        const msgs = targetConv.messages || [];
+        const matchMsg = msgs.find((msg) => msg.id === focus) || msgs[msgs.length - 1];
+        if (matchMsg && matchMsg.id) setPendingScroll(matchMsg.id);
+      }
+      setNotice(`Jumped to session ${targetConv.title || convId}${focus ? ` · step ${focus}` : ''}`);
+      return true;
+    }
+    return false;
+  }, [convs]);
+
+  useEffect(() => {
+    const onLinkClick = (e) => {
+      const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+      if (!a) return;
+      const href = a.getAttribute('href') || '';
+      if (href.startsWith('session://')) {
+        e.preventDefault();
+        openSessionDeepLink(href);
+      }
+    };
+    document.addEventListener('click', onLinkClick);
+    return () => document.removeEventListener('click', onLinkClick);
+  }, [openSessionDeepLink]);
 
   // subscribe to events
   const openPreview = useCallback((url) => {
@@ -2990,6 +3031,17 @@ export default function App() {
         note('Opened **Scheduled** — create, edit, or pause recurring runs here.');
         break;
       }
+      case 'mission': {
+        setPanel('mission');
+        note('Opened **Mission Control** — live zero-token session health monitor across workspaces.');
+        break;
+      }
+      case 'ask-history': {
+        setSearchTab('ask');
+        setPanel('search');
+        note('Opened **Ask History** — ask natural-language questions across indexed past sessions.');
+        break;
+      }
       case 'workflows': {
         setPanel('scheduled');
         note('**Workflows** — dynamic multi-step runs live under **Scheduled**. Completed and running workflow history is listed there.');
@@ -3427,7 +3479,8 @@ export default function App() {
 
             <div className="section-label">Workspace</div>
             <nav className="sidenav">
-              <button className={panel === 'search' ? 'on' : ''} onClick={() => setPanel('search')} title="Search conversations"><Icon name="Search" size={15} /><span className="label">Search</span><span className="kbd-hint">{modShift}F</span></button>
+              <button className={panel === 'search' ? 'on' : ''} onClick={() => { setSearchTab('search'); setPanel('search'); }} title="Search & Ask History"><Icon name="Search" size={15} /><span className="label">Search</span><span className="kbd-hint">{modShift}F</span></button>
+              <button className={panel === 'mission' ? 'on' : ''} onClick={() => setPanel('mission')} title="Mission Control (live session health)"><Icon name="Grid" size={15} /><span className="label">Mission</span></button>
               <button className={panel === 'projects' ? 'on' : ''} onClick={() => setPanel('projects')} title={T('sidebar.projects')}><Icon name="Folder" size={15} /><span className="label">{T('sidebar.projects')}</span>{projects.length > 0 && <span className="count">{projects.length}</span>}</button>
               <button className={panel === 'artifacts' ? 'on' : ''} onClick={() => setPanel('artifacts')} title={T('sidebar.artifacts')}><Icon name="Artifacts" size={15} /><span className="label">{T('sidebar.artifacts')}</span>{artifacts.length > 0 && <span className="count">{artifacts.length}</span>}</button>
               <button className={panel === 'scheduled' ? 'on' : ''} onClick={() => setPanel('scheduled')} title="Automations & Scheduled Tasks"><Icon name="Clock" size={15} /><span className="label">Automations</span></button>
@@ -3463,11 +3516,28 @@ export default function App() {
               {convs.length > 0 && <span className="recents-count">{convs.length}</span>}
             </div>
             <div className="convlist">
-              {[...convs].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)).map((c) => (
+              {[...convs].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)).map((c) => {
+                const sh = sessionHealthMap[c.id];
+                const hStatus = sh && (sh.status === 'bad' || sh.status === 'warn' || sh.status === 'ok') ? sh.status : 'ok';
+                return (
                 <div key={c.id} className={'conv ' + (c.id === activeId && panel === 'chats' ? 'on' : '')} onClick={() => selectConv(c.id)}>
                   {c.pinned && <span className="conv-pin" title="Pinned"><Icon name="Pin" size={12} /></span>}
-                  <Icon name="Chat" size={15} className="conv-ico" />
+                  <span className={'health-dot ' + hStatus} title={sh ? `Session health: ${hStatus} (${sh.score})` : 'Session health: ok'} />
                   <div className="conv-title">{c.title || 'Untitled'}</div>
+                  {(hStatus === 'bad' || hStatus === 'warn') && (
+                    <button
+                      type="button"
+                      className="btn-mini"
+                      style={{ padding: '1px 5px', fontSize: 10 }}
+                      title="Diagnose & Unstick"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        selectConv(c.id);
+                        if (sh && sh.unstickDraft) setDraft(sh.unstickDraft);
+                        setNotice(`Diagnosed session (${hStatus}) — unstick draft loaded in composer`);
+                      }}
+                    >Unstick</button>
+                  )}
                   {waitingPermissionConvIds.has(c.id) && (
                     <span className="conv-perm-bell" title="Waiting for permission approval">
                       <Icon name="Notification" size={12} />
@@ -3475,7 +3545,8 @@ export default function App() {
                   )}
                   <button className="conv-del" onClick={(e) => { e.stopPropagation(); deleteConv(c.id); }}><Icon name="Trash" size={13} /></button>
                 </div>
-              ))}
+                );
+              })}
               {convs.length === 0 && <div className="muted">No conversations yet</div>}
             </div>
           </div>
@@ -3509,7 +3580,29 @@ export default function App() {
           <div className="main-split">
             <div className="main-content">
               {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
-              {panel === 'search' && <SearchView convs={convs} cwd={cwd} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
+              {panel === 'search' && <SearchView convs={convs} cwd={cwd} initialTab={searchTab} provider={provider} onOpenSessionLink={openSessionDeepLink} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
+              {panel === 'mission' && (
+                <MissionControlPane
+                  convs={convs}
+                  activeId={activeId}
+                  streaming={streaming}
+                  streamingConvId={runConvRef.current}
+                  waitingPermissionConvIds={waitingPermissionConvIds}
+                  onOpenSession={(cid) => selectConv(cid)}
+                  onSendQuickReply={(cid, txt) => {
+                    selectConv(cid);
+                    const cObj = convs.find((c) => c.id === cid) || null;
+                    send(txt, [], cObj);
+                  }}
+                  onDiagnoseUnstick={(cid, row) => {
+                    selectConv(cid);
+                    setDraft((row && (row.unstickDraft || row.diagnosis)) || 'Stop retrying and inspect recent tool errors.');
+                    setNotice('Diagnosed session — unstick reply drafted in composer');
+                  }}
+                  onHealthSnapshot={(map) => setSessionHealthMap(map)}
+                  Icon={Icon}
+                />
+              )}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
               {panel === 'skills' && <SkillsView skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills} />}
@@ -5497,13 +5590,18 @@ function searchConversations(convs, query) {
   return out.sort((a, b) => (b.ts || 0) - (a.ts || 0));
 }
 
-function SearchView({ convs, cwd, onOpenConv }) {
+function SearchView({ convs, cwd, initialTab = 'search', provider = null, onOpenSessionLink, onOpenConv }) {
+  const [tab, setTab] = useState(initialTab);
   const [q, setQ] = useState('');
   const [convHits, setConvHits] = useState([]);
   const [diskHits, setDiskHits] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [askQuestion, setAskQuestion] = useState('');
+  const [askBusy, setAskBusy] = useState(false);
+  const [askResult, setAskResult] = useState(null);
   const inputRef = useRef(null);
-  useEffect(() => { inputRef.current && inputRef.current.focus(); }, []);
+  useEffect(() => { setTab(initialTab || 'search'); }, [initialTab]);
+  useEffect(() => { inputRef.current && inputRef.current.focus(); }, [tab]);
   useEffect(() => {
     setConvHits(searchConversations(convs, q));
     if (!q.trim()) { setDiskHits([]); return; }
@@ -5518,39 +5616,101 @@ function SearchView({ convs, cwd, onOpenConv }) {
     }, 220);
     return () => { alive = false; clearTimeout(t); };
   }, [q, convs, cwd]);
+
+  const runAskHistory = async () => {
+    if (!askQuestion.trim() || !window.autobot || !window.autobot.askHistory) return;
+    setAskBusy(true);
+    try {
+      const res = await window.autobot.askHistory({ question: askQuestion.trim(), provider });
+      setAskResult(res);
+    } catch (e) {
+      setAskResult({ ok: false, error: (e && e.message) || 'Ask History failed' });
+    } finally {
+      setAskBusy(false);
+    }
+  };
+
   const total = convHits.length + diskHits.length;
   return (
     <div className="searchview">
-      <div className="search-bar">
-        <Icon name="Search" size={16} />
-        <input ref={inputRef} className="search-input" placeholder="Search conversations, files, notebooks, memory…" value={q} onChange={(e) => setQ(e.target.value)} />
-        {busy && <span className="search-busy">searching…</span>}
-        <span className="search-count">{q.trim() ? total + ' result' + (total === 1 ? '' : 's') : ''}</span>
+      <div className="ask-tabs">
+        <button type="button" className={'mc-filter-pill' + (tab === 'search' ? ' on' : '')} onClick={() => setTab('search')}>Instant Search</button>
+        <button type="button" className={'mc-filter-pill' + (tab === 'ask' ? ' on' : '')} onClick={() => setTab('ask')}>Ask History (SQLite FTS5)</button>
       </div>
-      {!q.trim() && <div className="search-empty">Type to search. Conversations are searched in memory; files, notebooks and memory on disk.</div>}
-      {q.trim() > '' && convHits.length > 0 && (
-        <section className="search-group">
-          <h4>Conversations</h4>
-          {convHits.map((h, i) => (
-            <button key={'c' + i} className="search-hit" onClick={() => onOpenConv(h.convId, h.msgId)}>
-              <span className="search-hit-title">{h.title}</span>
-              <span className="search-hit-sub">{h.role ? (h.role === 'user' ? 'you' : 'assistant') + ' · ' : ''}{h.text}</span>
+      {tab === 'ask' ? (
+        <div>
+          <div className="search-bar">
+            <Icon name="Search" size={16} />
+            <input
+              ref={inputRef}
+              className="search-input"
+              placeholder="Ask across past coding sessions (e.g. How did we fix OAuth callback?)"
+              value={askQuestion}
+              onChange={(e) => setAskQuestion(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') runAskHistory(); }}
+            />
+            <button type="button" className="btn-mini primary" disabled={askBusy || !askQuestion.trim()} onClick={runAskHistory}>
+              {askBusy ? 'Asking…' : 'Ask History'}
             </button>
-          ))}
-        </section>
-      )}
-      {q.trim() > '' && diskHits.length > 0 && (
-        <section className="search-group">
-          <h4>Project files, notebooks &amp; memory</h4>
-          {diskHits.map((h, i) => (
-            <div key={'d' + i} className="search-hit search-hit-static">
-              <span className="search-hit-title">{h.kind === 'file' ? (h.rel || h.file) + ':' + h.line : h.kind === 'notebook' ? 'Notebook · ' + h.title : 'Memory'}</span>
-              <span className="search-hit-sub">{h.text}</span>
+          </div>
+          {!askResult && <div className="search-empty">Searches indexed local JSONL session trajectories and cites clickable session:// step deep links.</div>}
+          {askResult && !askResult.ok && <div className="duet-err">{askResult.error || 'Ask History failed.'}</div>}
+          {askResult && askResult.ok && (
+            <div className="ask-answer-box">
+              <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(askResult.answer || '') }} />
+              {Array.isArray(askResult.citations) && askResult.citations.length > 0 && (
+                <div className="ask-cite-list">
+                  <div className="muted" style={{ fontSize: 11, fontWeight: 600 }}>Cited Session Steps</div>
+                  {askResult.citations.map((c, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      className="ask-cite-btn"
+                      onClick={() => (onOpenSessionLink ? onOpenSessionLink(c.deepLink) : onOpenConv(c.convId))}
+                    >
+                      <span className="search-hit-title">{c.label} · <code>{c.deepLink}</code></span>
+                      <span className="search-hit-sub">{c.snippet}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          ))}
-        </section>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="search-bar">
+            <Icon name="Search" size={16} />
+            <input ref={inputRef} className="search-input" placeholder="Search conversations, files, notebooks, memory…" value={q} onChange={(e) => setQ(e.target.value)} />
+            {busy && <span className="search-busy">searching…</span>}
+            <span className="search-count">{q.trim() ? total + ' result' + (total === 1 ? '' : 's') : ''}</span>
+          </div>
+          {!q.trim() && <div className="search-empty">Type to search. Conversations are searched in memory; files, notebooks and memory on disk.</div>}
+          {q.trim() > '' && convHits.length > 0 && (
+            <section className="search-group">
+              <h4>Conversations</h4>
+              {convHits.map((h, i) => (
+                <button key={'c' + i} className="search-hit" onClick={() => onOpenConv(h.convId, h.msgId)}>
+                  <span className="search-hit-title">{h.title}</span>
+                  <span className="search-hit-sub">{h.role ? (h.role === 'user' ? 'you' : 'assistant') + ' · ' : ''}{h.text}</span>
+                </button>
+              ))}
+            </section>
+          )}
+          {q.trim() > '' && diskHits.length > 0 && (
+            <section className="search-group">
+              <h4>Project files, notebooks &amp; memory</h4>
+              {diskHits.map((h, i) => (
+                <div key={'d' + i} className="search-hit search-hit-static">
+                  <span className="search-hit-title">{h.kind === 'file' ? (h.rel || h.file) + ':' + h.line : h.kind === 'notebook' ? 'Notebook · ' + h.title : 'Memory'}</span>
+                  <span className="search-hit-sub">{h.text}</span>
+                </div>
+              ))}
+            </section>
+          )}
+          {q.trim() && !busy && total === 0 && <div className="search-empty">No matches for “{q.trim()}”.</div>}
+        </>
       )}
-      {q.trim() && !busy && total === 0 && <div className="search-empty">No matches for “{q.trim()}”.</div>}
     </div>
   );
 }

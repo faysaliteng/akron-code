@@ -3099,6 +3099,51 @@ ipcMain.handle('autobot:duetReview', async (e, payload = {}) => {
     return { ok: false, error: humanizeLLMError(err) };
   }
 });
+ipcMain.handle('autobot:sessionHealth', (e, payload = {}) => {
+  try {
+    return require('./session-health').scoreSessionHealth(payload.convId, { messages: payload.messages || null });
+  } catch (_) {
+    return { status: 'ok', score: 100, flags: [], failingSteps: [], quickReplies: [] };
+  }
+});
+ipcMain.handle('autobot:allSessionsHealth', (e, convsSummary = []) => {
+  try {
+    return require('./session-health').inspectAllSessionsHealth(convsSummary);
+  } catch (_) {
+    return {};
+  }
+});
+ipcMain.handle('autobot:searchSessionIndex', async (e, payload = {}) => {
+  try {
+    return await require('./session-index').searchHistory({ query: payload.query || '', limit: payload.limit || 20 });
+  } catch (err) {
+    return { ok: false, hits: [], error: oneLine(err) };
+  }
+});
+ipcMain.handle('autobot:askHistory', async (e, payload = {}) => {
+  try {
+    let p = (payload && payload.provider) || store.getSettings().provider || null;
+    if (p) {
+      try { p = await hydrateProvider(p); } catch (_) { p = null; }
+    }
+    const { chatOnce } = require('./llm');
+    return await require('./session-index').askAcrossHistory({
+      question: payload.question || '',
+      provider: p,
+      chatFn: p ? chatOnce : null,
+      limit: payload.limit || 12,
+    });
+  } catch (err) {
+    return { ok: false, error: humanizeLLMError(err) };
+  }
+});
+ipcMain.handle('autobot:rebuildSessionIndex', async () => {
+  try {
+    return await require('./session-index').syncSessionIndex({ forceRebuild: true });
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
 ipcMain.handle('autobot:extBridgeStatus', () => {
   try { return require('./extbridge').status(); } catch (e) { return { running: false, error: e.message, tabs: [] }; }
 });

@@ -4597,3 +4597,151 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
 }
 .duet-q-title { font-size: 12px; font-weight: 600; color: var(--text-100); }
 .duet-q-detail { font-size: 11.5px; color: var(--text-300); margin-top: 2px; }
+
+/* ============================================================
+   MISSION CONTROL, SESSION HEALTH & ASK HISTORY
+   ============================================================ */
+.health-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  display: inline-block;
+}
+.health-dot.ok { background: #10b981; }
+.health-dot.warn { background: #f59e0b; box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25); }
+.health-dot.bad { background: #ef4444; box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.28); }
+.mc-panel { display: flex; flex-direction: column; gap: 12px; }
+.mc-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mc-filter-pill {
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-200);
+  color: var(--text-200);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.mc-filter-pill.on {
+  border-color: var(--accent);
+  background: rgba(16, 185, 129, 0.16);
+  color: var(--text-000);
+}
+.mc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  gap: 12px;
+}
+.mc-card {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-200);
+  border: 1px solid var(--border-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mc-card.warn { border-color: rgba(245, 158, 11, 0.45); }
+.mc-card.bad { border-color: rgba(239, 68, 68, 0.52); }
+.mc-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mc-card-title-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+}
+.mc-card-title {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--text-000);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mc-card-title:hover { text-decoration: underline; }
+.mc-card-badges { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.mc-health-pill, .mc-state-pill, .mc-ctx-pill {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-100);
+  color: var(--text-300);
+}
+.mc-health-pill.ok { color: #34d399; border-color: rgba(16, 185, 129, 0.35); background: rgba(16, 185, 129, 0.12); }
+.mc-health-pill.warn { color: #fbbf24; border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.14); }
+.mc-health-pill.bad { color: #f87171; border-color: rgba(239, 68, 68, 0.45); background: rgba(239, 68, 68, 0.15); }
+.light .mc-health-pill.ok { color: #047857; }
+.light .mc-health-pill.warn { color: #b45309; }
+.light .mc-health-pill.bad { color: #b91c1c; }
+.mc-state-pill.wait { color: #fbbf24; border-color: rgba(245, 158, 11, 0.4); }
+.mc-state-pill.live { color: #34d399; border-color: rgba(16, 185, 129, 0.35); }
+.mc-cwd {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-400);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mc-flags { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: #fca5a5; }
+.light .mc-flags { color: #b91c1c; }
+.mc-diag-box {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-000);
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-200);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mc-diag-step { font-family: var(--mono); font-size: 11px; color: var(--text-300); }
+.mc-quick-row { display: flex; flex-wrap: wrap; gap: 5px; }
+.mc-quick-chip {
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-100);
+  color: var(--text-200);
+  font-size: 11px;
+  cursor: pointer;
+}
+.mc-quick-chip:hover { border-color: var(--accent); color: var(--text-000); }
+.mc-card-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: auto; padding-top: 4px; }
+.ask-tabs { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.ask-answer-box {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-200);
+  border: 1px solid var(--border-strong);
+  margin-bottom: 10px;
+}
+.ask-cite-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.ask-cite-btn {
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg-100);
+  color: var(--text-100);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ask-cite-btn:hover { border-color: var(--accent); }
