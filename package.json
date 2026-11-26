@@ -23,7 +23,12 @@
     "icons": "electron build/render_icon.cjs"
   },
   "dependencies": {
+    "@vscode/ripgrep": "^1.18.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "mermaid": "^10.9.8",
+    "monaco-editor": "^0.58.0",
+    "node-pty": "^1.1.0",
     "ws": "^8.23.0"
   },
   "devDependencies": {
@@ -42,6 +47,11 @@
     "productName": "Akron Code",
     "copyright": "AkronLogic",
     "asar": true,
+    "asarUnpack": [
+      "**/node_modules/node-pty/**/*",
+      "**/node_modules/@vscode/ripgrep/**/*",
+      "**/node_modules/@vscode/ripgrep-*/**/*"
+    ],
     "compression": "maximum",
     "files": [
       "dist/**/*",
@@ -110,7 +120,7 @@
           ]
         }
       ],
-      "artifactName": "AkronBot-${version}-win-${arch}.${ext}"
+      "artifactName": "AkronCode-${version}-win-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,

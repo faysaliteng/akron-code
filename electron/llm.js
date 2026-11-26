@@ -594,6 +594,22 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
     const msg = data.choices && data.choices[0] && data.choices[0].message;
     if (msg && typeof msg.reasoning_content === 'string' && msg.reasoning_content) onDelta(msg.reasoning_content, true);
     if (msg && typeof msg.content === 'string' && msg.content) onDelta(msg.content);
+    if (onToolDelta && msg && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        const fn = (tc && tc.function) || {};
+        const argsStr = typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments || '');
+        if (fn.name) {
+          onToolDelta({
+            id: tc.id || '',
+            name: fn.name,
+            argsPreview: argsStr.slice(0, 360),
+            argsTail: argsStr.slice(-600),
+            bytes: Buffer.byteLength(argsStr, 'utf8'),
+            lines: argsStr ? (argsStr.match(/\\n|\n/g) || []).length + 1 : 0,
+          });
+        }
+      }
+    }
     if (data && data.error && !msg) {
       const err = new Error(`LLM ${Number(data.error.code) || 502}: ${JSON.stringify(data.error).slice(0, 400)}`);
       err.status = Number(data.error.code) || 502;
@@ -742,11 +758,14 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
             }
           }
           if (onToolDelta && acc.function.name) {
+            const rawArgs = String(acc.function.arguments || '');
             onToolDelta({
               id: acc.id || String(idx),
               name: acc.function.name,
-              argsPreview: acc.function.arguments.slice(0, 320),
-              bytes: acc.function.arguments.length,
+              argsPreview: rawArgs.slice(0, 360),
+              argsTail: rawArgs.slice(-600),
+              bytes: Buffer.byteLength(rawArgs, 'utf8'),
+              lines: rawArgs ? (rawArgs.match(/\\n|\n/g) || []).length + 1 : 0,
             });
           }
         }
@@ -2154,9 +2173,19 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
   // Per-agent read-state mtime tracking so Edit/MultiEdit detects external or
   // concurrent modifications since this agent last Read the file.
   const agentReadMtimes = opts.readMtimes instanceof Map ? opts.readMtimes : new Map();
+  const pauseCtrl = opts.pauseController || null;
 
   for (let step = 0; step < maxSteps; step++) {
     if (opts.signal && opts.signal.aborted) throw new Error('aborted');
+    if (pauseCtrl) {
+      await pauseCtrl.waitIfPaused(opts.signal);
+      const notes = pauseCtrl.drainSteering();
+      if (notes.length) {
+        const joined = notes.join('\n\n');
+        messages.push({ role: 'user', content: joined });
+        emit({ type: 'notice', text: `Resumed with steering note: ${joined.slice(0, 120)}` });
+      }
+    }
     // Live teammate inbox delivery between steps: active team agents pick up
     // new SendMessage payloads (or shutdown requests) mid-run without restart.
     if (step > 0 && opts.teamContext && opts.teamContext.teamName && opts.teamContext.agentName) {
@@ -2204,19 +2233,36 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       turnChars = 0;
       turnThink = 0;
       let lastToolStreamAt = 0;
-      let lastToolStreamName = '';
+      let lastToolStreamKey = '';
+      const unescapeToolTail = (raw) => String(raw || '')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '  ')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\')
+        .trim();
       const onToolDelta = (info) => {
         if (!info || !info.name) return;
         const now = Date.now();
-        if (info.name === lastToolStreamName && now - lastToolStreamAt < 180) return;
+        const key = `${info.id || ''}|${info.name}`;
+        if (key === lastToolStreamKey && now - lastToolStreamAt < 150) return;
         lastToolStreamAt = now;
-        lastToolStreamName = info.name;
+        lastToolStreamKey = key;
         let target = '';
         if (info.argsPreview) {
-          const m = /"(?:file_path|path|command|cmd|description|goal|query|tool|url)"\s*:\s*"([^"\n]{1,90})/i.exec(info.argsPreview);
+          const m = /"(?:file_path|path|filePath|filename|command|cmd|description|goal|query|tool|url)"\s*:\s*"([^"\n]{1,90})/i.exec(info.argsPreview);
           if (m) target = m[1];
         }
-        emit({ type: 'toolStream', id: info.id || '', name: info.name, bytes: info.bytes || 0, target });
+        const preview = unescapeToolTail(info.argsTail || info.argsPreview || '').slice(-480);
+        emit({
+          type: 'toolStream',
+          id: info.id || '',
+          name: info.name,
+          bytes: Number(info.bytes) || 0,
+          lines: Number(info.lines) || 0,
+          target,
+          preview,
+          phase: 'args',
+        });
       };
       return chatWithFailover({
         list: providerList,
@@ -3086,6 +3132,8 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
 
     async function runOneSequential(tc) {
       if (opts.signal && opts.signal.aborted) throw new Error('aborted');
+      if (pauseCtrl) await pauseCtrl.waitIfPaused(opts.signal);
+      if (opts.signal && opts.signal.aborted) throw new Error('aborted');
       const name = tc.function.name;
       let args = parseArgs(tc.function.arguments);
       emit({ type: 'tool', id: tc.id, name, args });
@@ -3163,7 +3211,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             }
           }
         } else {
-          const r = await runTool(name, args, ctx);
+          const r = await runTool(name, args, { ...ctx, currentToolId: tc.id });
           result = typeof r === 'string' ? r : r.content;
           isError = typeof r === 'object' && Boolean(r.isError);
           if (r && typeof r === 'object' && r.imageDataUrl) imageDataUrl = r.imageDataUrl;
@@ -3213,6 +3261,8 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     }
 
     for (const wave of waves) {
+      if (opts.signal && opts.signal.aborted) throw new Error('aborted');
+      if (pauseCtrl) await pauseCtrl.waitIfPaused(opts.signal);
       if (opts.signal && opts.signal.aborted) throw new Error('aborted');
       if (wave.parallel) {
         const batch = wave.items.map((tc) => ({ tc, name: tc.function.name, args: parseArgs(tc.function.arguments) }));
@@ -3287,4 +3337,52 @@ async function chatOnce({ provider, messages, maxTokens, signal, tools }) {
   return { content: String(content || ''), usage: (msg && msg.usage) || null, model: p.model };
 }
 
-module.exports = { runAgent, normalizeProvider, chatOnce, chatWithFailover, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, chunkText, humanizeLLMError, isRateLimitError, isContextOverflow, isCreditExhausted };
+function createPauseController() {
+  let paused = false;
+  const waiters = new Set();
+  const steeringQueue = [];
+  const flushWaiters = () => {
+    for (const w of waiters) {
+      waiters.delete(w);
+      try { w.resolve(); } catch (_) {}
+    }
+  };
+  return {
+    isPaused: () => paused,
+    pause() {
+      paused = true;
+      return true;
+    },
+    resume(steeringNote) {
+      const note = String(steeringNote || '').trim();
+      if (note) steeringQueue.push(note);
+      paused = false;
+      flushWaiters();
+      return true;
+    },
+    drainSteering() {
+      return steeringQueue.splice(0, steeringQueue.length);
+    },
+    waitIfPaused(signal) {
+      if (signal && signal.aborted) return Promise.reject(new Error('aborted'));
+      if (!paused) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const entry = {
+          resolve: () => {
+            if (signal) { try { signal.removeEventListener('abort', onAbort); } catch (_) {} }
+            resolve();
+          },
+        };
+        const onAbort = () => {
+          waiters.delete(entry);
+          paused = false;
+          reject(new Error('aborted'));
+        };
+        waiters.add(entry);
+        if (signal) signal.addEventListener('abort', onAbort, { once: true });
+      });
+    },
+  };
+}
+
+module.exports = { runAgent, createPauseController, normalizeProvider, chatOnce, chatWithFailover, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, chunkText, humanizeLLMError, isRateLimitError, isContextOverflow, isCreditExhausted };

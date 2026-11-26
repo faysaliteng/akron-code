@@ -12,9 +12,10 @@ import { hydrateProvider, endpointKey } from './providerhydrate.mjs';
 import { ctxToastState } from './ctx-toast.mjs';
 import ConnectorLogo from './ConnectorLogo.jsx';
 import { useVoiceDictation } from './voice';
-import { LiveChecklistCard, FilesChangedBar, summarizeChangedFiles } from './components/LiveProgress.jsx';
+import { LiveChecklistCard, LiveToolActivityCard, StickyLiveToolBar, FilesChangedBar, summarizeChangedFiles } from './components/LiveProgress.jsx';
 import { CodeReviewPane } from './components/CodeReviewPane.jsx';
 import { deriveSubAgents } from './review-helpers.mjs';
+import { IdeWorkbench } from './ide/IdeWorkbench.jsx';
 
 // ---------- Anthropicons (Example's icon font, PUA U+E000+) ----------
 const iconChar = (name) => {
@@ -674,6 +675,9 @@ export default function App() {
     sync: { enabled: false, lastSync: null, status: 'never', deviceCount: 1 },
   }));
   const [panel, setPanel] = useState('chats'); // chats | memory | skills | notebooks | mcp | artifacts | terminal | projects | search | plugins | scheduled
+  const [workbenchMode, setWorkbenchMode] = useState('agent'); // 'agent' | 'ide'
+  const [ideExternalOpenFile, setIdeExternalOpenFile] = useState(null);
+  const editorContextXmlRef = useRef('');
   // Jump-to-message target set by the global search panel; cleared once scrolled.
   const [pendingScroll, setPendingScroll] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -683,6 +687,10 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
+  pausedRef.current = paused;
+  const [scrolledAway, setScrolledAway] = useState(false);
   // Wall-clock start of the active run — powers the live "Working · 12s" row.
   const [runStartedAt, setRunStartedAt] = useState(0);
   // Token accounting for /usage, /cost, /context and /insights. `usage` events
@@ -996,13 +1004,21 @@ export default function App() {
     });
   }, []);
 
-  // Example parity: CmdOrCtrl+K command palette, CmdOrCtrl+F in-chat find
+  // Example parity: CmdOrCtrl+K command palette, CmdOrCtrl+F in-chat find, CmdOrCtrl+Shift+E Agent/IDE toggle
   useEffect(() => {
     const onKey = (e) => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
+      if (e.shiftKey && (e.key === 'e' || e.key === 'E')) {
+        e.preventDefault();
+        setWorkbenchMode((m) => (m === 'ide' ? 'agent' : 'ide'));
+        return;
+      }
+      const inMonaco = Boolean(e.target && e.target.closest && e.target.closest('.monaco-editor'));
+      if (inMonaco) return;
       if (e.key === 'k' || e.key === 'K') { e.preventDefault(); setShowPalette((v) => !v); }
       else if (e.key === 'f' || e.key === 'F') {
+        if (workbenchMode === 'ide' && e.shiftKey) return;
         e.preventDefault();
         // Shift+F is the cross-conversation search panel; plain F is in-chat find.
         if (e.shiftKey) setPanel((p) => (p === 'search' ? 'chats' : 'search'));
@@ -1011,7 +1027,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [workbenchMode]);
 
   // subscribe to events
   const openPreview = useCallback((url) => {
@@ -1028,7 +1044,7 @@ export default function App() {
       // settled). Those late events used to land after the NEXT run had already
       // started and clobber it — drop anything still tagged with an older run.
       if (evt.runId && runIdRef.current && evt.runId !== runIdRef.current
-        && /^(delta|thinking|tool|toolResult|done|complete|cancelled|error|notice|limit|retry|usage|subagent|swarm)$/.test(evt.type)) return;
+        && /^(delta|thinking|tool|toolStream|toolResult|done|complete|cancelled|error|notice|limit|retry|usage|subagent|swarm|paused)$/.test(evt.type)) return;
       // A sub-agent's events belong to ITS row, never to the parent reply. Without
       // this, three concurrent workers interleaved their tokens into one garbled
       // paragraph ("done on cheadone on mid-…"), every worker tool row landed in
@@ -1152,13 +1168,25 @@ export default function App() {
         case 'toolStream': {
           setLiveSync((l) => {
             const base = l || { content: '', tools: [], segments: [] };
+            const prev = base.streamingTool;
+            const startedAt = (prev && prev.name === evt.name && (!evt.id || prev.id === evt.id)) ? prev.startedAt : Date.now();
+            const tools = Array.isArray(base.tools) && evt.id
+              ? base.tools.map((t) => (t.id === evt.id && t.status === 'running'
+                ? { ...t, liveBytes: Number(evt.bytes) || 0, liveLines: Number(evt.lines) || 0, livePreview: evt.preview || t.livePreview || '' }
+                : t))
+              : (base.tools || []);
             return {
               ...base,
+              tools,
               streamingTool: {
                 id: evt.id || '',
                 name: evt.name || '',
                 bytes: Number(evt.bytes) || 0,
+                lines: Number(evt.lines) || 0,
                 target: evt.target || '',
+                preview: evt.preview || '',
+                phase: evt.phase || 'args',
+                startedAt,
                 at: Date.now(),
               },
             };
@@ -1175,10 +1203,21 @@ export default function App() {
             const last = segments[segments.length - 1];
             if (last && last.type === 'tools') segments[segments.length - 1] = { type: 'tools', ids: [...last.ids, tid] };
             else segments.push({ type: 'tools', ids: [tid] });
-            return { ...base, streamingTool: null, tools: [...(base.tools || []), { id: tid, name: evt.name, args: evt.args, result: null, status: 'running' }], segments };
+            const st = base.streamingTool;
+            const seededBytes = (st && (st.id === tid || st.name === evt.name)) ? st.bytes : 0;
+            const seededLines = (st && (st.id === tid || st.name === evt.name)) ? st.lines : 0;
+            return {
+              ...base,
+              streamingTool: null,
+              tools: [...(base.tools || []), { id: tid, name: evt.name, args: evt.args, result: null, status: 'running', startedAt: Date.now(), liveBytes: seededBytes, liveLines: seededLines }],
+              segments,
+            };
           });
           break;
         }
+        case 'paused':
+          setPaused(!!evt.paused);
+          break;
         case 'toolResult':
           setLiveSync((l) => {
             if (!l) return l;
@@ -1187,15 +1226,18 @@ export default function App() {
           break;
         case 'done':
         case 'complete':
+          setPaused(false);
           if (evt && evt.usage) setLastUsage({ ...evt.usage, model: evt.usage.model || (evt.usage && evt.usage.model) || null, at: Date.now() });
           commitLive();
           sendDesktopNotification('agent', 'Akron Code', 'Agent finished working in your workspace.', settings);
           break;
         case 'cancelled':
+          setPaused(false);
           // Stopping keeps whatever the model had already produced.
           commitLive();
           break;
         case 'error':
+          setPaused(false);
           // Preserve anything already streamed, then show the failure.
           commitLive();
           setError(cleanErr(evt.message));
@@ -1473,6 +1515,8 @@ export default function App() {
     const target = runConvRef.current || activeIdRef.current;
     runConvRef.current = null;
     setStreaming(false);
+    setPaused(false);
+    setScrolledAway(false);
     setThinking('');
     const startedAt = runStartedAtRef.current;
     // Read the stream from the ref and issue two independent state updates.
@@ -1520,6 +1564,11 @@ export default function App() {
     const text = (override !== undefined ? override : (inputRef.current?.value || '')).trim();
     const atts = Array.isArray(attsOverride) ? attsOverride : attachments;
     if (!text && atts.length === 0) return;
+    if (streamingRef.current && pausedRef.current && text && runIdRef.current && window.autobot && window.autobot.resume) {
+      if (override === undefined && inputRef.current) inputRef.current.value = '';
+      await window.autobot.resume(runIdRef.current, text);
+      return;
+    }
     // Example parity: a message sent while a reply is streaming is not dropped —
     // it is queued and dispatched the moment the current turn finishes.
     if (streamingRef.current) {
@@ -1567,6 +1616,9 @@ export default function App() {
 
     const payloadMessages = buildPayloadMessages([...currentMessages, userMsg]);
     const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile });
+    if (workbenchMode === 'ide' && editorContextXmlRef.current) {
+      directives.push(editorContextXmlRef.current);
+    }
     if (directives.length) payloadMessages.unshift({ role: 'system', content: directives.join('\n') });
 
     // Only consume the composer's attachment tray when this send came from the
@@ -1577,6 +1629,7 @@ export default function App() {
     runConvRef.current = convId;
     runActiveRef.current = true;
     teamConvRef.current = convId;
+    setPaused(false);
     setStreaming(true);
     setRunStartedAt(Date.now());
     setThinking('');
@@ -1614,7 +1667,22 @@ export default function App() {
   }, [activeId, convs, provider, cwd, settings.useMemory, settings.harnessProfile, streaming, orchestrator, attachments, styleId, webSearch, activeProject, permissions, swarmEnabled]);
 
   const stop = useCallback(() => {
+    setPaused(false);
     if (runIdRef.current) window.autobot.cancel(runIdRef.current);
+  }, []);
+
+  const pauseRun = useCallback(() => {
+    if (runIdRef.current && window.autobot && window.autobot.pause) {
+      setPaused(true);
+      window.autobot.pause(runIdRef.current);
+    }
+  }, []);
+
+  const resumeRun = useCallback((note = '') => {
+    if (runIdRef.current && window.autobot && window.autobot.resume) {
+      setPaused(false);
+      window.autobot.resume(runIdRef.current, note);
+    }
   }, []);
 
   // Example parity: anything queued while a reply was streaming is dispatched the
@@ -1911,6 +1979,7 @@ export default function App() {
     runConvRef.current = convId;
     runActiveRef.current = true;
     teamConvRef.current = convId;
+    setPaused(false);
     setStreaming(true);
     setRunStartedAt(Date.now());
     setThinking('');
@@ -2735,7 +2804,8 @@ export default function App() {
         break;
       }
       case 'ide': {
-        note('Akron Code **is** the IDE surface — the chat pane, file previews, artifacts, and the browser pane live in one window. Use `/add-dir` to widen the working folder.');
+        setWorkbenchMode('ide');
+        note('Switched to **IDE Mode** (Monaco Editor, File Explorer, Search, Source Control & PTY Terminal). Press `⌘⇧E` to toggle back.');
         break;
       }
       case 'desktop': {
@@ -2934,6 +3004,24 @@ export default function App() {
           <Logo size={16} active={streaming} />
           <span className="brand">Akron Code</span>
           <span className="sub">{T('brand.sub')}</span>
+          <div className="ws-mode-switch" role="group" aria-label="Workspace mode">
+            <button
+              type="button"
+              className={'ws-mode-btn' + (workbenchMode === 'agent' ? ' on' : '')}
+              onClick={() => setWorkbenchMode('agent')}
+              title="Agent & Mission Control view (⌘⇧E)"
+            >
+              <Icon name="Sparkles" size={12} /> <span>Agent</span>
+            </button>
+            <button
+              type="button"
+              className={'ws-mode-btn' + (workbenchMode === 'ide' ? ' on' : '')}
+              onClick={() => setWorkbenchMode('ide')}
+              title="Full AI IDE Workbench with Monaco & Terminal (⌘⇧E)"
+            >
+              <Icon name="Code" size={12} /> <span>IDE</span>
+            </button>
+          </div>
         </div>
         <div className="ws-tabs" role="tablist" aria-label="Workspace sessions">
           {visibleTabs.map((tab) => (
@@ -2958,6 +3046,99 @@ export default function App() {
         </div>
       </div>
 
+      {workbenchMode === 'ide' ? (
+        <IdeWorkbench
+          cwd={cwd || ''}
+          setCwd={(dir) => {
+            setCwd(dir);
+            if (activeId && dir) {
+              saveJSON('autobot:workspace:' + activeId, dir);
+              try { window.autobot.setWorkspace(activeId, dir); } catch (_) {}
+            }
+          }}
+          theme={settings.theme}
+          provider={provider}
+          orchestrator={orchestrator}
+          setError={setError}
+          setNotice={setNotice}
+          externalOpenFile={ideExternalOpenFile}
+          onAttachToChat={(node) => {
+            setAttachments((a) => [...a, { name: node.name, path: node.path, size: 0, isText: true, content: `@${node.relPath || node.name}` }]);
+          }}
+          onSendToAgent={(prompt) => send(prompt)}
+          onOpenSettings={() => openSettingsAt('providers')}
+          renderAgentDock={({ editorContextXml, onOpenFileDiff }) => {
+            editorContextXmlRef.current = editorContextXml || '';
+            return (
+              <>
+                <ChatView
+                  messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway}
+                  subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode}
+                  copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd}
+                  copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage}
+                  forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv}
+                  T={T} runStartedAt={runStartedAt}
+                  envOpen={sessionPane.type === 'env'} onToggleEnv={() => { setWorkbenchMode('agent'); toggleSessionPane('env'); }}
+                  runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => { setWorkbenchMode('agent'); showSessionPane('runlog'); }}
+                  reviewOpen={false} sessionPaneType={null}
+                  onOpenReview={(target) => {
+                    const summary = summarizeChangedFiles((target && target.tools) || allActiveTools, (target && target.checkpoints) || allActiveCheckpoints);
+                    const first = summary.files && summary.files[0];
+                    if (first && onOpenFileDiff) {
+                      onOpenFileDiff(first.path.startsWith('/') || /^[A-Za-z]:/.test(first.path) ? first.path : `${cwd}/${first.path}`);
+                    } else {
+                      setWorkbenchMode('agent');
+                      openReview(target);
+                    }
+                  }}
+                  onTogglePane={(tp) => { setWorkbenchMode('agent'); tp ? showSessionPane(tp) : toggleSessionPane(); }}
+                  onOpenPlugins={() => openSettingsAt('skills')}
+                  onRenameConv={(title) => active && renameConv(active.id, title)}
+                  onPinConv={() => active && pinConv(active.id)}
+                  onArchiveConv={() => active && archiveConv(active.id)}
+                  onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))}
+                  onDeleteConv={() => active && deleteConv(active.id)}
+                  setError={setError}
+                />
+                {error && (
+                  <div className={'errorbar' + (String(error).startsWith('✅') ? ' ok' : '')}>
+                    <span className="errorbar-text">{error}</span>
+                    <button type="button" className="errorbar-x" title="Dismiss" aria-label="Dismiss" onClick={() => setError('')}><Icon name="X" size={12} /></button>
+                  </div>
+                )}
+                <ChatNoticeBar text={notice} onDismiss={() => setNotice('')} />
+                {streaming && paused && (
+                  <div className="paused-banner" role="status">
+                    <div className="paused-banner-left"><span className="paused-banner-dot" /><span>Paused — Resume or type a steering note</span></div>
+                    <button type="button" className="paused-resume-btn" onClick={() => resumeRun('')}><Icon name="Play" size={12} /> Resume</button>
+                  </div>
+                )}
+                <InputBar
+                  streaming={streaming} paused={paused} onPause={pauseRun} onResume={resumeRun} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
+                  queued={queued.filter((q) => q.convId === activeId)} unqueue={unqueue} editQueued={editQueued} sendQueuedNow={sendQueuedNow}
+                  settings={settings} onVoiceError={setError}
+                  provider={provider} setProvider={setProvider} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt('providers'); }}
+                  providerKeys={providerKeys} setProviderKeys={setProviderKeys}
+                  attachments={attachments} setAttachments={setAttachments}
+                  reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
+                  swarmEnabled={swarmEnabled} setSwarmEnabled={setSwarmEnabled}
+                  styleId={styleId} setStyleId={setStyleId}
+                  webSearch={webSearch} setWebSearch={setWebSearch}
+                  dictating={dictating} setDictating={setDictating}
+                  voiceMode={voiceMode} startVoiceMode={startVoiceMode} stopVoiceMode={stopVoiceMode}
+                  sessionPane={sessionPane} toggleSessionPane={toggleSessionPane}
+                  permissions={permissions} setPermissions={setPermissions}
+                  lastUsage={lastUsage}
+                  gdriveState={gdriveState}
+                  onOpenGdrive={() => setGdriveModalOpen(true)}
+                  T={T}
+                />
+              </>
+            );
+          }}
+          Icon={Icon}
+        />
+      ) : (
       <div className="layout">
         {/* Sidebar — 3-zone layout: pinned Workspace + Dock, scrollable Recents, pinned Customizations & Settings */}
         <aside className={'sidebar' + (sidebarCollapsed ? ' collapsed' : '')}>
@@ -3053,7 +3234,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
+              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
@@ -3128,8 +3309,31 @@ export default function App() {
           )}
           <ChatNoticeBar text={notice} onDismiss={() => setNotice('')} />
 
+          {streaming && scrolledAway && (
+            <StickyLiveToolBar
+              live={liveForActive}
+              thinking={thinking}
+              startedAt={runStartedAt}
+              paused={paused}
+              onJumpToLive={() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' })}
+              Icon={Icon}
+            />
+          )}
+
+          {streaming && paused && (
+            <div className="paused-banner" role="status">
+              <div className="paused-banner-left">
+                <span className="paused-banner-dot" aria-hidden="true" />
+                <span>Paused — Resume or type a steering note</span>
+              </div>
+              <button type="button" className="paused-resume-btn" onClick={() => resumeRun('')}>
+                <Icon name="Play" size={12} /> Resume
+              </button>
+            </div>
+          )}
+
           <InputBar
-            streaming={streaming} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
+            streaming={streaming} paused={paused} onPause={pauseRun} onResume={resumeRun} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
             queued={queued.filter((q) => q.convId === activeId)} unqueue={unqueue} editQueued={editQueued} sendQueuedNow={sendQueuedNow}
             settings={settings} onVoiceError={setError}
             provider={provider} setProvider={setProvider} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt('providers'); }}
@@ -3150,6 +3354,7 @@ export default function App() {
           />
         </main>
       </div>
+      )}
 
       {showSettings && (
         <SettingsModal
@@ -4071,7 +4276,7 @@ function RunLogPanel({ convId }) {
 }
 
 // ---------- Chat view ----------
-function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError }) {
+function ChatView({ messages, live, thinking, paused, onScrollAway, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [subExpanded, setSubExpanded] = useState(false);
@@ -4118,7 +4323,16 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
   }, [messages]);
 
   return (
-    <div className="chat" onClick={(e) => { copyBlock(e); applyBlock(e); }}>
+    <div
+      className="chat"
+      onClick={(e) => { copyBlock(e); applyBlock(e); }}
+      onScroll={(e) => {
+        if (!onScrollAway) return;
+        const el = e.currentTarget;
+        const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+        onScrollAway(dist > 140);
+      }}
+    >
       {planMode && planMode.active && (
         <div className="planmode-banner" title={'The agent is read-only until you approve the plan. Plan file: ' + (planMode.file || 'PLAN.md')}>
           <Icon name="Clipboard" size={13} /> Plan mode · read-only · writes go to {planMode.file || 'PLAN.md'}
@@ -4343,6 +4557,7 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
               {live.content ? <div className="md streaming" dangerouslySetInnerHTML={{ __html: renderMarkdown(live.content) + '<span class="cursor">▍</span>' }} /> : null}
             </>
           )}
+          <LiveToolActivityCard tools={live.tools} streamingTool={live.streamingTool} paused={paused} describeTool={describeTool} Icon={Icon} />
           <FilesChangedBar tools={live.tools} checkpoints={live.checkpoints} checkpointId={live.checkpointId} turnLabel={liveTurnLabel} convId={convId} subAgentCount={subCount} taskCount={bgTasksCount} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} streaming Icon={Icon} />
           {live.content === '' && live.tools.length === 0 && !thinking && <span className="cursor">▍</span>}
         </div>
@@ -6948,7 +7163,7 @@ const BUILTIN_MENTION_AGENTS = [
   { name: 'Plan', kind: 'agent', description: 'Read-only planning & design subagent' },
 ];
 
-function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, editQueued, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, T }) {
+function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, unqueue, editQueued, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -8246,6 +8461,17 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
               {voice.state === 'recording' && <span className="mic-time">{Math.floor(voice.seconds / 60)}:{String(voice.seconds % 60).padStart(2, '0')}</span>}
             </button>
 
+            {streaming && (
+              <button
+                type="button"
+                className={'pause-btn' + (paused ? ' paused' : '')}
+                onClick={() => (paused ? (onResume && onResume('')) : (onPause && onPause()))}
+                title={paused ? 'Resume agent' : 'Pause agent at next boundary'}
+                aria-label={paused ? 'Resume' : 'Pause'}
+              >
+                <Icon name={paused ? 'Play' : 'Pause'} size={15} />
+              </button>
+            )}
             {streaming && <button className="send stop" onClick={stop} title="Stop"><Icon name="Stop" size={16} /></button>}
             {(!streaming || hasText) && (
               <button

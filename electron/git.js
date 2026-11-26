@@ -349,4 +349,186 @@ async function removeWorktree(cwd, targetDir) {
   }
 }
 
-module.exports = { gitInfo, findRoot, unifiedDiff, gitDiffFiles, parseGitDiffOutput, listWorktrees, addWorktree, removeWorktree };
+async function gitStatusDetailed(cwd) {
+  const root = await findRoot(cwd || process.cwd());
+  if (!root) return { isRepo: false, root: null, branch: '', ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [] };
+  let raw = '';
+  try {
+    raw = execFileSync('git', ['status', '--porcelain=v1', '-z'], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (_) { raw = ''; }
+  const staged = [];
+  const unstaged = [];
+  const untracked = [];
+  const tokens = raw ? raw.split('\0').filter(Boolean) : [];
+  for (let i = 0; i < tokens.length; i++) {
+    const entry = tokens[i];
+    if (entry.length < 4) continue;
+    const x = entry[0];
+    const y = entry[1];
+    let relPath = entry.slice(3);
+    if ((x === 'R' || x === 'C') && tokens[i + 1]) {
+      relPath = tokens[i + 1];
+      i++;
+    }
+    const full = path.join(root, relPath);
+    if (x === '?' && y === '?') {
+      untracked.push({ relPath, path: full, status: 'U' });
+      continue;
+    }
+    if (x !== ' ') staged.push({ relPath, path: full, status: x });
+    if (y !== ' ') unstaged.push({ relPath, path: full, status: y });
+  }
+  const info = await gitInfo(root);
+  return {
+    isRepo: true,
+    root,
+    branch: info.branch || 'HEAD',
+    ahead: info.ahead || 0,
+    behind: info.behind || 0,
+    staged,
+    unstaged,
+    untracked,
+  };
+}
+
+async function stageFiles(cwd, relPaths) {
+  const root = await findRoot(cwd || process.cwd());
+  if (!root) return { ok: false, error: 'Not a git repository' };
+  const files = Array.isArray(relPaths) && relPaths.length ? relPaths.map(String) : ['.'];
+  try {
+    execFileSync('git', ['add', '--', ...files], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { ok: true, status: await gitStatusDetailed(root) };
+  } catch (e) {
+    return { ok: false, error: String((e && e.stderr) || e.message || e) };
+  }
+}
+
+async function unstageFiles(cwd, relPaths) {
+  const root = await findRoot(cwd || process.cwd());
+  if (!root) return { ok: false, error: 'Not a git repository' };
+  const files = Array.isArray(relPaths) && relPaths.length ? relPaths.map(String) : ['.'];
+  try {
+    execFileSync('git', ['reset', 'HEAD', '--', ...files], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { ok: true, status: await gitStatusDetailed(root) };
+  } catch (e) {
+    try {
+      execFileSync('git', ['rm', '--cached', '--', ...files], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      return { ok: true, status: await gitStatusDetailed(root) };
+    } catch (e2) {
+      return { ok: false, error: String((e2 && e2.stderr) || e.message || e) };
+    }
+  }
+}
+
+async function stagePatch(cwd, patchText, reverse = false) {
+  const root = await findRoot(cwd || process.cwd());
+  if (!root) return { ok: false, error: 'Not a git repository' };
+  try {
+    const args = ['apply', '--cached'];
+    if (reverse) args.push('--reverse');
+    execFileSync('git', args, { cwd: root, input: String(patchText || ''), encoding: 'utf8', windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    return { ok: true, status: await gitStatusDetailed(root) };
+  } catch (e) {
+    return { ok: false, error: String((e && e.stderr) || e.message || e) };
+  }
+}
+
+async function discardFiles(cwd, relPaths) {
+  const root = await findRoot(cwd || process.cwd());
+  if (!root) return { ok: false, error: 'Not a git repository' };
+  const files = Array.isArray(relPaths) ? relPaths.map(String).filter(Boolean) : [];
+  if (!files.length) return { ok: false, error: 'No files specified' };
+  const errors = [];
+  for (const rel of files) {
+    try {
+      execFileSync('git', ['checkout', '--', rel], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (_) {
+      try {
+        const full = path.resolve(root, rel);
+        if (full.startsWith(root) && fs.existsSync(full)) fs.rmSync(full, { recursive: true, force: true });
+      } catch (e2) {
+        errors.push(`${rel}: ${e2.message}`);
+      }
+    }
+  }
+  return { ok: errors.length === 0, errors, status: await gitStatusDetailed(root) };
+}
+
+async function commitChanges(cwd, message) {
+  const root = await findRoot(cwd || process.cwd());
+  if (!root) return { ok: false, error: 'Not a git repository' };
+  const msg = String(message || '').trim();
+  if (!msg) return { ok: false, error: 'Commit message required' };
+  try {
+    execFileSync('git', ['commit', '-m', msg], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { ok: true, status: await gitStatusDetailed(root) };
+  } catch (e) {
+    return { ok: false, error: String((e && e.stderr) || e.message || e) };
+  }
+}
+
+async function listBranches(cwd) {
+  const root = await findRoot(cwd || process.cwd());
+  if (!root) return { ok: false, branches: [], current: '' };
+  try {
+    const out = execFileSync('git', ['branch', '--format=%(HEAD)|%(refname:short)'], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const branches = [];
+    let current = '';
+    for (const ln of out.split(/\r?\n/)) {
+      if (!ln.trim()) continue;
+      const [head, name] = ln.split('|');
+      if (head && head.trim() === '*') current = name;
+      branches.push({ name, current: head && head.trim() === '*' });
+    }
+    return { ok: true, branches, current };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e), branches: [], current: '' };
+  }
+}
+
+async function checkoutBranch(cwd, branch, createNew = false) {
+  const root = await findRoot(cwd || process.cwd());
+  if (!root) return { ok: false, error: 'Not a git repository' };
+  const name = String(branch || '').trim();
+  if (!name) return { ok: false, error: 'Branch name required' };
+  try {
+    const args = createNew ? ['checkout', '-b', name] : ['checkout', name];
+    execFileSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { ok: true, ...(await listBranches(root)), status: await gitStatusDetailed(root) };
+  } catch (e) {
+    return { ok: false, error: String((e && e.stderr) || e.message || e) };
+  }
+}
+
+async function fileAtHead(cwd, filePath) {
+  const root = await findRoot(cwd || process.cwd());
+  if (!root) return { ok: false, content: '' };
+  try {
+    const abs = path.isAbsolute(filePath) ? filePath : path.resolve(root, filePath);
+    const rel = path.relative(root, abs).replace(/\\/g, '/');
+    const content = execFileSync('git', ['show', `HEAD:${rel}`], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { ok: true, content, existsAtHead: true, relPath: rel };
+  } catch (_) {
+    return { ok: true, content: '', existsAtHead: false };
+  }
+}
+
+module.exports = {
+  gitInfo,
+  findRoot,
+  unifiedDiff,
+  gitDiffFiles,
+  parseGitDiffOutput,
+  listWorktrees,
+  addWorktree,
+  removeWorktree,
+  gitStatusDetailed,
+  stageFiles,
+  unstageFiles,
+  stagePatch,
+  discardFiles,
+  commitChanges,
+  listBranches,
+  checkoutBranch,
+  fileAtHead,
+};

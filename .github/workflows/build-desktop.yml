@@ -1,4 +1,4 @@
-name: Build Akron Bot Desktop (macOS · Windows · Linux)
+name: Build Akron Code Desktop (macOS · Windows · Linux)
 
 on:
   push:
@@ -51,7 +51,7 @@ jobs:
         run: ${{ matrix.cmd }}
       - uses: actions/upload-artifact@v4
         with:
-          name: akron-bot-${{ matrix.platform }}
+          name: akron-code-${{ matrix.platform }}
           path: |
             release/*.dmg
             release/*.zip

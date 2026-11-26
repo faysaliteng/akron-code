@@ -8,6 +8,158 @@ function fmtSecs(secs) {
   return rem ? `${m}m ${rem}s` : `${m}m`;
 }
 
+function fmtBytesLabel(bytes) {
+  const b = Number(bytes) || 0;
+  if (!b) return '';
+  if (b >= 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + ' MB';
+  if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+  return b + ' B';
+}
+
+function fmtElapsedPrecise(ms) {
+  const m = Math.max(0, Number(ms) || 0);
+  if (m < 60000) return (m / 1000).toFixed(1) + 's';
+  return fmtSecs(m / 1000);
+}
+
+const TOOL_VERBS = {
+  Write: 'Writing',
+  Edit: 'Editing',
+  MultiEdit: 'Editing',
+  StrReplace: 'Editing',
+  Read: 'Reading',
+  Bash: 'Running',
+  Glob: 'Finding files',
+  Grep: 'Searching',
+  LS: 'Listing',
+  WebFetch: 'Fetching',
+  WebSearch: 'Searching web',
+  Task: 'Delegating',
+  Agent: 'Delegating',
+  Swarm: 'Swarming',
+};
+
+function toolTargetHint(name, args, fallbackTarget) {
+  if (fallbackTarget) return String(fallbackTarget);
+  const a = args || {};
+  const raw = a.file_path || a.path || a.filePath || a.filename || a.command || a.cmd || a.description || a.pattern || a.query || a.url || '';
+  const s = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  if (s.includes('/') && !/\s/.test(s)) {
+    const parts = s.replace(/\\/g, '/').split('/').filter(Boolean);
+    return parts.slice(-2).join('/') || s;
+  }
+  return s.length > 72 ? s.slice(0, 69) + '…' : s;
+}
+
+export function LiveToolActivityCard({ tools = [], streamingTool = null, paused = false, describeTool, Icon }) {
+  const [expanded, setExpanded] = useState(true);
+  const running = [...(tools || [])].reverse().find((t) => t && t.status === 'running') || null;
+  const active = Boolean(running || (streamingTool && streamingTool.name));
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active || paused) return;
+    const t = setInterval(() => setNow(Date.now()), 200);
+    return () => clearInterval(t);
+  }, [active, paused]);
+
+  if (!active) return null;
+
+  const toolName = (running && running.name) || (streamingTool && streamingTool.name) || 'Working';
+  const sameToolStream = streamingTool && (!running || streamingTool.id === running.id || streamingTool.name === running.name)
+    ? streamingTool
+    : null;
+  const d = describeTool && running ? describeTool(running.name, running.args) : null;
+  const verb = (d && d.verb) || TOOL_VERBS[toolName] || toolName;
+  const target = (d && d.target) || toolTargetHint(toolName, running && running.args, sameToolStream && sameToolStream.target);
+
+  const rawArgsContent = running && running.args
+    ? (running.args.content || running.args.new_string || running.args.command || '')
+    : '';
+  const bytes = (sameToolStream && sameToolStream.bytes)
+    || (running && running.liveBytes)
+    || (rawArgsContent ? String(rawArgsContent).length : 0);
+  const lines = (sameToolStream && sameToolStream.lines)
+    || (running && running.liveLines)
+    || (rawArgsContent ? countLines(rawArgsContent) : 0);
+  const preview = (sameToolStream && sameToolStream.preview)
+    || (running && running.livePreview)
+    || (rawArgsContent ? String(rawArgsContent).slice(-480) : '');
+  const startedAt = (running && running.startedAt) || (sameToolStream && sameToolStream.startedAt) || now;
+  const elapsed = Math.max(0, now - startedAt);
+  const kbLabel = fmtBytesLabel(bytes);
+
+  return (
+    <div className="live-tool-card" data-tool-name={toolName}>
+      <div className="live-tool-head">
+        <span className="live-tool-pulse" aria-hidden="true" />
+        <span className="live-dots-loader" aria-hidden="true"><i /><i /><i /><i /></span>
+        <div className="live-tool-main">
+          <span className="activity-text live-tool-verb">{paused ? `${verb} (paused)` : `${verb}…`}</span>
+          {target && <span className="live-tool-target" title={target}>{target}</span>}
+        </div>
+        <div className="live-tool-meta">
+          {kbLabel && <span>{kbLabel}</span>}
+          {lines > 0 && <span>{lines} lines</span>}
+          <span className="live-tool-time">{fmtElapsedPrecise(elapsed)}</span>
+        </div>
+        {preview && (
+          <button
+            type="button"
+            className="live-tool-toggle"
+            title={expanded ? 'Hide live output' : 'Show live output'}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            <Icon name={expanded ? 'CaretUp' : 'CaretDown'} size={12} />
+          </button>
+        )}
+      </div>
+      {preview && expanded && (
+        <div className="live-tool-preview">
+          <pre>{preview}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function StickyLiveToolBar({ live, thinking, startedAt, paused, onJumpToLive, Icon }) {
+  const [now, setNow] = useState(() => Date.now());
+  const active = Boolean(live);
+  useEffect(() => {
+    if (!active || paused) return;
+    const t = setInterval(() => setNow(Date.now()), 300);
+    return () => clearInterval(t);
+  }, [active, paused]);
+  if (!active) return null;
+
+  const tools = live.tools || [];
+  const running = [...tools].reverse().find((t) => t && t.status === 'running');
+  const st = live.streamingTool;
+  const name = (running && running.name) || (st && st.name) || '';
+  const verb = paused ? 'Paused' : (name ? (TOOL_VERBS[name] || name) + '…' : (thinking ? 'Thinking…' : 'Working…'));
+  const target = name ? toolTargetHint(name, running && running.args, st && st.target) : '';
+  const bytes = (st && st.bytes) || (running && running.liveBytes) || 0;
+  const kbLabel = fmtBytesLabel(bytes);
+  const elapsed = startedAt ? Math.max(0, now - startedAt) : 0;
+
+  return (
+    <div className="sticky-live-bar" onClick={onJumpToLive} role="status" aria-live="polite">
+      <div className="sticky-live-left">
+        <span className="live-tool-pulse" aria-hidden="true" />
+        <span className="live-dots-loader" aria-hidden="true"><i /><i /><i /><i /></span>
+        <span className="activity-text live-tool-verb">{verb}</span>
+        {target && <span className="live-tool-target">{target}</span>}
+        {kbLabel && <span className="live-tool-meta">{kbLabel}</span>}
+        {elapsed > 0 && <span className="live-tool-meta">{fmtElapsedPrecise(elapsed)}</span>}
+      </div>
+      <span className="sticky-live-jump">
+        <Icon name="ArrowDown" size={11} /> Jump to live
+      </span>
+    </div>
+  );
+}
+
 function countLines(s) {
   const t = String(s == null ? '' : s);
   if (!t) return 0;

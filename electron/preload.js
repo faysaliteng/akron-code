@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('autobot', {
   run: (payload) => ipcRenderer.invoke('autobot:run', payload),
+  pause: (runId) => ipcRenderer.invoke('autobot:pause', runId),
+  resume: (runId, steeringNote) => ipcRenderer.invoke('autobot:resume', runId, steeringNote),
   cancel: (runId) => ipcRenderer.invoke('autobot:cancel', runId),
   // One-shot completion used by GUI slash commands (/compact, /btw, /recap,
   // /advisor). Same request path + retry semantics as a full run.
@@ -305,4 +307,70 @@ contextBridge.exposeInMainWorld('autobot', {
     ipcRenderer.on('autobot:quickEntry', handler);
     return () => ipcRenderer.removeListener('autobot:quickEntry', handler);
   },
+
+  // ---- IDE Workbench (Monaco, FS Watcher, Ripgrep Search, PTY, LSP, Cmd+K, Git) ----
+  ideReadTree: (payload) => ipcRenderer.invoke('ide:readTree', payload),
+  ideReadFile: (payload) => ipcRenderer.invoke('ide:readFile', payload),
+  ideWriteFile: (payload) => ipcRenderer.invoke('ide:writeFile', payload),
+  ideCreateEntry: (payload) => ipcRenderer.invoke('ide:createEntry', payload),
+  ideRenameEntry: (payload) => ipcRenderer.invoke('ide:renameEntry', payload),
+  ideDuplicateEntry: (payload) => ipcRenderer.invoke('ide:duplicateEntry', payload),
+  ideDeleteEntry: (payload) => ipcRenderer.invoke('ide:deleteEntry', payload),
+  ideRevealInOS: (payload) => ipcRenderer.invoke('ide:revealInOS', payload),
+  ideWatchWorkspace: (payload) => ipcRenderer.invoke('ide:watchWorkspace', payload),
+  ideUnwatchWorkspace: (payload) => ipcRenderer.invoke('ide:unwatchWorkspace', payload),
+  onIdeFsChanged: (cb) => {
+    const h = (e, payload) => cb(payload);
+    ipcRenderer.on('ide:fsChanged', h);
+    return () => ipcRenderer.removeListener('ide:fsChanged', h);
+  },
+
+  ideSearch: (payload) => ipcRenderer.invoke('ide:search', payload),
+  ideReplace: (payload) => ipcRenderer.invoke('ide:replace', payload),
+
+  idePtyCreate: (payload) => ipcRenderer.invoke('ide:ptyCreate', payload),
+  idePtyWrite: (payload) => ipcRenderer.invoke('ide:ptyWrite', payload),
+  idePtyResize: (payload) => ipcRenderer.invoke('ide:ptyResize', payload),
+  idePtyKill: (payload) => ipcRenderer.invoke('ide:ptyKill', payload),
+  idePtyList: () => ipcRenderer.invoke('ide:ptyList'),
+  onIdePtyData: (cb) => {
+    const h = (e, payload) => cb(payload);
+    ipcRenderer.on('ide:ptyData', h);
+    return () => ipcRenderer.removeListener('ide:ptyData', h);
+  },
+  onIdePtyExit: (cb) => {
+    const h = (e, payload) => cb(payload);
+    ipcRenderer.on('ide:ptyExit', h);
+    return () => ipcRenderer.removeListener('ide:ptyExit', h);
+  },
+
+  ideLspStatus: (payload) => ipcRenderer.invoke('ide:lspStatus', payload),
+  ideLspEnsure: (payload) => ipcRenderer.invoke('ide:lspEnsure', payload),
+  ideLspNotify: (payload) => ipcRenderer.invoke('ide:lspNotify', payload),
+  ideLspRequest: (payload) => ipcRenderer.invoke('ide:lspRequest', payload),
+  onIdeLspDiagnostics: (cb) => {
+    const h = (e, payload) => cb(payload);
+    ipcRenderer.on('ide:lspDiagnostics', h);
+    return () => ipcRenderer.removeListener('ide:lspDiagnostics', h);
+  },
+
+  ideInlineEdit: (payload) => ipcRenderer.invoke('ide:inlineEdit', payload),
+  ideInlineEditCancel: (editId) => ipcRenderer.invoke('ide:inlineEditCancel', editId),
+  ideInlineComplete: (payload) => ipcRenderer.invoke('ide:inlineComplete', payload),
+  ideGenerateCommitMsg: (payload) => ipcRenderer.invoke('ide:generateCommitMsg', payload),
+  onIdeInlineEditDelta: (cb) => {
+    const h = (e, payload) => cb(payload);
+    ipcRenderer.on('ide:inlineEditDelta', h);
+    return () => ipcRenderer.removeListener('ide:inlineEditDelta', h);
+  },
+
+  ideGitStatus: (payload) => ipcRenderer.invoke('ide:gitStatus', payload),
+  ideGitStage: (payload) => ipcRenderer.invoke('ide:gitStage', payload),
+  ideGitUnstage: (payload) => ipcRenderer.invoke('ide:gitUnstage', payload),
+  ideGitStagePatch: (payload) => ipcRenderer.invoke('ide:gitStagePatch', payload),
+  ideGitDiscard: (payload) => ipcRenderer.invoke('ide:gitDiscard', payload),
+  ideGitCommit: (payload) => ipcRenderer.invoke('ide:gitCommit', payload),
+  ideGitBranches: (payload) => ipcRenderer.invoke('ide:gitBranches', payload),
+  ideGitCheckout: (payload) => ipcRenderer.invoke('ide:gitCheckout', payload),
+  ideGitFileAtHead: (payload) => ipcRenderer.invoke('ide:gitFileAtHead', payload),
 });

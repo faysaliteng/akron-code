@@ -266,6 +266,19 @@ function pushToolArg(acc, frag) {
   acc.function.arguments += typeof frag === 'string' ? frag : JSON.stringify(frag);
 }
 
+function toolDeltaPayload(acc) {
+  const args = String((acc && acc.function && acc.function.arguments) || '');
+  const lines = args ? (args.match(/\\n|\n/g) || []).length + 1 : 0;
+  return {
+    id: (acc && acc.id) || '',
+    name: (acc && acc.function && acc.function.name) || '',
+    argsPreview: args.slice(0, 360),
+    argsTail: args.slice(-600),
+    bytes: Buffer.byteLength(args, 'utf8'),
+    lines,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Anthropic Messages API
 //
@@ -693,6 +706,7 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
           const acc = newToolAcc(block.id, block.name);
           acc.function.arguments = JSON.stringify(block.input || {});
           message.tool_calls.push(acc);
+          if (onToolDelta && acc.function.name) onToolDelta(toolDeltaPayload(acc));
         }
       }
     }
@@ -710,7 +724,7 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
         const acc = newToolAcc(block.id, block.name);
         accs.set(ev.index, acc);
         message.tool_calls.push(acc);
-        if (onToolDelta) onToolDelta({ id: acc.id, name: acc.function.name, argsPreview: '', bytes: 0 });
+        if (onToolDelta) onToolDelta(toolDeltaPayload(acc));
       }
     } else if (type === 'content_block_delta') {
       const d = ev.delta || {};
@@ -723,14 +737,7 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
         const acc = accs.get(ev.index);
         if (acc) {
           pushToolArg(acc, d.partial_json);
-          if (onToolDelta) {
-            onToolDelta({
-              id: acc.id,
-              name: acc.function.name,
-              argsPreview: acc.function.arguments.slice(0, 320),
-              bytes: acc.function.arguments.length,
-            });
-          }
+          if (onToolDelta) onToolDelta(toolDeltaPayload(acc));
         }
       }
     } else if (type === 'message_delta') {
@@ -904,6 +911,7 @@ async function responsesChat(o) {
         if (typeof item.arguments === 'string' && item.arguments) acc.function.arguments = item.arguments;
         if (item.name && !acc.function.name) acc.function.name = item.name;
         if (item.call_id) acc.id = item.call_id;
+        if (onToolDelta && acc.function.name) onToolDelta(toolDeltaPayload(acc));
       }
     }
     if (resp.status === 'incomplete') message.finish_reason = 'length';
@@ -942,20 +950,13 @@ async function responsesChat(o) {
       if (item.type === 'function_call') {
         const acc = addCall(item.call_id || item.id, item.name);
         if (item.id) byItem.set(item.id, acc);
-        if (onToolDelta) onToolDelta({ id: acc.id, name: acc.function.name, argsPreview: '', bytes: 0 });
+        if (onToolDelta) onToolDelta(toolDeltaPayload(acc));
       }
     } else if (type === 'response.function_call_arguments.delta') {
       const acc = byItem.get(ev.item_id);
       if (acc) {
         pushToolArg(acc, ev.delta);
-        if (onToolDelta) {
-          onToolDelta({
-            id: acc.id,
-            name: acc.function.name,
-            argsPreview: acc.function.arguments.slice(0, 320),
-            bytes: acc.function.arguments.length,
-          });
-        }
+        if (onToolDelta) onToolDelta(toolDeltaPayload(acc));
       }
     } else if (type === 'response.function_call_arguments.done') {
       const acc = byItem.get(ev.item_id);
@@ -1399,14 +1400,7 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
           acc.function.arguments = JSON.stringify(fc.args || {});
           if (part.thoughtSignature) acc.thoughtSignature = part.thoughtSignature;
           message.tool_calls.push(acc);
-          if (onToolDelta) {
-            onToolDelta({
-              id: acc.id,
-              name: acc.function.name,
-              argsPreview: acc.function.arguments.slice(0, 320),
-              bytes: acc.function.arguments.length,
-            });
-          }
+          if (onToolDelta) onToolDelta(toolDeltaPayload(acc));
         }
       }
       if (cand.finishReason) message.finish_reason = geminiFinish(cand.finishReason);

@@ -460,8 +460,30 @@ const executors = {
       };
       timer = setTimeout(() => { timedOut = true; killGroup(); armGrace(); }, t);
       if (abortSignal) abortSignal.addEventListener('abort', onAbort, { once: true });
-      child.stdout.on('data', (d) => buf.push(d));
-      child.stderr.on('data', (d) => buf.push(d));
+      let lastOutStreamAt = 0;
+      const emitBashStream = () => {
+        if (!execCtx || typeof execCtx.emit !== 'function') return;
+        const now = Date.now();
+        if (now - lastOutStreamAt < 150) return;
+        lastOutStreamAt = now;
+        const txt = buf.text();
+        const lines = txt ? txt.split('\n').length : 0;
+        const target = String(description || command || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+        try {
+          execCtx.emit({
+            type: 'toolStream',
+            id: execCtx.currentToolId || '',
+            name: 'Bash',
+            bytes: Buffer.byteLength(txt, 'utf8'),
+            lines,
+            target,
+            preview: txt.slice(-600),
+            phase: 'stdout',
+          });
+        } catch (_) {}
+      };
+      child.stdout.on('data', (d) => { buf.push(d); emitBashStream(); });
+      child.stderr.on('data', (d) => { buf.push(d); emitBashStream(); });
       child.on('error', (e) => finish(null, null, e));
       // `exit` fires when zsh is done; `close` waits for every holder of the
       // pipes. A backgrounded `server &` keeps them open forever, so settle a
@@ -2120,7 +2142,7 @@ async function runToolInner(name, args, ctx) {
       if (ctx.allowRichRead) finalArgs._allowRichRead = true;
     }
     if (!finalArgs.cwd && ctx.cwd) finalArgs.cwd = ctx.cwd;
-    const content = await withTimeout(fn(finalArgs, { signal: ctx.signal, cwd: finalArgs.cwd }), toolTimeoutMs(name, finalArgs), name);
+    const content = await withTimeout(fn(finalArgs, { signal: ctx.signal, cwd: finalArgs.cwd, emit: ctx.emit, currentToolId: ctx.currentToolId }), toolTimeoutMs(name, finalArgs), name);
     if (content && typeof content === 'object' && (content.isError || typeof content.content === 'string')) return content;
     return { content: String(content) };
   } catch (e) {

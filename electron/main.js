@@ -5,7 +5,7 @@ const os = require('os');
 const fs = require('fs');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
-const { runAgent, normalizeProvider, humanizeLLMError } = require('./llm');
+const { runAgent, createPauseController, normalizeProvider, humanizeLLMError } = require('./llm');
 const store = require('./store');
 const { MCPClient } = require('./mcp');
 const { ShellManager } = require('./shell');
@@ -39,6 +39,7 @@ const sessionlog = require('./sessionlog');
 const { hydrateOrchestrator, poolDeadNotice } = require('./orch-hydrate');
 const rea = require('./rea');
 const gdrive = require('./gdrive');
+const ideIpc = require('./ide/ipc');
 try { rea.enrichProcessPath(); } catch (_) {}
 
 // ---------------------------------------------------------------------------
@@ -876,7 +877,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     return { ok: false, error: e.message, needsSignIn };
   }
   const ac = new AbortController();
-  runs.set(runId, ac);
+  const pauseCtrl = createPauseController();
   const owner = winFor(event); // route streaming events back to the originating window
   const turnId = 't' + Date.now();
   // Event-sourced run log (DeepSeek-harness style): every structural event of
@@ -887,6 +888,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     if (owner && !owner.isDestroyed()) owner.webContents.send('autobot:event', { runId, ...evt });
     slog.append(evt);
   };
+  runs.set(runId, { ac, pauseCtrl, send });
   const emit = (evt) => send(evt);
 
   if (poolDead.length) emit({ type: 'notice', text: poolDeadNotice(poolDead) });
@@ -1080,6 +1082,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       extraTools,
       callMcpTool,
       signal: ac.signal,
+      pauseController: pauseCtrl,
       shell: shells,
       askUser,
       exitPlanMode,
@@ -1128,9 +1131,29 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   }
 });
 
+ipcMain.handle('autobot:pause', async (event, runId) => {
+  const entry = runs.get(runId);
+  if (!entry || !entry.pauseCtrl) return { ok: false, error: 'run not active' };
+  entry.pauseCtrl.pause();
+  if (entry.send) entry.send({ type: 'paused', paused: true });
+  return { ok: true, paused: true };
+});
+
+ipcMain.handle('autobot:resume', async (event, runId, steeringNote) => {
+  const entry = runs.get(runId);
+  if (!entry || !entry.pauseCtrl) return { ok: false, error: 'run not active' };
+  const note = String(steeringNote || '').trim();
+  entry.pauseCtrl.resume(note);
+  if (entry.send) entry.send({ type: 'paused', paused: false, steeringNote: note });
+  return { ok: true, paused: false };
+});
+
 ipcMain.handle('autobot:cancel', async (event, runId) => {
-  const ac = runs.get(runId);
-  if (ac) ac.abort();
+  const entry = runs.get(runId);
+  if (entry) {
+    const ac = entry.ac || entry;
+    if (ac && typeof ac.abort === 'function') ac.abort();
+  }
   return { ok: true };
 });
 
@@ -3814,6 +3837,11 @@ app.whenReady().then(() => {
     }).catch(() => {});
   } catch (_) {}
   applyFeatures(store.getFeatures());
+  try {
+    ideIpc.register({ ipcMain, normalizeProvider, hydrateProvider, hydrateOrchestrator, store, broadcast });
+  } catch (e) {
+    console.error('ideIpc register failed:', e.message);
+  }
   // Re-assert the login item on boot so a moved/reinstalled app keeps working
   // (macOS stores the path, and it changes between dev and packaged builds).
   try {
@@ -3875,6 +3903,7 @@ app.whenReady().then(() => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  try { ideIpc.cleanup(); } catch (_) {}
   try { scheduler.stop(); } catch (_) {}
   try { extHost.stopBridge(); } catch (_) {}
   try { require('./extbridge').stop(); } catch (_) {}
