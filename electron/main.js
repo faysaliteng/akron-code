@@ -34,6 +34,7 @@ const computeruse = require('./computeruse');
 const windowstate = require('./windowstate');
 const freellm = require('./freellm');
 const { createRuntimes } = require('./runtimes');
+const orchPool = require('./orch-pool');
 
 // ---------------------------------------------------------------------------
 // Rebrand migration: user data used to live under "Helio Bot".
@@ -781,6 +782,48 @@ async function hydrateProvider(provider) {
   return out;
 }
 
+// ---- Orchestrator pool validation -----------------------------------------
+// A saved pool row asserts "<this gateway> serves <this model>". Nothing used to
+// check that, so a stale row pointed at Ollama (localhost:11434) asking for
+// `claude-fable-5-2` produced
+//
+//   The provider says that model or endpoint does not exist —
+//   model 'claude-fable-5-2' not found
+//
+// which reads like a dead Claude subscription and was a local model server
+// answering honestly. Ask each anonymous row's gateway for its catalogue before
+// the turn and leave out only the rows that gateway itself disowned. A gateway
+// we cannot ask (down, 401, empty catalogue) leaves its row alone: the app
+// never invents a failure it did not observe. Subscription rows have no
+// anonymous endpoint and are never probed.
+async function validateOrchestrator(orch, emit) {
+  if (!orch || !Array.isArray(orch.providers) || !orch.providers.length) return orch;
+  let res;
+  try {
+    res = await orchPool.pruneUnserved(orch.providers, { timeoutMs: 2500 });
+  } catch (_) {
+    return orch; // validation must never cost a turn
+  }
+  if (!res || !res.dropped.length) return orch;
+  // Re-anchor the active row by identity so pruning an entry above it does not
+  // silently switch the pool to a different model.
+  const prevActive = Math.max(0, Number(orch.activeIndex) || 0);
+  const activeRow = orch.providers[prevActive];
+  const moved = activeRow ? res.providers.indexOf(activeRow) : 0;
+  const detail = res.dropped
+    .map((d) => (d.entry && d.entry.model ? d.entry.model : 'a model') + ' (' + d.why + ')')
+    .join('; ');
+  try {
+    emit({
+      type: 'notice',
+      text: 'Left ' + res.dropped.length + ' orchestrator ' +
+        (res.dropped.length === 1 ? 'model' : 'models') + ' out of this turn — ' + detail +
+        '. The saved row is untouched; remove it in Settings if that gateway no longer serves it.',
+    });
+  } catch (_) {}
+  return Object.assign({}, orch, { providers: res.providers, activeIndex: moved < 0 ? 0 : moved });
+}
+
 ipcMain.handle('autobot:run', async (event, payload) => {
   let { runId, messages, provider, cwd, useMemory, maxSteps, orchestrator, permissions, title, convId, swarm } = payload || {};
   // Resolve subscription accounts into a live bearer token before the turn.
@@ -816,6 +859,10 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     if (owner && !owner.isDestroyed()) owner.webContents.send('autobot:event', { runId, ...evt });
   };
   const emit = (evt) => send(evt);
+
+  // Kick off pool validation now so its network wait overlaps MCP discovery.
+  const orchInput = orchestrator || store.getOrchestrator();
+  const orchReady = validateOrchestrator(orchInput, emit).catch(() => orchInput);
 
   // gather MCP tools across connected servers
   const extraTools = [];
@@ -983,7 +1030,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     send({ type: 'cwd', dir: runCwd });
     const finalMessages = await runAgent({
       provider,
-      orchestrator: orchestrator || store.getOrchestrator(),
+      orchestrator: await orchReady,
       messages,
       cwd: runCwd,
       useMemory,
@@ -2992,9 +3039,13 @@ async function runScheduledPrompt({ task }) {
   // minted here at fire time (and refreshed if the subscription rotated).
   provider = await hydrateProvider(provider);
   let out = '';
+  // The pool is shared with interactive turns, so a stale row would break a
+  // scheduled task too — and a scheduled run has no window to complain into.
+  let orch = store.getOrchestrator();
+  try { orch = await validateOrchestrator(orch, () => {}); } catch (_) { /* keep the pool as stored */ }
   const finalMessages = await runAgent({
     provider,
-    orchestrator: store.getOrchestrator(),
+    orchestrator: orch,
     messages: [{ role: 'user', content: String(task.prompt) }],
     cwd: workspace.scratch(),
     useMemory: true,

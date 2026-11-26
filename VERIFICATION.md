@@ -1771,16 +1771,33 @@ GET  /v1/models?limit=2
 → 200 claude-fable-5-2, max_input_tokens 1000000
 ```
 
-Anthropic writes `model: <id>` — colon, no quotes. The reported
-`model 'claude-fable-5-2' not found` (single quotes, "not found" suffix) is the
-wording of an **OpenAI-compatible gateway**, not Anthropic: the in-app
-FreeLLMAPI router's own miss reads `not found — try /v1/models or POST
-/v1/chat/completions` (`electron/freellm.js:683`), and its config
-(`~/.autobot/freellm.json`) carries seven upstreams and no `fable` id at all. So
-the screenshot was a gateway row asked for a model it does not host — a provider
-404 with an opaque body, which is exactly the case §35.6 makes diagnosable.
+Anthropic writes `model: <id>` — colon, no quotes, inside a `{"type":"error",…}`
+envelope. The reported `model 'claude-fable-5-2' not found` (single quotes,
+`not found` suffix, `{"error":{…}}` envelope) is not Anthropic's wording. It is
+**Ollama's**, and the request that produced it is reproducible on this machine:
 
-### 35.6 A 404 now names the endpoint that answered
+```
+POST http://localhost:11434/v1/chat/completions {"model":"claude-fable-5-2"}
+→ 404 {"error":{"message":"model 'claude-fable-5-2' not found",
+                "type":"not_found_error","param":null,"code":null}}
+```
+
+(byte-identical to the banner body; saved as `ollama-404.json`). The request came
+from `~/.autobot/orchestrator.json`, which held one legacy row:
+
+```json
+{"id":"pmwwlyh4x","name":"Provider 1","baseURL":"http://localhost:11434/v1",
+ "apiKey":"","model":"claude-fable-5-2","tier":"heavy"}
+```
+
+`settings.json` was correct throughout (`baseURL:""`,
+`oauthProvider:"claude:rxpromedbd-gmail-com"`, `transport:"anthropic"`), so the
+bad binding was pool-only. Ollama on this machine serves `gemma4:latest` and one
+other model — nothing Claude-shaped — so that row could never succeed, and every
+orchestrated turn that picked it reported a dead subscription that was fine. The
+pool trusted its rows; §35.6 makes it ask the gateway.
+
+### 35.5 A 404 now names the endpoint that answered
 
 `404` is the only status whose friendly prose is unfalsifiable: "model or endpoint
 does not exist" is equally true of a wrong path, a gateway that never heard of the
@@ -1810,14 +1827,57 @@ Probing gotcha found the hard way: `publicRecord()` exposes `account` and
 `Claude needs to be signed in again…`, and the result reads like a credential
 regression that is not there. Always build it from `acct.account`.
 
-### 35.5 Regression
+### 35.6 A pool row is a claim its gateway has to honour
+
+Every anonymous pool row asserts *"this gateway serves this model"*, and nothing
+verified it. `electron/orch-pool.js` (`pruneUnserved`) asks each such row's own
+gateway once per turn:
+
+- candidate URLs: `<base>/models`. A base that already names a version
+  (`…/v1`, `…/v1beta/openai`) is asked directly; a bare host also tries
+  `<base>/v1/models`.
+- accepts the three shapes OpenAI-compatible servers return —
+  `{"data":[{"id"}]}`, `{"models":[{"name"}]}` (Ollama `/api/tags`), `["…"]`.
+- **drops a row only on positive evidence**: HTTP 200 *with* a non-empty
+  catalogue that does not contain the row's model (case-insensitive, trailing
+  slash normalised).
+- keeps the row and marks it `unverified` when the gateway is down, returns
+  401/5xx, answers with an unparseable body, or returns an **empty** list (that
+  is what a router with no keys says — pruning on it would erase working rows).
+- never probes subscription rows (`oauthProvider`): their binding is resolved in
+  main and a dead one already surfaces as its own sign-in error.
+- 2.5 s budget per turn in `validateOrchestrator()`, run concurrently with MCP
+  discovery, and any internal failure returns the pool unchanged — validation
+  can never cost a turn.
+
+Pruning is **per turn**. The stored row survives, the notice says so, and
+`activeIndex` is re-anchored by row identity so removing an entry above the active
+one does not silently switch models.
+
+Live in the dev build (`probe-orch-prune`, 8/8): the measured stale row seeded
+first and active, one real turn through Ollama, events
+`notice, cwd, delta, done, complete` and
+
+```
+Left 1 orchestrator model out of this turn — claude-fable-5-2
+(http://localhost:11434/v1/models serves 2 models and claude-fable-5-2 is not one
+of them). The saved row is untouched; remove it in Settings if that gateway no
+longer serves it.
+```
+
+`test/orch-pool.test.js` (32 assertions) replays the live 404, proves a served
+model survives (case + trailing slash), and pins the no-false-positives cases:
+401, ECONNREFUSED, empty catalogue, HTML body, silent gateway (60 ms deadline,
+returns in <1.5 s).
+
+### 35.7 Regression
 
 All suites green in the standalone tree after a clean `npm ci` (578 packages),
 27 files: `provideroauth 254`, `providertransport 169`,
 `e2e 112`, `extensionhost 162`, `compliance 147`, `mcpoauth 146`, `swarm 62`,
 `hooks 49`, `freellm 37`, `reconnect-code 24`, `providerhydrate 18`,
 `model-catalog 22 groups`, `artifacttypes 82`, `sandbox 22`, `runtimes 23 groups`,
-`error-banner 8`.
+`error-banner 8`, `orch-pool 32`.
 `test/provideroauth.test.js` sets `AUTOBOT_HOME` to a scratch dir before `require`
 and asserts the real `~/.autobot/provider-oauth.json` bytes are unchanged — that
 suite had been corrupting the live store.
