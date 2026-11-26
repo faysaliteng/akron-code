@@ -49,4 +49,15 @@ function ensureDir(p, cwd) {
   return resolved;
 }
 
-module.exports = { expandPath, resolvePath, ensureDir, homeDir: () => os.homedir() };
+let cachedPosixShell = null;
+function defaultPosixShell() {
+  if (cachedPosixShell) return cachedPosixShell;
+  const fs = require('fs');
+  for (const cand of ['/bin/zsh', '/usr/bin/zsh', '/bin/bash', '/usr/bin/bash', '/bin/sh']) {
+    try { if (fs.existsSync(cand)) { cachedPosixShell = cand; return cand; } } catch (_) {}
+  }
+  cachedPosixShell = '/bin/sh';
+  return cachedPosixShell;
+}
+
+module.exports = { expandPath, resolvePath, ensureDir, defaultPosixShell, homeDir: () => os.homedir() };

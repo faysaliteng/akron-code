@@ -190,8 +190,9 @@ async function powershell(args, ctx) {
     const out = await run(args.shell || 'powershell.exe', ps, { cwd: ctx.cwd, timeoutMs });
     return out.trim() || '(no output)';
   }
-  const out = await run('/bin/zsh', ['-lc', command], { cwd: ctx.cwd, timeoutMs });
-  return (out.trim() || '(no output)') + (args.note !== false ? '\n\n(PowerShell unavailable on this host — ran via /bin/zsh.)' : '');
+  const sh = require('./paths').defaultPosixShell();
+  const out = await run(sh, ['-lc', command], { cwd: ctx.cwd, timeoutMs });
+  return (out.trim() || '(no output)') + (args.note !== false ? `\n\n(PowerShell unavailable on this host — ran via ${sh}.)` : '');
 }
 
 // ────────────────────────────────────────────────────────────
@@ -718,7 +719,7 @@ async function monitor(args, ctx) {
         resolve(`Monitor "${description}" finished (${reason}) — ${lines.length} event line(s)${lines.length ? ':\n' + lines.slice(-200).join('\n') : ''}`);
       };
       try {
-        const shFile = process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh';
+        const shFile = process.platform === 'win32' ? 'powershell.exe' : require('./paths').defaultPosixShell();
         const shArgs = process.platform === 'win32'
           ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String(command)]
           : ['-lc', command];

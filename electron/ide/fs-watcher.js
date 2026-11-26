@@ -258,7 +258,7 @@ function watcherBackend() {
   return parcelWatcher ? 'parcel' : 'fs.watch';
 }
 
-const watchers = new Map(); // cwd -> { watcher, sub, timer, pending, backend }
+const watchers = new Map(); // cwd -> { watcher, bootstrapWatchers, sub, timer, pending, backend }
 
 function unwatchWorkspace(cwd) {
   if (!cwd) return;
@@ -267,6 +267,10 @@ function unwatchWorkspace(cwd) {
   if (!rec) return;
   if (rec.timer) clearTimeout(rec.timer);
   try { if (rec.watcher) rec.watcher.close(); } catch (_) {}
+  for (const bw of rec.bootstrapWatchers || []) {
+    try { bw.close(); } catch (_) {}
+  }
+  rec.bootstrapWatchers = [];
   try { if (rec.sub && typeof rec.sub.unsubscribe === 'function') rec.sub.unsubscribe().catch(() => {}); } catch (_) {}
   watchers.delete(key);
 }
@@ -302,11 +306,33 @@ function watchWorkspace(cwd, onChange) {
     rec.timer = setTimeout(flush, 120);
     if (rec.timer && typeof rec.timer.unref === 'function') rec.timer.unref();
   };
-  const rec = { watcher: null, sub: null, timer: null, pending, backend: 'fs.watch' };
+  const rec = { watcher: null, bootstrapWatchers: [], sub: null, timer: null, pending, backend: 'fs.watch' };
 
   if (parcelWatcher && typeof parcelWatcher.subscribe === 'function') {
     rec.backend = 'parcel';
     watchers.set(root, rec);
+    // Synchronous bootstrap fs.watch (plus 1-level child dirs on Linux where fs.watch is non-recursive)
+    // covers the async gap before @parcel/watcher's native inotify/FSEvents subscription resolves.
+    const attachBootstrap = (dir, prefix = '') => {
+      try {
+        const w = fs.watch(dir, { recursive: process.platform !== 'linux' }, (eventType, filename) => {
+          const raw = filename ? String(filename).replace(/\\/g, '/') : '';
+          const rel = prefix ? (raw ? `${prefix}/${raw}` : prefix) : raw;
+          scheduleEvent(rel, eventType || 'change');
+        });
+        rec.bootstrapWatchers.push(w);
+      } catch (_) {}
+    };
+    attachBootstrap(root);
+    if (process.platform === 'linux') {
+      try {
+        for (const ent of fs.readdirSync(root, { withFileTypes: true })) {
+          if (ent.isDirectory() && !DEFAULT_IGNORE_DIRS.has(ent.name)) {
+            attachBootstrap(path.join(root, ent.name), ent.name);
+          }
+        }
+      } catch (_) {}
+    }
     parcelWatcher.subscribe(root, (err, events) => {
       if (err || !Array.isArray(events)) return;
       for (const ev of events) {
@@ -316,6 +342,8 @@ function watchWorkspace(cwd, onChange) {
     }, {
       ignore: ['.git', 'node_modules', 'dist', 'release', 'build', '.next', '__pycache__'],
     }).then((sub) => {
+      for (const bw of rec.bootstrapWatchers) { try { bw.close(); } catch (_) {} }
+      rec.bootstrapWatchers = [];
       if (watchers.get(root) === rec) rec.sub = sub;
       else sub.unsubscribe().catch(() => {});
     }).catch(() => {});

@@ -65,9 +65,10 @@ withSettings({});
 ok('network: no list = allow all', sandbox.isHostAllowed('https://anything.dev') === true);
 
 // ── wrapShell ────────────────────────────────────────────────────────────────
+const expectedPosix = require('../electron/paths').defaultPosixShell();
 withSettings({ sandbox: { enabled: false } });
 const plain = sandbox.wrapShell('echo hi');
-ok('wrapShell disabled → zsh', plain.file === '/bin/zsh' && plain.sandboxed === false);
+ok('wrapShell disabled → posix shell', plain.file === expectedPosix && plain.sandboxed === false);
 
 withSettings({ sandbox: { enabled: true, filesystem: { denyRead: [path.join(home, 'secret')], denyWrite: [], allowRead: [], allowManagedReadPathsOnly: false } } });
 const wrapped = sandbox.wrapShell('cat ~/x');
@@ -78,7 +79,7 @@ if (process.platform === 'darwin' && fs.existsSync('/usr/bin/sandbox-exec')) {
   ok('wrapShell non-darwin unsandboxed', wrapped.sandboxed === false);
 }
 const bypass = sandbox.wrapShell('rm -rf ~/x', { dangerouslyDisableSandbox: true });
-ok('dangerouslyDisableSandbox bypasses', bypass.file === '/bin/zsh');
+ok('dangerouslyDisableSandbox bypasses', bypass.file === expectedPosix);
 
 // ── describe() ───────────────────────────────────────────────────────────────
 withSettings({ sandbox: { enabled: true, filesystem: { denyRead: ['/tmp/x'], allowRead: [], denyWrite: [], allowManagedReadPathsOnly: false }, network: { allowedDomains: ['a.com'], deniedDomains: [], allowManagedDomainsOnly: false } } });

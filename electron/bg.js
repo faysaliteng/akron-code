@@ -68,7 +68,7 @@ function view(job, { full = false } = {}) {
 }
 
 // ── Shell jobs ─────────────────────────────────────────────────────────────
-function startShell({ command, cwd, shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh', env, dangerouslyDisableSandbox } = {}) {
+function startShell({ command, cwd, shell = process.platform === 'win32' ? 'powershell.exe' : require('./paths').defaultPosixShell(), env, dangerouslyDisableSandbox } = {}) {
   if (!command) throw new Error('command required');
   const job = create('shell', { command, cwd });
   let file = shell;
@@ -151,7 +151,7 @@ function startAgent({ label, description, model, run, controller, onStop } = {})
 // Each stdout line is an event; `onLine` receives them live.
 function startMonitor({ command, description, timeoutMs = 300000, persistent = false, cwd, onLine, onExit } = {}) {
   const job = create('monitor', { command, description });
-  const shFile = process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh';
+  const shFile = process.platform === 'win32' ? 'powershell.exe' : require('./paths').defaultPosixShell();
   const shArgs = process.platform === 'win32'
     ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String(command)]
     : ['-l', '-c', String(command)];

@@ -131,7 +131,7 @@ except Exception:
 
 function defaultShell() {
   if (process.platform === 'win32') return process.env.COMSPEC ? 'powershell.exe' : 'powershell.exe';
-  return process.env.SHELL && fs.existsSync(process.env.SHELL) ? process.env.SHELL : '/bin/zsh';
+  return process.env.SHELL && fs.existsSync(process.env.SHELL) ? process.env.SHELL : require('../paths').defaultPosixShell();
 }
 
 function startPipeOrPythonSession(id, opts, { cwd, cols, rows, shellBin, env, onData, onExit, pendingWrites, pendingResize }) {

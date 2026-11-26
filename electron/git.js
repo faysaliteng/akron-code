@@ -10,7 +10,8 @@ const path = require('path');
 
 function run(cmd, cwd, timeoutMs = 8000) {
   return new Promise((resolve) => {
-    exec(cmd, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, shell: process.platform === 'win32' ? true : '/bin/zsh', windowsHide: true }, (err, stdout) => {
+    const sh = process.platform === 'win32' ? true : require('./paths').defaultPosixShell();
+    exec(cmd, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, shell: sh, windowsHide: true }, (err, stdout) => {
       resolve(err ? null : String(stdout || '').replace(/\r?\n+$/, ''));
     });
   });

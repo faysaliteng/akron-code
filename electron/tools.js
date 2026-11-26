@@ -1299,7 +1299,7 @@ function runCode(lang, code, cwd, timeoutMs) {
     } else if (lang === 'bash' || lang === 'sh' || lang === 'shell') {
       cmd = process.platform === 'win32'
         ? 'powershell.exe -NoLogo -NoProfile -NonInteractive -Command ' + JSON.stringify(String(code))
-        : '/bin/zsh -c ' + JSON.stringify(String(code));
+        : require('./paths').defaultPosixShell() + ' -c ' + JSON.stringify(String(code));
     } else {
       resolve(`Unsupported REPL language "${lang}". Supported: javascript/node, python, bash/shell.`);
       return;

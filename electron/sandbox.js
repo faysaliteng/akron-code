@@ -244,9 +244,10 @@ function profileFor(pol) {
  */
 function wrapShell(command, opts = {}) {
   const pol = load().sandbox;
+  const posixSh = require('./paths').defaultPosixShell();
   const shellCmd = process.platform === 'win32'
     ? { file: 'powershell.exe', args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String(command)] }
-    : { file: '/bin/zsh', args: ['-l', '-c', String(command)] };
+    : { file: posixSh, args: ['-l', '-c', String(command)] };
   if (!pol.enabled || opts.dangerouslyDisableSandbox) {
     return { ...shellCmd, sandboxed: false };
   }
@@ -261,7 +262,7 @@ function wrapShell(command, opts = {}) {
   const profile = profileFor(pol);
   return {
     file: SANDBOX_EXEC,
-    args: ['-p', profile, '/bin/zsh', '-l', '-c', String(command)],
+    args: ['-p', profile, posixSh, '-l', '-c', String(command)],
     sandboxed: true,
   };
 }

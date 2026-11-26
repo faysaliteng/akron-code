@@ -47,8 +47,12 @@ async function testFsWatcher() {
     if (Array.isArray(evts) && evts.length) sawWatchEvt = true;
   });
   assert(wres.ok);
+  await new Promise((r) => setTimeout(r, 120));
   fs.writeFileSync(path.join(dir, 'src', 'index.js'), 'console.log("updated");\n', 'utf8');
-  await new Promise((r) => setTimeout(r, 320));
+  const deadline = Date.now() + 1500;
+  while (!sawWatchEvt && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 60));
+  }
   fsWatcher.unwatchWorkspace(dir);
   assert(sawWatchEvt, 'fs.watch callback should fire on edit');
 

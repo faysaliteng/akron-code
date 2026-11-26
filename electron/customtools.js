@@ -90,7 +90,7 @@ function makeExecutor(spec) {
         cmd = 'powershell.exe';
         argv = ['-NoLogo', '-NoProfile', '-Command', spec.script];
       } else {
-        cmd = '/bin/zsh';
+        cmd = require('./paths').defaultPosixShell();
         argv = ['-c', spec.script];
       }
     } else if (spec.runtime === 'python3') {

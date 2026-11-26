@@ -14,7 +14,7 @@ class ShellManager {
   }
 
   // Spawn a persistent shell in a given cwd.
-  start({ cwd, shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh', pathPrefix = '' } = {}) {
+  start({ cwd, shell = process.platform === 'win32' ? 'powershell.exe' : require('./paths').defaultPosixShell(), pathPrefix = '' } = {}) {
     const id = 'sh' + this.nextId++;
     // `-s`: read commands from stdin even when the parent has a controlling
     // TTY (terminal launch, test runner) — plain `zsh -i` reads /dev/tty there

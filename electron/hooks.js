@@ -102,7 +102,7 @@ function runCommandHook(hook, payload, cwd) {
   return new Promise((resolve) => {
     let settled = false;
     const done = (r) => { if (!settled) { settled = true; resolve(r); } };
-    const shFile = process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh';
+    const shFile = process.platform === 'win32' ? 'powershell.exe' : require('./paths').defaultPosixShell();
     const shArgs = process.platform === 'win32'
       ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', hook.command]
       : ['-l', '-c', hook.command];
