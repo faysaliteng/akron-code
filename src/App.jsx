@@ -73,12 +73,10 @@ function ProvNotice({ text, warn, className }) {
 // ---------- chat notice bar ----------
 // The bar above the composer carries compaction notes, goal echoes and the
 // orchestrator-pool drop ("Left 1 orchestrator model out of this turn — …").
-// It used to be unclosable, so one failover line sat there for the rest of the
-// session. Dismissal is keyed on the bar's own text: closing this message can
-// never swallow the next, different one.
-function ChatNoticeBar({ text }) {
-  const [closed, setClosed] = useState(null);
-  if (!text || closed === text) return null;
+// Dismissal clears the parent notice state directly so the same message can
+// appear again cleanly if triggered later, and it also auto-clears after 5s.
+function ChatNoticeBar({ text, onDismiss }) {
+  if (!text) return null;
   return (
     <div className="noticebar">
       <span className="noticebar-text">{text}</span>
@@ -87,7 +85,7 @@ function ChatNoticeBar({ text }) {
         className="noticebar-x"
         title="Dismiss"
         aria-label="Dismiss"
-        onClick={() => setClosed(text)}
+        onClick={() => onDismiss && onDismiss()}
       ><Icon name="X" size={12} /></button>
     </div>
   );
@@ -647,12 +645,12 @@ export default function App() {
   const [notice, setNotice] = useState(''); // transient banner (SendUserMessage / SetGoal)
   useEffect(() => {
     if (!notice) return;
-    const t = setTimeout(() => setNotice((cur) => (cur === notice ? '' : cur)), 6500);
+    const t = setTimeout(() => setNotice((cur) => (cur === notice ? '' : cur)), 5000);
     return () => clearTimeout(t);
   }, [notice]);
   useEffect(() => {
-    if (!error || !String(error).startsWith('✅')) return;
-    const t = setTimeout(() => setError((cur) => (cur === error ? '' : cur)), 5500);
+    if (!error) return;
+    const t = setTimeout(() => setError((cur) => (cur === error ? '' : cur)), 5000);
     return () => clearTimeout(t);
   }, [error]);
   const [attachments, setAttachments] = useState([]); // { name, path, size, isText, content }
@@ -2128,7 +2126,7 @@ export default function App() {
         setConvs([]);
         setActiveId(null);
         setLiveSync(null);
-        setError('Reset complete.');
+        setError('✅ Reset complete.');
         break;
       case 'status':
         appendAssistant('**Status**\n- Provider: `' + provider.baseURL + '`\n- Model: `' + provider.model + '`\n- Tools: function-calling ' + (provider.supportsTools ? 'enabled' : 'disabled') + '\n- Memory: ' + (settings.useMemory ? 'on' : 'off') + '\n- CWD: `' + (cwd || '~') + '`');
@@ -2962,12 +2960,12 @@ export default function App() {
           </div>
 
           {error && (
-            <div className={'errorbar' + (String(error).startsWith('✅') ? ' ok' : '')}>
-              <span>{error}</span>
-              <button type="button" className="errorbar-x" aria-label="Dismiss" onClick={() => setError('')}><Icon name="X" size={12} /></button>
+            <div className={'errorbar' + (String(error).startsWith('✅') ? ' ok' : '') + (showSettings || gdriveModalOpen ? ' floating-modal-toast' : '')}>
+              <span className="errorbar-text">{error}</span>
+              <button type="button" className="errorbar-x" title="Dismiss" aria-label="Dismiss" onClick={() => setError('')}><Icon name="X" size={12} /></button>
             </div>
           )}
-          <ChatNoticeBar text={notice} />
+          <ChatNoticeBar text={notice} onDismiss={() => setNotice('')} />
 
           <InputBar
             streaming={streaming} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
@@ -3758,6 +3756,11 @@ function RunLogPanel({ convId }) {
   const [playing, setPlaying] = useState(false);
   const [checkpoints, setCheckpoints] = useState([]);
   const [rewindMsg, setRewindMsg] = useState('');
+  useEffect(() => {
+    if (!rewindMsg) return undefined;
+    const t = setTimeout(() => setRewindMsg((cur) => (cur === rewindMsg ? '' : cur)), 5000);
+    return () => clearTimeout(t);
+  }, [rewindMsg]);
 
   const loadLog = useCallback(async () => {
     if (!convId || !window.autobot || !window.autobot.sessionLog) return;
@@ -3875,7 +3878,12 @@ function RunLogPanel({ convId }) {
 
       {tab === 'checkpoints' && (
         <div className="rl-cp-list">
-          {rewindMsg && <div className="noticebar" style={{ borderRadius: 8, padding: '7px 10px' }}>{rewindMsg}</div>}
+          {rewindMsg && (
+            <div className="noticebar" style={{ borderRadius: 8, padding: '7px 10px' }}>
+              <span className="noticebar-text">{rewindMsg}</span>
+              <button type="button" className="noticebar-x" title="Dismiss" aria-label="Dismiss" onClick={() => setRewindMsg('')}><Icon name="X" size={12} /></button>
+            </div>
+          )}
           {checkpoints.length === 0 ? (
             <div className="env-empty">No file checkpoints recorded yet for this conversation.</div>
           ) : checkpoints.map((cp) => (
