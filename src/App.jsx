@@ -15,6 +15,7 @@ import { useVoiceDictation } from './voice';
 import { LiveChecklistCard, LiveToolActivityCard, StickyLiveToolBar, FilesChangedBar, summarizeChangedFiles } from './components/LiveProgress.jsx';
 import { CodeReviewPane } from './components/CodeReviewPane.jsx';
 import { AboutSection } from './components/AboutSection.jsx';
+import { NotificationCenter, useNotificationCenter } from './components/NotificationCenter.jsx';
 import { deriveSubAgents } from './review-helpers.mjs';
 import { IdeWorkbench } from './ide/IdeWorkbench.jsx';
 import { shortcutLabels } from './ide/shortcuts';
@@ -736,7 +737,7 @@ export default function App() {
     setLive(next);
   }, []);
   const [cwd, setCwd] = useState('');
-  const [error, setError] = useState('');
+  const [error, setErrorRaw] = useState('');
   const [question, setQuestion] = useState(null); // { id, type, text, options }
 
   // Organization compliance profile (`taint:*` capability namespace). The main
@@ -756,15 +757,26 @@ export default function App() {
   const [notebookCells, setNotebookCells] = useState([]);
   const [terminal, setTerminal] = useState({ tabs: [], active: null }); // { tabs: [{id,cwd,running,output}], active }
   const [artifactsExplicit, setArtifactsExplicit] = useState([]); // { name, language, content }
-  const [notice, setNotice] = useState(''); // transient banner (SendUserMessage / SetGoal)
-  useEffect(() => {
-    if (!notice) return;
-    const t = setTimeout(() => setNotice((cur) => (cur === notice ? '' : cur)), 5000);
-    return () => clearTimeout(t);
-  }, [notice]);
+  const notifCenter = useNotificationCenter();
+  const setNotice = useCallback((text, opts) => {
+    const s = String(text || '').trim();
+    if (!s) { notifCenter.dismissToast(); return; }
+    notifCenter.pushNotification(s, opts);
+  }, [notifCenter.pushNotification, notifCenter.dismissToast]);
+  const setError = useCallback((msg) => {
+    const s = String(msg || '').trim();
+    if (!s) { setErrorRaw(''); return; }
+    if (s.startsWith('✅')) {
+      setErrorRaw('');
+      notifCenter.pushNotification(s, { kind: 'success' });
+      return;
+    }
+    setErrorRaw(s);
+    notifCenter.pushNotification(s, { kind: 'error' });
+  }, [notifCenter.pushNotification]);
   useEffect(() => {
     if (!error) return;
-    const t = setTimeout(() => setError((cur) => (cur === error ? '' : cur)), 5000);
+    const t = setTimeout(() => setErrorRaw((cur) => (cur === error ? '' : cur)), 5000);
     return () => clearTimeout(t);
   }, [error]);
   const [attachments, setAttachments] = useState([]); // { name, path, size, isText, content }
@@ -3132,6 +3144,7 @@ export default function App() {
             <Icon name="Add" size={14} />
           </button>
         </div>
+        <NotificationCenter {...notifCenter} Icon={Icon} />
       </div>
 
       {workbenchMode === 'ide' ? (
@@ -3203,7 +3216,6 @@ export default function App() {
                     <button type="button" className="errorbar-x" title="Dismiss" aria-label="Dismiss" onClick={() => setError('')}><Icon name="X" size={12} /></button>
                   </div>
                 )}
-                <ChatNoticeBar text={notice} onDismiss={() => setNotice('')} />
                 {streaming && paused && (
                   <div className="paused-banner" role="status">
                     <div className="paused-banner-left"><span className="paused-banner-dot" /><span>Paused — Resume or type a steering note</span></div>
@@ -3417,7 +3429,6 @@ export default function App() {
               <button type="button" className="errorbar-x" title="Dismiss" aria-label="Dismiss" onClick={() => setError('')}><Icon name="X" size={12} /></button>
             </div>
           )}
-          <ChatNoticeBar text={notice} onDismiss={() => setNotice('')} />
 
           {streaming && scrolledAway && (
             <StickyLiveToolBar

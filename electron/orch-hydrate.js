@@ -76,4 +76,44 @@ function poolDeadNotice(dead) {
     'The saved row is untouched; sign in again in Settings.';
 }
 
-module.exports = { hydrateOrchestrator, poolDeadNotice };
+/**
+ * Orchestrator pool hydration/pruning only applies when orchestrator failover
+ * is enabled OR when Swarm is active with role pools enabled.
+ */
+function isOrchestratorActiveForTurn(orch, swarm) {
+  if (!orch || typeof orch !== 'object') return false;
+  if (orch.enabled) return true;
+  if (swarm === true && orch.pools && orch.pools.enabled) return true;
+  return false;
+}
+
+/**
+ * Suppress identical consecutive pool-drop/prune notices across turns until the
+ * pool recovers or is modified in Settings / OAuth.
+ */
+function createPoolNoticeDeduper() {
+  let lastDead = '';
+  let lastPruned = '';
+  return {
+    shouldEmitDead(text) {
+      const next = String(text || '');
+      if (!next) { lastDead = ''; return false; }
+      if (next === lastDead) return false;
+      lastDead = next;
+      return true;
+    },
+    shouldEmitPruned(text) {
+      const next = String(text || '');
+      if (!next) { lastPruned = ''; return false; }
+      if (next === lastPruned) return false;
+      lastPruned = next;
+      return true;
+    },
+    reset() {
+      lastDead = '';
+      lastPruned = '';
+    },
+  };
+}
+
+module.exports = { hydrateOrchestrator, poolDeadNotice, isOrchestratorActiveForTurn, createPoolNoticeDeduper };

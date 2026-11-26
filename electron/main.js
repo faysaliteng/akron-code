@@ -36,7 +36,8 @@ const freellm = require('./freellm');
 const { createRuntimes } = require('./runtimes');
 const orchPool = require('./orch-pool');
 const sessionlog = require('./sessionlog');
-const { hydrateOrchestrator, poolDeadNotice } = require('./orch-hydrate');
+const { hydrateOrchestrator, poolDeadNotice, isOrchestratorActiveForTurn, createPoolNoticeDeduper } = require('./orch-hydrate');
+const poolNoticeDeduper = createPoolNoticeDeduper();
 const rea = require('./rea');
 const gdrive = require('./gdrive');
 const ideIpc = require('./ide/ipc');
@@ -938,14 +939,20 @@ async function hydrateProvider(provider) {
 // never invents a failure it did not observe. Subscription rows have no
 // anonymous endpoint and are never probed.
 async function validateOrchestrator(orch, emit) {
-  if (!orch || !Array.isArray(orch.providers) || !orch.providers.length) return orch;
+  if (!orch || !Array.isArray(orch.providers) || !orch.providers.length) {
+    poolNoticeDeduper.shouldEmitPruned('');
+    return orch;
+  }
   let res;
   try {
     res = await orchPool.pruneUnserved(orch.providers, { timeoutMs: 2500 });
   } catch (_) {
     return orch; // validation must never cost a turn
   }
-  if (!res || !res.dropped.length) return orch;
+  if (!res || !res.dropped.length) {
+    poolNoticeDeduper.shouldEmitPruned('');
+    return orch;
+  }
   // Re-anchor the active row by identity so pruning an entry above it does not
   // silently switch the pool to a different model.
   const prevActive = Math.max(0, Number(orch.activeIndex) || 0);
@@ -954,14 +961,12 @@ async function validateOrchestrator(orch, emit) {
   const detail = res.dropped
     .map((d) => (d.entry && d.entry.model ? d.entry.model : 'a model') + ' (' + d.why + ')')
     .join('; ');
-  try {
-    emit({
-      type: 'notice',
-      text: 'Left ' + res.dropped.length + ' orchestrator ' +
-        (res.dropped.length === 1 ? 'model' : 'models') + ' out of this turn — ' + detail +
-        '. The saved row is untouched; remove it in Settings if that gateway no longer serves it.',
-    });
-  } catch (_) {}
+  const noticeText = 'Left ' + res.dropped.length + ' orchestrator ' +
+    (res.dropped.length === 1 ? 'model' : 'models') + ' out of this turn — ' + detail +
+    '. The saved row is untouched; remove it in Settings if that gateway no longer serves it.';
+  if (poolNoticeDeduper.shouldEmitPruned(noticeText)) {
+    try { emit({ type: 'notice', text: noticeText }); } catch (_) {}
+  }
   return Object.assign({}, orch, { providers: res.providers, activeIndex: moved < 0 ? 0 : moved });
 }
 
@@ -970,13 +975,19 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   // The pool this turn will actually run against: the renderer's when it sent
   // one, otherwise the persisted one. Both need the same token resolution.
   const orchSource = orchestrator || store.getOrchestrator();
+  const orchActive = isOrchestratorActiveForTurn(orchSource, swarm);
   let poolDead = [];
   // Resolve subscription accounts into a live bearer token before the turn.
   try {
     provider = await hydrateProvider(provider);
-    const hy = await hydrateOrchestrator(orchSource, hydrateProvider);
-    orchestrator = hy.orch;
-    poolDead = hy.dead;
+    if (orchActive) {
+      const hy = await hydrateOrchestrator(orchSource, hydrateProvider);
+      orchestrator = hy.orch;
+      poolDead = hy.dead;
+    } else {
+      orchestrator = orchSource;
+      poolNoticeDeduper.reset();
+    }
   } catch (e) {
     // The run never started, so nothing else will ever clear the renderer's
     // streaming state. Emit the failure as a normal run event *and* return it,
@@ -1010,11 +1021,16 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   runs.set(runId, { ac, pauseCtrl, send });
   const emit = (evt) => send(evt);
 
-  if (poolDead.length) emit({ type: 'notice', text: poolDeadNotice(poolDead) });
+  const deadNotice = poolDead.length ? poolDeadNotice(poolDead) : '';
+  if (poolNoticeDeduper.shouldEmitDead(deadNotice)) {
+    emit({ type: 'notice', text: deadNotice });
+  }
 
   // Kick off pool validation now so its network wait overlaps MCP discovery.
   const orchInput = orchestrator || orchSource;
-  const orchReady = validateOrchestrator(orchInput, emit).catch(() => orchInput);
+  const orchReady = orchActive
+    ? validateOrchestrator(orchInput, emit).catch(() => orchInput)
+    : Promise.resolve(orchInput);
 
   // gather MCP tools across connected servers + built-in Google Drive tools
   const extraTools = [];
@@ -1531,6 +1547,7 @@ ipcMain.handle('autobot:providerSignIn', async (event, id) => {
       });
       // Register the new account's live catalog immediately: the very next turn
       // must compact against the real context window of whatever model it picks.
+      poolNoticeDeduper.reset();
       try {
         if (rec && rec.id) await fetchProviderModels(rec.id);
       } catch (_) {}
@@ -1596,6 +1613,7 @@ ipcMain.handle('autobot:providerSignInManual', async (event, id) => {
     task.then(async (rec) => {
       if (timer) clearTimeout(timer);
       pendingManualSignIn.delete(flowId);
+      poolNoticeDeduper.reset();
       try { if (rec && rec.id) await fetchProviderModels(rec.id); } catch (_) {}
       try { event.sender.send('autobot:providerManualResult', flowId, { ok: true, account: rec }); } catch (_) {}
     }).catch((e) => {
@@ -1632,7 +1650,9 @@ ipcMain.handle('autobot:providerSignOut', (event, id, account) => {
     const [provId, ...rest] = raw.split(':');
     const acct = account || rest.join(':');
     if (!acct) return { ok: false, error: 'which account?' };
-    return { ok: true, removed: providerOauth.removeAccount(provId, acct) };
+    const removed = providerOauth.removeAccount(provId, acct);
+    poolNoticeDeduper.reset();
+    return { ok: true, removed };
   } catch (e) {
     return { ok: false, error: oneLine(e) };
   }
@@ -1641,6 +1661,7 @@ ipcMain.handle('autobot:providerSignOut', (event, id, account) => {
 ipcMain.handle('autobot:providerImport', async () => {
   try {
     const result = await providerOauth.importLocal();
+    poolNoticeDeduper.reset();
     // Adoption brings a new account (and therefore a new catalog) into play.
     try { await warmModelCatalogs(); } catch (_) {}
     return { ok: true, result };
@@ -1651,6 +1672,7 @@ ipcMain.handle('autobot:providerAddBearer', async (event, id, token, label) => {
   try {
     if (!token) return { ok: false, error: 'a token is required' };
     const rec = await providerOauth.addBearer(String(id || ''), String(token), { label: label || '' });
+    poolNoticeDeduper.reset();
     return { ok: true, account: rec };
   } catch (e) {
     return { ok: false, error: oneLine(e) };
@@ -1858,6 +1880,7 @@ async function startClaudeLogin(event) {
         // The CLI owns the credential now; adopt it and refresh the catalog.
         try {
           const rec = await providerOauth.adoptClaudeFromCli();
+          poolNoticeDeduper.reset();
           try { if (rec && rec.id) await fetchProviderModels(rec.id); } catch (_) {}
           try { await warmModelCatalogs(); } catch (_) {}
           send('autobot:providerReconnectResult', flowId, { ok: true, account: rec });
@@ -2001,6 +2024,7 @@ ipcMain.handle('autobot:providerReconnectState', () => {
 ipcMain.handle('autobot:providerAdoptClaude', async () => {
   try {
     const rec = await providerOauth.adoptClaudeFromCli();
+    poolNoticeDeduper.reset();
     try { if (rec && rec.id) await fetchProviderModels(rec.id); } catch (_) {}
     try { await warmModelCatalogs(); } catch (_) {}
     return { ok: true, account: rec };
@@ -3019,7 +3043,10 @@ ipcMain.handle('autobot:transcribeAudio', async (e, payload = {}) => {
   }
 });
 ipcMain.handle('autobot:getOrchestrator', () => store.getOrchestrator());
-ipcMain.handle('autobot:setOrchestrator', (e, patch) => store.setOrchestrator(patch));
+ipcMain.handle('autobot:setOrchestrator', (e, patch) => {
+  poolNoticeDeduper.reset();
+  return store.setOrchestrator(patch);
+});
 // Live model health for the Role pools editor: per-row cooldown / dead / inflight
 // from the shared provider gate, plus the configured pools.
 ipcMain.handle('autobot:poolStatus', () => {

@@ -17,7 +17,7 @@ const ok = (name, cond, detail) => {
 };
 const eq = (name, a, b) => ok(name, JSON.stringify(a) === JSON.stringify(b), { got: a, want: b });
 
-const { hydrateOrchestrator, poolDeadNotice } = require('../electron/orch-hydrate');
+const { hydrateOrchestrator, poolDeadNotice, isOrchestratorActiveForTurn, createPoolNoticeDeduper } = require('../electron/orch-hydrate');
 
 // A resolver stand-in: stamps the token a real hydrateProvider() would mint,
 // removes accessToken on demand, and records which rows it was handed.
@@ -135,6 +135,27 @@ const row = (model, extra) => Object.assign({
     const pool = { enabled: true, activeIndex: 0, providers: [plain] };
     const r = await hydrateOrchestrator(pool, async (p) => p);
     ok('an untouched row is passed by reference', r.orch.providers[0] === plain);
+  }
+
+  // ---- Orchestrator activation & deduper guards ---------------------------
+  {
+    eq('null orch is inactive', isOrchestratorActiveForTurn(null, false), false);
+    eq('disabled orch & disabled swarm pools is inactive', isOrchestratorActiveForTurn({ enabled: false, pools: { enabled: false }, providers: [row('a')] }, false), false);
+    eq('disabled orch with pools enabled stays inactive when swarm is off', isOrchestratorActiveForTurn({ enabled: false, pools: { enabled: true }, providers: [row('a')] }, false), false);
+    eq('disabled orch becomes active when swarm & pools are both on', isOrchestratorActiveForTurn({ enabled: false, pools: { enabled: true }, providers: [row('a')] }, true), true);
+    eq('enabled orch is always active', isOrchestratorActiveForTurn({ enabled: true, providers: [row('a')] }, false), true);
+
+    const deduper = createPoolNoticeDeduper();
+    eq('empty dead notice does not emit', deduper.shouldEmitDead(''), false);
+    eq('first dead notice emits once', deduper.shouldEmitDead('Left 5 orchestrator models out of this turn — a'), true);
+    eq('identical consecutive dead notice is suppressed', deduper.shouldEmitDead('Left 5 orchestrator models out of this turn — a'), false);
+    eq('changed dead notice emits', deduper.shouldEmitDead('Left 1 orchestrator model out of this turn — b'), true);
+    eq('recovery clears dead state', deduper.shouldEmitDead(''), false);
+    eq('subsequent dead notice after recovery emits again', deduper.shouldEmitDead('Left 1 orchestrator model out of this turn — b'), true);
+    eq('first pruned notice emits once', deduper.shouldEmitPruned('Left 2 orchestrator models out of this turn — c'), true);
+    eq('identical pruned notice is suppressed', deduper.shouldEmitPruned('Left 2 orchestrator models out of this turn — c'), false);
+    deduper.reset();
+    eq('reset re-enables both dead and pruned notices', deduper.shouldEmitDead('Left 1 orchestrator model out of this turn — b') && deduper.shouldEmitPruned('Left 2 orchestrator models out of this turn — c'), true);
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
