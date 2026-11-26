@@ -42,6 +42,12 @@ const rea = require('./rea');
 const gdrive = require('./gdrive');
 const ideIpc = require('./ide/ipc');
 const brandGuard = require('./brand-guard');
+const {
+  APP_USER_MODEL_ID,
+  resolveAppIconPath,
+  resolveNotificationIconPath,
+  createNotificationService,
+} = require('./notifications');
 try { rea.enrichProcessPath(); } catch (_) {}
 
 // ---------------------------------------------------------------------------
@@ -100,6 +106,10 @@ const runs = new Map(); // runId -> AbortController
 // conversation index, provider accounts), so a second launch focuses the
 // running window instead. A `helio://` link that arrives while we are still
 // booting is parked and delivered once the window can receive it.
+if (process.platform === 'win32') {
+  try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch (_) {}
+}
+
 const gotSingleInstance = app.requestSingleInstanceLock();
 if (!gotSingleInstance && process.env.AKRON_COLD_BOOT_CHECK !== '1') app.quit();
 
@@ -118,11 +128,25 @@ function findMainWindow() {
 
 function focusMainWindow() {
   const win = findMainWindow();
-  if (!win) { if (app.isReady()) createWindow(); return; }
+  if (!win) { if (app.isReady()) createWindow(); return null; }
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
+  return win;
 }
+
+function windowIconProps() {
+  if (process.platform !== 'win32' && process.platform !== 'linux') return {};
+  const icon = resolveAppIconPath({ isPackaged: app.isPackaged });
+  return icon ? { icon } : {};
+}
+
+const notificationService = createNotificationService({
+  isPackaged: () => app.isPackaged,
+  getWindows: () => Array.from(windows),
+  getMainWindow: findMainWindow,
+  focusMainWindow,
+});
 
 function routeDeepLink(url) {
   if (!isDeepLink(url)) return;
@@ -322,6 +346,7 @@ function createWindow() {
     minWidth: 940,
     minHeight: 600,
     title: 'Akron Code',
+    ...windowIconProps(),
     backgroundColor: initTheme === 'light' ? '#ffffff' : '#131316',
     ...(isMac
       ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 12 } }
@@ -466,6 +491,7 @@ function createAboutWindow() {
     maximizable: false,
     fullscreenable: false,
     title: 'About Akron Code',
+    ...windowIconProps(),
     backgroundColor: '#30302e',
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : { autoHideMenuBar: true }),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false },
@@ -530,6 +556,7 @@ function createQuickWindow() {
     frame: false, resizable: false, movable: true,
     alwaysOnTop: true, skipTaskbar: true, show: false,
     backgroundColor: '#30302e',
+    ...windowIconProps(),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
   });
   quickWin.loadFile(path.join(__dirname, 'quick.html'));
@@ -653,6 +680,7 @@ function createArtifactWindow(payload) {
   const win = new BrowserWindow({
     width: canvas ? 1180 : 960, height: canvas ? 800 : 700, minWidth: 520, minHeight: 360,
     title: htmlTitle(html) || artifacttypes.windowTitle(language, name), backgroundColor: '#1e1f1c',
+    ...windowIconProps(),
     webPreferences: {
       contextIsolation: true, nodeIntegration: false, sandbox: false,
       // The bridge is only meaningful for canvas documents; plain code/SVG
@@ -786,6 +814,7 @@ async function createExtensionWindow(payload = {}) {
     height: height > 200 ? height : 620,
     title: info.name || 'Extension',
     backgroundColor: '#1e1f1c',
+    ...windowIconProps(),
     webPreferences,
   });
   extensionWindows.set(win.id, id);
@@ -2948,6 +2977,7 @@ ipcMain.handle('autobot:addPermissionRule', (e, payload) => {
 ipcMain.handle('autobot:removePermissionRule', (e, payload) => {
   try { return require('./permissions').removePermissionRule(payload || {}); } catch (err) { return { ok: false, error: err.message }; }
 });
+ipcMain.handle('autobot:notify', (_e, payload) => notificationService.notify(payload || {}));
 ipcMain.handle('autobot:checkPermission', (e, toolName, toolArgs, cwd, mode) => {
   try { return require('./permissions').decide(require('./permissions').loadPermissions(cwdFor(cwd)), toolName, toolArgs || {}, { cwd: cwdFor(cwd), mode: mode || store.getSettings().permissionMode || 'auto' }); } catch (_) { return { decision: 'ask' }; }
 });
@@ -3978,6 +4008,18 @@ async function freellmStatus() {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === 'darwin' && !app.isPackaged && app.dock && typeof app.dock.setIcon === 'function') {
+    try {
+      const dockIconPath = resolveNotificationIconPath({ isPackaged: false });
+      if (dockIconPath) {
+        const dockImg = nativeImage.createFromPath(dockIconPath);
+        if (dockImg && !dockImg.isEmpty()) app.dock.setIcon(dockImg);
+      }
+    } catch (_) {}
+  }
+  app.on('browser-window-focus', (_e, win) => {
+    notificationService.clearAttention(win);
+  });
   // Repair any project folder split left by the old auto-create logic (files in
   // `project/` while the conversation points at a titled-but-empty folder).
   try { workspace.reconcile(); } catch (e) { console.error('workspace reconcile failed:', e.message); }

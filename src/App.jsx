@@ -112,18 +112,31 @@ function playUiSound(presetId) {
   } catch (_) {}
 }
 
-function sendDesktopNotification(kind, title, body, settings) {
+function sendDesktopNotification(kind, title, body, settings, opts = {}) {
   try {
     const notif = (settings && settings.notifications) || { agent: true, permissions: true, questions: true, errors: false };
     const sounds = (settings && settings.sounds) || { agent: 'staplebops-01', permissions: 'staplebops-02', questions: 'staplebops-05', errors: 'none' };
     if (sounds[kind] && sounds[kind] !== 'none') playUiSound(sounds[kind]);
-    if (!notif[kind]) return;
+    if (!opts.force && !notif[kind]) return;
+    const cleanTitle = title || 'Akron Code';
+    const cleanBody = String(body || '').slice(0, 180);
+    if (typeof window !== 'undefined' && window.autobot && typeof window.autobot.notify === 'function') {
+      window.autobot.notify({
+        kind,
+        title: cleanTitle,
+        subtitle: opts.subtitle || '',
+        body: cleanBody,
+        convId: opts.convId || null,
+        force: !!opts.force,
+      }).catch(() => {});
+      return;
+    }
     if (typeof Notification !== 'undefined') {
       if (Notification.permission === 'granted') {
-        new Notification(title || 'Akron Code', { body: String(body || '').slice(0, 140), silent: true });
+        new Notification(cleanTitle, { body: cleanBody, silent: true });
       } else if (Notification.permission === 'default' && Notification.requestPermission) {
         Notification.requestPermission().then((p) => {
-          if (p === 'granted') new Notification(title || 'Akron Code', { body: String(body || '').slice(0, 140), silent: true });
+          if (p === 'granted') new Notification(cleanTitle, { body: cleanBody, silent: true });
         }).catch(() => {});
       }
     }
@@ -1342,7 +1355,7 @@ export default function App() {
           setPermissionQueue((q) => q.filter((p) => evt.runId && p.runId && p.runId !== evt.runId));
           if (evt && evt.usage) setLastUsage({ ...evt.usage, model: evt.usage.model || (evt.usage && evt.usage.model) || null, at: Date.now() });
           commitLive();
-          sendDesktopNotification('agent', 'Akron Code', 'Agent finished working in your workspace.', settings);
+          sendDesktopNotification('agent', 'Akron Code', 'Agent finished working in your workspace.', settings, { convId: evt.convId || runConvRef.current || activeIdRef.current || null });
           break;
         case 'cancelled':
           setPaused(false);
@@ -1358,18 +1371,18 @@ export default function App() {
           // Preserve anything already streamed, then show the failure.
           commitLive();
           setError(cleanErr(evt.message));
-          sendDesktopNotification('errors', 'Akron Code · Error', cleanErr(evt.message), settings);
+          sendDesktopNotification('errors', 'Akron Code · Error', cleanErr(evt.message), settings, { convId: evt.convId || runConvRef.current || activeIdRef.current || null });
           // A dead credential is fixed by signing in, not by retrying — open the
           // model menu so the button that resolves it is one click away.
           if (evt.needsSignIn) setModelMenuOpen(true);
           break;
         case 'question':
           setQuestion({ id: evt.id, type: 'question', text: evt.question, options: evt.options || [] });
-          sendDesktopNotification('questions', 'Akron Code needs input', evt.question, settings);
+          sendDesktopNotification('questions', 'Akron Code needs input', evt.question, settings, { convId: evt.convId || runConvRef.current || activeIdRef.current || null });
           break;
         case 'plan':
           setQuestion({ id: evt.id, type: 'plan', text: evt.plan, options: [] });
-          sendDesktopNotification('questions', 'Akron Code · Plan approval', 'Review proposed execution plan.', settings);
+          sendDesktopNotification('questions', 'Akron Code · Plan approval', 'Review proposed execution plan.', settings, { convId: evt.convId || runConvRef.current || activeIdRef.current || null });
           break;
         case 'permission': {
           const item = {
@@ -1383,7 +1396,7 @@ export default function App() {
           };
           setPermError('');
           setPermissionQueue((q) => (q.some((x) => x.id === item.id) ? q : [...q, item]));
-          sendDesktopNotification('permissions', 'Permission required', `${evt.tool}: ${evt.summary || 'approval needed'}`, settings);
+          sendDesktopNotification('permissions', 'Permission required', `${evt.tool}: ${evt.summary || 'approval needed'}`, settings, { convId: item.convId });
           break;
         }
         case 'permissionCleared':
@@ -1393,6 +1406,11 @@ export default function App() {
             if (evt.runId) return p.runId !== evt.runId;
             return false;
           }));
+          break;
+        case 'notificationClick':
+          setShowSettings(false);
+          setPanel('chats');
+          if (evt.convId) setActiveId(evt.convId);
           break;
         case 'computerUseConsent':
           // Desktop's `computer:request_access` / `request_full_control` /
@@ -3638,7 +3656,7 @@ export default function App() {
           memory={memory} addMemory={addMemory} clearMemory={clearMemory}
           notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells}
           openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook}
-          cwd={cwd} setCwd={setCwd}
+          cwd={cwd} setCwd={setCwd} activeId={activeId}
           onOpenGdrive={() => setGdriveModalOpen(true)}
           gdriveState={gdriveState}
           envState={envState}
@@ -10784,7 +10802,7 @@ function SettingsModal({
   mcpServers = [], mcpForm, setMcpForm, connectMcp, disconnectMcp,
   memory = [], addMemory, clearMemory,
   notebooks = [], activeNotebook, notebookCells = [], setNotebookCells, openNotebook, newNotebook, saveActiveNotebook, deleteActiveNotebook,
-  cwd, setCwd,
+  cwd, setCwd, activeId,
   onOpenGdrive, gdriveState,
   envState, refreshEnvState, onSwitchEnvironment, setError, setNotice,
 }) {
@@ -11121,7 +11139,26 @@ function SettingsModal({
             {section === 'notifications' && (
               <>
                 <div>
-                  <h3 className="oc-sec-title">Desktop notifications</h3>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
+                    <h3 className="oc-sec-title" style={{ margin: 0 }}>Desktop notifications</h3>
+                    <button
+                      type="button"
+                      className="btn-mini"
+                      data-testid="test-desktop-notification-btn"
+                      onClick={() => {
+                        sendDesktopNotification(
+                          'agent',
+                          'Akron Code',
+                          'Desktop notifications and the Akron Code logo are working across OS targets.',
+                          settings,
+                          { force: true, convId: activeId || null }
+                        );
+                        setNotice && setNotice('Sent test desktop notification');
+                      }}
+                    >
+                      <Icon name="Notification" size={12} /> Test Notification
+                    </button>
+                  </div>
                   <div className="oc-group">
                     {[
                       { k: 'agent', title: 'Agent', sub: 'Show system notification when the agent is complete or needs attention' },

@@ -181,6 +181,7 @@ contextBridge.exposeInMainWorld('autobot', {
 
   answerQuestion: (id, answer) => ipcRenderer.invoke('autobot:answerQuestion', id, answer),
   answerPermission: (id, payload) => ipcRenderer.invoke('autobot:answerPermission', id, payload),
+  notify: (payload) => ipcRenderer.invoke('autobot:notify', payload),
 
   listNotebooks: () => ipcRenderer.invoke('autobot:listNotebooks'),
   getNotebook: (name) => ipcRenderer.invoke('autobot:getNotebook', name),

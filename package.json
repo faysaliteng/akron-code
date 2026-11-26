@@ -89,6 +89,14 @@
       {
         "from": "resources/skills",
         "to": "skills"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
       }
     ],
     "directories": {
@@ -151,6 +159,7 @@
       "artifactName": "AkronCode-${version}-win-portable-${arch}.${ext}"
     },
     "linux": {
+      "icon": "build/icon.png",
       "target": [
         "AppImage"
       ],
