@@ -1,7 +1,7 @@
 {
   "name": "akronbot",
   "productName": "Akron Code",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Akron Code — multi-agent desktop coding IDE by Akronlogic.com",
   "main": "electron/main.js",
   "author": "AkronLogic",
@@ -22,6 +22,7 @@
     "dist": "npm run build && electron-builder --mac dmg zip",
     "dist:mac": "npm run build && electron-builder --mac dmg zip",
     "dist:win": "npm run build && electron-builder --win nsis portable",
+    "dist:linux": "npm run build && electron-builder --linux AppImage deb",
     "freellm": "node scripts/freellm-server.js",
     "icons": "electron build/render_icon.cjs"
   },
@@ -165,10 +166,13 @@
     },
     "linux": {
       "icon": "build/icon.png",
+      "maintainer": "AkronLogic <support@akronlogic.com>",
       "target": [
-        "AppImage"
+        "AppImage",
+        "deb"
       ],
-      "category": "Development"
+      "category": "Development",
+      "artifactName": "AkronCode-${version}-linux-${arch}.${ext}"
     }
   },
   "allowScripts": {

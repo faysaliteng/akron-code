@@ -110,7 +110,7 @@ const CAPABILITY_SURFACES = {
   downloads: { implemented: true, note: 'Export HTML / MD, Save .html per artboard, Print to PDF' },
   artifact: { implemented: true, note: 'Opens in its own window, embeds in chat and in the Artifacts panel' },
   comments: { implemented: true, note: 'Composer-only pins with custom x/y anchors, persisted per artifact' },
-  room: { implemented: false, note: 'collaboration rooms are not part of Akron Bot' },
+  room: { implemented: false, note: 'collaboration rooms are not part of Akron Code' },
   db: { implemented: true, note: 'Edits persist locally under ~/.autobot/artifact-edits.json (local owner is admin)' },
   assets: { implemented: true, note: 'Artboard/slide HTML renders in a sandboxed iframe' },
   user: { implemented: true, note: 'local account profile (name + initials) is exposed to the frame' },

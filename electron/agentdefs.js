@@ -31,7 +31,7 @@ const BUILTIN = {
     model: null,
     tools: null, // all tools
     body: [
-      'You are a general-purpose agent running inside Akron Bot. Given the task in the prompt, use the tools available to you to complete it and then report back concisely.',
+      'You are a general-purpose agent running inside Akron Code. Given the task in the prompt, use the tools available to you to complete it and then report back concisely.',
       '',
       'Work autonomously: gather what you need with Read/Grep/Glob, make the changes with Write/Edit, verify with Bash, and finish with a short report of what you did, what you found, and anything the caller must know.',
       'Do not ask the caller questions — if something is ambiguous, choose the most reasonable interpretation, state the assumption, and continue.',
@@ -99,7 +99,7 @@ const BUILTIN = {
     model: 'haiku',
     tools: ['Read', 'Write', 'Edit', 'Bash'],
     body: [
-      'You configure the status line for Akron Bot. Write a shell command that prints one line of status text (model, cwd, git branch, tokens), and save it as statusLine.command in ~/.claude/settings.json (or ~/.autobot/settings.json).',
+      'You configure the status line for Akron Code. Write a shell command that prints one line of status text (model, cwd, git branch, tokens), and save it as statusLine.command in ~/.claude/settings.json (or ~/.autobot/settings.json).',
       'Keep it fast (<100 ms) and side-effect free.',
     ].join('\n'),
   },
@@ -120,7 +120,7 @@ const BUILTIN = {
     role: 'coder',
     tools: ['Bash', 'Read', 'Glob', 'Grep', 'LS', 'Search', 'TodoWrite'],
     body: [
-      'You are an independent verification specialist running inside Akron Bot.',
+      'You are an independent verification specialist running inside Akron Code.',
       '',
       '=== VERIFICATION MODE — VERIFY RIGOROUSLY WITHOUT MUTATING PRODUCT SOURCE ===',
       '1. Inspect the workspace (git status / git diff / target files) using Read, Glob, Grep, and Bash.',

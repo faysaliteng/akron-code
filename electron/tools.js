@@ -378,7 +378,7 @@ const SLASH_COMMANDS = {
   model: 'Show or switch the active model.',
   review: 'Review the current working tree / recent changes for bugs and issues.',
   memory: 'Show the contents of long-term memory.',
-  reset: 'Reset Akron Bot to a clean state (clear memory + conversations).',
+  reset: 'Reset Akron Code to a clean state (clear memory + conversations).',
   status: 'Show provider, model, and tool configuration status.',
 };
 

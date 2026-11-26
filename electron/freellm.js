@@ -425,7 +425,7 @@ function buildUpstream(candidate, body) {
   if (p.apiKey) headers.authorization = 'Bearer ' + p.apiKey;
   if (spec.referer) {
     headers['http-referer'] = 'https://akronlogic.com';
-    headers['x-title'] = 'Akron Bot';
+    headers['x-title'] = 'Akron Code';
   }
   const url = providerBase(id, { providers: { [id]: p } }) + '/chat/completions';
   return { url, headers, payload };

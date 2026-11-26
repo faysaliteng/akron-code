@@ -32,15 +32,26 @@ check() {
     exit 1
   fi
 }
-check "browser inspect mode"            'setInspectMode'      "$X/electron/browser.js"
-check "execution environments"          'openSshShell'        "$X/electron/environments.js"
-check "dependency manager"              'getDependenciesStatus' "$X/electron/dep-manager.js"
-check "auto-updater"                    'checkForUpdate'      "$X/electron/updater.js"
-check "IDE layout persistence"          'loadLayout'          "$X/electron/ide/layout-store.js"
-check "brand seal guard"                'verifyBrandIntegrity' "$X/electron/brand-guard.js"
-check "brand seal manifest"             'sealDigest'          "$X/electron/brand-seal.json"
-check "LICENSE & TRADEMARKS bundled"    'AkronLogic'          "$X/LICENSE.md"
-check "TRADEMARKS bundled"              'Akron Browser Bot'   "$X/TRADEMARKS.md"
+check "browser inspect mode"            'setInspectMode'          "$X/electron/browser.js"
+check "execution environments"          'openSshShell'            "$X/electron/environments.js"
+check "dependency manager"              'getDependenciesStatus'   "$X/electron/dep-manager.js"
+check "auto-updater"                    'checkForUpdate'          "$X/electron/updater.js"
+check "IDE layout persistence"          'loadLayout'              "$X/electron/ide/layout-store.js"
+check "context spill-to-disk"           'maybeSpillOutput'        "$X/electron/spill.js"
+check "context output masking"          'maskOlderToolOutputs'    "$X/electron/context-pipeline.js"
+check "doom-loop guard"                 'createLoopGuard'         "$X/electron/loop-guard.js"
+check "atomic ApplyPatch"               'applyPatchToWorkspace'   "$X/electron/apply-patch.js"
+check "stale-read edit guard"           'checkStaleRead'          "$X/electron/ide/edit-guard.js"
+check "codebase hybrid index"           'searchCodebase'          "$X/electron/ide/codebase-index.js"
+check "isolated RunToolScript"          'runToolScript'           "$X/electron/codemode.js"
+check "SQLite session DB"               'initSessionDb'           "$X/electron/session-db.js"
+check "skill learner"                   'extractSkillToDisk'      "$X/electron/skill-learner.js"
+check "OS sandbox profiles"             'canonicalizeShellCommand' "$X/electron/os-sandbox.js"
+check "cross-OS notifications"          'createNotificationService' "$X/electron/notifications.js"
+check "brand seal guard"                'verifyBrandIntegrity'    "$X/electron/brand-guard.js"
+check "brand seal manifest"             'sealDigest'              "$X/electron/brand-seal.json"
+check "LICENSE & TRADEMARKS bundled"    'AkronLogic'              "$X/LICENSE.md"
+check "TRADEMARKS bundled"              'Akron Browser Bot'       "$X/TRADEMARKS.md"
 
 echo
 echo "=== source maps hygiene ==="
@@ -52,13 +63,24 @@ echo
 echo "=== renderer bundle markers ==="
 JS=$(ls -S "$X"/dist/assets/index-*.js 2>/dev/null | head -1)
 echo "  bundle: $(basename "$JS") ($(wc -c < "$JS" | tr -d ' ') bytes)"
-for m in 'ide-status-bar' 'ide-changes-panel' 'env-picker-btn' 'browser-inspect-banner' 'akronlogic.com'; do
+for m in 'ide-status-bar' 'ide-changes-panel' 'env-picker-btn' 'browser-inspect-banner' 'akron-mindmap-view' 'akronlogic.com'; do
   if grep -qF -- "$m" "$JS"; then printf '  ok   %s\n' "$m"; else printf '  FAIL %s\n' "$m"; exit 1; fi
 done
 
 echo
-echo "=== bundled resources ==="
+echo "=== bundled resources & unpacked wasm/icons ==="
 ls -d "$APP/Contents/Resources"/* 2>/dev/null | sed 's|.*/Resources/|  resource: |'
+for req in \
+  "$APP/Contents/Resources/icon.png" \
+  "$APP/Contents/Resources/icon.ico" \
+  "$APP/Contents/Resources/app.asar.unpacked/node_modules/sql.js/dist/sql-wasm.wasm"; do
+  if [ -f "$req" ]; then
+    printf '  ok   unpacked: %s\n' "${req#$APP/Contents/Resources/}"
+  else
+    printf '  FAIL missing unpacked file: %s\n' "$req"
+    exit 1
+  fi
+done
 
 echo
 echo "=== electron fuses verification ==="

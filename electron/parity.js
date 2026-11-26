@@ -756,7 +756,7 @@ async function monitor(args, ctx) {
 
 function pushNotification(args, ctx) {
   const message = String(args.message != null ? args.message : (args.body || args.text || ''));
-  const title = String(args.title || 'Akron Bot');
+  const title = String(args.title || 'Akron Code');
   const status = args.status || 'proactive';
   if (!message && !args.title) return { content: 'Error: message required.', isError: true };
   if (typeof ctx.notify === 'function') {

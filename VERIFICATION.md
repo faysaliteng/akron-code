@@ -1,3 +1,25 @@
+# Akron Code (`v1.1.0`) — Production Release Verification (2026-11-27)
+
+**Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.1.0`)
+
+## v1.1.0 Production Gate Summary
+
+| Gate | Command / Platform | Result |
+|---|---|---|
+| Static Syntax / JSX Check | `npm run typecheck` | ✅ `TYPECHECK_OK: verified 257 JS/JSX/MJS/CJS files with 0 syntax/transform errors.` |
+| Full Unit & Integration Suite | `for f in test/*.test.js; do node "$f"; done` | ✅ **66 / 66 test files passed (0 failures)** |
+| Cross-Platform Audit | `node test/cross-platform-audit.test.js` | ✅ `CROSS_PLATFORM_AUDIT_ALL_PASS` (0 `.map` files, 0 hardcoded user paths, 0 secrets) |
+| Cryptographic Brand Seal | `npm run brand:check && node test/brand-integrity.test.js` | ✅ `BRAND_SEAL_OK 12`, `BRAND_INTEGRITY_ALL_PASS` |
+| Live Dark/Light Screenshots | Electron `dist/index.html` capture + visual inspection | ✅ Verified `docs/screenshots/{ide-mindmap-dark,ide-mindmap-light,notifications-settings,permission-dock-dark,browser-bot-inline-plan}.png` |
+| Packaged macOS ARM64 Build + Fuses + Codesign | `npm run dist:mac && ./verify-release.sh` | ✅ `VERIFY_RELEASE_DONE` (all 20 ASAR Phase 1–5 markers, 6/6 Electron Fuses, `codesign --verify --deep --strict` OK, `sql-wasm.wasm` + `icon.png`/`icon.ico` unpacked, 0 `.map` files) |
+
+### Local Verified Artifact Checksums (`v1.1.0`)
+
+- `AkronCode-1.1.0-arm64.dmg`: `8fd8f9912841140701a96d8e76c459616d7066fc2dc7f327ab4d54fab7af4e78`
+- `AkronCode-1.1.0-arm64.zip`: `c21d427055e34d8528c6ea52957bad878f384bffbd4e4de5baec24c68204378c`
+
+---
+
 # Akron Code (`v1.0.0`) — Production Release Verification (2026-11-26)
 
 **Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.0.0`)

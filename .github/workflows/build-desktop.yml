@@ -21,6 +21,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run typecheck
       - run: npm run build
         env:
           NODE_OPTIONS: --max-old-space-size=4096
@@ -57,7 +58,7 @@ jobs:
             cmd: npm run build && npx electron-builder --win --config.compression=normal --publish never
           - os: ubuntu-latest
             platform: linux
-            cmd: npm run build && npx electron-builder --linux AppImage --config.compression=normal --publish never
+            cmd: npm run build && npx electron-builder --linux AppImage deb --config.compression=normal --publish never
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -124,6 +125,7 @@ jobs:
             release/*.zip
             release/*.exe
             release/*.AppImage
+            release/*.deb
           if-no-files-found: error
 
   release:
@@ -141,7 +143,7 @@ jobs:
         working-directory: artifacts
         run: |
           ls -la
-          sha256sum *.dmg *.zip *.exe *.AppImage > SHA256SUMS.txt
+          sha256sum *.dmg *.zip *.exe *.AppImage *.deb > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
@@ -150,5 +152,6 @@ jobs:
             artifacts/*.zip
             artifacts/*.exe
             artifacts/*.AppImage
+            artifacts/*.deb
             artifacts/SHA256SUMS.txt
           generate_release_notes: true

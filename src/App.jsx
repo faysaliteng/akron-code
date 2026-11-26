@@ -10930,7 +10930,7 @@ function SettingsModal({
             onClick={() => setSection('about')}
             title="Open About & License"
           >
-            <span>Akron Code v1.0</span>
+            <span>Akron Code v1.1</span>
             <span>{settings.theme === 'light' ? 'Light' : 'Dark'}</span>
           </button>
         </aside>

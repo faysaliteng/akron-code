@@ -112,7 +112,7 @@ const SKILL_PROMPTS = {
   'update-config': {
     description: 'Configure the harness through settings.json: permissions, env vars, and hooks.',
     body: [
-      'Change Akron Bot / Claude Code configuration using `settings.json` (project `.claude/settings.json`, or `settings.local.json` for machine-local overrides).',
+      'Change Akron Code / Claude Code configuration using `settings.json` (project `.claude/settings.json`, or `settings.local.json` for machine-local overrides).',
       '',
       'Rules:',
       '- Automated behaviours ("from now on when X", "each time X", "before/after X") require **hooks** in settings.json — memory files cannot enforce them.',
@@ -167,7 +167,7 @@ const SKILL_PROMPTS = {
   'keybindings-help': {
     description: 'Explain or change keyboard shortcuts.',
     body: [
-      'Help with keyboard shortcuts in Akron Bot.',
+      'Help with keyboard shortcuts in Akron Code.',
       '',
       'Known shortcuts: `⌘K` command palette, `⌘,` settings, `/` at the start of the composer opens the slash menu, `Esc` closes menus, `⌘Enter` sends, `Shift+Enter` newline, `⌘↩` while streaming queues the next message instead of dropping it.',
       'Shortcuts are configured in Settings → Shortcuts (stored with the app, not in a JSON file).',
@@ -366,7 +366,7 @@ const BUILTIN = [
   { name: 'feedback', description: 'Send feedback' },
   { name: 'init-verifiers', description: 'Add verification steps to CLAUDE.md' },
   { name: 'pr-comments', description: 'View pull request comments (via Artifacts)' },
-  { name: 'exit', description: 'Quit Akron Bot', aliases: ['q', 'bye', 'quit'] },
+  { name: 'exit', description: 'Quit Akron Code', aliases: ['q', 'bye', 'quit'] },
   // GUI equivalents of the remaining real 2.1.x commands (each has a handler
   // in `runSlashCommand`; `guiEquivalent` lets the picker label them).
   { name: 'voice', description: 'Toggle voice mode', guiEquivalent: true },
@@ -376,7 +376,7 @@ const BUILTIN = [
   { name: 'remote-env', description: 'Toggle remote control', guiEquivalent: true },
   { name: 'setup-bedrock', description: 'Configure an Amazon Bedrock endpoint', guiEquivalent: true },
   { name: 'setup-vertex', description: 'Configure a Google Vertex AI endpoint', guiEquivalent: true },
-  { name: 'ide', description: 'Akron Bot is the IDE surface', guiEquivalent: true },
+  { name: 'ide', description: 'Akron Code is the IDE surface', guiEquivalent: true },
   { name: 'desktop', description: 'Already running in the desktop app', guiEquivalent: true },
   { name: 'tui', description: 'Terminal renderer (not applicable to the GUI)', guiEquivalent: true },
   { name: 'keybindings', description: 'Keyboard shortcuts (Settings → Shortcuts)', guiEquivalent: true },

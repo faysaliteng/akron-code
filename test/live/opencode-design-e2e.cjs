@@ -149,7 +149,7 @@ async function run() {
   assert.ok(notifCheck.backBtn.includes('Back to app'), 'Expected Back to app button');
   assert.strictEqual(notifCheck.switches, 4, 'Expected 4 Desktop notification pill switches');
   assert.strictEqual(notifCheck.selects, 4, 'Expected 4 Sound effect preset dropdowns');
-  assert.ok(notifCheck.verFoot.includes('Akron Code v1.0'), 'Expected Akron Code v1.0 footer');
+  assert.ok(notifCheck.verFoot.includes('Akron Code v1.1'), 'Expected Akron Code v1.1 footer');
 
   const settingsShot = await win.webContents.capturePage();
   fs.writeFileSync(path.join(ARTIFACTS, 'akron-code-opencode-settings.png'), settingsShot.toPNG());

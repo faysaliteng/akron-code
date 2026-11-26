@@ -1,3 +1,13 @@
+# Akron Code `v1.1.0` — Resolved Production & Architecture Upgrades (2026-11-27)
+
+- **Context Engine 2.0 & Agent Harness (`6d48570`)**: `electron/spill.js` (`0o600` spills + 7d cleanup), `electron/context-pipeline.js` (masking older outputs while preserving last 4 steps), `electron/loop-guard.js` (repeat 3/5/8 circuit breaker + 20s FIFO non-blocking reader), 50 KB hook output cap, MCP stdout flood cap, and compaction digest headroom fix.
+- **Elite Editing & Codebase Intelligence (`baa7be0`)**: Atomic Codex V4A `ApplyPatch`, SHA-256 + mtime stale-read guard + LSP diagnostics + `ShadowCheck`, incremental Merkle/BM25/vector `CodebaseSearch` + `CodebaseInvestigator`, and isolated `RunToolScript` worker.
+- **SQLite Session DB, `/learn` & OS Sandbox (`9af3e8f`)**: Pure-WASM SQLite store (`~/.autobot/akron.db`) with atomic persistence & FTS/token search, deduplicated categorized memory + `ExtractSkill` / `/learn`, and `os-sandbox.js` command canonicalization + OS profiles.
+- **Offline Interactive Mind Maps & Cross-OS Notifications (`c363b1c`)**: Bundled `markmap-lib` + `markmap-view` (`src/ide/MindMapView.jsx`) with Dark/Light themes and click-to-open files, theme-aware Mermaid, headless Linux notification guard + `notifyWhenFocused` + sound toggles, modularized UI (`src/features/*`, `src/components/Icon.jsx`), and `npm run typecheck`.
+- **Brand Seal Packaging Fix & Cross-Platform Status**: Fixed `electron/brand-guard.js` + `scripts/harden-fuses.js` so `extraResources` unpacked icons pass packaged Brand Seal validation, added Linux `.deb` target alongside `.AppImage`. *(Cross-platform Windows x64/ARM64 and Linux AppImage/.deb installers are built in GitHub Actions upon `v1.1.0` push; EV Authenticode & Apple Developer ID notarization certs remain unconfigured for third-party Gatekeeper/SmartScreen bypass.)*
+
+---
+
 # Akron Code `v1.0.0` — Resolved Production Gaps (2026-11-26)
 
 All desktop IDE, cross-platform Windows 11, execution environment, dependency/updater, license/brand seal, and security Fuse items from the v1.0.0 production plan are resolved and verified:
