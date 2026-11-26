@@ -1639,3 +1639,131 @@ Functional probe at 1280×803: tools popover 10 rows, thinking menu 4 items,
 model menu **78 rows** grouped exactly
 `["Claude","ChatGPT","Google Antigravity","Grok"]`, `fits: true`, every topbar
 control `inBar: true` + `clipped: false`, `sendArrowInside.inside: true`.
+
+---
+
+## 35. Subscription sign-in — port discipline, cancel, and where the windows come from (2026-11-26)
+
+Three defects were reported together, and all three turned out to be facts about
+the providers rather than opinions about the code.
+
+### 35.1 `invalid_authorize_request` was a port, not a scope problem
+
+The screenshot error was:
+
+```
+{"error":{"message":"Invalid authorize request","type":"invalid_request_error",
+ "param":null,"code":"invalid_authorize_request"}}
+```
+
+Measured against `https://auth.openai.com/oauth/authorize` for this client id
+(`app_EMoamEEZ73f0CkXaXp7hrann`), holding every other parameter fixed:
+
+| `redirect_uri` | result |
+| --- | --- |
+| `http://localhost:1455/auth/callback` | **302** → `https://auth.openai.com/log-in` |
+| `http://localhost:1456/auth/callback` | 400 `invalid_authorize_request` |
+| `http://localhost:3000/auth/callback` | 400 |
+| `http://localhost:54321/auth/callback` | 400 |
+| `http://localhost:1455/callback` | 400 |
+| `http://127.0.0.1:1455/auth/callback` | 302 (accepted, but the login page then
+  rejects the mismatch) |
+| missing / empty `state` | 400 |
+
+So the registered URI is **one exact string**. The old `startLoopbackServer`
+caught `EADDRINUSE` and quietly fell back to an ephemeral port — meaning any
+machine where something already held 1455 (in the measured case, a `codex login`)
+produced exactly the screenshot, every time.
+
+What changed:
+
+- `PROVIDERS.chatgpt.fixedRedirectPort: true`, and `startLoopbackServer` gained
+  `strictPort` — no silent port move for a provider that has one registered URI.
+- `authorize()` pre-flights with `portOwner(port)` (`lsof -nP -iTCP:<port>
+  -sTCP:LISTEN`, read-only) and throws `redirect_port_busy` naming the holder.
+  It returns `null` on any failure — it never asserts a port is free.
+- A post-bind guard re-checks the actual `server.address().port` and throws
+  `redirect_uri_mismatch` if they diverge.
+- `originator: 'codex_cli_rs'` added to the authorize params, matching the CLI.
+
+`probe-chatgpt-authurl` (11/11) and `probe-chatgpt-port` (all green) re-derive
+this table from the running app: off-port URIs reproduce the exact 400, busy 1455
+throws `redirect_port_busy`, a non-strict listener still moves, a strict one does not.
+
+### 35.2 An abandoned sign-in must release the port
+
+Because 1455 is a single global resource, a second sign-in could not start while
+a first one waited for a human, and closing the panel left it held. `authorize()`
+now takes `o.signal`, races `loop.wait()` / `o.waitForCode()` against an abort
+promise, throws `err.code = 'signin_cancelled'`, and still runs `loop.close()` in
+`finally`. Main returns `{ok:false, cancelled:true}` and both account surfaces
+report *"Sign-in cancelled — no account was added."*, never a failure.
+
+`probe-chatgpt-add` (22/22) drives the whole thing: row offers **Add account** →
+`{ok:true, waiting:true, url}` → `lsof` shows `Electron … TCP 127.0.0.1:1455
+(LISTEN)` → the row flips to **Cancel** → the URL carries
+`redirect_uri=http://localhost:1455/auth/callback`, a `state`, a 43-char PKCE
+`S256` challenge and `originator=codex_cli_rs` → OpenAI answers **302** → Cancel
+releases 1455, returns `{waiting:false}` and adds no account.
+
+Honest limit: a human still has to approve the login at `auth.openai.com`; no
+automation can assert that.
+
+### 35.3 The context windows are provider data, and we were ignoring them
+
+The reported "Claude is 200K" was our fallback, not Anthropic's answer.
+`GET /v1/models?limit=100` returns 15 models, each with **both**
+`max_input_tokens` and `max_tokens`:
+
+```
+claude-fable-5-2          max_input_tokens 1000000   max_tokens 128000
+claude-opus-4-8           max_input_tokens 1000000   max_tokens 128000
+claude-sonnet-4-6         max_input_tokens 1000000   max_tokens  64000
+claude-opus-4-5-20251101  max_input_tokens  200000   max_tokens  64000
+claude-haiku-4-5-20251001 max_input_tokens  200000   max_tokens  64000
+```
+
+`max_tokens` is the **output cap**; using it as a window would have been wrong in
+both directions. `listModels` now reads
+`max_input_tokens || context_window || max_context_window || contextWindow`, and
+the offline catalog gained rules for the 5.x line and opus/sonnet 4-6..4-8 at 1M
+ahead of the older 200K rules. `probe-orch-ctx` reports `{ctx: 1000000, win: "1M"}`
+for a ticked row and `probe-orch` finds `contextWindow: 1000000` persisted.
+
+A 1M window is optimistic until the turn proves it, so `anthropicChat` demotes to
+200 000 and retries headerless **once** on any oversized turn — the 400 matcher is
+`/context|beta|long|1m|entitle|not available|too long|prompt is too/i`, so a
+beta-less account still works without a second click.
+
+### 35.4 `claude-fable-5-2` exists; the wall was the 5-hour allowance
+
+The app had shown `model 'claude-fable-5-2' not found`, but:
+
+- `GET /v1/models?limit=100` → **HTTP 200**, 15 models, `claude-fable-5-2` present.
+- Every `/v1/messages` turn → **HTTP 429** `{"type":"rate_limit_error","message":"Error"}`.
+- `count_tokens` → 200.
+
+`GET /api/oauth/usage` on the same token: `five_hour.utilization = 100.0`,
+`resets_at 2026-11-26T01:30:00Z` (= 02:30 CET, exactly the user's "resets 2:30 am"),
+`seven_day.utilization = 49.0`. `/api/oauth/profile` confirms plan `max`.
+
+Anthropic's own not-found wording is
+`{"type":"error","error":{"type":"not_found_error","message":"model: <id>"}}`, and
+no source file in `src/` or `electron/` produces the quoted form the banner showed
+— the banner was ours, describing a 429 as a missing model. The 429 path itself
+already carries the right words: `anthropicChat` sets
+`hint = "the Claude plan's 5-hour allowance is 100% used (resets 2:29 AM, in 65
+min); send this request again after the reset — nothing in the conversation is
+lost"` plus `retryHopeless`, and `humanizeLLMError()` prefers the hint. Live-proven
+end to end at 01:24 CET through the real transport.
+
+### 35.5 Regression
+
+All suites green in the standalone tree after a clean `npm ci` (578 packages),
+27 files: `provideroauth 254`, `providertransport 169`,
+`e2e 112`, `extensionhost 162`, `compliance 147`, `mcpoauth 146`, `swarm 62`,
+`hooks 49`, `freellm 37`, `reconnect-code 24`, `providerhydrate 18`,
+`model-catalog 22 groups`, `artifacttypes 82`, `sandbox 22`, `runtimes 23 groups`.
+`test/provideroauth.test.js` sets `AUTOBOT_HOME` to a scratch dir before `require`
+and asserts the real `~/.autobot/provider-oauth.json` bytes are unchanged — that
+suite had been corrupting the live store.
