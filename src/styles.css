@@ -680,9 +680,19 @@ button { font-family: inherit; letter-spacing: inherit; }
 }
 .response-share-menu button:hover { background: var(--bg-200); color: var(--text-000); }
 .response-actions-meta {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
+  margin-left: auto; display: inline-flex; align-items: center; gap: 7px;
   color: var(--text-400); font-size: 11.5px;
 }
+.response-model-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px; border-radius: 999px;
+  background: var(--bg-200); border: 1px solid var(--border);
+  color: var(--text-300); font-family: var(--mono); font-size: 11px; line-height: 1.3;
+}
+.response-model-badge .icon { color: var(--accent); flex-shrink: 0; }
+.response-model-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.response-meta-sep { color: var(--text-500, var(--text-400)); }
+.response-worked-time { display: inline-flex; align-items: center; gap: 5px; }
 
 /* Reasoning trace — collapsible, like Example's "Thought for 4s" block. */
 .thinkblock { margin: 2px 0 10px; }

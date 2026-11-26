@@ -586,6 +586,14 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
     throw err;
   }
   const ct = res.headers.get('content-type') || '';
+  const headerModel = String(
+    res.headers.get('x-freellm-model')
+    || res.headers.get('x-routed-model')
+    || res.headers.get('x-upstream-model')
+    || res.headers.get('x-model')
+    || ''
+  ).trim();
+  const isRouterAliasName = (m) => /^(auto|fast|smart|fusion|default|free|akron-.*)$/i.test(String(m || '').trim());
   if (!ct.includes('text/event-stream')) {
     // Non-streaming JSON response (some gateways/proxies ignore `stream:true`).
     // Replay the text as one delta so the UI still shows the reply instead of
@@ -615,9 +623,14 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
       err.status = Number(data.error.code) || 502;
       throw err;
     }
+    const rawRespModel = String((data && data.model) || '').trim();
+    const resolvedModel = (rawRespModel && !isRouterAliasName(rawRespModel))
+      ? rawRespModel
+      : (headerModel && !isRouterAliasName(headerModel) ? headerModel : (rawRespModel || headerModel || String(provider.model || '').trim()));
     return Object.assign({ content: '', tool_calls: [] }, msg, {
       finish_reason: data.choices && data.choices[0] && data.choices[0].finish_reason,
       usage: data.usage || (msg && msg.usage) || undefined,
+      model: resolvedModel,
     });
   }
 
@@ -625,7 +638,7 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
-  const message = { role: 'assistant', content: '', tool_calls: [] };
+  const message = { role: 'assistant', content: '', tool_calls: [], model: headerModel || '' };
   const toolAcc = new Map();
 
   // A provider that opens the stream and then goes silent used to leave the run
@@ -689,6 +702,10 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
         continue;
       }
       if (json.usage) message.usage = json.usage;
+      if (typeof json.model === 'string' && json.model.trim()) {
+        const jm = json.model.trim();
+        if (!message.model || !isRouterAliasName(jm)) message.model = jm;
+      }
       const choice = json.choices && json.choices[0];
       if (!choice) continue;
       if (choice.finish_reason) message.finish_reason = choice.finish_reason;
@@ -777,6 +794,7 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   message.tool_calls.forEach((c, i) => {
     if (!c.id) c.id = 'call_' + Date.now().toString(36) + '_' + i + Math.random().toString(36).slice(2, 6);
   });
+  if (!message.model) message.model = String(provider.model || '').trim();
   return message;
 }
 
@@ -1003,7 +1021,13 @@ async function chatWithFailover(opts) {
         }
         gate.ok(p);
         if (n > 1 && typeof opts.setIndex === 'function') opts.setIndex(i);
-        if (out && typeof out === 'object') out.servedBy = p.model;
+        if (out && typeof out === 'object') {
+          const isAlias = (m) => /^(auto|fast|smart|fusion|default|free|akron-.*)$/i.test(String(m || '').trim());
+          const outM = String(out.model || '').trim();
+          const actualModel = (outM && !isAlias(outM)) ? outM : (String(p.model || '').trim() || outM);
+          out.servedBy = actualModel;
+          out.model = actualModel;
+        }
         return out;
       } catch (e) {
         if (signal && signal.aborted) throw e;
@@ -2151,8 +2175,17 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
   // that is what the window meter must show, because summed prompt tokens exceed
   // the context window on any multi-step turn (a 3-step turn bills ~3× the
   // prompt). Rendering the sum as "context used" produced "168,145 of 128,000".
-  const usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0, context_tokens: 0, model: provider.model };
-  const addUsage = (u) => {
+  let activeServedModel = String(provider.model || '').trim();
+  const modelsUsed = [];
+  const recordModelUsed = (name) => {
+    const clean = String(name || '').trim();
+    if (!clean) return;
+    activeServedModel = clean;
+    if (!modelsUsed.includes(clean)) modelsUsed.push(clean);
+  };
+  const usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0, context_tokens: 0, model: activeServedModel };
+  const addUsage = (u, resolvedModel) => {
+    if (resolvedModel) recordModelUsed(resolvedModel);
     if (!u || typeof u !== 'object') return;
     const pin = Number(u.prompt_tokens != null ? u.prompt_tokens : u.input_tokens);
     const pout = Number(u.completion_tokens != null ? u.completion_tokens : u.output_tokens);
@@ -2163,7 +2196,8 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       ? ptotal
       : (Number.isFinite(pin) ? pin : 0) + (Number.isFinite(pout) ? pout : 0));
     usageTotals.calls++;
-    emit({ type: 'usage', usage: { ...usageTotals }, model: provider.model });
+    usageTotals.model = activeServedModel || provider.model;
+    emit({ type: 'usage', usage: { ...usageTotals }, model: usageTotals.model });
   };
 
   // Output budget for this turn. Starts as "whatever the provider config says"
@@ -2280,13 +2314,18 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         signal: opts.signal,
         maxTokens,
       }).then((m) => {
+        const stepModel = String((m && (m.servedBy || m.model)) || provider.model || '').trim();
+        if (stepModel) {
+          recordModelUsed(stepModel);
+          emit({ type: 'model', model: stepModel, modelsUsed: modelsUsed.slice() });
+        }
         // Record the output tokens this attempt produced into the shared pool.
         // A discarded token-limit attempt still cost tokens, so it counts too.
         if (m && m.usage) {
           const out = Number(m.usage.completion_tokens != null ? m.usage.completion_tokens : m.usage.output_tokens);
           if (Number.isFinite(out) && out > 0) budgetPool.addOutput(out);
         }
-        addUsage(m && m.usage);
+        addUsage(m && m.usage, stepModel);
         if (process.env.AUTOBOT_TRACE) {
           traceLine({
             t: new Date().toISOString(),

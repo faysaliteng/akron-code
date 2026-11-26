@@ -711,7 +711,9 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
       }
     }
     message.finish_reason = anthropicFinish(data && data.stop_reason);
+    if (data && data.model) message.model = String(data.model);
     if (data && data.usage) message.usage = data.usage;
+    if (!message.model) message.model = String(provider.model || '');
     return message;
   }
 
@@ -745,6 +747,7 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
       if (d.stop_reason) message.finish_reason = anthropicFinish(d.stop_reason);
       if (ev.usage) message.usage = ev.usage;
     } else if (type === 'message_start') {
+      if (ev.message && ev.message.model) message.model = String(ev.message.model);
       if (ev.message && ev.message.usage) message.usage = ev.message.usage;
     } else if (type === 'error') {
       const e = ev.error || {};
@@ -754,6 +757,7 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
     }
   }
   if (!message.finish_reason) message.finish_reason = message.tool_calls.length ? 'tool_calls' : 'stop';
+  if (!message.model) message.model = String(provider.model || '');
   return message;
 }
 
@@ -914,11 +918,13 @@ async function responsesChat(o) {
         if (onToolDelta && acc.function.name) onToolDelta(toolDeltaPayload(acc));
       }
     }
+    if (resp.model) message.model = String(resp.model);
     if (resp.status === 'incomplete') message.finish_reason = 'length';
   };
 
   const finish = () => {
     if (!message.finish_reason) message.finish_reason = message.tool_calls.length ? 'tool_calls' : 'stop';
+    if (!message.model && o && o.body && o.body.model) message.model = String(o.body.model);
     return message;
   };
 
@@ -1382,6 +1388,7 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
   let callSeq = 0;
   const absorb = (resp) => {
     if (!resp) return;
+    if (resp.modelVersion) message.model = String(resp.modelVersion);
     const cand = (resp.candidates || [])[0];
     if (cand) {
       for (const part of (cand.content && cand.content.parts) || []) {
@@ -1427,6 +1434,7 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
     } else if (!message.finish_reason) {
       message.finish_reason = 'stop';
     }
+    if (!message.model) message.model = String(provider.model || '');
     return message;
   };
   const opened = await openStream(res, signal);

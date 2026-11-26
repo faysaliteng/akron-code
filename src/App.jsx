@@ -1294,7 +1294,17 @@ export default function App() {
           setPlanMode(evt.active ? { active: true, file: evt.file || 'PLAN.md' } : null);
           break;
         case 'orchestrator':
-          setLiveSync((l) => (l ? { ...l, failover: { from: evt.from, to: evt.to, reason: evt.reason } } : l));
+          setLiveSync((l) => (l ? { ...l, failover: { from: evt.from, to: evt.to, reason: evt.reason }, model: evt.to || l.model } : l));
+          break;
+        case 'model':
+          setLiveSync((l) => {
+            if (!l) return l;
+            return {
+              ...l,
+              model: evt.model || l.model || '',
+              modelsUsed: Array.isArray(evt.modelsUsed) && evt.modelsUsed.length ? evt.modelsUsed : l.modelsUsed,
+            };
+          });
           break;
         case 'checkpoint': {
           const cp = { id: evt.id || 'turn', path: evt.path || '', existed: !!evt.existed, at: evt.at || Date.now() };
@@ -1448,6 +1458,9 @@ export default function App() {
           break;
         case 'usage':
           if (evt.usage) setLastUsage({ ...evt.usage, model: evt.model || (evt.usage && evt.usage.model) || null, at: Date.now() });
+          if (evt.model) {
+            setLiveSync((l) => (l ? { ...l, model: evt.model || l.model } : l));
+          }
           break;
         case 'notice':
           // Context compaction and other system-level messages from the agent.
@@ -1557,6 +1570,8 @@ export default function App() {
         segments: l.segments,
         checkpoints: l.checkpoints || [],
         checkpointId: l.checkpointId || null,
+        model: l.model || '',
+        modelsUsed: Array.isArray(l.modelsUsed) && l.modelsUsed.length ? l.modelsUsed : undefined,
         subAgents: hasTeam ? subAgentsRef.current : undefined,
         swarmInfo: teamConvRef.current === target && swarmInfoRef.current ? swarmInfoRef.current : undefined,
         ts: Date.now(),
@@ -1651,19 +1666,19 @@ export default function App() {
     runConvRef.current = convId;
     runActiveRef.current = true;
     teamConvRef.current = convId;
+    const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
+    const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
     setPaused(false);
     setStreaming(true);
     setRunStartedAt(Date.now());
     setThinking('');
-    setLiveSync({ content: '', tools: [] });
+    setLiveSync({ content: '', tools: [], model: effProvider.model || provider.model || '' });
     setSubAgents([]);
     setSwarmInfo(null);
     setSwarmBoard([]);
     const runId = uid();
     runIdRef.current = runId;
 
-    const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
-    const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
     const started = await window.autobot.run({
       runId,
       messages: payloadMessages,
@@ -2003,18 +2018,18 @@ export default function App() {
     runConvRef.current = convId;
     runActiveRef.current = true;
     teamConvRef.current = convId;
+    const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
+    const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
     setPaused(false);
     setStreaming(true);
     setRunStartedAt(Date.now());
     setThinking('');
-    setLiveSync({ content: '', tools: [] });
+    setLiveSync({ content: '', tools: [], model: effProvider.model || provider.model || '' });
     setSubAgents([]);
     setSwarmInfo(null);
     setSwarmBoard([]);
     const runId = uid();
     runIdRef.current = runId;
-    const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
-    const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
     const started = await window.autobot.run({
       runId, messages: payloadMessages, provider: effProvider,
       cwd: runCwd || undefined, useMemory: settings.useMemory, orchestrator, permissions,
@@ -4727,8 +4742,22 @@ function Message({ m, convId, idx, turnLabel = '', subAgentCount = 0, taskCount 
                 </div>
               )}
             </div>
-            {m.durationMs > 800 && (
-              <span className="response-actions-meta"><Icon name="Clock" size={12} /> Worked for {fmtElapsed(m.durationMs)}</span>
+            {(m.model || m.durationMs > 800) && (
+              <span className="response-actions-meta">
+                {m.model && (
+                  <span
+                    className="response-model-badge"
+                    title={m.modelsUsed && m.modelsUsed.length > 1 ? `Models used: ${m.modelsUsed.join(' → ')}` : `Model: ${m.model}`}
+                  >
+                    <Icon name="Sparkles" size={11} />
+                    <span className="response-model-name">{m.model}</span>
+                  </span>
+                )}
+                {m.model && m.durationMs > 800 && <span className="response-meta-sep" aria-hidden="true">·</span>}
+                {m.durationMs > 800 && (
+                  <span className="response-worked-time"><Icon name="Clock" size={12} /> Worked for {fmtElapsed(m.durationMs)}</span>
+                )}
+              </span>
             )}
           </div>
         )}

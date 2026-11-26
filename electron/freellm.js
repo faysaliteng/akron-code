@@ -518,13 +518,18 @@ async function proxyChatExternal(extBase, req, body, res, opts, cfg) {
 
   if (body && body.stream) {
     if (!upstream.body) throw httpError(502, 'upstream returned an empty stream');
-    res.writeHead(200, {
+    const respHeaders = {
       'content-type': upstream.headers.get('content-type') || 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
       connection: 'keep-alive',
       'x-accel-buffering': 'no',
       'x-freellm-upstream': extBase,
-    });
+    };
+    for (const h of ['x-freellm-model', 'x-freellm-provider', 'x-routed-model', 'x-model', 'x-provider', 'x-upstream-model']) {
+      const val = upstream.headers.get(h);
+      if (val) respHeaders[h] = val;
+    }
+    res.writeHead(200, respHeaders);
     const nodeStream = Readable.fromWeb(upstream.body);
     nodeStream.on('error', () => { try { res.end(); } catch (_) {} });
     res.on('close', () => { try { nodeStream.destroy(); } catch (_) {} });
@@ -537,7 +542,12 @@ async function proxyChatExternal(extBase, req, body, res, opts, cfg) {
   try { data = JSON.parse(text); } catch (_) {
     throw httpError(502, 'upstream returned non-JSON response');
   }
-  sendJson(res, upstream.status || 200, data, { 'x-freellm-upstream': extBase });
+  const respHeaders = { 'x-freellm-upstream': extBase };
+  for (const h of ['x-freellm-model', 'x-freellm-provider', 'x-routed-model', 'x-model', 'x-provider', 'x-upstream-model']) {
+    const val = upstream.headers.get(h);
+    if (val) respHeaders[h] = val;
+  }
+  sendJson(res, upstream.status || 200, data, respHeaders);
 }
 
 // ---------------------------------------------------------------------------
