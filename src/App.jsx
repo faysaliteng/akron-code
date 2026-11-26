@@ -8921,55 +8921,68 @@ function AccountSection({ T, provider, setProvider }) {
         <ProvNotice warn text={T('account.storeError')} />
       )}
 
-      {st && providers.map((pv) => (
+      <div className="acct-prov-list">
+      {st && providers.map((pv) => {
+        const hasAccounts = pv.accounts && pv.accounts.length > 0;
+        const needsAction = !hasAccounts || pv.accounts.some((a) => a.needsSignIn || a.expired);
+        return (
         <div key={pv.id} className="prov-group acct-prov">
-          <div className="prov-head">
-            <span className="prov-name">{pv.label}</span>
-            <span className="acct-count">{pv.accounts.length === 1 ? '1 account' : (pv.accounts.length ? pv.accounts.length + ' ' + T('account.count') : T('account.none'))}</span>
-          </div>
-
-          {pv.accounts.map((a) => {
-            const on = provider && provider.oauthProvider === a.id;
-            return (
-              <div key={a.id} className={'prov-acct' + (on ? ' on' : '')}>
-                <span className={'model-dot ' + (a.needsSignIn || a.expired ? 'out' : 'ok')} />
+          <div className="prov-head acct-card-head">
+            <div className="acct-title-wrap">
+              <span className="prov-name">{pv.label}</span>
+              <span className={'acct-count' + (hasAccounts ? ' connected' : '')}>
+                {pv.accounts.length === 1 ? '1 account' : (pv.accounts.length ? pv.accounts.length + ' ' + T('account.count') : T('account.none'))}
+              </span>
+            </div>
+            <div className="acct-actions">
+              {pv.id === 'claude' && (
+                <button type="button" className={needsAction ? 'primary' : ''} disabled={!!busy || claude.busy} onClick={claude.start}>
+                  <Icon name="ArrowInSquare" size={13} /> {claude.busy ? T('account.opening') : T('account.reconnect')}
+                </button>
+              )}
+              {pv.id !== 'claude' && pv.canBrowserSignIn && (
                 <button
-                  className="prov-pick"
-                  title={a.needsSignIn ? T('account.needsSignIn') : (a.expired ? T('account.expired') : (a.label || a.account))}
-                  onClick={() => use(pv, a)}
+                  type="button"
+                  className={needsAction ? 'primary' : ''}
+                  disabled={!!busy && busy !== 'signin:' + pv.id}
+                  onClick={() => (busy === 'signin:' + pv.id ? cancelBrowserSignIn(pv.id) : act('signin', pv.id))}
                 >
-                  <span className="model-opt-name">{a.label || a.account}</span>
-                  <span className="model-opt-prov">{a.needsSignIn ? T('account.needsSignIn') : acctSub(a)}</span>
-                  {on && <Icon name="Check" size={13} className="model-check" />}
+                  <Icon name="ArrowInSquare" size={13} /> {busy === 'signin:' + pv.id ? T('account.cancel') : (pv.accounts.length ? T('account.add') : T('account.signIn'))}
                 </button>
-                <button className="prov-x" title={T('account.signOut')} disabled={busy === 'signout:' + pv.id} onClick={() => act('signout', pv.id, a.account)}>
-                  <Icon name="Logout" size={12} />
+              )}
+              {pv.id !== 'claude' && pv.canManualCode && (
+                <button type="button" disabled={!!busy} onClick={() => signInManual(pv.id)}>
+                  <Icon name="Clipboard" size={13} /> {busy === 'manual:' + pv.id ? T('account.opening') : T('account.paste')}
                 </button>
-              </div>
-            );
-          })}
-
-          <div className="acct-actions">
-            {pv.id === 'claude' && (
-              <button className="primary" disabled={!!busy || claude.busy} onClick={claude.start}>
-                <Icon name="ArrowInSquare" size={13} /> {claude.busy ? T('account.opening') : T('account.reconnect')}
-              </button>
-            )}
-            {pv.id !== 'claude' && pv.canBrowserSignIn && (
-              <button
-                className="primary"
-                disabled={!!busy && busy !== 'signin:' + pv.id}
-                onClick={() => (busy === 'signin:' + pv.id ? cancelBrowserSignIn(pv.id) : act('signin', pv.id))}
-              >
-                <Icon name="ArrowInSquare" size={13} /> {busy === 'signin:' + pv.id ? T('account.cancel') : (pv.accounts.length ? T('account.add') : T('account.signIn'))}
-              </button>
-            )}
-            {pv.id !== 'claude' && pv.canManualCode && (
-              <button disabled={!!busy} onClick={() => signInManual(pv.id)}>
-                <Icon name="Clipboard" size={13} /> {busy === 'manual:' + pv.id ? T('account.opening') : T('account.paste')}
-              </button>
-            )}
+              )}
+            </div>
           </div>
+
+          {hasAccounts && (
+            <div className="acct-rows">
+              {pv.accounts.map((a) => {
+                const on = provider && provider.oauthProvider === a.id;
+                return (
+                  <div key={a.id} className={'prov-acct' + (on ? ' on' : '')}>
+                    <span className={'model-dot ' + (a.needsSignIn || a.expired ? 'out' : 'ok')} />
+                    <button
+                      type="button"
+                      className="prov-pick"
+                      title={a.needsSignIn ? T('account.needsSignIn') : (a.expired ? T('account.expired') : (a.label || a.account))}
+                      onClick={() => use(pv, a)}
+                    >
+                      <span className="model-opt-name">{a.label || a.account}</span>
+                      <span className="model-opt-prov">{a.needsSignIn ? T('account.needsSignIn') : acctSub(a)}</span>
+                      {on && <Icon name="Check" size={13} className="model-check" />}
+                    </button>
+                    <button type="button" className="prov-x" title={T('account.signOut')} disabled={busy === 'signout:' + pv.id} onClick={() => act('signout', pv.id, a.account)}>
+                      <Icon name="Logout" size={13} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {pv.id === 'claude' && (
             <ClaudeReconnectPanel
@@ -8999,16 +9012,17 @@ function AccountSection({ T, provider, setProvider }) {
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }}
               />
               <button
+                type="button"
                 className="prov-link"
                 disabled={!!busy || manual.sent || !String(manual.code || '').trim()}
                 onClick={submit}
               >{manual.sent ? T('account.manual.submitting') : T('account.manual.submit')}</button>
-              <button className="prov-x" title={T('account.cancel')} aria-label={T('account.cancel')} onClick={() => setManual(null)}><Icon name="X" size={12} /></button>
+              <button type="button" className="prov-x" title={T('account.cancel')} aria-label={T('account.cancel')} onClick={() => setManual(null)}><Icon name="X" size={12} /></button>
             </div>
           )}
 
           {pv.canPasteKey && (
-            <div className="prov-token">
+            <div className="prov-token acct-key-row">
               <input
                 className="prov-token-in"
                 type="password"
@@ -9021,14 +9035,17 @@ function AccountSection({ T, provider, setProvider }) {
                 onKeyDown={(e) => { if (e.key === 'Enter' && (token[pv.id] || '').trim()) { e.preventDefault(); act('bearer', pv.id, (token[pv.id] || '').trim()); } }}
               />
               <button
-                className="prov-link"
+                type="button"
+                className="acct-key-btn"
                 disabled={!!busy || !(token[pv.id] || '').trim()}
                 onClick={() => act('bearer', pv.id, (token[pv.id] || '').trim())}
               >{busy === 'bearer:' + pv.id ? T('account.key.checking') : T('account.key.add')}</button>
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
+      </div>
 
       {st && (
         <div className="account-actions">
@@ -9736,21 +9753,21 @@ function RolePoolsEditor({ orchestrator, saveOrch }) {
 }
 
 const SETTINGS_SECTIONS = [
-  { id: 'providers', label: 'Models & Providers', icon: 'Sparkles', sub: 'Primary endpoints, presets, local Ollama, and subscription sign-in.', keys: 'model provider ollama api key preset subscription oauth temperature token' },
-  { id: 'notifications', label: 'Notifications', icon: 'Notification', sub: 'Choose when to receive desktop notifications and hear synthesized sounds.', keys: 'notifications sound chime staplebops alert agent permissions questions errors' },
-  { id: 'orchestrator', label: 'Orchestrator & Pools', icon: 'Orbit', sub: 'DeepSeek Harness profiles, multi-model failover tiers, and role pools.', keys: 'orchestrator pool planner coder vision fast longctx failover swarm profile harness' },
-  { id: 'worktrees', label: 'Worktrees', icon: 'GitBranch', sub: 'Create and switch isolated git worktree checkouts for parallel branches.', keys: 'git worktree branch checkout parallel workspace' },
-  { id: 'skills', label: 'Skills & Plugins', icon: 'Lightbulb', sub: 'Manage SKILL.md packs, agent capabilities, and plugins.', keys: 'skills plugins packs extensions' },
-  { id: 'mcp', label: 'MCP Connectors', icon: 'Connectors', sub: 'Connect external Model Context Protocol servers & tools.', keys: 'mcp connectors servers tools' },
-  { id: 'memory', label: 'Memory & Notebooks', icon: 'Memory', sub: 'Long-term saved facts and interactive notebooks.', keys: 'memory facts notebooks cells' },
-  { id: 'harness', label: 'Harness & Custom Tools', icon: 'AgentsSimple', sub: 'Creator Mode runtime tools, developer features, and agent capabilities.', keys: 'creator custom tool harness developer extension buddy remote control' },
-  { id: 'rea', label: 'Reverse Engineering', icon: 'Orbit', sub: 'Built-in REA (morluto/rea) MCP & CLI, 263 tools, doctor & runtime.', keys: 'rea reverse engineer binary ghidra hopper ida rizin asar apk firmware mcp decompile' },
-  { id: 'browser', label: 'Browser Extension', icon: 'Globe', sub: 'Zero-key Chrome extension bridge for live browser control & shared desktop models.', keys: 'chrome extension akron browser bot bridge websocket tabs 8766' },
-  { id: 'server', label: 'Server & Pairing', icon: 'Plug', sub: 'Local HTTP/WebSocket host endpoint, bridge health, and device info.', keys: 'server pairing port 8766 endpoint websocket health' },
-  { id: 'voice', label: 'Voice & Dictation', icon: 'Microphone', sub: 'Built-in offline ONNX Whisper speech model & fast gateway transcription.', keys: 'voice dictation whisper microphone speech audio language' },
-  { id: 'shortcuts', label: 'Shortcuts', icon: 'Keyboard', sub: 'Keyboard shortcuts for fast navigation and editing.', keys: 'shortcuts hotkeys keybindings keyboard cmd ctrl' },
-  { id: 'security', label: 'Permissions & Security', icon: 'LockShield', sub: 'Tool consent rules, Computer Use, Chrome CDP, bridges, and compliance.', keys: 'permission security computer use chrome cdp bridge compliance trusted folders' },
-  { id: 'system', label: 'Appearance & System', icon: 'Palette', sub: 'Theme, language locale, memory injection, launch behavior, and runtimes.', keys: 'theme dark light locale language memory login quick entry runtime' },
+  { id: 'providers', group: 'ai', label: 'Models & Providers', icon: 'Sparkles', sub: 'Primary endpoints, presets, local Ollama, and subscription sign-in.', keys: 'model provider ollama api key preset subscription oauth temperature token' },
+  { id: 'orchestrator', group: 'ai', label: 'Orchestrator & Pools', icon: 'Orbit', sub: 'DeepSeek Harness profiles, multi-model failover tiers, and role pools.', keys: 'orchestrator pool planner coder vision fast longctx failover swarm profile harness' },
+  { id: 'notifications', group: 'ai', label: 'Notifications', icon: 'Notification', sub: 'Choose when to receive desktop notifications and hear synthesized sounds.', keys: 'notifications sound chime staplebops alert agent permissions questions errors' },
+  { id: 'worktrees', group: 'workspace', label: 'Worktrees', icon: 'GitBranch', sub: 'Create and switch isolated git worktree checkouts for parallel branches.', keys: 'git worktree branch checkout parallel workspace' },
+  { id: 'skills', group: 'workspace', label: 'Skills & Plugins', icon: 'Lightbulb', sub: 'Manage SKILL.md packs, agent capabilities, and plugins.', keys: 'skills plugins packs extensions' },
+  { id: 'mcp', group: 'workspace', label: 'MCP Connectors', icon: 'Connectors', sub: 'Connect external Model Context Protocol servers & tools.', keys: 'mcp connectors servers tools' },
+  { id: 'memory', group: 'workspace', label: 'Memory & Notebooks', icon: 'Memory', sub: 'Long-term saved facts and interactive notebooks.', keys: 'memory facts notebooks cells' },
+  { id: 'harness', group: 'workspace', label: 'Harness & Custom Tools', icon: 'AgentsSimple', sub: 'Creator Mode runtime tools, developer features, and agent capabilities.', keys: 'creator custom tool harness developer extension buddy remote control' },
+  { id: 'rea', group: 'ext', label: 'Reverse Engineering', icon: 'Orbit', sub: 'Built-in REA (morluto/rea) MCP & CLI, 263 tools, doctor & runtime.', keys: 'rea reverse engineer binary ghidra hopper ida rizin asar apk firmware mcp decompile' },
+  { id: 'browser', group: 'ext', label: 'Browser Extension', icon: 'Globe', sub: 'Zero-key Chrome extension bridge for live browser control & shared desktop models.', keys: 'chrome extension akron browser bot bridge websocket tabs 8766' },
+  { id: 'server', group: 'ext', label: 'Server & Pairing', icon: 'Plug', sub: 'Local HTTP/WebSocket host endpoint, bridge health, and device info.', keys: 'server pairing port 8766 endpoint websocket health' },
+  { id: 'voice', group: 'ext', label: 'Voice & Dictation', icon: 'Microphone', sub: 'Built-in offline ONNX Whisper speech model & fast gateway transcription.', keys: 'voice dictation whisper microphone speech audio language' },
+  { id: 'shortcuts', group: 'system', label: 'Shortcuts', icon: 'Keyboard', sub: 'Keyboard shortcuts for fast navigation and editing.', keys: 'shortcuts hotkeys keybindings keyboard cmd ctrl' },
+  { id: 'security', group: 'system', label: 'Permissions & Security', icon: 'LockShield', sub: 'Tool consent rules, Computer Use, Chrome CDP, bridges, and compliance.', keys: 'permission security computer use chrome cdp bridge compliance trusted folders' },
+  { id: 'system', group: 'system', label: 'Appearance & System', icon: 'Palette', sub: 'Theme, language locale, memory injection, launch behavior, and runtimes.', keys: 'theme dark light locale language memory login quick entry runtime' },
 ];
 
 function SettingsModal({
@@ -9932,15 +9949,15 @@ function SettingsModal({
   const activeMeta = SETTINGS_SECTIONS.find((s) => s.id === section) || SETTINGS_SECTIONS[0];
 
   const badgeFor = (id) => {
-    if (id === 'providers') return (provider.model || '').split('/').pop().slice(0, 14) || 'Setup';
+    if (id === 'providers') return provider.model ? '' : 'Setup';
     if (id === 'notifications') return notifCfg.agent ? 'On' : 'Off';
-    if (id === 'orchestrator') return (orchestrator.pools && orchestrator.pools.enabled) ? 'Pools on' : (orchestrator.enabled ? 'On' : 'Off');
+    if (id === 'orchestrator') return (orchestrator.pools && orchestrator.pools.enabled) ? 'Pools' : (orchestrator.enabled ? 'On' : '');
     if (id === 'worktrees') return wtInfo.worktrees && wtInfo.worktrees.length ? `${wtInfo.worktrees.length}` : '';
-    if (id === 'skills') return `${skills.filter((s) => s.enabled !== false).length}`;
-    if (id === 'mcp') return `${mcpServers.length}`;
-    if (id === 'memory') return `${memory.length}`;
-    if (id === 'harness') return customTools.length ? `${customTools.length} tool${customTools.length === 1 ? '' : 's'}` : '';
-    if (id === 'rea') return reaInfo && reaInfo.connected ? `${reaInfo.toolCount} tools` : (reaInfo && reaInfo.available ? 'Ready' : 'Setup');
+    if (id === 'skills') { const n = skills.filter((s) => s.enabled !== false).length; return n > 0 ? `${n}` : ''; }
+    if (id === 'mcp') return mcpServers.length > 0 ? `${mcpServers.length}` : '';
+    if (id === 'memory') return memory.length > 0 ? `${memory.length}` : '';
+    if (id === 'harness') return customTools.length ? `${customTools.length}` : '';
+    if (id === 'rea') return reaInfo && reaInfo.connected ? `${reaInfo.toolCount}` : (reaInfo && reaInfo.available ? 'Ready' : '');
     if (id === 'browser') return extStatus && extStatus.extensionConnected ? 'Live' : '8766';
     if (id === 'server') return '8766';
     if (id === 'voice') return settings.voiceEngine === 'local' ? 'Whisper' : 'Auto';
@@ -9966,19 +9983,22 @@ function SettingsModal({
             />
           </div>
           <nav className="settings-nav">
-            {visibleSections.map((s) => {
+            {visibleSections.map((s, idx) => {
               const badge = badgeFor(s.id);
+              const showSep = !q && idx > 0 && visibleSections[idx - 1].group !== s.group;
               return (
-                <button
-                  key={s.id}
-                  type="button"
-                  className={'settings-nav-btn' + (section === s.id ? ' on' : '')}
-                  onClick={() => setSection(s.id)}
-                >
-                  <Icon name={s.icon} size={15} />
-                  <span>{s.label}</span>
-                  {badge && <span className="settings-nav-pill">{badge}</span>}
-                </button>
+                <React.Fragment key={s.id}>
+                  {showSep && <div className="settings-nav-sep" role="separator" />}
+                  <button
+                    type="button"
+                    className={'settings-nav-btn' + (section === s.id ? ' on' : '')}
+                    onClick={() => setSection(s.id)}
+                  >
+                    <Icon name={s.icon} size={15} />
+                    <span>{s.label}</span>
+                    {badge && <span className="settings-nav-pill">{badge}</span>}
+                  </button>
+                </React.Fragment>
               );
             })}
           </nav>
