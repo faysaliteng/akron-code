@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "identity": {
+    "productName": "Akron Code",
+    "author": "AkronLogic",
+    "attribution": "by Akronlogic.com",
+    "extensionName": "Akron Browser Bot",
+    "license": "SEE LICENSE IN LICENSE.md"
+  },
+  "assets": {
+    "build/icon.svg": {
+      "sha256": "e0e203a791d0ff87f484bc7ec6d8047e5ecf4230170f88596a6e03b83751d267",
+      "size": 4229,
+      "runtime": "asar"
+    },
+    "build/logo-mark.svg": {
+      "sha256": "124e4de0e98c2b36d0af65bce6ebae6e293a333746546039489a9c0839b4695c",
+      "size": 5605,
+      "runtime": "asar"
+    },
+    "build/icon.png": {
+      "sha256": "2f13c76e045b5c5b58c35babe51b1f7c6a0712b33ecaaa9287196667947697ac",
+      "size": 366123,
+      "runtime": "asar"
+    },
+    "build/icon.icns": {
+      "sha256": "8b6557d8b0774a7b9c93e0f7d171609031aad231348befdff34176153d3cb0cb",
+      "size": 919555,
+      "runtime": "repo-only"
+    },
+    "build/icon.ico": {
+      "sha256": "0de376afc5de4379d7703664a8d98f4f7f32d3d4dec4e006bfd7ca3a401401c0",
+      "size": 68771,
+      "runtime": "repo-only"
+    },
+    "electron/trayTemplate.png": {
+      "sha256": "ada9508cbddcf47ff76f10e72ca88a0498b450ab14e995e34f0c5cae64243955",
+      "size": 346,
+      "runtime": "asar"
+    },
+    "electron/trayTemplate@2x.png": {
+      "sha256": "41b03eead95b45d3f276b6b1b2c146aaeffad8a0ced836027d3608c029bd038b",
+      "size": 590,
+      "runtime": "asar"
+    },
+    "resources/akron-browser-bot/icons/icon16.png": {
+      "sha256": "5abef6c709ffccac05022bd7f1fae7f39881ce6572d6a4ec4ab50943aa7e4eb0",
+      "size": 503,
+      "runtime": "both"
+    },
+    "resources/akron-browser-bot/icons/icon32.png": {
+      "sha256": "1e48c0d2b6bf09b30c9dd82f55155b3dd624098fcbf3416c0c407839fcbe3092",
+      "size": 1084,
+      "runtime": "both"
+    },
+    "resources/akron-browser-bot/icons/icon48.png": {
+      "sha256": "c652b28e9283b7f64c6b0b4ba3938b5b2fb6be7b2ddb03564b2e551967b754f6",
+      "size": 1186,
+      "runtime": "both"
+    },
+    "resources/akron-browser-bot/icons/icon128.png": {
+      "sha256": "84617b24232c6e93628830df97e167d254ef34b7a9ab76f858c6e871c2258924",
+      "size": 4301,
+      "runtime": "both"
+    },
+    "resources/akron-browser-bot/icons/logo.svg": {
+      "sha256": "359d416da655b609631f32a20632187060e9a410d51b94c810c5e2ac07a4bd5d",
+      "size": 5735,
+      "runtime": "both"
+    }
+  },
+  "sealDigest": "8e61e34ec8feaad456d60412b3e8813dd48d865b7f740b70a177e69561a6da7b",
+  "generatedAt": "2026-11-26T19:50:55.221Z"
+}

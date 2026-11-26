@@ -208,12 +208,42 @@ function ensureWorker() {
   if (workerProc && !workerProc.killed && workerProc.connected && !workerDead) return workerProc;
   workerDead = false;
   const scriptPath = resolveWorkerScript();
-  const child = spawn(process.execPath, [scriptPath], {
-    cwd: os.homedir(),
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-    windowsHide: true,
-  });
+
+  // Inside Electron (with RunAsNode=false fuse hardened), fork via Electron's utilityProcess.
+  // In plain Node tests, spawn Node IPC directly.
+  let utilityProcess = null;
+  try {
+    if (process.versions && process.versions.electron) {
+      utilityProcess = require('electron').utilityProcess;
+    }
+  } catch (_) {}
+
+  let raw = null;
+  let wrapper = null;
+  if (utilityProcess && typeof utilityProcess.fork === 'function') {
+    raw = utilityProcess.fork(scriptPath, [], {
+      cwd: os.homedir(),
+      serviceName: 'Akron PTY Host',
+    });
+    wrapper = {
+      connected: true,
+      killed: false,
+      send: (m) => { try { raw.postMessage(m); } catch (_) {} },
+      kill: () => { wrapper.killed = true; wrapper.connected = false; try { raw.kill(); } catch (_) {} },
+      on: (ev, fn) => raw.on(ev, fn),
+      once: (ev, fn) => raw.once(ev, fn),
+    };
+  } else {
+    raw = spawn(process.execPath, [scriptPath], {
+      cwd: os.homedir(),
+      env: process.env,
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      windowsHide: true,
+    });
+    wrapper = raw;
+  }
+
+  const child = wrapper;
   workerProc = child;
 
   child.on('message', (msg) => {
@@ -257,6 +287,8 @@ function ensureWorker() {
 
   child.on('exit', () => {
     if (workerProc === child) workerProc = null;
+    child.connected = false;
+    child.killed = true;
     workerDead = true;
     for (const [id, cb] of [...workerCallbacks.entries()]) {
       workerCallbacks.delete(id);
@@ -269,10 +301,12 @@ function ensureWorker() {
     }
   });
 
-  child.on('error', () => {
-    if (workerProc === child) workerProc = null;
-    workerDead = true;
-  });
+  if (typeof raw.on === 'function' && utilityProcess === null) {
+    raw.on('error', () => {
+      if (workerProc === child) workerProc = null;
+      workerDead = true;
+    });
+  }
 
   try { child.send({ type: 'init' }); } catch (_) {}
   return child;

@@ -15,13 +15,19 @@ function loadNodePty() {
 
 const nodePty = loadNodePty();
 const sessions = new Map();
+const parentPort = process.parentPort || null;
 let shuttingDown = false;
 let shutdownTimer = null;
 
 function safeSend(msg) {
-  if (!process.connected) return;
   try {
-    process.send(msg);
+    if (parentPort) {
+      parentPort.postMessage(msg);
+      return;
+    }
+    if (process.connected && typeof process.send === 'function') {
+      process.send(msg);
+    }
   } catch (_) {}
 }
 
@@ -50,7 +56,7 @@ function beginShutdown() {
   }, 140);
 }
 
-process.on('message', (msg) => {
+function handleMessage(msg) {
   if (!msg || typeof msg !== 'object') return;
   const { type, id } = msg;
 
@@ -122,7 +128,13 @@ process.on('message', (msg) => {
   if (type === 'shutdown') {
     beginShutdown();
   }
-});
+}
+
+if (parentPort) {
+  parentPort.on('message', (evt) => handleMessage(evt && evt.data !== undefined ? evt.data : evt));
+} else {
+  process.on('message', handleMessage);
+}
 
 process.on('disconnect', beginShutdown);
 process.on('SIGTERM', beginShutdown);

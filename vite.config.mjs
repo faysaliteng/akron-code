@@ -8,6 +8,7 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     target: 'chrome126',
+    sourcemap: false,
   },
   server: {
     port: 5173,

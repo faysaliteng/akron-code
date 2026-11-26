@@ -5,11 +5,13 @@
   "description": "Akron Code — multi-agent desktop coding IDE by Akronlogic.com",
   "main": "electron/main.js",
   "author": "AkronLogic",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE.md",
   "scripts": {
     "build": "vite build",
     "start": "electron .",
     "dev": "vite --host 127.0.0.1",
+    "brand:seal": "node scripts/seal-brand.js",
+    "brand:check": "node -e \"const r=require('./electron/brand-guard').verifyBrandIntegrity();if(!r.ok){console.error(r.problems);process.exit(1);}console.log('BRAND_SEAL_OK',r.checkedFiles);\"",
     "vendor:runtimes": "node scripts/vendor-runtimes.js",
     "vendor:runtimes:check": "node scripts/vendor-runtimes.js --check",
     "vendor:runtimes:sync": "node scripts/vendor-runtimes.js --download --stale",
@@ -61,11 +63,19 @@
       "**/node_modules/@parcel/watcher-*/**/*"
     ],
     "compression": "maximum",
+    "npmRebuild": false,
+    "afterPack": "scripts/harden-fuses.js",
     "files": [
       "dist/**/*",
       "electron/**/*",
       "resources/**/*",
-      "package.json"
+      "build/icon.svg",
+      "build/logo-mark.svg",
+      "build/icon.png",
+      "LICENSE.md",
+      "TRADEMARKS.md",
+      "package.json",
+      "!**/*.map"
     ],
     "extraResources": [
       {

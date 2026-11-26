@@ -105,13 +105,16 @@ function quickSyntaxDiagnostic(fp) {
         && (/from\s+['"]react['"]/.test(sample) || /require\(\s*['"]react['"]\s*\)/.test(sample) || /export\s+default\s+function/.test(sample) || /React\./.test(sample));
       if (hasJsx) return '';
     }
-    if (ext === '.cjs' || ext === '.mjs' || ext === '.js') {
-      execFileSync(process.execPath, ['--check', fp], {
-        timeout: 2500,
-        encoding: 'utf8',
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+    if (ext === '.cjs' || ext === '.js') {
+      const src = fs.readFileSync(fp, 'utf8');
+      if (/^\s*(?:import\s+(?:[\w*{]|['"])|export\s+(?:default|const|let|var|async|function|class|\{|\*))/m.test(src)) {
+        return '';
+      }
+      const vm = require('vm');
+      new vm.Script(src.replace(/^#!.*\r?\n/, '\n'), { filename: fp });
+      return '';
+    }
+    if (ext === '.mjs') {
       return '';
     }
     if (ext === '.py') {

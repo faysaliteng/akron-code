@@ -40,6 +40,7 @@ const { hydrateOrchestrator, poolDeadNotice } = require('./orch-hydrate');
 const rea = require('./rea');
 const gdrive = require('./gdrive');
 const ideIpc = require('./ide/ipc');
+const brandGuard = require('./brand-guard');
 try { rea.enrichProcessPath(); } catch (_) {}
 
 // ---------------------------------------------------------------------------
@@ -99,7 +100,7 @@ const runs = new Map(); // runId -> AbortController
 // running window instead. A `helio://` link that arrives while we are still
 // booting is parked and delivered once the window can receive it.
 const gotSingleInstance = app.requestSingleInstanceLock();
-if (!gotSingleInstance) app.quit();
+if (!gotSingleInstance && process.env.AKRON_COLD_BOOT_CHECK !== '1') app.quit();
 
 const PROTOCOL = 'helio';
 let pendingDeepLink = '';
@@ -342,7 +343,56 @@ function createWindow() {
   windows.add(win);
   windowstate.track(win, { onRestore: true });
   // A deep link that arrived during boot is delivered once the page can hear it.
-  win.webContents.once('did-finish-load', () => flushDeepLink(win));
+  const consoleErrors = [];
+  win.webContents.on('console-message', (_e, level, message) => {
+    if (level >= 3) consoleErrors.push(String(message || ''));
+  });
+  if (app.isPackaged) {
+    win.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return;
+      const key = String(input.key || '').toLowerCase();
+      const isInspect = key === 'f12' || ((input.control || input.meta) && (input.shift || input.alt) && key === 'i');
+      if (isInspect) event.preventDefault();
+    });
+  }
+  win.webContents.once('did-finish-load', async () => {
+    flushDeepLink(win);
+    try {
+      const domRes = await win.webContents.executeJavaScript(brandGuard.verifyRendererDomScript());
+      if (!domRes || !domRes.ok) {
+        console.error('[brand-guard] Renderer brand verification failed:', JSON.stringify(domRes));
+        if (app.isPackaged || process.env.AKRON_ENFORCE_BRAND_SEAL === '1') {
+          if (process.env.AKRON_NO_DIALOG !== '1') {
+            dialog.showErrorBox('Akron Code Integrity Error', 'Akron Code branding verification failed.');
+          }
+          app.exit(78);
+          return;
+        }
+      }
+      if (process.env.AKRON_COLD_BOOT_CHECK === '1') {
+        setTimeout(async () => {
+          try {
+            const integrity = brandGuard.verifyBrandIntegrity();
+            const ipcOk = await win.webContents.executeJavaScript('Boolean(window.autobot && typeof window.autobot.getVersion === "function")');
+            const summary = {
+              ok: Boolean(integrity.ok && domRes && domRes.ok && ipcOk && consoleErrors.length === 0),
+              brandOk: integrity.ok,
+              domOk: Boolean(domRes && domRes.ok),
+              ipcOk,
+              checkedFiles: integrity.checkedFiles,
+              consoleErrorCount: consoleErrors.length,
+              consoleErrors: consoleErrors.slice(0, 5),
+            };
+            process.stdout.write(`COLD_BOOT_OK ${JSON.stringify(summary)}\n`);
+            app.exit(summary.ok ? 0 : 1);
+          } catch (err) {
+            process.stderr.write(`COLD_BOOT_FAIL ${err && err.message ? err.message : String(err)}\n`);
+            app.exit(1);
+          }
+        }, 1200);
+      }
+    } catch (_) {}
+  });
 
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) {
@@ -439,10 +489,27 @@ function createAboutWindow() {
     <p class="sub">by Akronlogic.com</p>
     <span class="ver">Version ${app.getVersion()}</span>
     <div class="row">Autonomous coding IDE.<br>Multi-agent &amp; MCP–compatible.<br>Electron ${process.versions.electron}</div>
-    <div class="foot"><a href="https://akronlogic.com">akronlogic.com</a></div>
+    <div class="foot">
+      <a href="https://akronlogic.com" target="_blank">akronlogic.com</a> ·
+      <a href="https://akron-legal.local/license" target="_blank">License</a> ·
+      <a href="https://akron-legal.local/trademarks" target="_blank">Trademarks</a>
+    </div>
   </div></body></html>`;
   win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-  win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url === 'https://akron-legal.local/license') {
+      const lp = path.join(__dirname, '..', 'LICENSE.md');
+      if (fs.existsSync(lp)) shell.openPath(lp);
+      return { action: 'deny' };
+    }
+    if (url === 'https://akron-legal.local/trademarks') {
+      const tp = path.join(__dirname, '..', 'TRADEMARKS.md');
+      if (fs.existsSync(tp)) shell.openPath(tp);
+      return { action: 'deny' };
+    }
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
   return win;
 }
 
@@ -3453,6 +3520,7 @@ ipcMain.handle('autobot:devServerStart', (e, cwd) => devserver.start(cwd));
 
 // ---- Secondary-window / chrome IPC (Claude Desktop parity surfaces) ----
 ipcMain.handle('autobot:openAbout', () => { createAboutWindow(); return { ok: true }; });
+ipcMain.handle('autobot:brandStatus', () => brandGuard.verifyBrandIntegrity());
 ipcMain.handle('autobot:openQuickEntry', () => { createQuickWindow(); return { ok: true }; });
 ipcMain.handle('autobot:openArtifactWindow', (e, payload) => createArtifactWindow(payload || {}));
 ipcMain.handle('autobot:printToPdf', (e, payload) => printToPdf(e, payload || {}));
@@ -4018,6 +4086,17 @@ app.whenReady().then(() => {
   // first macOS launch before open-url is registered) becomes the pending link.
   const bootLink = (process.argv || []).find(isDeepLink);
   if (bootLink) pendingDeepLink = bootLink;
+  const brandRes = brandGuard.verifyBrandIntegrity();
+  if (!brandRes.ok) {
+    console.error('[brand-guard] Integrity verification failed:', brandRes.problems);
+    if (app.isPackaged || process.env.AKRON_ENFORCE_BRAND_SEAL === '1') {
+      if (process.env.AKRON_NO_DIALOG !== '1') {
+        dialog.showErrorBox('Akron Code Integrity Error', 'Akron Code brand & asset verification failed:\n' + brandRes.problems.join('\n'));
+      }
+      app.exit(78);
+      return;
+    }
+  }
   createWindow();
   // Start the scheduled-task ticker (fires tasks due on their cadence and
   // notifies every window so the Scheduled panel can refresh).

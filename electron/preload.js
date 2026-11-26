@@ -244,6 +244,7 @@ contextBridge.exposeInMainWorld('autobot', {
   },
 
   openAbout: () => ipcRenderer.invoke('autobot:openAbout'),
+  brandStatus: () => ipcRenderer.invoke('autobot:brandStatus'),
   openQuickEntry: () => ipcRenderer.invoke('autobot:openQuickEntry'),
   quickSubmit: (payload) => ipcRenderer.invoke('autobot:quickSubmit', payload),
   openArtifactWindow: (payload) => ipcRenderer.invoke('autobot:openArtifactWindow', payload),
