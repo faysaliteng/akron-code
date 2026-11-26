@@ -62,7 +62,9 @@ let needsState = true;
 // (opened as a page), and only then does it follow the active tab.
 const urlTabId = panelTabId(location.href);
 const stepEls = new Map();
+const planToolIds = new Set();
 const streamBubbles = new Map();
+let activePlanRecord = null;
 let keepaliveTimer = null;
 let prompts = [];
 let schedules = [];
@@ -111,52 +113,241 @@ function speak(text) {
   } catch {}
 }
 
-function attachCopy(bubble, text) {
-  if (!text) return;
-  const btn = document.createElement("button");
-  btn.className = "copy-btn";
-  btn.textContent = "Copy";
-  btn.title = "Copy this reply";
-  btn.addEventListener("click", async () => {
+function currentModelBadgeText(explicitEndpoint) {
+  if (explicitEndpoint) {
+    return typeof explicitEndpoint === "string"
+      ? explicitEndpoint
+      : explicitEndpoint.model || explicitEndpoint.label || "";
+  }
+  if (state.activeEndpoint) return state.activeEndpoint;
+  const selModel = modelSel?.selectedOptions?.[0]?.textContent?.replace(/\s*\(active\)$/, "").trim();
+  if (selModel && selModel !== "-" && selModel !== "—") return selModel;
+  return state.settings?.activeModel || "";
+}
+
+function attachMessageActions(wrap, bubble, text, explicitEndpoint = null) {
+  if (!wrap || !text) return;
+  const footer = document.createElement("div");
+  footer.className = "msg-footer";
+
+  const modelLabel = currentModelBadgeText(explicitEndpoint);
+  if (modelLabel) {
+    const badge = document.createElement("span");
+    badge.className = "msg-model-badge";
+    const dot = document.createElement("span");
+    dot.className = "msg-model-dot";
+    const name = document.createElement("span");
+    name.textContent = modelLabel;
+    badge.append(dot, name);
+    footer.appendChild(badge);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "msg-footer-actions";
+
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "msg-action-btn";
+  copyBtn.textContent = "Copy";
+  copyBtn.title = "Copy this reply";
+  copyBtn.addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(text);
+      copyBtn.textContent = "Copied";
       toast("Copied to clipboard.");
+      setTimeout(() => { copyBtn.textContent = "Copy"; }, 1400);
     } catch {
       toast("Could not copy. Select the text instead.");
     }
   });
-  bubble.appendChild(btn);
+
+  const retryBtn = document.createElement("button");
+  retryBtn.type = "button";
+  retryBtn.className = "msg-action-btn";
+  retryBtn.textContent = "Retry";
+  retryBtn.title = "Re-run last prompt";
+  retryBtn.addEventListener("click", () => {
+    const last = [...(state.conversation || [])].reverse().find((message) => message.role === "user" && !message.auto);
+    if (!last?.content || running) return;
+    inputEl.value = String(last.content);
+    autosize();
+    send();
+  });
+
+  actions.append(copyBtn, retryBtn);
+  footer.appendChild(actions);
+  wrap.appendChild(footer);
 }
 
 function clearMessagesDom() {
   messagesEl.innerHTML = EMPTY_HTML;
   stepEls.clear();
+  planToolIds.clear();
   streamBubbles.clear();
+  activePlanRecord = null;
+}
+
+function createStaticSvg(paths, viewBox = "0 0 24 24") {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", viewBox);
+  svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = paths;
+  return svg;
+}
+
+function syncInlinePlanCard(rec) {
+  if (!rec || !rec.cardEl) return;
+  const total = rec.steps.length;
+  if (!total) return;
+  const normalizedStatus = rec.status === "done" ? "done" : "in_progress";
+  const isLive = normalizedStatus !== "done" && running;
+  const doneCount = normalizedStatus === "done"
+    ? total
+    : (rec.completedTools > 0 ? Math.min(total - 1, rec.completedTools) : 0);
+  const pct = total ? Math.round((doneCount / total) * 100) : 0;
+
+  rec.cardEl.classList.toggle("is-live", isLive);
+  rec.cardEl.classList.toggle("is-done", normalizedStatus === "done");
+  rec.cardEl.classList.toggle("collapsed", !rec.open);
+
+  rec.iconEl.replaceChildren(
+    isLive
+      ? (() => { const sp = document.createElement("span"); sp.className = "plan-spin-ring"; return sp; })()
+      : createStaticSvg('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>')
+  );
+
+  rec.titleEl.textContent = isLive
+    ? `Progress · ${doneCount}/${total} steps`
+    : normalizedStatus === "done"
+      ? `Completed · ${total}/${total} steps`
+      : `Plan · ${doneCount}/${total} steps`;
+
+  rec.fillEl.style.width = `${pct}%`;
+  rec.ratioEl.textContent = `${doneCount}/${total}`;
+  rec.caretEl.textContent = rec.open ? "▴" : "▾";
+  rec.headBtn.setAttribute("aria-expanded", String(!!rec.open));
+  rec.listEl.hidden = !rec.open;
+
+  rec.listEl.replaceChildren();
+  rec.steps.forEach((step, idx) => {
+    let rowState = "pending";
+    if (normalizedStatus === "done" || idx < doneCount) rowState = "completed";
+    else if (idx === doneCount && isLive) rowState = "in_progress";
+
+    const row = document.createElement("div");
+    row.className = `live-plan-row ${rowState}`;
+
+    const mark = document.createElement("span");
+    mark.className = "live-plan-mark";
+    if (rowState === "completed") {
+      mark.appendChild(createStaticSvg('<path d="M20 6L9 17l-5-5"/>'));
+    } else if (rowState === "in_progress") {
+      const dots = document.createElement("span");
+      dots.className = "live-dots-loader";
+      dots.setAttribute("aria-hidden", "true");
+      dots.innerHTML = "<i></i><i></i><i></i><i></i>";
+      mark.appendChild(dots);
+    } else {
+      const dot = document.createElement("span");
+      dot.className = "live-plan-circle";
+      dot.textContent = String(idx + 1);
+      mark.appendChild(dot);
+    }
+
+    const text = document.createElement("span");
+    text.className = "live-plan-text";
+    text.textContent = String(step);
+    row.append(mark, text);
+    rec.listEl.appendChild(row);
+  });
+}
+
+function upsertInlinePlanCard(steps, status) {
+  const list = (Array.isArray(steps) ? steps : []).map((s) => String(s).trim()).filter(Boolean);
+  if (planEl) {
+    planEl.classList.add("hidden");
+    if (planStepsEl) planStepsEl.innerHTML = "";
+  }
+  if (!list.length) {
+    if (activePlanRecord && activePlanRecord.cardEl && !activePlanRecord.cardEl.isConnected) {
+      activePlanRecord = null;
+    }
+    return;
+  }
+
+  const normalizedStatus = status === "done" ? "done" : "in_progress";
+  if (!activePlanRecord || !activePlanRecord.cardEl.isConnected) {
+    const cardEl = document.createElement("div");
+    cardEl.className = "live-plan-card";
+
+    const headBtn = document.createElement("button");
+    headBtn.type = "button";
+    headBtn.className = "live-plan-head";
+
+    const iconEl = document.createElement("span");
+    iconEl.className = "live-plan-ico";
+
+    const titleEl = document.createElement("span");
+    titleEl.className = "live-plan-title";
+
+    const barEl = document.createElement("span");
+    barEl.className = "live-plan-bar";
+    barEl.setAttribute("aria-hidden", "true");
+    const fillEl = document.createElement("span");
+    fillEl.className = "live-plan-fill";
+    barEl.appendChild(fillEl);
+
+    const ratioEl = document.createElement("span");
+    ratioEl.className = "live-plan-ratio";
+
+    const caretEl = document.createElement("span");
+    caretEl.className = "live-plan-caret";
+
+    headBtn.append(iconEl, titleEl, barEl, ratioEl, caretEl);
+
+    const listEl = document.createElement("div");
+    listEl.className = "live-plan-list";
+
+    cardEl.append(headBtn, listEl);
+    addToChat(cardEl);
+    scrollBottom(false);
+
+    const rec = {
+      cardEl,
+      headBtn,
+      iconEl,
+      titleEl,
+      fillEl,
+      ratioEl,
+      caretEl,
+      listEl,
+      steps: list,
+      status: normalizedStatus,
+      open: normalizedStatus !== "done",
+      manualToggle: false,
+      completedTools: 0,
+    };
+
+    headBtn.addEventListener("click", () => {
+      rec.open = !rec.open;
+      rec.manualToggle = true;
+      syncInlinePlanCard(rec);
+    });
+
+    activePlanRecord = rec;
+  } else {
+    activePlanRecord.steps = list;
+    activePlanRecord.status = normalizedStatus;
+    if (!activePlanRecord.manualToggle) {
+      activePlanRecord.open = normalizedStatus !== "done";
+    }
+  }
+
+  syncInlinePlanCard(activePlanRecord);
 }
 
 function renderPlan(steps, status) {
-  const list = Array.isArray(steps) ? steps : [];
-  if (!list.length) {
-    planEl.classList.add("hidden");
-    planStepsEl.innerHTML = "";
-    return;
-  }
-  planStepsEl.innerHTML = "";
-  const done = status === "done";
-  list.forEach((step, index) => {
-    const li = document.createElement("li");
-    li.className = "plan-step" + (done ? " done" : "");
-    const mark = document.createElement("span");
-    mark.className = "plan-mark";
-    mark.textContent = done ? "✓" : String(index + 1);
-    const text = document.createElement("span");
-    text.textContent = String(step);
-    li.append(mark, text);
-    planStepsEl.appendChild(li);
-  });
-  planStatusEl.textContent = done ? "done" : "in progress";
-  planEl.classList.toggle("done", done);
-  planEl.classList.remove("hidden");
+  upsertInlinePlanCard(steps, status);
 }
 
 function renderOrchStatus({ active = null, switching = null } = {}) {
@@ -232,7 +423,7 @@ function appendUser(text, images = []) {
   scrollBottom();
 }
 
-function appendAssistant(text) {
+function appendAssistant(text, explicitEndpoint = null) {
   const wrap = document.createElement("div");
   wrap.className = "msg assistant";
   const bubble = document.createElement("div");
@@ -246,8 +437,8 @@ function appendAssistant(text) {
     frame.srcdoc = match[1];
     bubble.appendChild(frame);
   }
-  attachCopy(bubble, text);
   wrap.appendChild(bubble);
+  attachMessageActions(wrap, bubble, text, explicitEndpoint);
   addToChat(wrap);
   scrollBottom();
 }
@@ -282,12 +473,47 @@ function appendError(text, { retry = false } = {}) {
   scrollBottom();
 }
 
-// The word at the end of a step row. A finished row already says what was done.
-function stepStateText(phase) {
-  return phase === "error" ? "Failed" : "";
+// The word at the end of a step row. A finished row shows duration or failure.
+function stepStateText(phase, elapsedMs = 0) {
+  if (phase === "error") return "Failed";
+  if (phase === "done" && elapsedMs > 0) {
+    return elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(1)}s` : `${Math.max(1, Math.round(elapsedMs))}ms`;
+  }
+  return "";
+}
+
+function toolCategorySvg(name) {
+  const nm = String(name || "").toLowerCase();
+  if (nm.includes("navigate") || nm.includes("tab") || nm.includes("url")) {
+    return createStaticSvg('<circle cx="12" cy="12" r="9"/><path d="M2 12h20M12 3a13 13 0 0 1 0 18M12 3a13 13 0 0 0 0 18"/>');
+  }
+  if (nm.includes("click") || nm.includes("press") || nm.includes("hover")) {
+    return createStaticSvg('<path d="M5 3l14 9-6 2-3 6-5-17z"/>');
+  }
+  if (nm.includes("type") || nm.includes("fill") || nm.includes("form") || nm.includes("select")) {
+    return createStaticSvg('<path d="M4 7V4h16v3M9 20h6M12 4v16"/>');
+  }
+  if (nm.includes("read") || nm.includes("find") || nm.includes("get_page") || nm.includes("text")) {
+    return createStaticSvg('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>');
+  }
+  if (nm.includes("screenshot") || nm.includes("computer") || nm.includes("image")) {
+    return createStaticSvg('<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>');
+  }
+  if (nm.includes("javascript") || nm.includes("eval") || nm.includes("console") || nm.includes("network")) {
+    return createStaticSvg('<path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/>');
+  }
+  return createStaticSvg('<circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/>');
 }
 
 function createStep(id, name, args, phase = "running") {
+  if (name === "update_plan") {
+    if (id) planToolIds.add(id);
+    if (args && Array.isArray(args.steps) && args.steps.length) {
+      upsertInlinePlanCard(args.steps, args.status || "in_progress");
+    }
+    return null;
+  }
+
   const details = document.createElement("details");
   details.className = `step ${phase}`;
   details.dataset.tool = name || "tool";
@@ -297,13 +523,16 @@ function createStep(id, name, args, phase = "running") {
   const summary = document.createElement("summary");
   const dot = document.createElement("span");
   dot.className = "step-dot";
+  const ico = document.createElement("span");
+  ico.className = "step-ico";
+  ico.appendChild(toolCategorySvg(name));
   const labelEl = document.createElement("span");
   labelEl.className = "step-label";
   labelEl.textContent = stepLine(name, args, phase);
   const stateEl = document.createElement("span");
   stateEl.className = "state";
-  stateEl.textContent = stepStateText(phase);
-  summary.append(dot, labelEl, stateEl);
+  stateEl.textContent = stepStateText(phase, 0);
+  summary.append(dot, ico, labelEl, stateEl);
 
   const nameEl = document.createElement("div");
   nameEl.className = "tool-name";
@@ -321,19 +550,22 @@ function createStep(id, name, args, phase = "running") {
   details.append(summary, nameEl, argsEl, resultEl);
   addToChat(details);
 
-  const record = { details, labelEl, stateEl, resultEl, name, args };
+  const record = { details, labelEl, stateEl, resultEl, name, args, startedAt: Date.now() };
   stepEls.set(id, record);
   scrollBottom();
   return record;
 }
 
 function finishStep(id, phase, result, image) {
+  if (id && planToolIds.has(id)) return;
   let record = stepEls.get(id);
   if (!record) record = createStep(id, "tool", null, "running");
+  if (!record) return;
   record.details.classList.remove("running", "done", "error");
   record.details.classList.add(phase);
   record.labelEl.textContent = stepLine(record.name, record.args, phase, result);
-  record.stateEl.textContent = stepStateText(phase);
+  const elapsed = record.startedAt ? Math.max(0, Date.now() - record.startedAt) : 0;
+  record.stateEl.textContent = stepStateText(phase, elapsed);
 
   if (typeof result === "string" && result) {
     record.resultEl.hidden = false;
@@ -345,6 +577,10 @@ function finishStep(id, phase, result, image) {
     img.src = image;
     img.alt = "Screenshot captured by Akron";
     record.details.appendChild(img);
+  }
+  if (phase === "done" && activePlanRecord && activePlanRecord.status !== "done") {
+    activePlanRecord.completedTools += 1;
+    syncInlinePlanCard(activePlanRecord);
   }
   scrollBottom();
 }
@@ -378,7 +614,7 @@ function appendDelta(streamId, delta) {
   if (stick) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-function finalizeStream(streamId, finalText) {
+function finalizeStream(streamId, finalText, explicitEndpoint = null) {
   const entry = streamBubbles.get(streamId);
   if (!entry) return null;
   streamBubbles.delete(streamId);
@@ -390,7 +626,7 @@ function finalizeStream(streamId, finalText) {
   }
   if (!entry.wrap.isConnected) addToChat(entry.wrap);
   entry.bubble.innerHTML = mdToHtml(text);
-  attachCopy(entry.bubble, text);
+  attachMessageActions(entry.wrap, entry.bubble, text, explicitEndpoint);
   scrollBottom(false);
   return entry;
 }
@@ -408,7 +644,9 @@ function stepsInFlight(conv, stillRunning) {
 
 function renderConversation(stillRunning = false) {
   stepEls.clear();
+  planToolIds.clear();
   streamBubbles.clear();
+  activePlanRecord = null;
   const conv = state.conversation || [];
 
   if (!conv.length) {
@@ -443,6 +681,10 @@ function renderConversation(stillRunning = false) {
     if (record.details.classList.contains("running") && !inFlight.has(id)) {
       finishStep(id, "error", "Interrupted — the extension worker restarted before this step finished.");
     }
+  }
+  if (!stillRunning && activePlanRecord) {
+    if (!activePlanRecord.manualToggle) activePlanRecord.open = false;
+    syncInlinePlanCard(activePlanRecord);
   }
   scrollBottom();
 }
@@ -560,12 +802,19 @@ function requestModels(providerId) {
 function setRunning(value) {
   running = value;
   sendBtn.disabled = value;
+  sendBtn.classList.toggle("hidden", value);
   stopBtn.classList.toggle("hidden", !value);
   typingEl.classList.toggle("hidden", !value);
   inputEl.disabled = false;
   if (!value) {
     actionCount = 0;
     showThinking("");
+    if (activePlanRecord) {
+      if (!activePlanRecord.manualToggle) activePlanRecord.open = false;
+      syncInlinePlanCard(activePlanRecord);
+    }
+  } else if (activePlanRecord) {
+    syncInlinePlanCard(activePlanRecord);
   }
 }
 
@@ -853,8 +1102,16 @@ async function ungroupSelected() {
 
 function updateGifButton() {
   const btn = $("gif-btn");
+  const labelEl = $("gif-btn-label");
   btn.classList.toggle("active", gifRecording);
-  btn.textContent = gifBusy ? "…" : "⏺";
+  btn.classList.toggle("recording", gifRecording);
+  if (labelEl) {
+    labelEl.textContent = gifBusy
+      ? "Encoding GIF…"
+      : gifRecording
+        ? `Stop GIF (${gifFrames} frame${gifFrames === 1 ? "" : "s"})`
+        : "Record Tab GIF";
+  }
   btn.title = gifBusy
     ? "Encoding GIF…"
     : gifRecording
@@ -1544,6 +1801,7 @@ function onMessage(msg) {
         ...(state.conversation || []),
         { role: "user", content: msg.text || "" },
       ];
+      activePlanRecord = null;
       appendUser(msg.text || "", msg.images || (msg.image ? [msg.image] : []));
       dismissSkillOffer();
       inputEl.value = "";
@@ -1579,14 +1837,16 @@ function onMessage(msg) {
       break;
     case "assistant_final": {
       if (msg.endpoint) {
-        state.activeEndpoint = msg.endpoint;
+        state.activeEndpoint = typeof msg.endpoint === "string"
+          ? msg.endpoint
+          : msg.endpoint.label || msg.endpoint.model || state.activeEndpoint;
       }
       if (msg.streamed) {
-        const done = finalizeStream(msg.streamId, msg.text || "");
-        if (!done) appendAssistant(msg.text || "");
+        const done = finalizeStream(msg.streamId, msg.text || "", msg.endpoint);
+        if (!done) appendAssistant(msg.text || "", msg.endpoint);
       } else {
         finalizeAllStreams();
-        appendAssistant(msg.text || "");
+        appendAssistant(msg.text || "", msg.endpoint);
       }
       speak(typeof msg.spoken === "string" ? msg.spoken : msg.text || "");
       renderOrchStatus();
@@ -1854,6 +2114,29 @@ async function refreshActiveTab() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab && tab.id != null) activeTabId = tab.id;
+    updateActiveTabPill(tab);
+  } catch {}
+}
+
+function updateActiveTabPill(knownTab) {
+  const pill = $("active-tab-pill");
+  const hostEl = $("active-tab-host");
+  if (!pill || !hostEl) return;
+  const applyTab = (tab) => {
+    if (!tab) return;
+    let host = "";
+    try {
+      const u = new URL(tab.url || "");
+      host = u.hostname || (u.protocol === "file:" ? "Local file" : u.protocol.replace(":", ""));
+    } catch {}
+    hostEl.textContent = host || tab.title || "Current tab";
+    pill.title = tab.title ? `${tab.title}${tab.url ? " · " + tab.url : ""}` : "Active browser tab";
+  };
+  if (knownTab) { applyTab(knownTab); return; }
+  try {
+    chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
+      if (tabs && tabs[0]) applyTab(tabs[0]);
+    }).catch(() => {});
   } catch {}
 }
 
@@ -2154,6 +2437,61 @@ $("file-input").addEventListener("change", async (e) => {
   e.target.value = "";
   if (files.length) await addFiles(files);
 });
+$("snap-tab-btn")?.addEventListener("click", async () => {
+  try {
+    await refreshActiveTab();
+    const dataUrl = await chrome.tabs.captureVisibleTab(windowId ?? undefined, { format: "png" });
+    if (!dataUrl) {
+      toast("Could not capture current tab.");
+      return;
+    }
+    attachments.push({ name: `tab-${Date.now().toString(36)}.png`, type: "image/png", dataUrl });
+    renderAttachments();
+    toast("Tab screenshot attached");
+  } catch (err) {
+    toast(err?.message || "Cannot capture screenshot on this page.");
+  }
+});
+$("grab-selection-btn")?.addEventListener("click", async () => {
+  try {
+    await refreshActiveTab();
+    if (activeTabId == null) {
+      toast("No active tab available.");
+      return;
+    }
+    let info = null;
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: activeTabId },
+        func: () => ({
+          selection: String(window.getSelection ? window.getSelection() : "").trim(),
+          title: document.title || "",
+          url: location.href || "",
+        }),
+      });
+      info = results?.[0]?.result || null;
+    } catch {}
+    if (!info) {
+      try {
+        const tab = await chrome.tabs.get(activeTabId);
+        info = { selection: "", title: tab?.title || "", url: tab?.url || "" };
+      } catch {}
+    }
+    const sel = String(info?.selection || "").trim();
+    const md = sel
+      ? `# Page Context\nTitle: ${info?.title || ""}\nURL: ${info?.url || ""}\n\n## Selected Text\n${sel}`
+      : `# Page Context\nTitle: ${info?.title || ""}\nURL: ${info?.url || ""}`;
+    attachments.push({
+      name: sel ? "selection.md" : "page-context.md",
+      type: "text/markdown",
+      text: md,
+    });
+    renderAttachments();
+    toast(sel ? "Selected text attached" : "Page URL & title attached");
+  } catch (err) {
+    toast(err?.message || "Could not read page selection.");
+  }
+});
 $("mic").addEventListener("click", toggleVoice);
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "voice_progress" && msg.text) showVoiceNotice(msg.text);
@@ -2437,7 +2775,7 @@ orchToggle.addEventListener("change", async () => {
 messagesEl.addEventListener("click", (e) => {
   const chip = e.target.closest(".chip");
   if (!chip) return;
-  inputEl.value = chip.textContent.trim();
+  inputEl.value = chip.dataset.prompt || chip.textContent.trim();
   autosize();
   inputEl.focus();
 });
@@ -2445,10 +2783,14 @@ messagesEl.addEventListener("click", (e) => {
 // A panel opened for a tab keeps that tab's chat: the browser hides it on other
 // tabs, where opening the panel starts another chat, like Claude. Only a page
 // shown without a tab follows the active one.
+chrome.tabs?.onActivated?.addListener?.(() => {
+  updateActiveTabPill();
+  if (urlTabId == null) bindToActiveTab();
+});
+chrome.tabs?.onUpdated?.addListener?.((tabId, changeInfo, tab) => {
+  if (tabId === activeTabId && (changeInfo.url || changeInfo.title)) updateActiveTabPill(tab);
+});
 if (urlTabId == null) {
-  chrome.tabs.onActivated.addListener(() => {
-    bindToActiveTab();
-  });
   chrome.windows.onFocusChanged.addListener(() => {
     bindToActiveTab();
   });
@@ -2487,13 +2829,25 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 function applyTheme(theme) {
-  document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
+  const dark = theme !== "light";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const btn = $("theme-btn");
+  if (btn) {
+    btn.title = dark ? "Switch to Light mode" : "Switch to Dark mode";
+    btn.replaceChildren(
+      dark
+        ? createStaticSvg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>')
+        : createStaticSvg('<path d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/>')
+    );
+  }
 }
 async function boot() {
   try {
     skillLibrary = await getSkills();
     applyTheme((await getSettings()).theme);
-  } catch {}
+  } catch {
+    applyTheme("dark");
+  }
   $("theme-btn").addEventListener("click", async () => {
     const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
     applyTheme(next);
@@ -2507,6 +2861,7 @@ async function boot() {
   } catch {}
   if (urlTabId != null) {
     activeTabId = urlTabId;
+    try { updateActiveTabPill(await chrome.tabs.get(activeTabId)); } catch { updateActiveTabPill(); }
   } else {
     await refreshActiveTab();
   }

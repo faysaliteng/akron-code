@@ -1,17 +1,17 @@
 :root {
-  --bg: #faf9f5;
-  --bg-2: #f4f1ea;
-  --bg-3: #ebe6dc;
-  --line: #ddd6c8;
-  --text: #141413;
-  --muted: #6b675f;
+  --bg: #f8faf9;
+  --bg-2: #f0f4f2;
+  --bg-3: #e4ebe7;
+  --line: #dce3df;
+  --text: #111614;
+  --muted: #5c6660;
   --red: #dc2626;
-  --blue: #c15f3c;
-  --cyan: #356c78;
-  --green: #16a34a;
-  --amber: #9a6a1e;
-  --accent: #d97757;
-  --accent-2: #c15f3c;
+  --blue: #10b981;
+  --cyan: #059669;
+  --green: #10b981;
+  --amber: #d97706;
+  --accent: #10b981;
+  --accent-2: #059669;
   --danger: #dc2626;
   --radius: 14px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
@@ -332,53 +332,53 @@ textarea { resize: vertical; }
   .grid label.span-2 { grid-column: span 1; }
 }
 
-/* ---------------- Claude-style warm light theme ---------------- */
+/* ---------------- Akron Code clean light theme ---------------- */
 
 html, body {
   background:
-    radial-gradient(1100px 540px at 12% -10%, rgba(201, 100, 66, 0.12), transparent 62%),
-    radial-gradient(900px 500px at 92% -18%, rgba(47, 125, 91, 0.08), transparent 62%),
-    #faf9f5;
-  color: #26241f;
+    radial-gradient(1100px 540px at 12% -10%, rgba(16, 185, 129, 0.10), transparent 62%),
+    radial-gradient(900px 500px at 92% -18%, rgba(5, 150, 105, 0.08), transparent 62%),
+    #f8faf9;
+  color: #111614;
 }
-.page-head h1 { color: #2b2823; }
-.tagline { color: #7a746a; }
+.page-head h1 { color: #111614; }
+.tagline { color: #5c6660; }
 .head-note {
-  background: #fbf1e8;
-  border-color: #e7c9b4;
-  color: #6b5a4e;
+  background: rgba(16, 185, 129, 0.10);
+  border-color: rgba(16, 185, 129, 0.28);
+  color: #065f46;
 }
 .card {
-  background: #fffdf9;
-  border-color: #ddd6c8;
-  box-shadow: 0 14px 34px rgba(58, 48, 38, 0.08);
+  background: #ffffff;
+  border-color: #dce3df;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
 }
-.sub, .grid label, .hint, .empty-note, .p-meta { color: #7a746a; }
-h2, h3 { color: #2b2823; }
+.sub, .grid label, .hint, .empty-note, .p-meta { color: #5c6660; }
+h2, h3 { color: #111614; }
 select, input[type="text"], input[type="password"], input[type="number"], textarea {
-  background: #fffdf9;
-  color: #26241f;
-  border-color: #ddd5c7;
+  background: #ffffff;
+  color: #111614;
+  border-color: #dce3df;
 }
-select:focus, input:focus, textarea:focus { border-color: #d97757; }
+select:focus, input:focus, textarea:focus { border-color: #10b981; }
 .btn {
-  background: #f4efe5;
-  color: #3f3a32;
-  border-color: #ddd5c7;
+  background: #f0f4f2;
+  color: #111614;
+  border-color: #dce3df;
 }
-.btn:hover { border-color: #d97757; }
+.btn:hover { border-color: #10b981; }
 .btn.ghost { background: transparent; }
-.btn.primary { background: linear-gradient(135deg, #d97757, #c15f3c); color: #fffdf9; }
+.btn.primary { background: linear-gradient(135deg, #10b981, #059669); color: #ffffff; }
 .btn.danger { color: #a33424; background: #fdece8; border-color: #e6b3a5; }
 .provider, .skill-card, .schedule, .saved-prompt, .orch-provider, .check-row {
-  background: #f7f4ec;
-  border-color: #e2dbcd;
+  background: #f5f8f6;
+  border-color: #dce3df;
 }
-.provider .p-name { color: #2b2823; }
+.provider .p-name { color: #111614; }
 .badge {
-  background: #fbf1e8;
-  color: #9a4b30;
-  border-color: #e7c9b4;
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+  border-color: rgba(16, 185, 129, 0.32);
 }
 .badge.ok { background: #eef6f0; color: #2f6b4d; border-color: #b9d9c6; }
 .badge.warn { background: #fff6e5; color: #8a5a12; border-color: #e6cf9c; }
