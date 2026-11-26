@@ -48,6 +48,7 @@
     "copyright": "AkronLogic",
     "asar": true,
     "asarUnpack": [
+      "**/electron/ide/pty-worker.js",
       "**/node_modules/node-pty/**/*",
       "**/node_modules/@vscode/ripgrep/**/*",
       "**/node_modules/@vscode/ripgrep-*/**/*"

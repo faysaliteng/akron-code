@@ -3038,6 +3038,7 @@ export default function App() {
   };
 
   const isWinHost = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform || '');
+  const modShift = isWinHost ? 'Ctrl+Shift+' : '⌘⇧';
   const visibleTabs = openTabIds.map((id) => convs.find((c) => c.id === id)).filter(Boolean);
 
   return (
@@ -3052,7 +3053,7 @@ export default function App() {
               type="button"
               className={'ws-mode-btn' + (workbenchMode === 'agent' ? ' on' : '')}
               onClick={() => setWorkbenchMode('agent')}
-              title="Agent & Mission Control view (⌘⇧E)"
+              title={`Agent & Mission Control view (${modShift}E)`}
             >
               <Icon name="Sparkles" size={12} /> <span>Agent</span>
             </button>
@@ -3060,7 +3061,7 @@ export default function App() {
               type="button"
               className={'ws-mode-btn' + (workbenchMode === 'ide' ? ' on' : '')}
               onClick={() => setWorkbenchMode('ide')}
-              title="Full AI IDE Workbench with Monaco & Terminal (⌘⇧E)"
+              title={`Full AI IDE Workbench with Monaco & Terminal (${modShift}E)`}
             >
               <Icon name="Code" size={12} /> <span>IDE</span>
             </button>
@@ -3187,20 +3188,21 @@ export default function App() {
         <aside className={'sidebar' + (sidebarCollapsed ? ' collapsed' : '')}>
           <div className="sidebar-top">
             <div className="sidebar-head">
-              <div className="wordmark"><Logo size={18} /><span className="brand">Akron Code</span></div>
+              <button className="newchat" onClick={newChat} title={T('sidebar.newChat')}>
+                <Icon name="Add" size={15} />
+                <span className="label">{T('sidebar.newChat')}</span>
+              </button>
               <div className="sidebar-actions">
-                <button className="icon-btn" title={T('sidebar.search')} onClick={() => setPanel((p) => (p === 'search' ? 'chats' : 'search'))}><Icon name="Search" size={17} /></button>
+                <button className="icon-btn" title={`${T('sidebar.search')} (${modShift}F)`} onClick={() => setPanel((p) => (p === 'search' ? 'chats' : 'search'))}><Icon name="Search" size={16} /></button>
                 <button className="icon-btn" title={sidebarCollapsed ? T('sidebar.expand') : T('sidebar.collapse')} onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
-                  <Icon name={sidebarCollapsed ? 'SidebarOpen' : 'SidebarClose'} size={17} />
+                  <Icon name={sidebarCollapsed ? 'SidebarOpen' : 'SidebarClose'} size={16} />
                 </button>
               </div>
             </div>
 
-            <button className="newchat" onClick={newChat}><Icon name="Add" size={16} /><span className="label">{T('sidebar.newChat')}</span></button>
-
             <div className="section-label">Workspace</div>
             <nav className="sidenav">
-              <button className={panel === 'search' ? 'on' : ''} onClick={() => setPanel('search')} title="Search conversations"><Icon name="Search" size={15} /><span className="label">Search</span><span className="kbd-hint">⌘⇧F</span></button>
+              <button className={panel === 'search' ? 'on' : ''} onClick={() => setPanel('search')} title="Search conversations"><Icon name="Search" size={15} /><span className="label">Search</span><span className="kbd-hint">{modShift}F</span></button>
               <button className={panel === 'projects' ? 'on' : ''} onClick={() => setPanel('projects')} title={T('sidebar.projects')}><Icon name="Folder" size={15} /><span className="label">{T('sidebar.projects')}</span>{projects.length > 0 && <span className="count">{projects.length}</span>}</button>
               <button className={panel === 'artifacts' ? 'on' : ''} onClick={() => setPanel('artifacts')} title={T('sidebar.artifacts')}><Icon name="Artifacts" size={15} /><span className="label">{T('sidebar.artifacts')}</span>{artifacts.length > 0 && <span className="count">{artifacts.length}</span>}</button>
               <button className={panel === 'scheduled' ? 'on' : ''} onClick={() => setPanel('scheduled')} title="Automations & Scheduled Tasks"><Icon name="Clock" size={15} /><span className="label">Automations</span></button>
@@ -3259,17 +3261,16 @@ export default function App() {
               <span className="label">Customizations</span>
               <span className="custom-meta">Skills · MCP</span>
             </button>
-
-            <div className="sidebar-foot">
-              <button className="account-row" onClick={() => openSettingsAt('providers')}>
-                <span className="avatar-dot">AC</span>
-                <span className="account-name">Akron Code</span>
-              </button>
-              <button className="icon-btn settings-icon" title={T('sidebar.settings')} onClick={() => openSettingsAt('providers')}><Icon name="Settings" size={17} /></button>
-            </div>
-            <div className="sidebar-mark">
-              <a href="https://akronlogic.com" target="_blank" rel="noreferrer">akronlogic.com</a>
-            </div>
+            <button
+              type="button"
+              className="sidebar-settings-btn"
+              onClick={() => openSettingsAt('providers')}
+              title={T('sidebar.settings')}
+            >
+              <Icon name="Settings" size={15} />
+              <span className="label">{T('sidebar.settings')}</span>
+              <span className="custom-meta">{(provider && provider.model) || 'auto'}</span>
+            </button>
           </div>
         </aside>
 

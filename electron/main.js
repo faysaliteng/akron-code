@@ -296,11 +296,23 @@ let nextPermissionId = 1;
 // can be outstanding at a time, so a boolean-once resolver is enough.
 let pendingComputerUse = null;
 
+function winTitleBarOverlay(theme) {
+  const isLight = theme === 'light';
+  return {
+    color: isLight ? '#f8f8fa' : '#18181c',
+    symbolColor: isLight ? '#1f1f24' : '#e4e4ea',
+    height: 39,
+  };
+}
+
 function createWindow() {
   // Restore the last size/position (Desktop mainWindow.js). Bounds that no
   // longer intersect a display are dropped rather than restoring off-screen.
   const geo = windowstate.restore(screen.getAllDisplays());
   const { __maximized, ...bounds } = geo;
+  const isMac = process.platform === 'darwin';
+  const isWin = process.platform === 'win32';
+  const initTheme = (store.getSettings() || {}).theme;
   const win = new BrowserWindow({
     width: bounds.width,
     height: bounds.height,
@@ -308,9 +320,12 @@ function createWindow() {
     minWidth: 940,
     minHeight: 600,
     title: 'Akron Code',
-    backgroundColor: '#30302e',
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 14, y: 14 },
+    backgroundColor: initTheme === 'light' ? '#ffffff' : '#131316',
+    ...(isMac
+      ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 12 } }
+      : isWin
+        ? { titleBarStyle: 'hidden', autoHideMenuBar: true, titleBarOverlay: winTitleBarOverlay(initTheme) }
+        : { autoHideMenuBar: true }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -319,6 +334,9 @@ function createWindow() {
       webviewTag: true,
     },
   });
+  if (!isMac) {
+    try { win.setMenuBarVisibility(false); } catch (_) {}
+  }
 
   if (!primaryWindow || primaryWindow.isDestroyed()) primaryWindow = win;
   windows.add(win);
@@ -398,9 +416,12 @@ function createAboutWindow() {
     fullscreenable: false,
     title: 'About Akron Code',
     backgroundColor: '#30302e',
-    titleBarStyle: 'hiddenInset',
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : { autoHideMenuBar: true }),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false },
   });
+  if (process.platform !== 'darwin') {
+    try { win.setMenuBarVisibility(false); } catch (_) {}
+  }
   win.aboutWindow = true;
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#f5f4f0;background:#30302e;-webkit-user-select:none;user-select:none}
@@ -2604,6 +2625,14 @@ ipcMain.handle('autobot:setSettings', (e, patch) => {
       app.setLoginItemSettings({ openAtLogin: !!patch.launchAtLogin, openAsHidden: false });
     } catch (err) { console.error('login item update failed:', err.message); }
   }
+  if (process.platform === 'win32' && patch && Object.prototype.hasOwnProperty.call(patch, 'theme')) {
+    const overlay = winTitleBarOverlay(next.theme);
+    for (const w of windows) {
+      if (w && !w.isDestroyed() && typeof w.setTitleBarOverlay === 'function') {
+        try { w.setTitleBarOverlay(overlay); } catch (_) {}
+      }
+    }
+  }
   return next;
 });
 
@@ -3962,6 +3991,22 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+let ptyQuitDrained = false;
+app.on('before-quit', (e) => {
+  if (ptyQuitDrained) return;
+  try {
+    if (ideIpc.hasActivePtys && ideIpc.hasActivePtys()) {
+      e.preventDefault();
+      ptyQuitDrained = true;
+      Promise.resolve(ideIpc.cleanup())
+        .catch(() => {})
+        .finally(() => { app.quit(); });
+    }
+  } catch (_) {
+    ptyQuitDrained = true;
+  }
 });
 
 app.on('will-quit', () => {

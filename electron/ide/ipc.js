@@ -47,15 +47,43 @@ function register({ ipcMain, normalizeProvider, hydrateProvider, hydrateOrchestr
   ipcMain.handle('ide:replace', (e, payload) => search.replaceInWorkspace(payload || {}));
 
   // ---- Real Interactive PTY ----
+  const senderPtys = new Map(); // webContents -> Set<ptyId>
+  const removeTrackedPty = (wc, id) => {
+    const set = wc ? senderPtys.get(wc) : null;
+    if (set) set.delete(id);
+  };
+
   ipcMain.handle('ide:ptyCreate', (e, payload) => {
-    return ptyMod.createPty(payload || {}, {
+    const wc = e && e.sender;
+    let res = null;
+    if (wc && typeof wc.once === 'function' && !senderPtys.has(wc)) {
+      const set = new Set();
+      senderPtys.set(wc, set);
+      wc.once('destroyed', () => {
+        for (const pid of [...set]) {
+          try { ptyMod.killPty(pid); } catch (_) {}
+        }
+        senderPtys.delete(wc);
+      });
+    }
+    res = ptyMod.createPty(payload || {}, {
       onData: (id, data) => sendToSender(e, 'ide:ptyData', { id, data }),
-      onExit: (id, exitCode) => sendToSender(e, 'ide:ptyExit', { id, exitCode }),
+      onExit: (id, exitCode) => {
+        removeTrackedPty(wc, id);
+        sendToSender(e, 'ide:ptyExit', { id, exitCode });
+      },
     });
+    if (res && res.ok && res.id && wc && senderPtys.has(wc)) {
+      senderPtys.get(wc).add(res.id);
+    }
+    return res;
   });
   ipcMain.handle('ide:ptyWrite', (e, payload) => ptyMod.writePty(payload && payload.id, payload && payload.data));
   ipcMain.handle('ide:ptyResize', (e, payload) => ptyMod.resizePty(payload && payload.id, payload && payload.cols, payload && payload.rows));
-  ipcMain.handle('ide:ptyKill', (e, payload) => ptyMod.killPty(payload && payload.id));
+  ipcMain.handle('ide:ptyKill', (e, payload) => {
+    if (payload && payload.id && e && e.sender) removeTrackedPty(e.sender, payload.id);
+    return ptyMod.killPty(payload && payload.id);
+  });
   ipcMain.handle('ide:ptyList', () => ptyMod.listPtys());
 
   // ---- Pluggable LSP ----
@@ -150,14 +178,18 @@ function register({ ipcMain, normalizeProvider, hydrateProvider, hydrateOrchestr
   ipcMain.handle('ide:gitFileAtHead', (e, payload) => git.fileAtHead(payload && payload.cwd, payload && payload.path));
 }
 
+function hasActivePtys() {
+  return ptyMod.hasActiveSessions();
+}
+
 function cleanup() {
   try { fsWatcher.unwatchAll(); } catch (_) {}
-  try { ptyMod.killAll(); } catch (_) {}
   try { lspMod.lspStopAll(); } catch (_) {}
   for (const [, ac] of inlineEditControllers) {
     try { ac.abort(); } catch (_) {}
   }
   inlineEditControllers.clear();
+  try { return ptyMod.shutdown(); } catch (_) { return Promise.resolve(); }
 }
 
-module.exports = { register, cleanup };
+module.exports = { register, cleanup, hasActivePtys };

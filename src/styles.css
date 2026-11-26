@@ -170,7 +170,8 @@ button { font-family: inherit; letter-spacing: inherit; }
   font-size: var(--fs-footnote);
   color: var(--text-400);
 }
-[data-platform="win32"] .titlebar { padding-left: 14px; }
+[data-platform="win32"] .titlebar { padding-left: 14px; padding-right: 144px; }
+.titlebar button { -webkit-app-region: no-drag; }
 .titlebar-brand {
   display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto;
 }
@@ -191,7 +192,7 @@ button { font-family: inherit; letter-spacing: inherit; }
 .titlebar .logo { display: block; filter: drop-shadow(0 0 6px rgba(16,185,129,.35)); }
 .ws-tabs {
   flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 3px;
-  overflow-x: auto; scrollbar-width: none; -webkit-app-region: no-drag;
+  overflow-x: auto; scrollbar-width: none;
   margin-left: 8px; height: 100%;
 }
 .ws-tabs::-webkit-scrollbar { display: none; }
@@ -200,6 +201,7 @@ button { font-family: inherit; letter-spacing: inherit; }
   height: 28px; padding: 0 8px 0 10px; border-radius: 6px;
   border: 1px solid transparent; background: transparent; color: var(--text-400);
   font-size: 12px; font-weight: 500; cursor: pointer; flex: 0 1 auto;
+  -webkit-app-region: no-drag;
   transition: background .12s ease, color .12s ease, border-color .12s ease;
 }
 .ws-tab:hover { background: var(--bg-200); color: var(--text-100); }
@@ -220,6 +222,7 @@ button { font-family: inherit; letter-spacing: inherit; }
   display: inline-flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; border-radius: 6px; border: 0; background: transparent;
   color: var(--text-400); cursor: pointer; flex: 0 0 auto;
+  -webkit-app-region: no-drag;
 }
 .ws-tab-add:hover { background: var(--bg-200); color: var(--text-000); }
 
@@ -248,30 +251,41 @@ button { font-family: inherit; letter-spacing: inherit; }
 .sidebar.collapsed .sidenav button .kbd-hint,
 .sidebar.collapsed .sidebar-custom-btn .label,
 .sidebar.collapsed .sidebar-custom-btn .custom-meta,
+.sidebar.collapsed .sidebar-settings-btn .label,
+.sidebar.collapsed .sidebar-settings-btn .custom-meta,
 .sidebar.collapsed .recents-count,
 .sidebar.collapsed .account-name,
 .sidebar.collapsed .settings-icon { display: none; }
-.sidebar.collapsed .newchat { justify-content: center; padding: 10px 0; }
+.sidebar.collapsed .newchat { justify-content: center; padding: 0; }
+.sidebar.collapsed .sidebar-head .newchat { width: 34px; height: 32px; flex: 0 0 32px; padding: 0; justify-content: center; }
 .sidebar.collapsed .sidenav button { justify-content: center; padding: 8px 0; }
 .sidebar.collapsed .sidenav button .icon { margin: 0; }
 .sidebar.collapsed .sidenav-dock { grid-template-columns: 1fr; padding: 2px 0; border-top: none; margin-top: 2px; }
-.sidebar.collapsed .sidebar-custom-btn { justify-content: center; padding: 8px 0; }
+.sidebar.collapsed .sidebar-custom-btn,
+.sidebar.collapsed .sidebar-settings-btn { justify-content: center; padding: 8px 0; }
 .sidebar.collapsed .conv { justify-content: center; padding: 8px 0; }
 .sidebar.collapsed .conv-ico { color: var(--text-200); }
 .sidebar.collapsed .conv.on .conv-ico { color: var(--accent-text); }
-.sidebar.collapsed .sidebar-head { justify-content: center; padding: 14px 0 8px; }
+.sidebar.collapsed .sidebar-head { flex-direction: column-reverse; justify-content: center; padding: 10px 6px 8px; gap: 6px; }
 .sidebar.collapsed .sidebar-actions { flex-direction: column; }
 
 .sidebar-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 12px 8px; gap: 6px;
+  padding: 10px 10px 8px; gap: 6px;
+}
+.sidebar-head .newchat {
+  flex: 1 1 auto; min-width: 0; margin: 0; padding: 7px 11px;
+  height: 32px; border-radius: var(--radius-md);
+}
+.sidebar-head .newchat .label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .wordmark { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .wordmark .brand {
   font-family: var(--sans); font-weight: 600; font-size: 15.5px;
   color: var(--text-000); letter-spacing: -0.02em; white-space: nowrap;
 }
-.sidebar-actions { display: flex; align-items: center; gap: 2px; }
+.sidebar-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
 
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -342,7 +356,7 @@ button { font-family: inherit; letter-spacing: inherit; }
 
 .sidebar-top { flex: 0 0 auto; display: flex; flex-direction: column; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
 .sidebar-recents { flex: 1 1 0%; min-height: 110px; display: flex; flex-direction: column; overflow: hidden; }
-.sidebar-bottom { flex: 0 0 auto; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+.sidebar-bottom { flex: 0 0 auto; display: flex; flex-direction: column; gap: 5px; padding: 8px; border-top: 1px solid var(--border); }
 .recents-head { display: flex; align-items: center; justify-content: space-between; }
 .recents-count { font-size: 10px; color: var(--text-400); background: var(--bg-200); padding: 0 6px; border-radius: 999px; line-height: 16px; }
 .section-label {
@@ -380,17 +394,21 @@ button { font-family: inherit; letter-spacing: inherit; }
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
   background: var(--accent-soft); color: var(--text-000);
 }
-.sidebar-custom-btn {
-  display: flex; align-items: center; gap: 8px; margin: 6px 8px 2px; padding: 7px 10px;
+.sidebar-custom-btn,
+.sidebar-settings-btn {
+  display: flex; align-items: center; gap: 8px; margin: 0; padding: 7px 10px;
   border: 1px solid var(--border); border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--bg-200) 50%, transparent);
   color: var(--text-100); font-size: var(--fs-footnote); font-weight: 500;
   cursor: pointer; text-align: left;
   transition: background .12s ease, border-color .12s ease;
 }
-.sidebar-custom-btn:hover { background: var(--bg-200); border-color: var(--border-strong); color: var(--text-000); }
-.sidebar-custom-btn .custom-meta {
-  margin-left: auto; font-size: 10px; color: var(--text-400); font-family: var(--micro); white-space: nowrap;
+.sidebar-custom-btn:hover,
+.sidebar-settings-btn:hover { background: var(--bg-200); border-color: var(--border-strong); color: var(--text-000); }
+.sidebar-custom-btn .custom-meta,
+.sidebar-settings-btn .custom-meta {
+  margin-left: auto; max-width: 92px; overflow: hidden; text-overflow: ellipsis;
+  font-size: 10px; color: var(--text-400); font-family: var(--micro); white-space: nowrap;
 }
 .count {
   color: var(--text-400); font-size: var(--fs-caption);
