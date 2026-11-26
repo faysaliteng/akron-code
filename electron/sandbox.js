@@ -139,9 +139,26 @@ function anyMatch(list, target) {
   return (list || []).some((pat) => matches(pat, target));
 }
 
+const PROTECTED_CREDENTIAL_FILES = [
+  path.resolve(path.join(os.homedir(), '.autobot', 'secrets.json')),
+  path.resolve(path.join(os.homedir(), '.autobot', 'oauth.json')),
+];
+
+function isProtectedCredentialPath(p) {
+  try {
+    const resolved = path.resolve(expandPath(p));
+    return PROTECTED_CREDENTIAL_FILES.includes(resolved);
+  } catch (_) {
+    return false;
+  }
+}
+
 // ---- filesystem ----------------------------------------------------------
 function isReadAllowed(p) {
   if (!p) return true;
+  if (isProtectedCredentialPath(p)) {
+    return { allowed: false, reason: `access to Akron credential store is blocked: ${path.basename(String(p))}` };
+  }
   const pol = load().sandbox;
   if (!pol.enabled) return true;
   const fsPol = pol.filesystem || {};
@@ -158,6 +175,9 @@ function isReadAllowed(p) {
 
 function isWriteAllowed(p) {
   if (!p) return true;
+  if (isProtectedCredentialPath(p)) {
+    return { allowed: false, reason: `modification of Akron credential store is blocked: ${path.basename(String(p))}` };
+  }
   const pol = load().sandbox;
   if (!pol.enabled) return true;
   const fsPol = pol.filesystem || {};

@@ -249,6 +249,12 @@ function httpError(transport, res, text) {
   return err;
 }
 
+function sanitizeToolCallId(raw, fallbackSeq) {
+  const clean = String(raw || '').trim().replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+  if (clean && /[A-Za-z0-9]/.test(clean)) return clean;
+  return 'toolu_akron_' + (fallbackSeq || 1);
+}
+
 function newToolAcc(id, name) {
   // `unwireToolName` reverses the `x_` prefix added for Anthropic's tool-name
   // restriction, so the rest of the app always sees the real tool name.
@@ -365,26 +371,32 @@ function anthropicAuth(provider) {
  */
 function toAnthropicBody(provider, messages, tools, maxTokens) {
   const systemParts = [];
-  const out = [];
+  const rawMsgs = [];
+  const rawToCleanId = new Map();
+  let idSeq = 0;
+
   const pushMsg = (role, content) => {
-    const last = out[out.length - 1];
+    const last = rawMsgs[rawMsgs.length - 1];
     if (last && last.role === role) last.content = last.content.concat(content);
-    else out.push({ role, content });
+    else rawMsgs.push({ role, content });
   };
 
   for (const m of messages || []) {
+    if (!m || typeof m !== 'object') continue;
     const role = m.role || 'user';
     if (role === 'system' || role === 'developer') {
       if (typeof m.content === 'string' && m.content) systemParts.push({ type: 'text', text: m.content });
       continue;
     }
     if (role === 'tool') {
+      const rawId = m.tool_call_id || m.toolCallId || '';
+      const mappedId = rawId ? (rawToCleanId.get(rawId) || sanitizeToolCallId(rawId, ++idSeq)) : '';
       const block = {
         type: 'tool_result',
-        tool_use_id: m.tool_call_id || m.toolCallId || '',
+        tool_use_id: mappedId || sanitizeToolCallId('', ++idSeq),
         content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content == null ? '' : m.content),
       };
-      if (m.is_error) block.is_error = true;
+      if (m.is_error || m.isError) block.is_error = true;
       pushMsg('user', [block]);
       continue;
     }
@@ -393,20 +405,29 @@ function toAnthropicBody(provider, messages, tools, maxTokens) {
       if (typeof m.content === 'string' && m.content) blocks.push({ type: 'text', text: m.content });
       else if (Array.isArray(m.content)) {
         for (const p of m.content) {
-          if (p && typeof p.text === 'string') blocks.push({ type: 'text', text: p.text });
+          if (p && typeof p.text === 'string' && p.text) blocks.push({ type: 'text', text: p.text });
         }
       }
       for (const tc of m.tool_calls || []) {
         let input = {};
-        try { input = JSON.parse((tc.function && tc.function.arguments) || '{}') || {}; } catch (_) { input = {}; }
-        blocks.push({ type: 'tool_use', id: tc.id || '', name: wireToolName((tc.function && tc.function.name) || ''), input });
+        try {
+          const parsed = typeof (tc.function && tc.function.arguments) === 'object'
+            ? tc.function.arguments
+            : JSON.parse((tc.function && tc.function.arguments) || '{}');
+          input = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        } catch (_) { input = {}; }
+        const rawId = tc.id || '';
+        const cleanId = sanitizeToolCallId(rawId, ++idSeq);
+        if (rawId) rawToCleanId.set(rawId, cleanId);
+        blocks.push({ type: 'tool_use', id: cleanId, name: wireToolName((tc.function && tc.function.name) || tc.name || 'tool'), input });
       }
       if (blocks.length) pushMsg('assistant', blocks);
       continue;
     }
     // user
-    if (typeof m.content === 'string') pushMsg('user', [{ type: 'text', text: m.content }]);
-    else if (Array.isArray(m.content)) {
+    if (typeof m.content === 'string') {
+      if (m.content || !(m.tool_calls && m.tool_calls.length)) pushMsg('user', [{ type: 'text', text: m.content }]);
+    } else if (Array.isArray(m.content)) {
       const blocks = [];
       for (const p of m.content) {
         if (typeof p === 'string') blocks.push({ type: 'text', text: p });
@@ -420,6 +441,47 @@ function toAnthropicBody(provider, messages, tools, maxTokens) {
       }
       if (blocks.length) pushMsg('user', blocks);
     }
+  }
+
+  // Anthropic invariant: every `tool_result` in a user message must match a
+  // `tool_use.id` in the immediately preceding assistant message, and every
+  // `tool_use` in an assistant message (followed by further turns) must have
+  // a matching `tool_result` in the immediately next user message.
+  const out = [];
+  for (let i = 0; i < rawMsgs.length; i++) {
+    const cur = { role: rawMsgs[i].role, content: rawMsgs[i].content.slice() };
+    const prev = out[out.length - 1];
+    const prevToolIds = new Set(
+      prev && prev.role === 'assistant'
+        ? prev.content.filter((b) => b && b.type === 'tool_use' && b.id).map((b) => b.id)
+        : []
+    );
+
+    if (cur.role === 'user') {
+      cur.content = cur.content.map((b) => {
+        if (b && b.type === 'tool_result' && !prevToolIds.has(b.tool_use_id)) {
+          const txt = typeof b.content === 'string' ? b.content : JSON.stringify(b.content == null ? '' : b.content);
+          return { type: 'text', text: '[Tool output]: ' + txt };
+        }
+        return b;
+      });
+      if (prevToolIds.size) {
+        const answered = new Set(cur.content.filter((b) => b && b.type === 'tool_result').map((b) => b.tool_use_id));
+        const missing = [...prevToolIds].filter((id) => !answered.has(id));
+        if (missing.length) {
+          cur.content = missing.map((id) => ({ type: 'tool_result', tool_use_id: id, content: '(no output)' })).concat(cur.content);
+        }
+      }
+    } else if (prevToolIds.size) {
+      out.push({
+        role: 'user',
+        content: [...prevToolIds].map((id) => ({ type: 'tool_result', tool_use_id: id, content: '(interrupted)' })),
+      });
+    }
+
+    const last = out[out.length - 1];
+    if (last && last.role === cur.role) last.content = last.content.concat(cur.content);
+    else if (cur.content.length) out.push(cur);
   }
 
   // OAuth/subscription turns must lead with the Claude Code identity prompt.
@@ -699,38 +761,73 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
 function toCodexInput(messages) {
   const instructions = [];
   const input = [];
+  const emittedCallIds = new Set();
+  const rawToCleanId = new Map();
+  let callSeq = 0;
+
   for (const m of messages || []) {
+    if (!m || typeof m !== 'object') continue;
     const role = m.role || 'user';
     if (role === 'system' || role === 'developer') {
       if (typeof m.content === 'string' && m.content) instructions.push(m.content);
       continue;
     }
     if (role === 'tool') {
-      input.push({
-        type: 'function_call_output',
-        call_id: m.tool_call_id || m.toolCallId || '',
-        output: typeof m.content === 'string' ? m.content : JSON.stringify(m.content == null ? '' : m.content),
-      });
+      const rawId = m.tool_call_id || m.toolCallId || '';
+      const cleanId = rawId ? (rawToCleanId.get(rawId) || sanitizeToolCallId(rawId, ++callSeq)) : '';
+      const output = typeof m.content === 'string' ? m.content : JSON.stringify(m.content == null ? '' : m.content);
+      if (cleanId && emittedCallIds.has(cleanId)) {
+        input.push({
+          type: 'function_call_output',
+          call_id: cleanId,
+          output,
+        });
+      } else {
+        input.push({
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '[Tool output]: ' + output }],
+        });
+      }
       continue;
     }
     if (role === 'assistant') {
       if (typeof m.content === 'string' && m.content) {
         input.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: m.content }] });
+      } else if (Array.isArray(m.content)) {
+        const txt = m.content.map((p) => (typeof p === 'string' ? p : (p && p.text) || '')).join('');
+        if (txt) input.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: txt }] });
       }
       for (const tc of m.tool_calls || []) {
+        const rawId = tc.id || '';
+        const cleanId = sanitizeToolCallId(rawId, ++callSeq);
+        if (rawId) rawToCleanId.set(rawId, cleanId);
+        emittedCallIds.add(cleanId);
+        const argsStr = typeof (tc.function && tc.function.arguments) === 'string'
+          ? tc.function.arguments
+          : JSON.stringify((tc.function && tc.function.arguments) || {});
         input.push({
           type: 'function_call',
-          name: (tc.function && tc.function.name) || '',
-          arguments: (tc.function && tc.function.arguments) || '{}',
-          call_id: tc.id || '',
+          name: (tc.function && tc.function.name) || tc.name || 'tool',
+          arguments: argsStr || '{}',
+          call_id: cleanId,
         });
       }
       continue;
     }
-    const text = typeof m.content === 'string'
-      ? m.content
-      : (Array.isArray(m.content) ? m.content.map((p) => (typeof p === 'string' ? p : (p && p.text) || '')).join('') : '');
-    if (text) input.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] });
+    if (typeof m.content === 'string') {
+      if (m.content) input.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: m.content }] });
+    } else if (Array.isArray(m.content)) {
+      const parts = [];
+      for (const p of m.content) {
+        if (typeof p === 'string' && p) parts.push({ type: 'input_text', text: p });
+        else if (p && typeof p.text === 'string' && p.text) parts.push({ type: 'input_text', text: p.text });
+        else if (p && p.type === 'image_url' && p.image_url && typeof p.image_url.url === 'string') {
+          parts.push({ type: 'input_image', image_url: p.image_url.url });
+        }
+      }
+      if (parts.length) input.push({ type: 'message', role: 'user', content: parts });
+    }
   }
   return { instructions: instructions.join('\n\n'), input };
 }
@@ -935,42 +1032,79 @@ async function codexChat(provider, messages, tools, onDelta, signal, maxTokensOv
 // The transport is plain HTTPS — the desktop app's bundled 188 MB Go
 // `language_server` is NOT required (it only proxies to this same endpoint).
 // ---------------------------------------------------------------------------
-function toGeminiContents(messages) {
+function toGeminiContents(messages, model) {
   const systemParts = [];
   const contents = [];
+  const callNamesById = new Map();
+  const rawToCleanId = new Map();
+  let callSeq = 0;
+  const isGeminiThoughtModel = /^gemini-[3-9]/i.test(String(model || ''));
+
   const pushPart = (role, part) => {
     const last = contents[contents.length - 1];
     if (last && last.role === role) last.parts.push(part);
     else contents.push({ role, parts: [part] });
   };
   for (const m of messages || []) {
+    if (!m || typeof m !== 'object') continue;
     const role = m.role || 'user';
     if (role === 'system' || role === 'developer') {
       if (typeof m.content === 'string' && m.content) systemParts.push({ text: m.content });
       continue;
     }
     if (role === 'tool') {
+      const rawId = m.tool_call_id || m.toolCallId || '';
+      const id = rawId ? (rawToCleanId.get(rawId) || sanitizeToolCallId(rawId, ++callSeq)) : '';
+      const fnName = m.tool_name || m.name || (id && callNamesById.get(id)) || 'tool';
       pushPart('user', {
         functionResponse: {
-          name: m.tool_name || m.name || 'tool',
-          response: { result: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) },
+          ...(id ? { id } : {}),
+          name: fnName,
+          response: { result: typeof m.content === 'string' ? m.content : JSON.stringify(m.content == null ? '' : m.content) },
         },
       });
       continue;
     }
     if (role === 'assistant') {
       if (typeof m.content === 'string' && m.content) pushPart('model', { text: m.content });
+      else if (Array.isArray(m.content)) {
+        for (const p of m.content) {
+          if (typeof p === 'string' && p) pushPart('model', { text: p });
+          else if (p && typeof p.text === 'string' && p.text) pushPart('model', { text: p.text });
+        }
+      }
       for (const tc of m.tool_calls || []) {
         let args = {};
-        try { args = JSON.parse((tc.function && tc.function.arguments) || '{}') || {}; } catch (_) { args = {}; }
-        pushPart('model', { functionCall: { name: (tc.function && tc.function.name) || '', args } });
+        try {
+          const parsed = typeof (tc.function && tc.function.arguments) === 'object'
+            ? tc.function.arguments
+            : JSON.parse((tc.function && tc.function.arguments) || '{}');
+          args = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        } catch (_) { args = {}; }
+        const rawId = tc.id || '';
+        const id = sanitizeToolCallId(rawId, ++callSeq);
+        if (rawId) rawToCleanId.set(rawId, id);
+        const fnName = (tc.function && tc.function.name) || tc.name || 'tool';
+        callNamesById.set(id, fnName);
+        const fcPart = { functionCall: { id, name: fnName, args } };
+        const sig = tc.thoughtSignature || tc.thought_signature || (isGeminiThoughtModel ? 'skip_thought_signature_validator' : '');
+        if (sig) fcPart.thoughtSignature = sig;
+        pushPart('model', fcPart);
       }
       continue;
     }
-    const text = typeof m.content === 'string'
-      ? m.content
-      : (Array.isArray(m.content) ? m.content.map((p) => (typeof p === 'string' ? p : (p && p.text) || '')).join('') : '');
-    if (text) pushPart('user', { text });
+    if (typeof m.content === 'string') {
+      if (m.content) pushPart('user', { text: m.content });
+    } else if (Array.isArray(m.content)) {
+      for (const p of m.content) {
+        if (typeof p === 'string' && p) pushPart('user', { text: p });
+        else if (p && typeof p.text === 'string' && p.text) pushPart('user', { text: p.text });
+        else if (p && p.type === 'image_url' && p.image_url && typeof p.image_url.url === 'string') {
+          const dm = /^data:([^;]+);base64,(.+)$/.exec(p.image_url.url);
+          if (dm) pushPart('user', { inlineData: { mimeType: dm[1], data: dm[2] } });
+        }
+      }
+    }
   }
   return { systemParts, contents };
 }
@@ -1217,7 +1351,7 @@ function toGeminiDeclarations(tools) {
 }
 
 async function googleChat(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
-  const { systemParts, contents } = toGeminiContents(messages);
+  const { systemParts, contents } = toGeminiContents(messages, provider && provider.model);
   const want = Number(maxTokensOverride || provider.maxTokens) > 0
     ? Number(maxTokensOverride || provider.maxTokens) : 32000;
   const request = { contents, generationConfig: { maxOutputTokens: want } };
@@ -1263,6 +1397,7 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
           const name = fc.name || '';
           const acc = newToolAcc(fc.id || ('call_' + callSeq + '_' + name), name);
           acc.function.arguments = JSON.stringify(fc.args || {});
+          if (part.thoughtSignature) acc.thoughtSignature = part.thoughtSignature;
           message.tool_calls.push(acc);
           if (onToolDelta) {
             onToolDelta({
@@ -1598,7 +1733,7 @@ module.exports = {
   adapters: ADAPTERS,
   // exported for tests
   _internal: {
-    sseEvents, toAnthropicBody, anthropicAuth, anthropicFinish,
+    sseEvents, toAnthropicBody, anthropicAuth, anthropicFinish, sanitizeToolCallId,
     toCodexInput, toCodexTools, toGeminiContents, geminiFinish, responsesChat,
     googleModels, googleModelList, ANTIGRAVITY_UA,
     toGeminiSchema, toGeminiDeclarations,

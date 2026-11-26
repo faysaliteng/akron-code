@@ -1700,6 +1700,8 @@ if (chrome.tabs.onCreated) {
 
 globalThis.__autobotExecuteTool = executeTool;
 
+const bridgeTaskTabIds = new Set();
+
 async function handleBridgeMessage(event, socket) {
   let message;
   try {
@@ -1732,13 +1734,22 @@ async function handleBridgeMessage(event, socket) {
           if (anyTabs[0] && Number.isInteger(anyTabs[0].id)) tabId = anyTabs[0].id;
         }
       }
+      if (Number.isInteger(tabId)) bridgeTaskTabIds.add(tabId);
       const settings = await getSettings().catch(() => ({}));
       const result = await executeTool(message.tool, message.args || {}, {
         tabId,
+        taskTabIds: bridgeTaskTabIds.size ? [...bridgeTaskTabIds] : undefined,
         allowedDomains: settings.allowedDomains || [],
         blockedDomains: settings.blockedDomains || [],
-        settings: { ...settings, permissionMode: "skip" },
+        settings: { ...settings, permissionMode: "allow_all" },
+        addToGroup: async (newTabId) => {
+          if (Number.isInteger(newTabId)) bridgeTaskTabIds.add(newTabId);
+          return null;
+        },
+        emit: () => {},
+        confirm: async () => ({ approved: true }),
       });
+      if (Number.isInteger(result?.tabId)) bridgeTaskTabIds.add(result.tabId);
       socket.send(JSON.stringify({ type: "ext_tool_result", request_id: message.request_id, ok: true, result }));
     } catch (e) {
       try { socket.send(JSON.stringify({ type: "ext_tool_result", request_id: message.request_id, ok: false, error: String(e?.message || e) })); } catch {}

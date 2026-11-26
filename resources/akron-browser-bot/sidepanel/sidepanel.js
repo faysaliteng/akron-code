@@ -257,7 +257,7 @@ function appendAssistant(text) {
 function retryButton() {
   const retry = document.createElement("button");
   retry.type = "button";
-  retry.className = "mini-btn";
+  retry.className = "mini-btn retry-inline";
   retry.textContent = "Retry";
   retry.addEventListener("click", () => {
     const last = [...(state.conversation || [])].reverse().find((message) => message.role === "user" && !message.auto);
@@ -466,21 +466,31 @@ function populateModels(provider) {
     state.settings.activeProviderId === provider.id ? state.settings.activeModel : null;
 
   if (current && !models.includes(current)) models.unshift(current);
-  if (!models.length) {
+  const query = String($("model-search")?.value || "").trim().toLowerCase();
+  const filtered = query ? models.filter((m) => m.toLowerCase().includes(query)) : models;
+  if (!filtered.length) {
     const o = document.createElement("option");
-    o.value = "";
-    o.textContent = "No models";
+    o.value = current || "";
+    o.textContent = models.length ? `No matches for "${query}"` : "No models";
     modelSel.appendChild(o);
     return;
   }
-  for (const m of models) {
+  if (current && models.includes(current) && !filtered.includes(current)) {
+    const curOpt = document.createElement("option");
+    curOpt.value = current;
+    curOpt.textContent = `${current} (active)`;
+    modelSel.appendChild(curOpt);
+  }
+  for (const m of filtered) {
     const o = document.createElement("option");
     o.value = m;
     o.textContent = m;
     modelSel.appendChild(o);
   }
   modelSel.value =
-    current && models.includes(current) ? current : provider.defaultModel || models[0];
+    current && (filtered.includes(current) || models.includes(current))
+      ? current
+      : provider.defaultModel || filtered[0];
 }
 
 function updateSelectors() {
@@ -527,9 +537,12 @@ function updateSelectors() {
 function updateModelChip() {
   const label = $("model-chip-label");
   if (!label) return;
-  const provider = providerSel.selectedOptions?.[0]?.textContent || "";
-  const model = modelSel.selectedOptions?.[0]?.textContent || "";
-  label.textContent = provider && model && model !== "—" ? `${provider} · ${model}` : "Choose a model";
+  const rawProv = providerSel.selectedOptions?.[0]?.textContent || "";
+  const shortProv = rawProv.replace(/\s*\(.*?\)\s*/g, "").trim();
+  const model = modelSel.selectedOptions?.[0]?.textContent?.replace(/\s*\(active\)$/, "") || "";
+  label.textContent = model && model !== "—" && model !== "-"
+    ? (shortProv ? `${model} · ${shortProv}` : model)
+    : "Choose a model";
 }
 
 function requestModels(providerId) {
@@ -2107,15 +2120,30 @@ $("group-release").addEventListener("click", () => {
 });
 
 // The menus that open over the chat. A click outside one, or Escape, closes it.
-const POPOVER_IDS = ["prompts-panel", "tabs-panel", "history-panel", "sites-panel", "perm-mode-menu", "model-menu"];
+const POPOVER_IDS = ["prompts-panel", "tabs-panel", "history-panel", "sites-panel", "perm-mode-menu", "model-menu", "more-menu"];
 
 document.addEventListener("click", (e) => {
   for (const id of POPOVER_IDS) {
     const panel = $(id);
-    if (panel.classList.contains("hidden")) continue;
+    if (!panel || panel.classList.contains("hidden")) continue;
     if (panel.contains(e.target)) continue;
     panel.classList.add("hidden");
   }
+  if ($("more-menu")?.classList.contains("hidden")) {
+    $("more-btn")?.setAttribute("aria-expanded", "false");
+  }
+});
+
+$("more-btn")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const menu = $("more-menu");
+  const willOpen = menu.classList.contains("hidden");
+  menu.classList.toggle("hidden", !willOpen);
+  $("more-btn").setAttribute("aria-expanded", willOpen ? "true" : "false");
+});
+$("more-menu")?.addEventListener("click", () => {
+  $("more-menu")?.classList.add("hidden");
+  $("more-btn")?.setAttribute("aria-expanded", "false");
 });
 
 /* --------------------------- attachments --------------------------- */
@@ -2337,9 +2365,21 @@ $("model-chip").addEventListener("click", (e) => {
   const open = menu.classList.contains("hidden");
   menu.classList.toggle("hidden", !open);
   $("model-chip").setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    const active = (state.providers || []).find((p) => p.id === providerSel.value);
+    if (active) requestModels(active.id);
+    setTimeout(() => $("model-search")?.focus(), 20);
+  }
+});
+$("model-search")?.addEventListener("input", () => {
+  const active = (state.providers || []).find((p) => p.id === providerSel.value) || state.providers?.[0];
+  if (active) populateModels(active);
 });
 modelSel.addEventListener("change", updateModelChip);
-providerSel.addEventListener("change", () => setTimeout(updateModelChip, 0));
+providerSel.addEventListener("change", () => {
+  if ($("model-search")) $("model-search").value = "";
+  setTimeout(updateModelChip, 0);
+});
 
 $("perm-mode-btn").addEventListener("click", (e) => {
   e.stopPropagation();

@@ -165,7 +165,7 @@ console.log('\nOAUTH — discovery');
   eq('response types', regBody.response_types, ['code']);
   eq('native application', regBody.application_type, 'native');
   eq('auth method negotiated to none', regBody.token_endpoint_auth_method, 'none');
-  eq('client name branded', regBody.client_name, 'Akron Bot');
+  eq('client name branded', regBody.client_name, 'Akron Code');
   eq('scope forwarded', regBody.scope, 'read write');
 
   eq('pickAuthMethod prefers none', o.pickAuthMethod({ token_endpoint_auth_methods_supported: ['none', 'client_secret_post'] }), 'none');
@@ -259,7 +259,7 @@ console.log('\nOAUTH — discovery');
   const cbRes = await fetch(loop.redirectUri + '?code=abc&state=xyz');
   eq('callback page is 200', cbRes.status, 200);
   const html = await cbRes.text();
-  ok('callback page is branded', /Akron Bot/.test(html));
+  ok('callback page is branded', /Akron Code/.test(html));
   const got = await loop.wait();
   eq('code captured', got.code, 'abc');
   eq('state captured', got.state, 'xyz');

@@ -1,5 +1,5 @@
 'use strict';
-// Chrome extension host — Akron Bot parity with Desktop's `extension-host`
+// Chrome extension host — Akron Code parity with Desktop's `extension-host`
 // namespace (11 IPC channels).
 //
 // Two halves, exactly like the shipping app:
@@ -113,7 +113,7 @@ const SAFE_PATH_RE = /^[A-Za-z0-9._\-/]+$/;
 // ---------------------------------------------------------------------------
 // 4. Namespace registry
 //
-// `native` namespaces are answered by Akron Bot itself. The rest exist so the
+// `native` namespaces are answered by Akron Code itself. The rest exist so the
 // hosted page sees the full `chrome` object and so `installed` can report
 // "not permitted" / "no native namespace" exactly like Desktop.
 // ---------------------------------------------------------------------------
@@ -638,7 +638,7 @@ const BUILTINS = Object.freeze({
       const id = `n${++ctx.host.seq}`;
       const spec = args[1] || args[0] || {};
       try {
-        const n = new e.Notification({ title: String(spec.title || 'Akron Bot'), body: String(spec.message || '') });
+        const n = new e.Notification({ title: String(spec.title || 'Akron Code'), body: String(spec.message || '') });
         n.show();
       } catch (_) { /* headless: record only */ }
       ctx.host.state.notifications = ctx.host.state.notifications || {};

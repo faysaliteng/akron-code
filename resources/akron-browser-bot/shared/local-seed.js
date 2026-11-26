@@ -71,7 +71,7 @@ export function applyLocalSeed({ seed, providers, settings }) {
       // "replace": the file's key, address and models win over what is stored,
       // e.g. after the proxy's key was renewed. The user's other settings stay.
       const { replace: _replace, ...fromFile } = incoming;
-      const pick = ["apiKey", "apiKeys", "baseUrl", "models", "defaultModel"];
+      const pick = ["name", "apiKey", "apiKeys", "baseUrl", "models", "defaultModel"];
       const update = Object.fromEntries(pick.filter((key) => key in fromFile).map((key) => [key, fromFile[key]]));
       const current = nextProviders[index];
       if (pick.some((key) => key in update && JSON.stringify(current[key]) !== JSON.stringify(update[key]))) {

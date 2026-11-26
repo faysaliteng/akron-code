@@ -106,16 +106,21 @@ function quickSyntaxDiagnostic(fp) {
       if (hasJsx) return '';
     }
     if (ext === '.cjs' || ext === '.mjs' || ext === '.js') {
-      execFileSync(process.execPath, ['--check', fp], { timeout: 1500, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      execFileSync(process.execPath, ['--check', fp], {
+        timeout: 2500,
+        encoding: 'utf8',
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
       return '';
     }
     if (ext === '.py') {
-      execFileSync('python3', ['-c', 'import ast,sys; ast.parse(open(sys.argv[1],"rb").read(), sys.argv[1])', fp], { timeout: 1500, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      execFileSync('python3', ['-c', 'import ast,sys; ast.parse(open(sys.argv[1],"rb").read(), sys.argv[1])', fp], { timeout: 2000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
       return '';
     }
     return '';
   } catch (e) {
-    if (e && e.code === 'ENOENT') return '';
+    if (e && (e.code === 'ENOENT' || e.code === 'ETIMEDOUT')) return '';
     const rawErr = String((e && (e.stderr || e.message)) || e || '').trim();
     const lines = rawErr.split('\n').filter((l) => !/^Node\.js v\d+/i.test(l.trim())).join('\n').trim();
     const errText = (lines || rawErr).slice(0, 400);

@@ -645,6 +645,16 @@ export default function App() {
   const [terminal, setTerminal] = useState({ tabs: [], active: null }); // { tabs: [{id,cwd,running,output}], active }
   const [artifactsExplicit, setArtifactsExplicit] = useState([]); // { name, language, content }
   const [notice, setNotice] = useState(''); // transient banner (SendUserMessage / SetGoal)
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice((cur) => (cur === notice ? '' : cur)), 6500);
+    return () => clearTimeout(t);
+  }, [notice]);
+  useEffect(() => {
+    if (!error || !String(error).startsWith('✅')) return;
+    const t = setTimeout(() => setError((cur) => (cur === error ? '' : cur)), 5500);
+    return () => clearTimeout(t);
+  }, [error]);
   const [attachments, setAttachments] = useState([]); // { name, path, size, isText, content }
   // Reasoning / thinking level is stored on the provider object so it (a) drives
   // the prompt directive and (b) is sent to the API as `reasoning_effort`.
@@ -1690,6 +1700,62 @@ export default function App() {
 
   const copyMessage = (m) => { navigator.clipboard?.writeText(m.content || '').catch(() => {}); };
 
+  // Fork the conversation up to response index `idx` into a new branched chat.
+  const forkFromMessage = useCallback((convId, idx) => {
+    const src = convsRef.current.find((c) => c.id === convId);
+    if (!src) return;
+    const msgs = Array.isArray(src.messages) ? src.messages : [];
+    const sliced = msgs.slice(0, Math.min(msgs.length, idx + 1)).map((msg) => ({ ...msg }));
+    const forkId = uid();
+    const forkConv = {
+      ...src,
+      id: forkId,
+      title: ((src.title || 'Untitled') + ' (fork)').slice(0, 80),
+      pinned: false,
+      ts: Date.now(),
+      messages: sliced,
+      forkedFrom: { convId, idx },
+    };
+    setConvs((cs) => [forkConv, ...cs]);
+    setActiveId(forkId);
+    setPanel('chats');
+    setNotice('✅ Forked conversation from response.');
+  }, []);
+
+  // Share a specific assistant response (plus transcript up to it) via clipboard or HTML/MD/JSON save.
+  const shareFromMessage = useCallback(async (convId, idx, format = 'copy') => {
+    const src = convsRef.current.find((c) => c.id === convId);
+    if (!src) return;
+    const msgs = Array.isArray(src.messages) ? src.messages : [];
+    const targetMsg = msgs[idx];
+    if (format === 'copy') {
+      const md = targetMsg ? String(targetMsg.content || '') : '';
+      try { await navigator.clipboard?.writeText(md); } catch (_) {}
+      setNotice('✅ Copied response Markdown to clipboard.');
+      return;
+    }
+    const slicedConv = { ...src, messages: msgs.slice(0, Math.min(msgs.length, idx + 1)) };
+    const slug = (slicedConv.title || 'response').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 48) || 'response';
+    let content = '';
+    let defaultName = slug + '.md';
+    let filters = [{ name: 'Markdown', extensions: ['md'] }];
+    if (format === 'html') {
+      content = convToHtml(slicedConv);
+      defaultName = slug + '.html';
+      filters = [{ name: 'HTML', extensions: ['html'] }];
+    } else if (format === 'json') {
+      content = JSON.stringify(slicedConv, null, 2);
+      defaultName = slug + '.json';
+      filters = [{ name: 'JSON', extensions: ['json'] }];
+    } else {
+      content = convToMarkdown(slicedConv);
+    }
+    const r = await window.autobot.saveFile({ defaultName, content, filters });
+    if (r.ok && r.path) setError('✅ Shared to ' + r.path);
+    else if (r.ok && !r.path) setError('');
+    else setError('❌ Share failed: ' + (r.error || 'unknown'));
+  }, []);
+
   // Export / share the active conversation (markdown / HTML / JSON) via native save.
   const exportConv = useCallback(async (format) => {
     const conv = convsRef.current.find((c) => c.id === activeIdRef.current) || null;
@@ -2142,7 +2208,7 @@ export default function App() {
       case 'version': {
         let v = null;
         try { v = await window.autobot.getVersion(); } catch (_) {}
-        note(v ? ('**Version**\n- Akron Bot `' + v.app + '`\n- Electron `' + v.electron + '` · Chrome `' + v.chrome + '` · Node `' + v.node + '`\n- Platform: ' + v.platform + '/' + v.arch) : 'Version info unavailable.');
+        note(v ? ('**Version**\n- Akron Code `' + v.app + '`\n- Electron `' + v.electron + '` · Chrome `' + v.chrome + '` · Node `' + v.node + '`\n- Platform: ' + v.platform + '/' + v.arch) : 'Version info unavailable.');
         break;
       }
       case 'debug': {
@@ -2381,7 +2447,7 @@ export default function App() {
       }
       // ---------- GUI-EQ / informational ----------
       case 'statusline':
-        note('`/statusline` — Akron Bot renders status in the composer (provider, model, thinking level, context). Use `/status` for a text dump.');
+        note('`/statusline` — Akron Code renders status in the composer (provider, model, thinking level, context). Use `/status` for a text dump.');
         break;
       case 'login':
         setShowSettings(true);
@@ -2404,7 +2470,7 @@ export default function App() {
         break;
       }
       case 'quit':
-        note('`/quit` — Akron Bot is a GUI app, so there is no terminal to exit. Close the window (⌘W) to quit, or use the app menu.');
+        note('`/quit` — Akron Code is a GUI app, so there is no terminal to exit. Close the window (⌘W) to quit, or use the app menu.');
         break;
       case 'pr-comments':
         note('`/pr-comments` — pull request comments are reviewed in the Artifacts / GitHub panel. Connect a repo with `/init` and view PRs there.');
@@ -2477,7 +2543,7 @@ export default function App() {
         break;
       }
       case 'background': {
-        note('Akron Bot runs every task in-app, so there is no terminal to background. Use `/tasks` to see background shells, sub-agents, and monitors.');
+        note('Akron Code runs every task in-app, so there is no terminal to background. Use `/tasks` to see background shells, sub-agents, and monitors.');
         break;
       }
       case 'stop': {
@@ -2511,7 +2577,7 @@ export default function App() {
       }
       case 'daemon': {
         setPanel('scheduled');
-        note('**Background services** — Akron Bot keeps scheduled tasks, background shells, sub-agents, and monitors inside the app (no separate daemon). Opened **Scheduled**; `/tasks` lists live work.');
+        note('**Background services** — Akron Code keeps scheduled tasks, background shells, sub-agents, and monitors inside the app (no separate daemon). Opened **Scheduled**; `/tasks` lists live work.');
         break;
       }
       case 'session': {
@@ -2524,7 +2590,7 @@ export default function App() {
         const next = { ...features, remoteControl: on };
         setFeatures(next);
         window.autobot.setFeatures(next);
-        note('Remote control is now **' + (on ? 'ON' : 'OFF') + '** (Settings → Features). Akron Bot has no cloud workspace, so remote sessions run against this machine.');
+        note('Remote control is now **' + (on ? 'ON' : 'OFF') + '** (Settings → Features). Akron Code has no cloud workspace, so remote sessions run against this machine.');
         break;
       }
       case 'setup-bedrock': {
@@ -2540,7 +2606,7 @@ export default function App() {
         break;
       }
       case 'ide': {
-        note('Akron Bot **is** the IDE surface — the chat pane, file previews, artifacts, and the browser pane live in one window. Use `/add-dir` to widen the working folder.');
+        note('Akron Code **is** the IDE surface — the chat pane, file previews, artifacts, and the browser pane live in one window. Use `/add-dir` to widen the working folder.');
         break;
       }
       case 'desktop': {
@@ -2548,7 +2614,7 @@ export default function App() {
         break;
       }
       case 'tui': {
-        note('Akron Bot renders a full GUI, so the terminal renderer setting does not apply. Use **Settings → Appearance** for density.');
+        note('Akron Code renders a full GUI, so the terminal renderer setting does not apply. Use **Settings → Appearance** for density.');
         break;
       }
       case 'keybindings': {
@@ -2560,12 +2626,12 @@ export default function App() {
         break;
       }
       case 'wellbeing': {
-        note('Break reminders are handled by the OS. Akron Bot keeps long runs visible with elapsed time and a live activity row instead of nudging you.');
+        note('Break reminders are handled by the OS. Akron Code keeps long runs visible with elapsed time and a live activity row instead of nudging you.');
         break;
       }
       case 'privacy-settings': {
         setShowSettings(true);
-        note('Opened **Settings**. Akron Bot sends data only to the provider you configure — there is no telemetry endpoint and no account requirement.');
+        note('Opened **Settings**. Akron Code sends data only to the provider you configure — there is no telemetry endpoint and no account requirement.');
         break;
       }
       case 'rate-limit-options': {
@@ -2576,13 +2642,13 @@ export default function App() {
       case 'release-notes': {
         let v = '';
         try { v = (await window.autobot.getVersion()) || ''; } catch (_) {}
-        note('**Akron Bot** ' + (v ? 'v' + v : '') + ' — no changelog feed is bundled; release notes ship with each build at akronlogic.com.');
+        note('**Akron Code** ' + (v ? 'v' + v : '') + ' — no changelog feed is bundled; release notes ship with each build at akronlogic.com.');
         break;
       }
       case 'update':
       case 'upgrade':
       case 'install': {
-        note('Akron Bot updates by installing a new build (DMG/ZIP) — `/version` shows the current one. Provider plans are managed at the provider, not in-app.');
+        note('Akron Code updates by installing a new build (DMG/ZIP) — `/version` shows the current one. Provider plans are managed at the provider, not in-app.');
         break;
       }
       case 'powerup': {
@@ -2617,7 +2683,7 @@ export default function App() {
       case 'heapdump':
       case 'bridge-kick':
       case 'pro-trial-expired': {
-        note('`/' + cmd + '` targets Anthropic-hosted services (Slack app, claude.ai web/mobile/teleport, trial billing, debug tooling) that do not exist in Akron Bot. Nothing to configure locally.');
+        note('`/' + cmd + '` targets Anthropic-hosted services (Slack app, claude.ai web/mobile/teleport, trial billing, debug tooling) that do not exist in Akron Code. Nothing to configure locally.');
         break;
       }
       default: {
@@ -2731,14 +2797,14 @@ export default function App() {
 
   return (
     <div className="app" data-theme={settings.theme} dir={localeDir(settings.locale)} lang={settings.locale}>
-      <div className="titlebar"><Logo size={16} active={streaming} /><span className="brand">Akron Bot</span><span className="sub">{T('brand.sub')}</span></div>
+      <div className="titlebar"><Logo size={16} active={streaming} /><span className="brand">Akron Code</span><span className="sub">{T('brand.sub')}</span></div>
 
       <div className="layout">
         {/* Sidebar — 3-zone layout: pinned Workspace + Dock, scrollable Recents, pinned Customizations & Settings */}
         <aside className={'sidebar' + (sidebarCollapsed ? ' collapsed' : '')}>
           <div className="sidebar-top">
             <div className="sidebar-head">
-              <div className="wordmark"><Logo size={18} /><span className="brand">Akron Bot</span></div>
+              <div className="wordmark"><Logo size={18} /><span className="brand">Akron Code</span></div>
               <div className="sidebar-actions">
                 <button className="icon-btn" title={T('sidebar.search')} onClick={() => setPanel((p) => (p === 'search' ? 'chats' : 'search'))}><Icon name="Search" size={17} /></button>
                 <button className="icon-btn" title={sidebarCollapsed ? T('sidebar.expand') : T('sidebar.collapse')} onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
@@ -2813,8 +2879,8 @@ export default function App() {
 
             <div className="sidebar-foot">
               <button className="account-row" onClick={() => openSettingsAt('providers')}>
-                <span className="avatar-dot">HB</span>
-                <span className="account-name">Akron Bot</span>
+                <span className="avatar-dot">AC</span>
+                <span className="account-name">Akron Code</span>
               </button>
               <button className="icon-btn settings-icon" title={T('sidebar.settings')} onClick={() => openSettingsAt('providers')}><Icon name="Settings" size={17} /></button>
             </div>
@@ -2828,7 +2894,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
+              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
@@ -2895,7 +2961,12 @@ export default function App() {
             )}
           </div>
 
-          {error && <div className="errorbar">{error}</div>}
+          {error && (
+            <div className={'errorbar' + (String(error).startsWith('✅') ? ' ok' : '')}>
+              <span>{error}</span>
+              <button type="button" className="errorbar-x" aria-label="Dismiss" onClick={() => setError('')}><Icon name="X" size={12} /></button>
+            </div>
+          )}
           <ChatNoticeBar text={notice} />
 
           <InputBar
@@ -3109,7 +3180,7 @@ function timeGreeting() {
   return 'Good evening';
 }
 
-// Akron Bot brand mark — emerald symbiote sunburst (user-supplied artwork,
+// Akron Code brand mark — emerald symbiote sunburst (user-supplied artwork,
 // build/logo-mark.svg). Below ~30 px the full 12-ray mark plus its orbiting
 // tendrils collapses into mush, so small surfaces (titlebar, avatars, list
 // rows) get a compact 8-ray cut that keeps the same silhouette.
@@ -3119,7 +3190,7 @@ const COMPACT_RAYS = [0, 45, 90, 135, 180, 225, 270, 315];
 
 function CompactMark({ size, active }) {
   return (
-    <svg className={'logo' + (active ? ' logo-live' : '')} width={size} height={size} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Bot">
+    <svg className={'logo' + (active ? ' logo-live' : '')} width={size} height={size} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Code">
       <g fill={MARK} className="logo-rays">
         <circle cx="50" cy="50" r="17" className="logo-core" />
         {COMPACT_RAYS.map((deg) => (
@@ -3145,7 +3216,7 @@ function FullMark({ size, active }) {
   ];
   const glowSpokes = [[0, 96, 58], [64, 94, 62], [128, 96, 58], [188, 94, 62], [248, 92, 64], [306, 96, 58]];
   return (
-    <svg className={'logo' + (active ? ' logo-live' : '')} width={size} height={size} viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Bot">
+    <svg className={'logo' + (active ? ' logo-live' : '')} width={size} height={size} viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Code">
       <defs>
         <filter id="akGooMark" x="-30%" y="-30%" width="160%" height="160%">
           <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur" />
@@ -3229,7 +3300,7 @@ function Logo({ size = 20, active = false }) {
 }
 
 // ---------- Conversation export / share ----------
-// Claude Desktop's "Share chat" publishes a public link; Akron Bot has no backend, so
+// Claude Desktop's "Share chat" publishes a public link; Akron Code has no backend, so
 // the local equivalent is a self-contained HTML share file (open in any browser, no
 // server) plus Markdown/JSON export. All three route through the renderer and land in
 // a native save dialog via `autobot:saveFile`.
@@ -3237,9 +3308,9 @@ function convToMarkdown(conv) {
   const title = conv.title || 'Untitled conversation';
   const lines = ['# ' + title, ''];
   const ts = new Date(conv.ts || Date.now()).toISOString();
-  lines.push('> Exported from Akron Bot — ' + ts, '');
+  lines.push('> Exported from Akron Code — ' + ts, '');
   for (const m of conv.messages || []) {
-    const who = m.role === 'user' ? '**You**' : '**Akron Bot**';
+    const who = m.role === 'user' ? '**You**' : '**Akron Code**';
     lines.push('## ' + who, '');
     if (m.content) lines.push(m.content, '');
     for (const a of m.attachments || []) {
@@ -3255,7 +3326,7 @@ function convToHtml(conv) {
   const title = escapeHtml(conv.title || 'Untitled conversation');
   const ts = new Date(conv.ts || Date.now()).toISOString();
   const body = (conv.messages || []).map((m) => {
-    const role = m.role === 'user' ? 'You' : 'Akron Bot';
+    const role = m.role === 'user' ? 'You' : 'Akron Code';
     let html = '<div class="msg ' + m.role + '"><div class="role">' + role + '</div>';
     if (m.content) html += '<div class="content">' + renderMarkdown(m.content) + '</div>';
     for (const a of m.attachments || []) {
@@ -3271,10 +3342,10 @@ function convToHtml(conv) {
 body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;max-width:820px;margin:0 auto;padding:32px 20px;background:#f7f7f5;color:#1a1a1a;line-height:1.6}
 h1{font-size:22px;margin:0 0 4px} .meta{color:#888;font-size:12px;margin-bottom:24px}
 .msg{background:#fff;border:1px solid #e5e5e0;border-radius:10px;padding:14px 16px;margin:12px 0}
-.msg.assistant{background:#fbfbf9} .role{font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#b45309;margin-bottom:8px}
+.msg.assistant{background:#fbfbf9} .role{font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#059669;margin-bottom:8px}
 .msg.user .role{color:#0b5fff} .content pre{background:#f0f0ee;padding:12px;border-radius:8px;overflow:auto}
 .content img{max-width:100%} .att{color:#666;font-size:13px;margin-top:6px} img.att{max-width:100%;border-radius:8px;margin-top:8px}
-</style></head><body><h1>${title}</h1><div class="meta">Exported from Akron Bot — ${ts}</div>${body}</body></html>`;
+</style></head><body><h1>${title}</h1><div class="meta">Exported from Akron Code — ${ts}</div>${body}</body></html>`;
 }
 
 // ---------- Environment panel (the ··· pane) ----------
@@ -3830,7 +3901,7 @@ function RunLogPanel({ convId }) {
 }
 
 // ---------- Chat view ----------
-function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError }) {
+function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [subExpanded, setSubExpanded] = useState(false);
@@ -3850,7 +3921,7 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
     [messages, live]
   );
   const changedSummary = useMemo(() => summarizeChangedFiles(allTools, allCheckpoints), [allTools, allCheckpoints]);
-  const wsLeaf = String(cwd || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Akron Bot';
+  const wsLeaf = String(cwd || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Akron Code';
   const subCount = (subAgents && subAgents.length) || 0;
   const bgTasksCount = allCheckpoints.length + allTools.filter((t) => t && (t.name === 'Bash' || t.name === 'Task' || t.name === 'Agent' || t.name === 'Swarm' || t.background)).length;
 
@@ -4081,7 +4152,7 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
           <p className="muted">{T('welcome.prompt')}</p>
         </div>
       )}
-      {messages.map((m, i) => <Message key={m.id} m={m} convId={convId} idx={i} turnLabel={turnPrompts[i]} subAgentCount={subCount} taskCount={bgTasksCount} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} />)}
+      {messages.map((m, i) => <Message key={m.id} m={m} convId={convId} idx={i} turnLabel={turnPrompts[i]} subAgentCount={subCount} taskCount={bgTasksCount} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} />)}
       {Boolean((subAgents && subAgents.length > 0) || swarmInfo) && (
         <MissionControl subAgents={subAgents} swarmInfo={swarmInfo} swarmBoard={swarmBoard} inline onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} />
       )}
@@ -4155,8 +4226,11 @@ function SegmentView({ segments, tools, streaming }) {
   });
 }
 
-function Message({ m, convId, idx, turnLabel = '', subAgentCount = 0, taskCount = 0, copyMessage, editMessage, deleteMessage, retryMessage, onOpenReview, onOpenSubagents, onOpenRunLog }) {
+function Message({ m, convId, idx, turnLabel = '', subAgentCount = 0, taskCount = 0, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, onOpenReview, onOpenSubagents, onOpenRunLog }) {
   const [copied, setCopied] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const shareRef = useRef(null);
+  useDismiss(shareOpen, [shareRef], () => setShareOpen(false));
   const doCopy = () => { copyMessage(m); setCopied(true); setTimeout(() => setCopied(false), 1200); };
   const images = (m.attachments || []).filter((a) => a.isImage && a.dataUrl);
   const otherAtts = (m.attachments || []).filter((a) => !(a.isImage && a.dataUrl));
@@ -4204,13 +4278,52 @@ function Message({ m, convId, idx, turnLabel = '', subAgentCount = 0, taskCount 
         {m.role === 'assistant' && (
           <FilesChangedBar tools={m.tools} checkpoints={m.checkpoints} checkpointId={m.checkpointId} turnLabel={turnLabel} convId={convId} subAgentCount={subAgentCount} taskCount={taskCount} onOpenReview={onOpenReview} onOpenSubagents={onOpenSubagents} onOpenRunLog={onOpenRunLog} streaming={false} Icon={Icon} />
         )}
-        {m.role === 'assistant' && m.durationMs > 800 && (
-          <div className="worked-for"><Icon name="Clock" size={12} /> Worked for {fmtElapsed(m.durationMs)}</div>
+        {m.role === 'assistant' && (
+          <div className="response-actions" data-response-actions>
+            <button type="button" className={'response-action-btn' + (copied ? ' copied' : '')} title="Copy response" onClick={doCopy}>
+              <Icon name={copied ? 'Check' : 'Copy'} size={13} />
+              <span>{copied ? 'Copied' : 'Copy'}</span>
+            </button>
+            <button type="button" className="response-action-btn" title="Fork conversation from this response" onClick={() => forkFromMessage && forkFromMessage(convId, idx)}>
+              <Icon name="GitBranch" size={13} />
+              <span>Fork</span>
+            </button>
+            <button type="button" className="response-action-btn" title="Retry this response" onClick={() => retryMessage && retryMessage(convId, idx)}>
+              <Icon name="History" size={13} />
+              <span>Retry</span>
+            </button>
+            <div className="response-share-wrap" ref={shareRef}>
+              <button type="button" className="response-action-btn" title="Share or export response" onClick={() => setShareOpen((v) => !v)}>
+                <Icon name="Share" size={13} />
+                <span>Share</span>
+              </button>
+              {shareOpen && (
+                <div className="response-share-menu" onClick={(e) => e.stopPropagation()}>
+                  <button type="button" onClick={() => { setShareOpen(false); shareFromMessage && shareFromMessage(convId, idx, 'copy'); }}>
+                    <Icon name="Copy" size={13} /> <span>Copy Markdown</span>
+                  </button>
+                  <button type="button" onClick={() => { setShareOpen(false); shareFromMessage && shareFromMessage(convId, idx, 'html'); }}>
+                    <Icon name="File" size={13} /> <span>Share as HTML…</span>
+                  </button>
+                  <button type="button" onClick={() => { setShareOpen(false); shareFromMessage && shareFromMessage(convId, idx, 'md'); }}>
+                    <Icon name="FileAdd" size={13} /> <span>Export Markdown…</span>
+                  </button>
+                  <button type="button" onClick={() => { setShareOpen(false); shareFromMessage && shareFromMessage(convId, idx, 'json'); }}>
+                    <Icon name="Code" size={13} /> <span>Export JSON…</span>
+                  </button>
+                </div>
+              )}
+            </div>
+            {m.durationMs > 800 && (
+              <span className="response-actions-meta"><Icon name="Clock" size={12} /> Worked for {fmtElapsed(m.durationMs)}</span>
+            )}
+          </div>
         )}
       </div>
       <div className="msg-toolbar">
         <button className="icon-btn" title={copied ? 'Copied' : 'Copy'} onClick={doCopy}><Icon name={copied ? 'Check' : 'Copy'} size={15} /></button>
         {m.role === 'user' && <button className="icon-btn" title="Edit" onClick={() => editMessage(m)}><Icon name="Edit" size={15} /></button>}
+        {m.role === 'assistant' && <button className="icon-btn" title="Fork from here" onClick={() => forkFromMessage && forkFromMessage(convId, idx)}><Icon name="GitBranch" size={15} /></button>}
         {m.role === 'assistant' && <button className="icon-btn" title="Retry" onClick={() => retryMessage(convId, idx)}><Icon name="History" size={15} /></button>}
         <button className="icon-btn" title="Delete" onClick={() => deleteMessage(convId, idx)}><Icon name="Trash" size={15} /></button>
       </div>
@@ -4762,7 +4875,7 @@ function ArtifactsView({ blocks }) {
   return (
     <div className="panel artifacts">
       <h2>Artifacts</h2>
-      {blocks.length === 0 && <p className="muted">No code artifacts yet. Ask Akron Bot to write code and it will appear here.</p>}
+      {blocks.length === 0 && <p className="muted">No code artifacts yet. Ask Akron Code to write code and it will appear here.</p>}
       {blocks.length > 0 && (
         <>
           <div className="artifact-tabs">
@@ -5410,7 +5523,7 @@ function ExtensionsView() {
     <div className="extensions-view">
       <p className="muted">
         Unpacked Chrome MV3/MV2 extensions are hosted with a real <code>chrome-extension://</code> origin and a
-        <code> chrome.*</code> surface backed by Akron Bot. Drop a folder in <code>~/.autobot/extensions/&lt;id&gt;</code> and rescan.
+        <code> chrome.*</code> surface backed by Akron Code. Drop a folder in <code>~/.autobot/extensions/&lt;id&gt;</code> and rescan.
       </p>
       <div className="plugin-registry-row">
         <span className="muted">
@@ -5614,7 +5727,7 @@ function McpView({ mcpServers, mcpForm, setMcpForm, connectMcp, disconnectMcp })
   return (
     <div className="panel">
       <h2>MCP Servers</h2>
-      <p className="muted">Connect external Model Context Protocol servers over stdio, SSE, or streamable-HTTP. Their tools become available to Akron Bot automatically.</p>
+      <p className="muted">Connect external Model Context Protocol servers over stdio, SSE, or streamable-HTTP. Their tools become available to Akron Code automatically.</p>
       <div className="mcp-form">
         <select value={transport} onChange={(e) => setMcpForm({ ...mcpForm, transport: e.target.value })}>
           <option value="stdio">stdio</option>
@@ -8481,7 +8594,7 @@ function AccountSection({ T, provider, setProvider }) {
 
 // ---------- Organization compliance (`taint:*` capabilities) ----------
 // Desktop reads `memberships[].organization.capabilities` from the account API
-// and derives every gate from it. Akron Bot has no account backend, so the
+// and derives every gate from it. Akron Code has no account backend, so the
 // profile is declared here and the main process evaluates the exact same
 // arithmetic (`electron/compliance.js`). Toggles map 1:1 onto capability strings.
 function ComplianceSection({ compliance, setCompliance }) {
@@ -9375,7 +9488,7 @@ function SettingsModal({
             })}
           </nav>
           <div className="settings-side-foot">
-            <span>Akron Bot v1.0</span>
+            <span>Akron Code v1.0</span>
             <span>{settings.theme === 'light' ? 'Light' : 'Dark'}</span>
           </div>
         </aside>
@@ -9659,7 +9772,7 @@ function SettingsModal({
                       <span className={'ext-dot' + (extStatus && extStatus.extensionConnected ? ' on' : '')} />
                       <b>{extStatus && extStatus.extensionConnected ? `Connected (v${extStatus.extensionVersion || '1.6.7'})` : 'Listening for extension on ws://127.0.0.1:8766'}</b>
                       <p className="muted" style={{ margin: '4px 0 0' }}>
-                        All models configured in Akron Bot Desktop are automatically shared with Akron Browser Bot at <code>http://127.0.0.1:8766/v1</code> — zero separate API keys required.
+                        All models configured in Akron Code Desktop are automatically shared with Akron Browser Bot at <code>http://127.0.0.1:8766/v1</code> — zero separate API keys required.
                       </p>
                     </div>
                     <div style={{ display: 'flex', gap: 6 }}>
@@ -9822,7 +9935,7 @@ function SettingsModal({
                     </label>
                   </div>
                   <label className="check"><input type="checkbox" checked={settings.useMemory} onChange={(e) => setSettings({ ...settings, useMemory: e.target.checked })} /> Inject long-term memory into prompts</label>
-                  <label className="check"><input type="checkbox" checked={!!settings.launchAtLogin} onChange={(e) => setSettings({ ...settings, launchAtLogin: e.target.checked })} /> Launch Akron Bot at login</label>
+                  <label className="check"><input type="checkbox" checked={!!settings.launchAtLogin} onChange={(e) => setSettings({ ...settings, launchAtLogin: e.target.checked })} /> Launch Akron Code at login</label>
                   <label className="check"><input type="checkbox" checked={!!features.quickEntry} onChange={(e) => saveFeat({ ...features, quickEntry: e.target.checked })} /> Quick Entry (global hotkey CmdOrCtrl+Shift+Space)</label>
                 </div>
 
@@ -9857,7 +9970,7 @@ function QuestionModal({ question, answer }) {
   return (
     <div className="modal-overlay">
       <div className="modal">
-        <h2>{isPlan ? 'Plan approval' : 'Akron Bot needs your input'}</h2>
+        <h2>{isPlan ? 'Plan approval' : 'Akron Code needs your input'}</h2>
         <div className="question-text">{question.text}</div>
 
         {!isPlan && options.length > 0 && (
@@ -9903,7 +10016,7 @@ function PermissionModal({ permission, answer }) {
   return (
     <div className="modal-overlay">
       <div className="modal">
-        <h2>Akron Bot requests permission</h2>
+        <h2>Akron Code requests permission</h2>
         <div className="perm-tool">{permission.tool}</div>
         <pre className="perm-summary">{permission.summary}</pre>
         <div className="modal-actions">
@@ -9917,9 +10030,9 @@ function PermissionModal({ permission, answer }) {
 
 // ---------- Computer Use consent (Desktop `computer:request_*`) ----------
 const CU_TIERS = {
-  access: { label: 'See the screen', blurb: 'Akron Bot can look at your screen and click/type to finish this task.' },
-  full_control: { label: 'Full control', blurb: 'Akron Bot can drive any app, window, and keyboard shortcut without asking again.' },
-  teach_access: { label: 'Watch and learn', blurb: 'Akron Bot records your screen while you do a task once, then repeats it.' },
+  access: { label: 'See the screen', blurb: 'Akron Code can look at your screen and click/type to finish this task.' },
+  full_control: { label: 'Full control', blurb: 'Akron Code can drive any app, window, and keyboard shortcut without asking again.' },
+  teach_access: { label: 'Watch and learn', blurb: 'Akron Code records your screen while you do a task once, then repeats it.' },
 };
 function ComputerUseModal({ consent, answer }) {
   const [remember, setRemember] = useState(false);
@@ -9962,7 +10075,7 @@ function CommandPalette({ onClose, onNewChat, onSearch, onToggleBrowser, onToggl
     { key: 'quick', label: 'Quick Entry…', icon: 'CommandLine', run: onQuickEntry },
     { key: 'export', label: 'Export current conversation', icon: 'Download', run: onExport },
     { key: 'settings', label: 'Settings…', icon: 'Settings', run: onSettings },
-    { key: 'about', label: 'About Akron Bot', icon: 'Chat', run: onAbout },
+    { key: 'about', label: 'About Akron Code', icon: 'Chat', run: onAbout },
   ];
 
   const query = q.trim().toLowerCase();

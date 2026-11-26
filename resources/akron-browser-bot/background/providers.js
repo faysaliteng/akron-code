@@ -62,21 +62,32 @@ function retryDelayFromText(detail) {
   return Math.round(total);
 }
 
+function extractNestedMessage(input, depth = 0) {
+  const s = String(input || "").trim();
+  if (!s || depth > 4) return s;
+  if (s.startsWith("{") || s.startsWith("[")) {
+    try {
+      const json = JSON.parse(s);
+      const inner =
+        json?.error?.message ??
+        json?.error?.error?.message ??
+        json?.detail ??
+        json?.title ??
+        json?.message ??
+        (typeof json?.error === "string" ? json.error : "");
+      if (inner != null && String(inner).trim()) {
+        return extractNestedMessage(inner, depth + 1);
+      }
+    } catch {}
+  }
+  return s;
+}
+
 function readableDetail(detail) {
   const text = String(detail || "").trim();
   if (!text) return "";
-  let value = text;
-  if (text.startsWith("{") || text.startsWith("[")) {
-    try {
-      const json = JSON.parse(text);
-      value = String(
-        json?.error?.message || json?.detail || json?.title || json?.message || "request failed"
-      );
-    } catch {
-      value = text;
-    }
-  }
-  return value.replace(/\s+/g, " ").slice(0, 240);
+  const value = extractNestedMessage(text, 0) || text;
+  return String(value).replace(/\s+/g, " ").trim().slice(0, 260);
 }
 
 async function readErrorDetail(res) {

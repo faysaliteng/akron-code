@@ -40,7 +40,7 @@ async function osascript(script) {
   if (err) {
     const msg = (stderr || err.message || '').trim();
     if (/assistive access|not allowed/i.test(msg)) {
-      throw new Error('Accessibility permission missing: open System Settings › Privacy & Security › Accessibility and enable Akron Bot.');
+      throw new Error('Accessibility permission missing: open System Settings › Privacy & Security › Accessibility and enable Akron Code.');
     }
     throw new Error(msg || 'osascript failed');
   }

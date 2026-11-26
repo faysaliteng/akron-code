@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Akron Bot — MCP OAuth 2.1 sign-in for hosted connectors.
+ * Akron Code — MCP OAuth 2.1 sign-in for hosted connectors.
  *
  * Implements the flow the Desktop app runs for OAuth-gated MCP servers:
  *
@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const CALLBACK_PATH = '/callback';
 const REDIRECT_HOST = '127.0.0.1';
 const DEFAULT_TIMEOUT = 5 * 60 * 1000;
-const CLIENT_NAME = 'Akron Bot';
+const CLIENT_NAME = 'Akron Code';
 const REFRESH_SKEW = 60 * 1000;
 
 // ---------------------------------------------------------------------------
@@ -315,10 +315,10 @@ async function refresh(p) {
 // ---------------------------------------------------------------------------
 function resultPage(payload) {
   const bad = !!payload.error;
-  const title = bad ? 'Sign-in did not complete' : 'Signed in to Akron Bot';
+  const title = bad ? 'Sign-in did not complete' : 'Signed in to Akron Code';
   const line = bad
     ? stripMarkup(payload.errorDescription || payload.error || 'The provider returned an error.')
-    : 'You can close this window and return to Akron Bot.';
+    : 'You can close this window and return to Akron Code.';
   const color = bad ? '#c0392b' : '#047857';
   return '<!doctype html><html><head><meta charset="utf-8"><title>' + title + '</title>' +
     '<style>html,body{height:100%;margin:0;background:#F5FAF8;color:#12211c;' +

@@ -53,10 +53,20 @@ try { rea.enrichProcessPath(); } catch (_) {}
 (function migrateUserData() {
   try {
     const base = app.getPath('appData');
-    const next = path.join(base, 'Akron Bot');
-    const prev = path.join(base, 'Helio Bot');
-    if (fs.existsSync(next) || !fs.existsSync(prev)) return;
-    fs.renameSync(prev, next);
+    const codeDir = path.join(base, 'Akron Code');
+    const akronDir = path.join(base, 'Akron Bot');
+    const helioDir = path.join(base, 'Helio Bot');
+    if (!fs.existsSync(akronDir) && fs.existsSync(helioDir)) {
+      fs.renameSync(helioDir, akronDir);
+    }
+    const codeHasStorage = fs.existsSync(path.join(codeDir, 'Local Storage'));
+    if (!codeHasStorage && fs.existsSync(akronDir)) {
+      fs.cpSync(akronDir, codeDir, {
+        recursive: true,
+        force: false,
+        filter: (src) => !/^Singleton/.test(path.basename(src)),
+      });
+    }
   } catch (_) { /* non-fatal: the app starts with a fresh profile */ }
 })();
 
@@ -296,7 +306,7 @@ function createWindow() {
     ...(bounds.x !== undefined ? { x: bounds.x, y: bounds.y } : {}),
     minWidth: 940,
     minHeight: 600,
-    title: 'Akron Bot',
+    title: 'Akron Code',
     backgroundColor: '#30302e',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 14, y: 14 },
@@ -363,7 +373,7 @@ function logoMarkup(size, opts) {
 @keyframes akmBreathe{0%{transform:scale(.94)}100%{transform:scale(1.06)}}
 @media (prefers-reduced-motion:reduce){.akm-spin,.akm-breathe{animation:none}}
 </style>` : '';
-  return `<svg width="${size}" height="${size}" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Bot">${css}<defs><filter id="akGoo" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur"/><feColorMatrix in="blur" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 22 -9" result="goo"/><feComposite in="SourceGraphic" in2="goo" operator="atop"/></filter></defs>
+  return `<svg width="${size}" height="${size}" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Akron Code">${css}<defs><filter id="akGoo" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur"/><feColorMatrix in="blur" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 22 -9" result="goo"/><feComposite in="SourceGraphic" in2="goo" operator="atop"/></filter></defs>
 <g class="akm-spin"><g filter="url(#akGoo)"><g fill="#10B981"><circle cx="200" cy="200" r="34"/>${rects}${orbs}</g></g>
 <g opacity="0.55" fill="#A7F3D0" class="akm-breathe"><circle cx="200" cy="200" r="14"/>${glow}</g></g></svg>`;
 }
@@ -385,7 +395,7 @@ function createAboutWindow() {
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
-    title: 'About Akron Bot',
+    title: 'About Akron Code',
     backgroundColor: '#30302e',
     titleBarStyle: 'hiddenInset',
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false },
@@ -403,10 +413,10 @@ function createAboutWindow() {
     .foot{margin-top:auto;font-size:10.5px;color:#8d8a84}
   </style></head><body><div class="wrap">
     <div class="logo">${logoMarkup(72)}</div>
-    <h1>Akron Bot</h1>
-    <p class="sub">free-LLM desktop agent</p>
+    <h1>Akron Code</h1>
+    <p class="sub">by Akronlogic.com</p>
     <span class="ver">Version ${app.getVersion()}</span>
-    <div class="row">A free-LLM desktop agent.<br>Claude Desktop–compatible.<br>Electron ${process.versions.electron}</div>
+    <div class="row">Autonomous coding IDE.<br>Multi-agent &amp; MCP–compatible.<br>Electron ${process.versions.electron}</div>
     <div class="foot"><a href="https://akronlogic.com">akronlogic.com</a></div>
   </div></body></html>`;
   win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
@@ -451,14 +461,14 @@ function createTray() {
   }
   tray = new Tray(img);
   if (!img.isEmpty()) tray.setImage(img);
-  tray.setToolTip('Akron Bot');
+  tray.setToolTip('Akron Code');
   const menu = Menu.buildFromTemplate([
-    { label: 'Show Akron Bot', click: () => { const w = mainWindow() || createWindow(); w.show(); w.focus(); } },
+    { label: 'Show Akron Code', click: () => { const w = mainWindow() || createWindow(); w.show(); w.focus(); } },
     { label: 'Quick Entry', accelerator: 'CmdOrCtrl+Shift+Space', click: () => createQuickWindow() },
     { type: 'separator' },
     { label: 'New Window', accelerator: 'CmdOrCtrl+N', click: () => createWindow() },
     { type: 'separator' },
-    { label: 'About Akron Bot', click: () => createAboutWindow() },
+    { label: 'About Akron Code', click: () => createAboutWindow() },
     { type: 'separator' },
     { label: 'Quit', role: 'quit' },
   ]);
@@ -3520,7 +3530,7 @@ function buildMenu() {
     ...(isMac ? [{
       label: app.name,
       submenu: [
-        { label: 'About Akron Bot', click: () => createAboutWindow() },
+        { label: 'About Akron Code', click: () => createAboutWindow() },
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -3712,26 +3722,78 @@ app.whenReady().then(() => {
   // Akron Browser Bot Desktop Bridge (ws://127.0.0.1:8766 + zero-key /v1 proxy).
   try {
     const extbridge = require('./extbridge');
+    const injectFreeLlmKey = (row) => {
+      if (!row || typeof row !== 'object') return row;
+      if (!row.apiKey && /:3001\b/.test(String(row.baseURL || ''))) {
+        try {
+          const c = freellm.loadConfig ? freellm.loadConfig() : null;
+          if (c && c.token) return { ...row, apiKey: c.token };
+        } catch (_) {}
+      }
+      return row;
+    };
     const getHydratedProvider = async () => {
       const s = store.getSettings() || {};
       let p = s.provider || {};
       if (p.oauthProvider) {
         try { p = await hydrateProvider(p); } catch (_) {}
       }
-      if (!p.apiKey && /:3001\b/.test(String(p.baseURL || ''))) {
-        try { const c = freellm.loadConfig ? freellm.loadConfig() : null; if (c && c.token) p = { ...p, apiKey: c.token }; } catch (_) {}
-      }
-      return p;
+      return injectFreeLlmKey(p);
     };
     const getHydratedOrch = async () => {
       const orch = store.getOrchestrator() || {};
       const rows = Array.isArray(orch.providers) ? await Promise.all(orch.providers.map(async (r) => {
         if (r && r.oauthProvider) { try { return await hydrateProvider(r); } catch (_) { return r; } }
-        return r;
+        return injectFreeLlmKey(r);
       })) : [];
       return { ...orch, providers: rows };
     };
-    extbridge.start({ getProvider: getHydratedProvider, getOrchestrator: getHydratedOrch }).then((r) => {
+    const getExtraProviders = async () => {
+      const extras = [];
+      // 1. All signed-in OAuth accounts + their full static/live catalogs
+      try {
+        const accts = providerOauth.listAccounts ? providerOauth.listAccounts() : [];
+        const liveSnap = modelCatalog.snapshot ? modelCatalog.snapshot() : {};
+        for (const a of accts) {
+          if (!a || a.needsSignIn || a.expired) continue;
+          try {
+            const hydrated = await hydrateProvider({ oauthProvider: a.id, id: a.provider, name: a.label });
+            const pv = providerOauth.provider ? providerOauth.provider(a.provider) : null;
+            const liveList = Array.isArray(liveSnap[a.provider]) ? liveSnap[a.provider].map((m) => m.id) : [];
+            const staticList = pv && Array.isArray(pv.models) ? pv.models.map((m) => m.id) : [];
+            const catalogModels = [...new Set([...liveList, ...staticList].filter(Boolean))];
+            if (!hydrated.model && catalogModels.length) hydrated.model = catalogModels[0];
+            hydrated.catalogModels = catalogModels;
+            extras.push(hydrated);
+          } catch (_) {}
+        }
+      } catch (_) {}
+      // 2. Local FreeLLMAPI gateway (127.0.0.1:3001/v1)
+      try {
+        const cfg = freellm.loadConfig ? freellm.loadConfig() : null;
+        if (cfg && cfg.token) {
+          const aliasKeys = freellm.ALIASES ? Object.keys(freellm.ALIASES) : [];
+          const liveModels = freellm.listModels ? await Promise.resolve(freellm.listModels(cfg)).catch(() => []) : [];
+          const cleanLive = liveModels
+            .map((m) => (typeof m === 'string' ? m : m && m.id))
+            .map((id) => String(id || '').trim())
+            .filter((id) => id && !id.startsWith('[') && !/\s/.test(id) && /^(qwen|deepseek|nemotron|mistral|devstral|gpt-oss|kimi|glm|llama)/i.test(id))
+            .slice(0, 40);
+          const catalogModels = [...new Set([...aliasKeys, ...cleanLive].filter(Boolean))];
+          extras.push({
+            id: 'freellmapi',
+            name: 'FreeLLMAPI Pool',
+            baseURL: 'http://127.0.0.1:3001/v1',
+            apiKey: cfg.token,
+            model: catalogModels[0] || 'qwen3.8-flash',
+            catalogModels,
+            supportsTools: true,
+          });
+        }
+      } catch (_) {}
+      return extras;
+    };
+    extbridge.start({ getProvider: getHydratedProvider, getOrchestrator: getHydratedOrch, getExtraProviders }).then((r) => {
       if (!r || !r.ok) console.error('akron-browser-bot bridge unavailable:', (r && r.error) || 'unknown');
     }).catch(() => {});
   } catch (_) {}

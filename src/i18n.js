@@ -1,7 +1,7 @@
-// ---------- Akron Bot localization ----------
-// Claude Desktop ships 1575 localized UI strings; Akron Bot's local equivalent is a
+// ---------- Akron Code localization ----------
+// Claude Desktop ships 1575 localized UI strings; Akron Code's local equivalent is a
 // keyed dictionary over the app chrome with a persisted locale and a Settings switcher.
-// Strings are Akron Bot's own (not copied from Example's proprietary i18n bundle).
+// Strings are Akron Code's own (not copied from Example's proprietary i18n bundle).
 
 export const LOCALES = [
   { code: 'en',    label: 'English',        dir: 'ltr' },
@@ -16,7 +16,7 @@ export const LOCALES = [
 
 const STRINGS = {
   en: {
-    'brand.sub': 'free-LLM desktop agent',
+    'brand.sub': 'by Akronlogic.com',
     'sidebar.recents': 'Recents',
     'sidebar.tools': 'Tools',
     'sidebar.newChat': 'New chat',
@@ -72,7 +72,7 @@ const STRINGS = {
     'account.reconnect.hint': 'Approve in the browser and it finishes on its own. If it asks for a code, paste what the page shows — it includes a # in the middle. You can also paste the localhost URL from the address bar.',
     'account.reconnect.open': 'Open the sign-in page',
     'account.reconnect.closed': 'That sign-in window closed before the code arrived — start it again.',
-    'account.storeError': 'Your saved accounts could not be read — nothing was deleted. Quit and reopen Akron Bot; if it persists, the copy noted in the log can be restored by hand.',
+    'account.storeError': 'Your saved accounts could not be read — nothing was deleted. Quit and reopen Akron Code; if it persists, the copy noted in the log can be restored by hand.',
     'ctx.warm': 'This conversation is getting long',
     'ctx.hot': 'Almost out of room in this conversation',
     'ctx.dismiss': 'Dismiss',
@@ -142,7 +142,7 @@ const STRINGS = {
     'code.loading': 'Reading repository…',
   },
   bn: {
-    'brand.sub': 'ফ্রি-এলএলএম ডেস্কটপ এজেন্ট',
+    'brand.sub': 'by Akronlogic.com',
     'sidebar.recents': 'সাম্প্রতিক',
     'sidebar.tools': 'টুলস',
     'sidebar.newChat': 'নতুন চ্যাট',
@@ -161,7 +161,7 @@ const STRINGS = {
     'sidebar.code': 'কোড',
     'sidebar.browser': 'ব্রাউজার',
     'sidebar.settings': 'সেটিংস',
-    'composer.placeholder': 'Akron Bot-কে লিখুন…',
+    'composer.placeholder': 'Akron Code-কে লিখুন…',
     'composer.send': 'বার্তা পাঠান',
     'composer.voice': 'ভয়েস মোড',
     'composer.browser': 'ব্রাউজার খুলুন',
@@ -198,7 +198,7 @@ const STRINGS = {
     'account.reconnect.hint': 'ব্রাউজারে অনুমোদন করুন, সাইন-ইন নিজে থেকেই শেষ হবে। কোড চাইলে পৃষ্ঠাটি যা দেখায় তার পুরোটাই পেস্ট করুন — মাঝখানে একটি # থাকে। অ্যাড্রেস বার থেকে localhost URL-ও পেস্ট করতে পারেন।',
     'account.reconnect.open': 'সাইন-ইন পৃষ্ঠা খুলুন',
     'account.reconnect.closed': 'কোড আসার আগেই সাইন-ইন উইন্ডোটি বন্ধ হয়ে গেছে — আবার শুরু করুন।',
-    'account.storeError': 'সংরক্ষিত অ্যাকাউন্টগুলো পড়া যায়নি — কিছুই মুছে ফেলা হয়নি। Akron Bot বন্ধ করে আবার খুলুন; সমস্যা থাকলে লগে লেখা কপিটি হাতে ফিরিয়ে আনা যাবে।',
+    'account.storeError': 'সংরক্ষিত অ্যাকাউন্টগুলো পড়া যায়নি — কিছুই মুছে ফেলা হয়নি। Akron Code বন্ধ করে আবার খুলুন; সমস্যা থাকলে লগে লেখা কপিটি হাতে ফিরিয়ে আনা যাবে।',
     'ctx.warm': 'এই কথোপকথন অনেক লম্বা হয়ে যাচ্ছে',
     'ctx.hot': 'এই কথোপকথনে জায়গা প্রায় শেষ',
     'ctx.dismiss': 'বন্ধ করুন',
@@ -263,7 +263,7 @@ const STRINGS = {
     'code.loading': 'রিপোজিটরি পড়া হচ্ছে…',
   },
   es: {
-    'brand.sub': 'agente de escritorio LLM gratuito',
+    'brand.sub': 'by Akronlogic.com',
     'sidebar.recents': 'Recientes',
     'sidebar.tools': 'Herramientas',
     'sidebar.newChat': 'Nuevo chat',
@@ -282,7 +282,7 @@ const STRINGS = {
     'sidebar.code': 'Código',
     'sidebar.browser': 'Navegador',
     'sidebar.settings': 'Ajustes',
-    'composer.placeholder': 'Mensaje a Akron Bot…',
+    'composer.placeholder': 'Mensaje a Akron Code…',
     'composer.send': 'Enviar mensaje',
     'composer.voice': 'Modo de voz',
     'composer.browser': 'Abrir navegador',
@@ -307,7 +307,7 @@ const STRINGS = {
     'export.title': 'Compartir / exportar',
   },
   fr: {
-    'brand.sub': 'agent de bureau LLM gratuit',
+    'brand.sub': 'by Akronlogic.com',
     'sidebar.recents': 'Récents',
     'sidebar.tools': 'Outils',
     'sidebar.newChat': 'Nouveau chat',
@@ -326,7 +326,7 @@ const STRINGS = {
     'sidebar.code': 'Code',
     'sidebar.browser': 'Navigateur',
     'sidebar.settings': 'Paramètres',
-    'composer.placeholder': 'Message à Akron Bot…',
+    'composer.placeholder': 'Message à Akron Code…',
     'composer.send': 'Envoyer',
     'composer.voice': 'Mode vocal',
     'composer.browser': 'Ouvrir le navigateur',
@@ -351,7 +351,7 @@ const STRINGS = {
     'export.title': 'Partager / exporter',
   },
   de: {
-    'brand.sub': 'kostenloser LLM-Desktop-Agent',
+    'brand.sub': 'by Akronlogic.com',
     'sidebar.recents': 'Zuletzt',
     'sidebar.tools': 'Werkzeuge',
     'sidebar.newChat': 'Neuer Chat',
@@ -370,7 +370,7 @@ const STRINGS = {
     'sidebar.code': 'Code',
     'sidebar.browser': 'Browser',
     'sidebar.settings': 'Einstellungen',
-    'composer.placeholder': 'Nachricht an Akron Bot…',
+    'composer.placeholder': 'Nachricht an Akron Code…',
     'composer.send': 'Nachricht senden',
     'composer.voice': 'Sprachmodus',
     'composer.browser': 'Browser öffnen',
@@ -395,7 +395,7 @@ const STRINGS = {
     'export.title': 'Teilen / exportieren',
   },
   hi: {
-    'brand.sub': 'मुफ्त LLM डेस्कटॉप एजेंट',
+    'brand.sub': 'by Akronlogic.com',
     'sidebar.recents': 'हाल के',
     'sidebar.tools': 'उपकरण',
     'sidebar.newChat': 'नई चैट',
@@ -414,7 +414,7 @@ const STRINGS = {
     'sidebar.code': 'कोड',
     'sidebar.browser': 'ब्राउज़र',
     'sidebar.settings': 'सेटिंग्स',
-    'composer.placeholder': 'Akron Bot को संदेश…',
+    'composer.placeholder': 'Akron Code को संदेश…',
     'composer.send': 'संदेश भेजें',
     'composer.voice': 'वॉयस मोड',
     'composer.browser': 'ब्राउज़र खोलें',
@@ -439,7 +439,7 @@ const STRINGS = {
     'export.title': 'साझा / निर्यात',
   },
   'zh-CN': {
-    'brand.sub': '免费 LLM 桌面智能体',
+    'brand.sub': 'by Akronlogic.com',
     'sidebar.recents': '最近',
     'sidebar.tools': '工具',
     'sidebar.newChat': '新对话',
@@ -458,7 +458,7 @@ const STRINGS = {
     'sidebar.code': '代码',
     'sidebar.browser': '浏览器',
     'sidebar.settings': '设置',
-    'composer.placeholder': '给 Akron Bot 发消息…',
+    'composer.placeholder': '给 Akron Code 发消息…',
     'composer.send': '发送消息',
     'composer.voice': '语音模式',
     'composer.browser': '打开浏览器',
@@ -483,7 +483,7 @@ const STRINGS = {
     'export.title': '分享 / 导出',
   },
   ar: {
-    'brand.sub': 'وكيل سطح مكتب LLM مجاني',
+    'brand.sub': 'by Akronlogic.com',
     'sidebar.recents': 'الأخيرة',
     'sidebar.tools': 'الأدوات',
     'sidebar.newChat': 'محادثة جديدة',
@@ -502,7 +502,7 @@ const STRINGS = {
     'sidebar.code': 'الكود',
     'sidebar.browser': 'المتصفح',
     'sidebar.settings': 'الإعدادات',
-    'composer.placeholder': 'أرسل رسالة إلى Akron Bot…',
+    'composer.placeholder': 'أرسل رسالة إلى Akron Code…',
     'composer.send': 'إرسال رسالة',
     'composer.voice': 'وضع الصوت',
     'composer.browser': 'فتح المتصفح',

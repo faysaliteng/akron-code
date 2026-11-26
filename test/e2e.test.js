@@ -1,5 +1,5 @@
 'use strict';
-// Akron Bot headless end-to-end test. No Electron needed — exercises the exact
+// Akron Code headless end-to-end test. No Electron needed — exercises the exact
 // modules the app uses (tools.js, llm.js, store.js, shell.js) against a mock
 // OpenAI-compatible streaming server so the full agent loop + tool-calling +
 // orchestrator failover can be verified deterministically.
@@ -1474,7 +1474,7 @@ async function main() {
     server.close();
     const sys = sent.messages.filter((m) => m.role === 'system');
     assert.strictEqual(sys.length, 1, 'exactly one system message is sent');
-    assert.match(sys[0].content, /Akron Bot/, 'core identity survives');
+    assert.match(sys[0].content, /Akron Code/, 'core identity survives');
     assert.match(sys[0].content, /be brief/, 'renderer directives survive');
     assert.match(sys[0].content, /Write tool/, 'coding protocol survives');
   });

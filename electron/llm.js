@@ -166,7 +166,7 @@ function isToolCapError(e) {
   return /maximum number of items|too many tools|tools.{0,20}(exceed|limit)|request(ed)? too large|tokens per minute|\bTPM\b|payload too large|reduce your/i.test(s);
 }
 
-const SYSTEM_PROMPT = `You are Akron Bot, an agentic desktop coding assistant running on the user's Mac (a local alternative to the Example desktop app). You work inside the user's project folder and you actually create, edit, and run code. You do not just describe code — you build it.
+const SYSTEM_PROMPT = `You are Akron Code, an agentic desktop coding assistant running on the user's Mac (a local alternative to the Example desktop app). You work inside the user's project folder and you actually create, edit, and run code. You do not just describe code — you build it.
 
 ## Working style
 - Be concise. Do the work with tools; narrate only the key steps.
@@ -426,6 +426,43 @@ function normalizeProvider(p) {
   };
 }
 
+function sanitizeOpenAIWireMessages(messages, provider) {
+  const hay = `${(provider && provider.baseURL) || ''} ${(provider && provider.model) || ''}`;
+  const keepReasoning = /deepseek|moonshot|kimi/i.test(hay);
+  const idMap = new Map();
+  let seq = 0;
+  return (messages || []).map((m) => {
+    if (!m || typeof m !== 'object') return m;
+    const copy = { ...m };
+    if (!keepReasoning && 'reasoning_content' in copy) delete copy.reasoning_content;
+    if (copy.role === 'assistant' && Array.isArray(copy.tool_calls)) {
+      copy.tool_calls = copy.tool_calls.map((tc) => {
+        if (!tc || typeof tc !== 'object') return tc;
+        const rawId = tc.id || '';
+        const cleanId = rawId && /^[A-Za-z0-9_-]{1,64}$/.test(rawId)
+          ? rawId
+          : (String(rawId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || ('call_akron_' + (++seq)));
+        if (rawId) idMap.set(rawId, cleanId);
+        const fn = tc.function || {};
+        return {
+          id: cleanId,
+          type: 'function',
+          function: {
+            name: String(fn.name || tc.name || 'tool'),
+            arguments: typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments || {}),
+          },
+        };
+      });
+    }
+    if (copy.role === 'tool') {
+      const rawId = copy.tool_call_id || copy.toolCallId || '';
+      if (rawId && idMap.has(rawId)) copy.tool_call_id = idMap.get(rawId);
+      else if (rawId) copy.tool_call_id = String(rawId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+    }
+    return copy;
+  });
+}
+
 async function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
   // Delegating to a wire adapter keeps one stream contract for the agent loop:
   // the adapter returns the same {content, tool_calls, finish_reason, usage}
@@ -434,9 +471,10 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
     return providertransport.chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta);
   }
   const url = provider.baseURL + 'chat/completions';
+  const wireMessages = sanitizeOpenAIWireMessages(messages, provider);
   const body = {
     model: provider.model,
-    messages,
+    messages: wireMessages,
     temperature: provider.temperature,
     max_tokens: maxTokensOverride != null ? maxTokensOverride : provider.maxTokens,
     stream: true,
@@ -499,6 +537,13 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
     let changed = false;
     if (req.stream_options && /stream_options|include_usage/i.test(rejectedText)) {
       delete req.stream_options;
+      changed = true;
+    } else if (/reasoning_content/i.test(rejectedText) && Array.isArray(req.messages) && req.messages.some((m) => m && 'reasoning_content' in m)) {
+      req.messages = req.messages.map((m) => {
+        if (!m || !('reasoning_content' in m)) return m;
+        const { reasoning_content: _rc, ...rest } = m;
+        return rest;
+      });
       changed = true;
     } else if (req.reasoning_effort) {
       delete req.reasoning_effort;
@@ -1002,7 +1047,8 @@ async function chatWithFailover(opts) {
           // or a 400 naming an unknown model). With healthy rows below, that
           // costs this row, not the turn.
           const st = Number(e && e.status) || Number((/^\s*LLM\s+(\d{3})\b/.exec(String(e && e.message)) || [])[1] || 0);
-          const modelMissing = st === 404 || ((st === 400 || st === 422) && /model[^.]{0,60}(not (found|exist|supported|available|in the catalog)|unknown|invalid|does not exist)|unknown model|no such model/i.test(String(e && e.message)));
+          const msgTxt = String(e && e.message || '');
+          const modelMissing = st === 404 || ((st === 400 || st === 422) && /model[^.]{0,60}(not (found|exist|supported|available|in the catalog)|unknown|invalid|does not exist)|unknown model|no such model|plan|entitl|not included|upgrade|subscription/i.test(msgTxt));
           if ((modelMissing || st === 401 || st === 403) && n > 1) {
             gate.markDead(p, humanizeLLMError(e).slice(0, 160), modelMissing ? 30 * 60000 : 10 * 60000);
             if (nx) {
@@ -1646,17 +1692,21 @@ async function runAgent(opts) {
 
   // Always ensure the core system prompt is the first message. The renderer may
   // send its own system message (style / project / web-search directives); that
-  // stays as a second system message, but the core Akron Bot guidance (tool use,
+  // stays as a second system message, but the core Akron Code guidance (tool use,
   // browser, artifact/visualization instructions) must be present for EVERY
   // model — Gemini/Gemma via Ollama, Kimi, DeepSeek, Nemotron, etc.
-  const corePrompt = messages.find((m) => m.role === 'system' && m.content === SYSTEM_PROMPT);
+  const corePrompt = messages.find((m) => m.role === 'system' && typeof m.content === 'string' && m.content.startsWith('You are Akron Code,'));
   if (!corePrompt) {
     messages.unshift({ role: 'system', content: SYSTEM_PROMPT });
-  } else if (messages[0] !== corePrompt) {
-    // Move the core prompt to the front if a renderer system message precedes it.
-    const i = messages.indexOf(corePrompt);
-    messages.splice(i, 1);
-    messages.unshift(corePrompt);
+  } else {
+    // Move existing core prompt to index 0 and strip previously appended dynamic suffixes
+    // (subagent_types, project_workspace, etc.) so multi-turn re-entry never duplicates blocks.
+    if (messages[0] !== corePrompt) {
+      const i = messages.indexOf(corePrompt);
+      messages.splice(i, 1);
+      messages.unshift(corePrompt);
+    }
+    messages[0] = { role: 'system', content: SYSTEM_PROMPT };
   }
 
   // Collect extra system directives sent by the renderer and splice them out so

@@ -1,9 +1,9 @@
 {
-  "version": 100,
+  "version": 101,
   "providers": [
     {
       "id": "akron-desktop",
-      "name": "Akron Bot Desktop (All Models · Zero Key)",
+      "name": "Akron Code Desktop (All Models · Zero Key)",
       "type": "openai-compatible",
       "baseUrl": "http://127.0.0.1:8766/v1",
       "apiKey": "akron-desktop-local",
@@ -14,7 +14,13 @@
         "akron-coder",
         "akron-vision",
         "akron-fast",
-        "akron-longctx"
+        "akron-longctx",
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "gemini-4-neon-high",
+        "claude-opus-5-5-medium",
+        "qwen3.8-flash",
+        "gemma4:latest"
       ],
       "defaultModel": "akron-default"
     }

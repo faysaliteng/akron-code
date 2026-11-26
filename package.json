@@ -1,8 +1,8 @@
 {
   "name": "akronbot",
-  "productName": "Akron Bot",
+  "productName": "Akron Code",
   "version": "1.0.0",
-  "description": "Akron Bot — a free-LLM desktop agent built by AkronLogic",
+  "description": "Akron Code — multi-agent desktop coding IDE by Akronlogic.com",
   "main": "electron/main.js",
   "author": "AkronLogic",
   "license": "MIT",
@@ -39,7 +39,7 @@
   },
   "build": {
     "appId": "com.akronbot.app",
-    "productName": "Akron Bot",
+    "productName": "Akron Code",
     "copyright": "AkronLogic",
     "asar": true,
     "compression": "maximum",
@@ -76,10 +76,10 @@
       "darkModeSupport": true,
       "icon": "build/icon.icns",
       "identity": null,
-      "artifactName": "AkronBot-${version}-${arch}.${ext}"
+      "artifactName": "AkronCode-${version}-${arch}.${ext}"
     },
     "dmg": {
-      "title": "Akron Bot ${version}",
+      "title": "Akron Code ${version}",
       "contents": [
         {
           "x": 130,

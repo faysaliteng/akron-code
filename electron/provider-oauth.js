@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Provider OAuth — sign in to the *actual AI subscriptions* you already pay for
- * and use them as models inside Akron Bot.
+ * and use them as models inside Akron Code.
  *
  * Why this exists
  * ---------------
@@ -1344,7 +1344,7 @@ function callbackPage(payload) {
   const ok = !payload.error && payload.code;
   const title = ok ? 'Signed in' : 'Sign-in did not complete';
   const detail = ok
-    ? 'Akron Bot can close this tab and keep working.'
+    ? 'Akron Code can close this tab and keep working.'
     : escapeHtml(payload.errorDescription || payload.error || 'no authorization code was returned');
   return renderPage(title, detail);
 }
@@ -1457,7 +1457,7 @@ function startLoopbackServer(opts) {
       // real redirect instead of consuming the flow with a garbage code.
       if (o.state && payload.state && payload.state !== o.state) {
         res.writeHead(400, Object.assign({ 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }, cors));
-        res.end(renderPage('Sign-in did not complete', escapeHtml('That callback did not belong to this sign-in attempt. Akron Bot is still waiting — finish signing in from the window it opened.')));
+        res.end(renderPage('Sign-in did not complete', escapeHtml('That callback did not belong to this sign-in attempt. Akron Code is still waiting — finish signing in from the window it opened.')));
         return;
       }
       const respond = (title, detailHtml, after) => {
@@ -1481,7 +1481,7 @@ function startLoopbackServer(opts) {
           .then((verdict) => {
             const v = verdict || {};
             if (v.ok) {
-              respond('Signed in', 'Akron Bot can close this tab and keep working.', () => {
+              respond('Signed in', 'Akron Code can close this tab and keep working.', () => {
                 stop();
                 settle(Object.assign({}, payload, { verified: v }));
               });
@@ -1503,7 +1503,7 @@ function startLoopbackServer(opts) {
         return;
       }
       // No verifier supplied: never claim success on a bare code.
-      respond('Finishing sign-in', 'Akron Bot is completing the sign-in. You can close this tab.', () => {
+      respond('Finishing sign-in', 'Akron Code is completing the sign-in. You can close this tab.', () => {
         stop();
         settle(payload);
       });
@@ -2088,7 +2088,7 @@ function status() {
  * Re-adopt an account's token from the first-party credential store.
  *
  * The secretstore is encrypted with an app-identity-derived keychain item, so a
- * rename (Helio Bot → Akron Bot) makes every previously stored token
+ * rename (Helio Bot → Akron Code) makes every previously stored token
  * undecryptable, and a keychain item can also disappear on its own. Accounts
  * that were imported from a first-party CLI (`source: 'claude-code'`) still have
  * a live credential one read away, so healing is preferable to telling the user

@@ -3,9 +3,9 @@
 //
 // Two surfaces share the same local listener:
 //   1. HTTP OpenAI-compatible proxy (`http://127.0.0.1:8766/v1/*`) so Akron
-//      Browser Bot automatically shares ALL configured Akron Bot Desktop models
+//      Browser Bot automatically shares ALL configured Akron Code Desktop models
 //      and pools with ZERO separate API keys required.
-//   2. WebSocket bridge (`ws://127.0.0.1:8766`) so Akron Bot Desktop agents
+//   2. WebSocket bridge (`ws://127.0.0.1:8766`) so Akron Code Desktop agents
 //      can control the user's live Chrome/Brave/Edge tabs via `ext_browser`.
 
 const http = require('http');
@@ -13,9 +13,11 @@ const path = require('path');
 const fs = require('fs');
 const { WebSocketServer } = require('ws');
 const orchRouter = require('./orch-router');
+const freellm = require('./freellm');
 
 const DEFAULT_PORT = 8766;
 const ALIAS_ROLES = ['planner', 'coder', 'vision', 'fast', 'longctx'];
+const OLLAMA_TTL_MS = 15000;
 
 let state = {
   server: null,
@@ -24,6 +26,8 @@ let state = {
   running: false,
   getProvider: null,
   getOrchestrator: null,
+  getExtraProviders: null,
+  ollamaCache: { at: 0, models: [] },
   clients: new Set(),
   activeSocket: null,
   extensionVersion: null,
@@ -71,23 +75,159 @@ function readJsonBody(req) {
   });
 }
 
-async function gatherModels() {
-  const base = state.getProvider ? await Promise.resolve(state.getProvider()).catch(() => null) : null;
+async function gatherOllamaModels() {
+  if (Date.now() - state.ollamaCache.at < OLLAMA_TTL_MS) return state.ollamaCache.models;
+  let models = [];
+  try {
+    const r = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(1200) });
+    if (r.ok) {
+      const j = await r.json().catch(() => null);
+      if (j && Array.isArray(j.models)) {
+        models = j.models.map((m) => String((m && (m.model || m.name)) || '').trim()).filter(Boolean);
+      }
+    }
+  } catch (_) {}
+  state.ollamaCache = { at: Date.now(), models };
+  return models;
+}
+
+function enrichRow(row) {
+  if (!row || typeof row !== 'object') return row;
+  if (!row.apiKey && /:3001\b/.test(String(row.baseURL || ''))) {
+    try {
+      const cfg = freellm.loadConfig ? freellm.loadConfig() : null;
+      if (cfg && cfg.token) return { ...row, apiKey: cfg.token };
+    } catch (_) {}
+  }
+  return row;
+}
+
+async function gatherBackends() {
+  const llm = require('./llm');
+  const rawBase = state.getProvider ? await Promise.resolve(state.getProvider()).catch(() => null) : null;
   const orch = state.getOrchestrator ? await Promise.resolve(state.getOrchestrator()).catch(() => null) : null;
-  const ids = new Set(['akron-default']);
-  for (const r of ALIAS_ROLES) ids.add('akron-' + r);
-  if (base && base.model) ids.add(String(base.model));
+  const extras = state.getExtraProviders ? await Promise.resolve(state.getExtraProviders()).catch(() => []) : [];
+  const ollamaModels = await gatherOllamaModels();
+
+  const backends = [];
+  const addBackend = (raw, extraCatalog = []) => {
+    if (!raw || typeof raw !== 'object') return;
+    const enriched = enrichRow(raw);
+    const norm = llm.normalizeProvider(enriched);
+    const catalogModels = [...new Set([
+      norm.model,
+      ...(Array.isArray(raw.catalogModels) ? raw.catalogModels : []),
+      ...(Array.isArray(raw.models) ? raw.models : []),
+      ...extraCatalog,
+    ].map((x) => String(x || '').trim()).filter(Boolean))];
+    norm.catalogModels = catalogModels;
+    norm._isOllama = /11434/.test(String(norm.baseURL || ''));
+    norm._isFreeLlm = /:3001\b/.test(String(norm.baseURL || ''));
+    backends.push(norm);
+  };
+
+  if (rawBase && (rawBase.model || rawBase.baseURL || rawBase.oauthProvider || rawBase.transport)) {
+    addBackend(rawBase);
+  }
   if (orch && Array.isArray(orch.providers)) {
-    for (const p of orch.providers) if (p && p.model && p.enabled !== false) ids.add(String(p.model));
+    for (const p of orch.providers) {
+      if (p && p.enabled !== false) addBackend(p);
+    }
   }
   const poolsCfg = orch && orchRouter.poolsConfig(orch);
   if (poolsCfg && poolsCfg.roles) {
     for (const r of ALIAS_ROLES) {
-      const rows = (poolsCfg.roles[r] && poolsCfg.roles[r].models) || [];
-      for (const row of rows) {
-        const m = typeof row === 'string' ? row.split('@')[0].trim() : row && row.model;
-        if (m) ids.add(String(m));
+      const scoped = orchRouter.orchestratorFor(orch, r, rawBase ? llm.normalizeProvider(enrichRow(rawBase)) : null);
+      if (scoped && Array.isArray(scoped.providers)) {
+        for (const p of scoped.providers) addBackend(p);
       }
+    }
+  }
+  if (Array.isArray(extras)) {
+    for (const ex of extras) addBackend(ex);
+  }
+  if (ollamaModels.length) {
+    addBackend({
+      id: 'ollama',
+      name: 'Ollama (Local)',
+      baseURL: 'http://127.0.0.1:11434/v1',
+      model: ollamaModels[0],
+      supportsTools: true,
+    }, ollamaModels);
+  }
+  return { base: rawBase ? llm.normalizeProvider(enrichRow(rawBase)) : null, orch, backends };
+}
+
+function inferModelTransport(reqModel) {
+  const id = String(reqModel || '').trim();
+  if (!id) return [];
+  if (/:/.test(id)) return ['ollama'];
+  if (/^gemini-/i.test(id)) return ['google'];
+  if (/^claude-.*-(low|medium|high|xhigh|minimal)$/i.test(id)) return ['google'];
+  if (/^claude-/i.test(id)) return ['anthropic', 'google'];
+  if (/^(gpt-5|gpt-6|gpt-reserve|codex|o[1-9]\b)/i.test(id)) return ['codex'];
+  if (/^grok-/i.test(id)) return ['grok'];
+  if (/^(qwen|deepseek|nemotron|mistral|devstral|gpt-oss|llama|glm|kimi|minimax)/i.test(id)) return ['freellm', 'ollama'];
+  return ['freellm', 'ollama'];
+}
+
+function backendTransportKind(b) {
+  if (!b) return '';
+  if (b.transport) return String(b.transport);
+  if (b._isOllama || /11434/.test(String(b.baseURL || ''))) return 'ollama';
+  if (b._isFreeLlm || /:3001\b/.test(String(b.baseURL || ''))) return 'freellm';
+  return 'openai';
+}
+
+function withModel(backend, modelId) {
+  const copy = { ...backend, model: modelId };
+  return copy;
+}
+
+function normalizeOpenAIMessages(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const toolNameById = new Map();
+  let seq = 0;
+  return list.map((raw) => {
+    if (!raw || typeof raw !== 'object') return raw;
+    const m = { ...raw };
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      m.tool_calls = m.tool_calls.map((tc) => {
+        if (!tc || typeof tc !== 'object') return tc;
+        const fn = tc.function || {};
+        const name = String(fn.name || tc.name || 'tool');
+        const id = String(tc.id || '').trim() || ('call_akron_' + (++seq));
+        toolNameById.set(id, name);
+        return {
+          id,
+          type: 'function',
+          function: {
+            name,
+            arguments: typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments || {}),
+          },
+          ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
+        };
+      });
+    }
+    if (m.role === 'tool') {
+      const id = String(m.tool_call_id || m.toolCallId || '').trim();
+      if (id) m.tool_call_id = id;
+      if (!m.name && !m.tool_name && id && toolNameById.has(id)) {
+        m.name = toolNameById.get(id);
+      }
+    }
+    return m;
+  });
+}
+
+async function gatherModels() {
+  const { backends } = await gatherBackends();
+  const ids = new Set(['akron-default']);
+  for (const r of ALIAS_ROLES) ids.add('akron-' + r);
+  for (const b of backends) {
+    if (b.model) ids.add(String(b.model));
+    for (const m of b.catalogModels || []) {
+      if (m) ids.add(String(m));
     }
   }
   const now = Math.floor(Date.now() / 1000);
@@ -101,74 +241,83 @@ async function gatherModels() {
 
 async function resolveCandidateList(requestedModel) {
   const llm = require('./llm');
-  const rawBase = state.getProvider ? await Promise.resolve(state.getProvider()).catch(() => null) : null;
-  const orch = state.getOrchestrator ? await Promise.resolve(state.getOrchestrator()).catch(() => null) : null;
-  const base = rawBase ? llm.normalizeProvider(rawBase) : null;
-  const poolsActive = orch && orchRouter.poolsActive(orch, base);
+  const { base, orch, backends } = await gatherBackends();
   const reqModel = String(requestedModel || '').trim();
 
-  let list = [];
+  const dedupList = (items) => {
+    const seen = new Set();
+    const out = [];
+    for (const row of items) {
+      if (!row || !row.model) continue;
+      const key = `${row.transport || ''}|${row.oauthProvider || row.baseURL || ''}|${row.model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(llm.normalizeProvider(row));
+    }
+    return out;
+  };
+
   if (reqModel.startsWith('akron-') && ALIAS_ROLES.includes(reqModel.slice(6))) {
     const role = reqModel.slice(6);
+    const list = [];
     if (orch && orchRouter.poolsConfig(orch)) {
       const scoped = orchRouter.orchestratorFor(orch, role, base);
-      if (scoped && Array.isArray(scoped.providers)) list = scoped.providers.map((p) => llm.normalizeProvider(p));
+      if (scoped && Array.isArray(scoped.providers)) {
+        for (const p of scoped.providers) list.push(enrichRow(p));
+      }
     }
-    if (!list.length && base) list = [base];
-    return list;
+    if (base && base.model) list.push(base);
+    for (const b of backends) list.push(b);
+    return dedupList(list);
   }
 
   if (!reqModel || reqModel === 'akron-default') {
+    const list = [];
     if (base && base.model) list.push(base);
-    if (orch && Array.isArray(orch.providers)) {
-      for (const p of orch.providers) {
-        if (p && p.enabled !== false && p.model) list.push(llm.normalizeProvider(p));
-      }
-    }
+    const poolsActive = orch && orchRouter.poolsActive(orch, base);
     if (poolsActive) {
       const scoped = orchRouter.orchestratorFor(orch, 'coder', base);
       if (scoped && Array.isArray(scoped.providers)) {
-        for (const p of scoped.providers) list.push(llm.normalizeProvider(p));
+        for (const p of scoped.providers) list.push(enrichRow(p));
       }
     }
-  } else {
-    // Explicit model ID requested
-    let matched = null;
-    if (base && base.model === reqModel) matched = base;
-    if (!matched && orch && Array.isArray(orch.providers)) {
-      const found = orch.providers.find((p) => p && p.model === reqModel);
-      if (found) matched = llm.normalizeProvider(found);
-    }
-    if (!matched && orch && orchRouter.poolsConfig(orch)) {
-      for (const r of ALIAS_ROLES) {
-        const scoped = orchRouter.orchestratorFor(orch, r, base, { preferModel: reqModel });
-        if (scoped && Array.isArray(scoped.providers)) {
-          const hit = scoped.providers.find((p) => p && p.model === reqModel);
-          if (hit) { matched = llm.normalizeProvider(hit); break; }
-        }
-      }
-    }
-    if (!matched && base) matched = llm.normalizeProvider({ ...base, model: reqModel });
-    if (matched) list.push(matched);
-    if (orch && Array.isArray(orch.providers)) {
-      for (const p of orch.providers) {
-        if (p && p.enabled !== false && p.model && p.model !== reqModel) list.push(llm.normalizeProvider(p));
-      }
-    }
-    if (base && base.model && base.model !== reqModel) list.push(base);
+    for (const b of backends) list.push(b);
+    return dedupList(list);
   }
 
-  // Deduplicate by (baseURL|oauthProvider|model) preserving order
-  const seen = new Set();
-  const dedup = [];
-  for (const row of list) {
-    if (!row || !row.model) continue;
-    const key = `${row.oauthProvider || row.baseURL || ''}|${row.model}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    dedup.push(row);
+  // Explicit model ID requested: route strictly to owning/compatible backends first.
+  const exact = [];
+  const catalogHits = [];
+  const inferredKinds = inferModelTransport(reqModel);
+  const affinityHits = [];
+
+  for (const b of backends) {
+    if (b.model === reqModel) {
+      exact.push(b);
+      continue;
+    }
+    if (Array.isArray(b.catalogModels) && b.catalogModels.includes(reqModel)) {
+      catalogHits.push(withModel(b, reqModel));
+      continue;
+    }
+    const kind = backendTransportKind(b);
+    if (inferredKinds.includes(kind)) {
+      affinityHits.push(withModel(b, reqModel));
+    }
   }
-  return dedup;
+
+  // Only allow mutating a generic plain OpenAI-compatible gateway when neither exact/catalog/affinity matched.
+  const genericFallback = [];
+  if (!exact.length && !catalogHits.length && !affinityHits.length) {
+    for (const b of backends) {
+      if (backendTransportKind(b) === 'openai') genericFallback.push(withModel(b, reqModel));
+    }
+  }
+
+  const ordered = [...exact, ...catalogHits, ...affinityHits, ...genericFallback];
+  // Never append unrelated transports/models for an explicit non-alias request;
+  // that caused wrong-provider 400s instead of testing the requested model cleanly.
+  return dedupList(ordered);
 }
 
 async function handleChatCompletions(req, res) {
@@ -178,10 +327,11 @@ async function handleChatCompletions(req, res) {
 
   const list = await resolveCandidateList(body.model);
   if (!list.length) {
-    return sendJson(res, 503, { error: { message: 'No model provider is configured in Akron Bot Desktop.' } });
+    return sendJson(res, 404, { error: { message: `Model "${body.model || 'default'}" is not configured in Akron Code Desktop.` } });
   }
 
   const llm = require('./llm');
+  const normalizedMessages = normalizeOpenAIMessages(body.messages);
   const ac = new AbortController();
   req.on('close', () => { if (!res.writableEnded) ac.abort(); });
 
@@ -210,7 +360,7 @@ async function handleChatCompletions(req, res) {
       list,
       getIndex: () => idx,
       setIndex: (i) => { idx = i; },
-      messages: Array.isArray(body.messages) ? body.messages : [],
+      messages: normalizedMessages,
       tools: Array.isArray(body.tools) && body.tools.length ? body.tools : undefined,
       maxTokens: body.max_tokens || body.maxTokens,
       signal: ac.signal,
@@ -274,13 +424,14 @@ async function handleChatCompletions(req, res) {
     });
   } catch (e) {
     if (ac.signal.aborted) return;
+    const friendlyMsg = llm.humanizeLLMError ? llm.humanizeLLMError(e) : String((e && e.message) || e);
     if (sseStarted && !res.writableEnded) {
-      res.write(`data: ${JSON.stringify({ error: { message: e.message } })}\n\n`);
+      res.write(`data: ${JSON.stringify({ error: { message: friendlyMsg } })}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();
       return;
     }
-    sendJson(res, Number(e && e.status) || 502, { error: { message: String((e && e.message) || e) } });
+    sendJson(res, Number(e && e.status) || 502, { error: { message: friendlyMsg } });
   }
 }
 
@@ -385,10 +536,12 @@ function start(opts = {}) {
   if (state.server && state.running) {
     if (opts.getProvider) state.getProvider = opts.getProvider;
     if (opts.getOrchestrator) state.getOrchestrator = opts.getOrchestrator;
+    if (opts.getExtraProviders) state.getExtraProviders = opts.getExtraProviders;
     return Promise.resolve({ ok: true, port: state.port });
   }
   state.getProvider = opts.getProvider || state.getProvider;
   state.getOrchestrator = opts.getOrchestrator || state.getOrchestrator;
+  state.getExtraProviders = opts.getExtraProviders || state.getExtraProviders;
   const listenPort = opts.port !== undefined ? Number(opts.port) : (Number(process.env.AKRON_BRIDGE_PORT) || DEFAULT_PORT);
 
   return new Promise((resolve) => {
@@ -465,4 +618,12 @@ function stop() {
   });
 }
 
-module.exports = { start, stop, status, listTabs, callTool, extensionDir };
+module.exports = {
+  start,
+  stop,
+  status,
+  listTabs,
+  callTool,
+  extensionDir,
+  _internal: { gatherBackends, resolveCandidateList, normalizeOpenAIMessages, inferModelTransport },
+};
