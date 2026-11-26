@@ -66,15 +66,20 @@ const workers = new Map();
 // a single goal can fan out to different backends (e.g. NVIDIA NIM + a local
 // Ollama Gemma model) in one call.
 function workerProvider(opts = {}) {
-  const hasOverride = !!(opts.baseURL || opts.model || opts.apiKey);
+  const hasOverride = !!(opts.baseURL || opts.model || opts.apiKey || opts.oauthProvider || opts.transport);
   if (!hasOverride) return null;
   return {
-    baseURL: opts.baseURL || (opts.provider && opts.provider.baseURL) || 'http://localhost:11434/v1',
+    baseURL: opts.baseURL || (opts.provider && opts.provider.baseURL) || (opts.transport ? '' : 'http://localhost:11434/v1'),
     apiKey: opts.apiKey != null ? opts.apiKey : ((opts.provider && opts.provider.apiKey) || ''),
     model: opts.model || (opts.provider && opts.provider.model) || 'llama3.1',
     temperature: opts.temperature != null ? Number(opts.temperature) : (opts.provider ? opts.provider.temperature : 0.7),
     maxTokens: opts.maxTokens != null ? Number(opts.maxTokens) : (opts.provider ? opts.provider.maxTokens : 4096),
     supportsTools: opts.supportsTools !== false,
+    oauthProvider: opts.oauthProvider || '',
+    transport: opts.transport || '',
+    oauth: !!opts.oauth || !!opts.oauthProvider,
+    accessToken: opts.accessToken || '',
+    contextWindow: Number(opts.contextWindow) || 0,
   };
 }
 
@@ -119,12 +124,17 @@ async function runWorker(name, goal, opts) {
   const raw = (opts.overrides && opts.overrides[name]) || null;
   const provider = raw
     ? {
-        baseURL: raw.baseURL || (base && base.baseURL) || undefined,
+        baseURL: raw.baseURL !== undefined ? raw.baseURL : (base ? base.baseURL : undefined),
         apiKey: raw.apiKey != null ? raw.apiKey : (base ? base.apiKey : undefined),
         model: raw.model || (base && base.model) || undefined,
         temperature: raw.temperature != null ? raw.temperature : (base ? base.temperature : undefined),
         maxTokens: raw.maxTokens != null ? raw.maxTokens : (base ? base.maxTokens : undefined),
         supportsTools: raw.supportsTools !== false,
+        oauthProvider: raw.oauthProvider !== undefined ? raw.oauthProvider : (base && base.oauthProvider) || '',
+        transport: raw.transport !== undefined ? raw.transport : (base && base.transport) || '',
+        oauth: raw.oauth !== undefined ? raw.oauth : Boolean(base && base.oauth),
+        accessToken: raw.accessToken !== undefined ? raw.accessToken : (base && base.accessToken) || '',
+        contextWindow: raw.contextWindow || (base && base.contextWindow) || 0,
       }
     : base;
 
@@ -133,6 +143,7 @@ async function runWorker(name, goal, opts) {
   w.lastRun = Date.now();
   const started = Date.now();
   try {
+    if (opts && opts.signal && opts.signal.aborted) throw new Error('aborted');
     const sys = raw && raw.systemPrompt ? raw.systemPrompt : w.systemPrompt;
     // When a per-call prompt is supplied it is the worker's whole job; keep the
     // shared goal as context so the worker knows what the team is building.
@@ -142,7 +153,14 @@ async function runWorker(name, goal, opts) {
     const msgs = sys
       ? [{ role: 'system', content: sys }, { role: 'user', content: userContent }]
       : [{ role: 'user', content: userContent }];
-    const out = await w.runAgent({ provider, messages: msgs, maxSteps: opts.maxSteps || 0, emit: opts.emit });
+    const out = await w.runAgent({
+      provider,
+      messages: msgs,
+      maxSteps: opts.maxSteps || 0,
+      emit: opts.emit,
+      signal: opts && opts.signal,
+      cwd: opts && opts.cwd,
+    });
     const last = [...out].reverse().find((m) => m.role === 'assistant' && m.content);
     w.status = 'idle';
     return {
@@ -227,17 +245,24 @@ async function orchestrate(goal, workerNames, opts = {}) {
         overrides[e.name] = {
           ...(overrides[e.name] || {}),
           ...(e.model ? { model: e.model } : {}),
-          ...(picked ? { baseURL: picked.baseURL, apiKey: picked.apiKey, model: picked.model } : {}),
+          ...(picked ? {
+            baseURL: picked.baseURL, apiKey: picked.apiKey, model: picked.model,
+            oauthProvider: picked.oauthProvider || '', transport: picked.transport || '',
+            oauth: !!picked.oauth, accessToken: picked.accessToken || '', contextWindow: picked.contextWindow || 0,
+          } : {}),
           ...(e.tier ? { tier: swarm.normalizeTier(e.tier) } : {}),
         };
       }
     }
   }
 
-  // Auto-provision a worker when a task names one that was never registered, so
-  // a single orchestrate call works without a separate register step.
+  // Refresh existing workers' runAgent so they never run with a stale turn's
+  // emit/cwd/signal, and auto-provision any worker not registered yet.
   for (const e of entries) {
-    if (!workers.has(e.name) && typeof opts.runAgent === 'function') {
+    const cur = workers.get(e.name);
+    if (cur && typeof opts.runAgent === 'function') {
+      cur.runAgent = opts.runAgent;
+    } else if (!cur && typeof opts.runAgent === 'function') {
       registerWorker(e.name, {
         runAgent: opts.runAgent,
         provider: opts.provider,
@@ -250,7 +275,7 @@ async function orchestrate(goal, workerNames, opts = {}) {
     }
   }
 
-  const limit = Math.max(1, Number(opts.concurrency) || 4);
+  const limit = Math.max(1, Math.min(Number(opts.concurrency) || 4, 8));
   const results = new Array(entries.length);
   let cursor = 0;
 

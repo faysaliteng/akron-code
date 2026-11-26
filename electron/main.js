@@ -35,6 +35,7 @@ const windowstate = require('./windowstate');
 const freellm = require('./freellm');
 const { createRuntimes } = require('./runtimes');
 const orchPool = require('./orch-pool');
+const sessionlog = require('./sessionlog');
 const { hydrateOrchestrator, poolDeadNotice } = require('./orch-hydrate');
 
 // ---------------------------------------------------------------------------
@@ -858,8 +859,14 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   const ac = new AbortController();
   runs.set(runId, ac);
   const owner = winFor(event); // route streaming events back to the originating window
+  const turnId = 't' + Date.now();
+  // Event-sourced run log (DeepSeek-harness style): every structural event of
+  // the turn is appended to ~/.autobot/sessions/<conv>/<turn>.jsonl so a run
+  // can be inspected and replayed after the fact.
+  const slog = sessionlog.open(convId || 'scratch', turnId, { title });
   const send = (evt) => {
     if (owner && !owner.isDestroyed()) owner.webContents.send('autobot:event', { runId, ...evt });
+    slog.append(evt);
   };
   const emit = (evt) => send(evt);
 
@@ -1057,7 +1064,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       // Checkpoints need the conversation id + a stable turn key so a rewind can
       // restore exactly the files this turn touched.
       convId,
-      turnId: 't' + Date.now(),
+      turnId,
       // This is the top-level user turn: it owns the token-budget pool.
       turnStart: true,
       // Swarm is user-opted. Unless the renderer explicitly enabled it, the
@@ -1086,6 +1093,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     return { ok: false, error: message };
   } finally {
     runs.delete(runId);
+    slog.close();
   }
 });
 
@@ -2370,6 +2378,59 @@ ipcMain.handle('autobot:rewind', (e, convId, checkpointId) => {
 });
 ipcMain.handle('autobot:getOrchestrator', () => store.getOrchestrator());
 ipcMain.handle('autobot:setOrchestrator', (e, patch) => store.setOrchestrator(patch));
+// Live model health for the Role pools editor: per-row cooldown / dead / inflight
+// from the shared provider gate, plus the configured pools.
+ipcMain.handle('autobot:poolStatus', () => {
+  try {
+    const router = require('./orch-router');
+    const gate = require('./provider-gate');
+    const orch = store.getOrchestrator() || {};
+    const cfg = router.poolsConfig(orch);
+    const snap = gate.snapshot();
+    const roles = {};
+    const rows = [];
+    if (cfg) {
+      for (const r of router.ROLES) {
+        const list = router.resolve(orch, r, {}).filter((x) => x.role === r);
+        roles[r] = list.map((x) => ({ model: x.model, max: x.maxConcurrent || 0 }));
+        for (const x of list) {
+          const key = gate.keyOf(x);
+          if (rows.some((y) => y.key === key)) continue;
+          const st = snap[key] || {};
+          rows.push({ key, model: x.model, coolingMs: st.coolingMs || 0, dead: !!st.dead, deadWhy: st.deadWhy || '', inflight: st.inflight || 0, queued: st.queued || 0, strikes: st.strikes || 0 });
+        }
+      }
+    }
+    return { active: !!cfg, summary: cfg ? router.summary(orch, { baseURL: cfg.gateway && cfg.gateway.baseURL }) : '', roles, rows };
+  } catch (e) {
+    return { active: false, error: e.message, roles: {}, rows: [] };
+  }
+});
+ipcMain.handle('autobot:sessionLog', (e, convId, opts) => sessionlog.read(convId || 'scratch', opts || {}));
+
+// Creator Mode: hot-swappable user/agent custom tools (~/.autobot/custom-tools/*.json)
+ipcMain.handle('autobot:customToolList', () => {
+  try { return require('./customtools').listTools(); } catch (_) { return []; }
+});
+ipcMain.handle('autobot:customToolSave', (e, spec) => {
+  const ct = require('./customtools');
+  const toolsMod = require('./tools');
+  return ct.saveTool(spec, {
+    toolDefinitions: toolsMod.toolDefinitions,
+    executorsByTool: toolsMod.executorsByTool,
+    executors: toolsMod.executors,
+  });
+});
+ipcMain.handle('autobot:customToolDelete', (e, name) => {
+  const ct = require('./customtools');
+  const toolsMod = require('./tools');
+  return ct.deleteTool(name, {
+    toolDefinitions: toolsMod.toolDefinitions,
+    executorsByTool: toolsMod.executorsByTool,
+    executors: toolsMod.executors,
+  });
+});
+
 // Role pools: the FreeLLMAPI layout (planner / coder / vision / fast / longctx),
 // pointed at the configured local router.
 ipcMain.handle('autobot:poolsPreset', () => {

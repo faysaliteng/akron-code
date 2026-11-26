@@ -355,6 +355,11 @@ function toAnthropicBody(provider, messages, tools, maxTokens) {
         if (typeof p === 'string') blocks.push({ type: 'text', text: p });
         else if (p && typeof p.text === 'string') blocks.push({ type: 'text', text: p.text });
         else if (p && p.type === 'image' && p.source) blocks.push(p);
+        else if (p && p.type === 'image_url' && p.image_url && typeof p.image_url.url === 'string') {
+          const dm = /^data:([^;]+);base64,(.+)$/.exec(p.image_url.url);
+          if (dm) blocks.push({ type: 'image', source: { type: 'base64', media_type: dm[1], data: dm[2] } });
+          else blocks.push({ type: 'image', source: { type: 'url', url: p.image_url.url } });
+        }
       }
       if (blocks.length) pushMsg('user', blocks);
     }

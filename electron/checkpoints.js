@@ -77,24 +77,31 @@ function listCheckpoints(conv) {
 // Returns { restored:[], removed:[], errors:[] }.
 function restore(conv, id) {
   const all = listCheckpoints(conv);
-  const target = all.find((c) => c.id === id || path.basename(c.dir) === id);
-  if (!target) return { restored: [], removed: [], errors: [`checkpoint ${id} not found`] };
-  const restored = [];
-  const removed = [];
+  const targetIdx = all.findIndex((c) => c.id === id || path.basename(c.dir) === id);
+  if (targetIdx < 0) return { restored: [], removed: [], errors: [`checkpoint ${id} not found`] };
+  const restoredSet = new Set();
+  const removedSet = new Set();
   const errors = [];
-  for (const f of target.files) {
-    try {
-      if (f.existed && f.backup) {
-        fs.copyFileSync(path.join(target.dir, f.backup), f.path);
-        restored.push(f.path);
-      } else if (!f.existed) {
-        try { fs.unlinkSync(f.path); removed.push(f.path); } catch (_) {}
+  // Apply every checkpoint from newest back down to targetIdx so rewinding
+  // also undoes edits and created files from all later turns.
+  for (let i = all.length - 1; i >= targetIdx; i--) {
+    const cp = all[i];
+    for (const f of cp.files || []) {
+      try {
+        if (f.existed && f.backup) {
+          fs.mkdirSync(path.dirname(f.path), { recursive: true });
+          fs.copyFileSync(path.join(cp.dir, f.backup), f.path);
+          restoredSet.add(f.path);
+          removedSet.delete(f.path);
+        } else if (!f.existed) {
+          try { fs.unlinkSync(f.path); removedSet.add(f.path); restoredSet.delete(f.path); } catch (_) {}
+        }
+      } catch (e) {
+        errors.push(`${f.path}: ${e.message}`);
       }
-    } catch (e) {
-      errors.push(`${f.path}: ${e.message}`);
     }
   }
-  return { restored, removed, errors };
+  return { restored: [...restoredSet], removed: [...removedSet], errors };
 }
 
 function removeCheckpoint(conv, id) {

@@ -422,6 +422,7 @@ const summarizeTrace = (tools) => {
   const list = Array.isArray(tools) ? tools.filter((t) => t && t.name) : [];
   if (!list.length) return '';
   const clip = (v, n) => {
+    if (v == null) return '';
     const s = typeof v === 'string' ? v : (() => { try { return JSON.stringify(v); } catch { return ''; } })();
     return (s || '').replace(/\s+/g, ' ').trim().slice(0, n || 110);
   };
@@ -429,7 +430,8 @@ const summarizeTrace = (tools) => {
     const a = t.args || {};
     const target = a.path || a.file || a.command || a.query || a.url || a.name || a.description || a.prompt || '';
     const bad = /^(Error|Tool error)/i.test(String(t.result || '').trim());
-    return `- ${t.name}${target ? '(' + clip(target, 90) + ')' : ''} → ${bad ? 'ERROR: ' : ''}${clip(t.result, 110) || '(no result)'}`;
+    const lim = /^(Task|Agent|Swarm|Workflow)$/.test(t.name) ? 600 : 110;
+    return `- ${t.name}${target ? '(' + clip(target, 90) + ')' : ''} → ${bad ? 'ERROR: ' : ''}${clip(t.result, lim) || '(no result)'}`;
   });
   return '\n\n[Tool actions taken in your previous turn — this already happened, do not redo it]\n' + lines.join('\n');
 };
@@ -620,8 +622,9 @@ export default function App() {
   const [skills, setSkills] = useState([]);
   const [mcpServers, setMcpServers] = useState([]);
   const [mcpForm, setMcpForm] = useState({ transport: 'stdio', command: '', args: '', url: '' });
-  const [subAgents, setSubAgents] = useState([]); // { id, name, status, role, model, tier, ms }
-  const [swarmInfo, setSwarmInfo] = useState(null); // { supervisor, roster }
+  const [subAgents, setSubAgents] = useState([]); // { key, name, status, role, jobRole, model, tier, ms, failover, posts, progress }
+  const [swarmInfo, setSwarmInfo] = useState(null); // { supervisor, roster, pools, phase, wave, startedAt }
+  const [swarmBoard, setSwarmBoard] = useState([]); // [{ seq, from, to, channel, text, at }]
   const [notebooks, setNotebooks] = useState([]); // names
   const [activeNotebook, setActiveNotebook] = useState(null);
   const [notebookCells, setNotebookCells] = useState([]);
@@ -873,21 +876,44 @@ export default function App() {
       const subTag = evt.subagent != null ? String(evt.subagent) : (evt.agentId != null ? String(evt.agentId) : '');
       if (subTag && !/^(question|plan|permission|computerUseConsent|permissionMode|planMode|artifact|preview|subagent|swarm|cwd|deeplink|compliance)$/.test(evt.type)) {
         const agentKey = evt.agentId != null ? String(evt.agentId) : '';
+        const normHandle = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
         setSubAgents((prev) => prev.map((a) => {
-          if (a.key !== subTag && a.name !== subTag && !(agentKey && a.key === agentKey)) return a;
-          const p = a.progress || { chars: 0, tools: 0, last: '' };
+          const hit = a.key === subTag || a.name === subTag || (agentKey && a.key === agentKey) || (a.handle && a.handle === normHandle(subTag));
+          if (!hit) return a;
+          const p = a.progress || { chars: 0, tools: 0, last: '', log: [] };
           switch (evt.type) {
             case 'delta': {
               const chars = p.chars + String(evt.text || '').length;
-              return { ...a, progress: { ...p, chars, last: (p.last + String(evt.text || '')).slice(-400) } };
+              return { ...a, progress: { ...p, chars, last: (p.last + String(evt.text || '')).slice(-500) } };
             }
             case 'thinking': return { ...a, progress: { ...p, think: (p.think || 0) + String(evt.text || '').length } };
-            case 'tool': return { ...a, progress: { ...p, tools: p.tools + 1, last: p.last || 'using ' + evt.name } };
+            case 'tool': {
+              const args = evt.args || {};
+              const shortArg = String(args.path || args.file_path || args.command || args.pattern || args.query || args.text || '').replace(/\s+/g, ' ').slice(0, 80);
+              const entry = { kind: 'tool', id: evt.id || '', name: evt.name, arg: shortArg, at: Date.now() };
+              const log = [...(p.log || []), entry].slice(-20);
+              return { ...a, progress: { ...p, tools: p.tools + 1, currentTool: { name: evt.name, arg: shortArg }, log, last: p.last || ('using ' + evt.name) } };
+            }
+            case 'toolResult': {
+              const log = (p.log || []).slice();
+              for (let j = log.length - 1; j >= 0; j--) {
+                if ((evt.id && log[j].id === evt.id) || log[j].name === evt.name) {
+                  log[j] = { ...log[j], done: true, isError: !!evt.isError };
+                  break;
+                }
+              }
+              return { ...a, progress: { ...p, log } };
+            }
+            case 'orchestrator':
+              return {
+                ...a,
+                model: evt.to || a.model,
+                failover: { from: evt.from, to: evt.to, reason: evt.reason, count: ((a.failover && a.failover.count) || 0) + 1 },
+              };
             case 'retry': return { ...a, progress: { ...p, retried: (p.retried || 0) + 1 } };
             case 'notice': return { ...a, progress: { ...p, notice: String(evt.text || '') } };
             case 'error': return { ...a, status: 'error', progress: { ...p, last: String(evt.message || 'error').slice(-400) } };
-            // done / complete / cancelled / usage / toolResult / limit: the
-            // lifecycle `subagent` event owns the row's final status.
+            // done / complete / cancelled / usage / limit: lifecycle `subagent` owns status.
             default: return a;
           }
         }));
@@ -1013,27 +1039,37 @@ export default function App() {
         case 'planMode':
           setPlanMode(evt.active ? { active: true, file: evt.file || 'PLAN.md' } : null);
           break;
+        case 'orchestrator':
+          setLiveSync((l) => (l ? { ...l, failover: { from: evt.from, to: evt.to, reason: evt.reason } } : l));
+          break;
         case 'subagent': {
-          // One row per agent, keyed by id (falling back to name) so a worker
-          // reporting started → running → done updates in place instead of
-          // stacking duplicates. Carries model + tier so the transcript shows
-          // WHICH model is doing the work.
           const key = String(evt.id || evt.name || 'agent');
           const status = evt.status === 'started' || evt.status === 'running' ? 'running'
-            : evt.status === 'error' ? 'error'
-              : evt.status === 'stopped' ? 'stopped' : 'done';
+            : evt.status === 'queued' ? 'queued'
+              : evt.status === 'waiting' ? 'waiting'
+                : evt.status === 'error' ? 'error'
+                  : evt.status === 'killed' ? 'killed'
+                    : evt.status === 'stopped' ? 'stopped' : 'done';
+          const handle = String(evt.name || evt.id || 'worker').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
           setSubAgents((prev) => {
             const next = [...prev];
             const i = next.findIndex((a) => a.key === key);
+            const cur = i >= 0 ? next[i] : null;
             const row = {
               key,
-              name: evt.name || (i >= 0 ? next[i].name : key),
+              handle: (cur && cur.handle) || handle,
+              name: evt.name || (cur ? cur.name : key),
               status,
-              role: evt.role || (i >= 0 ? next[i].role : null),
-              model: evt.model || (i >= 0 ? next[i].model : null),
-              tier: evt.tier || (i >= 0 ? next[i].tier : null),
-              ms: evt.ms != null ? evt.ms : (i >= 0 ? next[i].ms : null),
-              progress: i >= 0 ? next[i].progress : undefined,
+              role: evt.role || (cur ? cur.role : null),
+              jobRole: evt.jobRole || (cur ? cur.jobRole : null),
+              model: evt.model || (cur ? cur.model : null),
+              tier: evt.tier || (cur ? cur.tier : null),
+              round: evt.round || (cur ? cur.round : 1),
+              ms: evt.ms != null ? evt.ms : (cur ? cur.ms : null),
+              startedAt: (cur && cur.startedAt) || Date.now(),
+              failover: cur ? cur.failover : null,
+              posts: cur ? cur.posts || 0 : 0,
+              progress: cur ? cur.progress : undefined,
             };
             if (i >= 0) next[i] = row; else next.push(row);
             return next;
@@ -1041,37 +1077,90 @@ export default function App() {
           break;
         }
         case 'swarm': {
-          // Supervisor-led team events: start → planned → dispatched → done.
           if (evt.phase === 'start') {
-            setSwarmInfo({ supervisor: evt.supervisor, roster: evt.roster || [], phase: 'planning' });
+            setSwarmInfo({ supervisor: evt.supervisor, roster: evt.roster || [], pools: !!evt.pools, phase: 'planning', wave: 0, startedAt: Date.now() });
+            setSwarmBoard([]);
           } else if (evt.phase === 'planned') {
-            setSwarmInfo((w) => ({ ...(w || {}), phase: 'running' }));
-            // Show every planned agent immediately as queued, so the user can
-            // see the team and the models assigned before work completes.
+            setSwarmInfo((w) => ({ ...(w || {}), phase: 'dispatch', taskCount: (evt.tasks || []).length }));
             setSubAgents((prev) => {
               const byKey = new Map(prev.map((a) => [a.key, a]));
               (evt.tasks || []).forEach((t) => {
                 const key = String(t.id);
                 const cur = byKey.get(key);
+                const handle = String(t.title || t.id || 'worker').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
                 byKey.set(key, {
                   key,
+                  handle: (cur && cur.handle) || handle,
                   name: t.title || t.id,
                   status: cur && cur.status !== 'queued' ? cur.status : 'queued',
                   role: 'worker',
+                  jobRole: t.role || (cur && cur.jobRole) || null,
                   model: t.model || (cur && cur.model) || null,
                   tier: t.tier || (cur && cur.tier) || null,
+                  round: (cur && cur.round) || 1,
                   ms: cur && cur.ms != null ? cur.ms : null,
+                  startedAt: (cur && cur.startedAt) || Date.now(),
+                  failover: cur ? cur.failover : null,
+                  posts: (cur && cur.posts) || 0,
                   progress: cur ? cur.progress : undefined,
                 });
               });
               return [...byKey.values()];
             });
+          } else if (evt.phase === 'board' && evt.msg) {
+            setSwarmBoard((prev) => {
+              if (prev.some((m) => m.seq === evt.msg.seq)) return prev;
+              return [...prev, evt.msg].slice(-200);
+            });
+          } else if (evt.phase === 'member' && evt.member) {
+            const mem = evt.member;
+            if (mem.name === 'supervisor') {
+              setSwarmInfo((w) => ({
+                ...(w || {}),
+                supervisorState: mem.state,
+                phase: mem.state === 'reviewing' ? 'review' : (w && w.phase),
+              }));
+            } else {
+              setSubAgents((prev) => {
+                const next = [...prev];
+                const idx = next.findIndex((a) => a.handle === mem.name || a.key === mem.name || a.name === mem.name);
+                const mapped = mem.state === 'working' ? 'running'
+                  : mem.state === 'pending' ? 'queued'
+                    : (mem.state === 'waiting' || mem.state === 'done' || mem.state === 'error' || mem.state === 'stopped' || mem.state === 'killed') ? mem.state
+                      : null;
+                if (idx >= 0) {
+                  const cur = next[idx];
+                  next[idx] = {
+                    ...cur,
+                    status: mapped || cur.status,
+                    posts: mem.posts != null ? mem.posts : cur.posts,
+                    model: mem.model || cur.model,
+                  };
+                } else {
+                  next.push({
+                    key: mem.name,
+                    handle: mem.name,
+                    name: mem.name,
+                    status: mapped || 'queued',
+                    role: mem.role || 'worker',
+                    jobRole: mem.jobRole || null,
+                    model: mem.model || null,
+                    tier: mem.tier || null,
+                    posts: mem.posts || 0,
+                    startedAt: Date.now(),
+                  });
+                }
+                return next;
+              });
+            }
           } else if (evt.phase === 'monitor') {
-            // The host re-briefed members that stalled or were addressed by name.
+            setSwarmInfo((w) => ({ ...(w || {}), phase: 'wakeup', wave: evt.wave || ((w && w.wave) || 0) + 1 }));
             const who = [...(evt.stalled || []), ...(evt.addressed || [])].filter((v, i, a) => a.indexOf(v) === i);
             if (who.length) setNotice(`Team monitor: re-briefing ${who.join(', ')} (${evt.stalled && evt.stalled.length ? 'no board report' : 'addressed on the board'}).`);
+          } else if (evt.phase === 'dispatched') {
+            setSwarmInfo((w) => ({ ...(w || {}), phase: 'review' }));
           } else if (evt.phase === 'done') {
-            setSwarmInfo((w) => ({ ...(w || {}), phase: 'done' }));
+            setSwarmInfo((w) => ({ ...(w || {}), phase: 'done', ms: evt.ms }));
           }
           break;
         }
@@ -1269,6 +1358,7 @@ export default function App() {
     setLiveSync({ content: '', tools: [] });
     setSubAgents([]);
     setSwarmInfo(null);
+    setSwarmBoard([]);
     const runId = uid();
     runIdRef.current = runId;
 
@@ -1502,6 +1592,7 @@ export default function App() {
     setLiveSync({ content: '', tools: [] });
     setSubAgents([]);
     setSwarmInfo(null);
+    setSwarmBoard([]);
     const runId = uid();
     runIdRef.current = runId;
     const started = await window.autobot.run({
@@ -2442,7 +2533,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={teamConvRef.current === activeId ? subAgents : []} swarmInfo={teamConvRef.current === activeId ? swarmInfo : null} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} />}
+              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={teamConvRef.current === activeId ? subAgents : []} swarmInfo={teamConvRef.current === activeId ? swarmInfo : null} swarmBoard={teamConvRef.current === activeId ? swarmBoard : []} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => toggleSessionPane('runlog')} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
@@ -2470,6 +2561,11 @@ export default function App() {
                   onOpenConnectors={() => setPanel('mcp')}
                   T={T}
                 />
+              </SessionPane>
+            )}
+            {sessionPane.type === 'runlog' && (
+              <SessionPane icon="Activity" title="Run Log & Rewind" width={sessionPane.width} onWidth={(w) => setSessionPane((p) => ({ ...p, width: w }))} onHide={() => setSessionPane((p) => ({ ...p, type: null }))}>
+                <RunLogPanel convId={activeId} />
               </SessionPane>
             )}
           </div>
@@ -3012,8 +3108,342 @@ function EnvPanel({ cwd, setCwd, provider, lastUsage, mcpServers, features, save
   );
 }
 
+// ---------- Mission Control (Swarm + Multi-agent dashboard) ----------
+const MC_PHASES = [
+  { id: 'planning', label: 'Plan' },
+  { id: 'dispatch', label: 'Dispatch' },
+  { id: 'wakeup', label: 'Coordinate' },
+  { id: 'review', label: 'Review' },
+  { id: 'done', label: 'Done' },
+];
+
+function renderBoardText(text) {
+  const s = String(text || '');
+  const parts = s.split(/(@[a-z0-9][a-z0-9_-]*)/gi);
+  return parts.map((p, i) => (
+    /^@[a-z0-9]/i.test(p) ? <span key={i} className="mc-mention">{p}</span> : p
+  ));
+}
+
+function MissionControl({ subAgents, swarmInfo, swarmBoard }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [expandedKey, setExpandedKey] = useState(null);
+  const [showBoard, setShowBoard] = useState(true);
+  const boardEndRef = useRef(null);
+
+  const anyActive = Boolean(
+    (swarmInfo && swarmInfo.phase !== 'done')
+    || (subAgents || []).some((a) => a.status === 'running' || a.status === 'working' || a.status === 'queued' || a.status === 'waiting')
+  );
+  const now = useTicker(anyActive, 1000);
+
+  useEffect(() => {
+    if (showBoard && boardEndRef.current) {
+      boardEndRef.current.scrollIntoView({ block: 'nearest' });
+    }
+  }, [swarmBoard && swarmBoard.length, showBoard]);
+
+  const counts = { working: 0, waiting: 0, done: 0, err: 0 };
+  for (const a of subAgents || []) {
+    if (a.status === 'running' || a.status === 'working') counts.working++;
+    else if (a.status === 'waiting') counts.waiting++;
+    else if (a.status === 'done') counts.done++;
+    else if (a.status === 'error') counts.err++;
+  }
+  const curPhase = (swarmInfo && swarmInfo.phase) || 'planning';
+  const curIdx = MC_PHASES.findIndex((p) => p.id === curPhase);
+  const postsCount = (swarmBoard && swarmBoard.length) || 0;
+
+  return (
+    <div className={'mc-panel' + (anyActive ? ' active' : '')}>
+      <button type="button" className="mc-head" onClick={() => setCollapsed((v) => !v)} aria-expanded={!collapsed}>
+        <span className="mc-head-ico"><Icon name="Orbit" size={15} /></span>
+        <span className="mc-title">{swarmInfo ? 'Swarm Mission Control' : 'Agent Workers'}</span>
+        <div className="mc-badges">
+          {counts.working > 0 && <span className="mc-pill working">{counts.working} active</span>}
+          {counts.waiting > 0 && <span className="mc-pill waiting">{counts.waiting} waiting</span>}
+          {counts.done > 0 && <span className="mc-pill done">{counts.done} done</span>}
+          {counts.err > 0 && <span className="mc-pill err">{counts.err} err</span>}
+          {postsCount > 0 && <span className="mc-pill">{postsCount} board</span>}
+        </div>
+        <Icon name={collapsed ? 'CaretRight' : 'CaretDown'} size={13} className="mc-caret" />
+      </button>
+
+      {!collapsed && (
+        <div className="mc-body">
+          {swarmInfo && (
+            <div className="mc-phases">
+              {MC_PHASES.map((ph, idx) => {
+                const isDone = curPhase === 'done' ? true : idx < curIdx;
+                const isActive = curPhase !== 'done' && idx === curIdx;
+                return (
+                  <div key={ph.id} className={'mc-phase' + (isDone ? ' done' : '') + (isActive ? ' active' : '')}>
+                    <span className="mc-phase-dot" />
+                    <span className="mc-phase-label">{ph.label}</span>
+                    {ph.id === 'wakeup' && swarmInfo.wave > 0 && (
+                      <span className="mc-phase-wave">w{swarmInfo.wave}</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="mc-grid">
+            {swarmInfo && swarmInfo.supervisor && (
+              <div className={'mc-card supervisor ' + (swarmInfo.supervisorState || (curPhase === 'done' ? 'done' : 'running'))}>
+                <div className="mc-card-top">
+                  <span className={'mc-dot ' + (swarmInfo.supervisorState || (curPhase === 'done' ? 'done' : 'running'))} />
+                  <span className="mc-card-name">Supervisor · @supervisor</span>
+                  <span className="mc-role planner">planner</span>
+                </div>
+                <div className="mc-card-meta">
+                  {swarmInfo.supervisor.model && <span className="mc-model" title={swarmInfo.supervisor.model}>{swarmInfo.supervisor.model}</span>}
+                  <span className="mc-stat">{swarmInfo.supervisorState || curPhase}</span>
+                </div>
+              </div>
+            )}
+
+            {(subAgents || []).map((a) => {
+              const p = a.progress || {};
+              const expanded = expandedKey === a.key;
+              const roleClass = a.jobRole || a.tier || 'coder';
+              const elapsedMs = a.ms != null ? a.ms : (a.startedAt ? Math.max(0, now - a.startedAt) : 0);
+              return (
+                <button
+                  type="button"
+                  key={a.key}
+                  className={'mc-card ' + a.status + (a.role === 'supervisor' ? ' supervisor' : '')}
+                  onClick={() => setExpandedKey(expanded ? null : a.key)}
+                >
+                  <div className="mc-card-top">
+                    <span className={'mc-dot ' + a.status} />
+                    <span className="mc-card-name" title={a.name}>
+                      {a.name}{a.handle && a.handle !== a.name ? ` · @${a.handle}` : ''}
+                    </span>
+                    <span className={'mc-role ' + roleClass}>{a.jobRole || a.tier || 'worker'}</span>
+                  </div>
+                  <div className="mc-card-meta">
+                    {a.model && <span className="mc-model" title={a.model}>{a.model}</span>}
+                    {a.failover && (
+                      <span className="mc-failover" title={`Failover ${a.failover.from} → ${a.failover.to}: ${a.failover.reason || ''}`}>
+                        ⇣ failover{a.failover.count > 1 ? ' ×' + a.failover.count : ''}
+                      </span>
+                    )}
+                    <span className="mc-stat">
+                      {p.tools ? p.tools + 't' : ''}{p.tools && a.posts ? ' · ' : ''}{a.posts ? a.posts + 'p' : ''}
+                      {(p.tools || a.posts) && elapsedMs ? ' · ' : ''}
+                      {elapsedMs ? Math.round(elapsedMs / 1000) + 's' : ''}
+                    </span>
+                  </div>
+                  {p.currentTool && (a.status === 'running' || a.status === 'working' || a.status === 'waiting') && (
+                    <div className="mc-action">
+                      <Icon name="Wrench" size={11} />
+                      <span>{p.currentTool.name}{p.currentTool.arg ? ' ' + p.currentTool.arg : ''}</span>
+                    </div>
+                  )}
+                  {expanded && (
+                    <div className="mc-trace" onClick={(e) => e.stopPropagation()}>
+                      {(p.log || []).slice(-12).map((item, idx) => (
+                        <div key={idx} className={'mc-trace-item' + (item.isError ? ' err' : '')}>
+                          <span className="mc-trace-name">{item.name}</span>
+                          <span className="mc-trace-arg">{item.arg}</span>
+                        </div>
+                      ))}
+                      {p.last && <div className="mc-trace-snip">{String(p.last).slice(-280)}</div>}
+                      {!(p.log && p.log.length) && !p.last && <div className="muted" style={{ fontSize: 11 }}>Waiting for activity…</div>}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {postsCount > 0 && (
+            <div className="mc-board">
+              <div className="mc-board-head">
+                <span><Icon name="Chat" size={12} /> Shared Message Board ({postsCount})</span>
+                <button type="button" className="btn-mini" onClick={() => setShowBoard((v) => !v)}>
+                  {showBoard ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              {showBoard && (
+                <div className="mc-board-feed">
+                  {swarmBoard.map((m) => (
+                    <div key={m.seq} className="mc-post">
+                      <div className="mc-post-meta">
+                        <span>#{m.seq}</span>
+                        <span className="mc-post-from">@{m.from}</span>
+                        {m.to && <span className="mc-post-to">→ @{m.to}</span>}
+                        {m.channel && <span className="mc-post-chan">{m.channel}</span>}
+                      </div>
+                      <div className="mc-post-text">{renderBoardText(m.text)}</div>
+                    </div>
+                  ))}
+                  <div ref={boardEndRef} />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Run Log & Checkpoints (Replay Blueprint + Rewind) ----------
+function RunLogPanel({ convId }) {
+  const [tab, setTab] = useState('replay'); // 'replay' | 'checkpoints'
+  const [turns, setTurns] = useState([]);
+  const [turnIdx, setTurnIdx] = useState(0);
+  const [step, setStep] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [checkpoints, setCheckpoints] = useState([]);
+  const [rewindMsg, setRewindMsg] = useState('');
+
+  const loadLog = useCallback(async () => {
+    if (!convId || !window.autobot || !window.autobot.sessionLog) return;
+    try {
+      const r = await window.autobot.sessionLog(convId, { limit: 30 });
+      const list = (r && Array.isArray(r.turns)) ? r.turns.slice().reverse() : [];
+      setTurns(list);
+      setTurnIdx(0);
+      setStep(list[0] && list[0].events ? list[0].events.length : 0);
+      setPlaying(false);
+    } catch (_) { setTurns([]); }
+  }, [convId]);
+
+  const loadCps = useCallback(async () => {
+    if (!convId || !window.autobot || !window.autobot.listCheckpoints) return;
+    try {
+      const list = await window.autobot.listCheckpoints(convId);
+      setCheckpoints(Array.isArray(list) ? list.slice().reverse() : []);
+    } catch (_) { setCheckpoints([]); }
+  }, [convId]);
+
+  useEffect(() => { loadLog(); loadCps(); }, [loadLog, loadCps]);
+
+  const activeTurn = turns[turnIdx] || null;
+  const events = (activeTurn && activeTurn.events) || [];
+  useEffect(() => {
+    if (!playing) return undefined;
+    const t = setInterval(() => {
+      setStep((s) => {
+        if (s >= events.length) { setPlaying(false); return s; }
+        return s + 1;
+      });
+    }, 450);
+    return () => clearInterval(t);
+  }, [playing, events.length]);
+
+  const visible = events.slice(0, Math.max(1, step));
+  const doRewind = async (id) => {
+    if (!window.autobot || !window.autobot.rewind) return;
+    setRewindMsg('');
+    try {
+      const r = await window.autobot.rewind(convId, id);
+      const rest = (r && r.restored && r.restored.length) || 0;
+      const rem = (r && r.removed && r.removed.length) || 0;
+      setRewindMsg(`Rewound: restored ${rest} file${rest === 1 ? '' : 's'}, removed ${rem}.`);
+    } catch (e) { setRewindMsg('Rewind failed: ' + String((e && e.message) || e)); }
+  };
+
+  return (
+    <div className="rl-panel">
+      <div className="rl-tabs">
+        <button type="button" className={'rl-tab' + (tab === 'replay' ? ' on' : '')} onClick={() => setTab('replay')}>Replay ({turns.length})</button>
+        <button type="button" className={'rl-tab' + (tab === 'checkpoints' ? ' on' : '')} onClick={() => { setTab('checkpoints'); loadCps(); }}>Checkpoints ({checkpoints.length})</button>
+        <button type="button" className="btn-mini" style={{ marginLeft: 'auto' }} onClick={() => { loadLog(); loadCps(); }}>
+          <Icon name="Reload" size={12} /> Refresh
+        </button>
+      </div>
+
+      {tab === 'replay' && (
+        <>
+          {turns.length === 0 ? (
+            <div className="env-empty">No recorded runs yet for this conversation. Send a prompt to record an event-sourced trace.</div>
+          ) : (
+            <>
+              <div className="rl-controls">
+                <select
+                  className="rl-select"
+                  value={turnIdx}
+                  onChange={(e) => {
+                    const idx = Number(e.target.value) || 0;
+                    setTurnIdx(idx);
+                    setPlaying(false);
+                    setStep((turns[idx] && turns[idx].events && turns[idx].events.length) || 0);
+                  }}
+                >
+                  {turns.map((t, i) => (
+                    <option key={t.turnId || i} value={i}>
+                      {t.startedAt ? new Date(t.startedAt).toLocaleTimeString() : 'Turn'} · {t.events.length} events
+                    </option>
+                  ))}
+                </select>
+                <button type="button" className="btn-mini" onClick={() => { setPlaying(false); setStep((s) => Math.max(1, s - 1)); }}><Icon name="CaretLeft" size={12} /></button>
+                <button type="button" className="btn-mini" onClick={() => { if (step >= events.length) setStep(1); setPlaying((p) => !p); }}>
+                  <Icon name={playing ? 'Pause' : 'Play'} size={12} />
+                </button>
+                <button type="button" className="btn-mini" onClick={() => { setPlaying(false); setStep((s) => Math.min(events.length, s + 1)); }}><Icon name="CaretRight" size={12} /></button>
+              </div>
+              <div className="rl-scrubber">
+                <input type="range" min={1} max={Math.max(1, events.length)} value={Math.min(Math.max(1, step), Math.max(1, events.length))} onChange={(e) => { setPlaying(false); setStep(Number(e.target.value)); }} />
+                <span className="rl-step-count">{Math.min(step, events.length)} / {events.length}</span>
+              </div>
+              <div className="rl-timeline">
+                {visible.map((ev, i) => (
+                  <div key={i} className={'rl-ev' + (i === visible.length - 1 ? ' current' : '')}>
+                    <div className="rl-ev-head">
+                      <span className="rl-ev-time">+{((Number(ev.t) || 0) / 1000).toFixed(1)}s</span>
+                      <span className={'rl-ev-type ' + (ev.type || '')}>{ev.type}</span>
+                      {ev.subagent && <span className="mc-role coder">{ev.subagent}</span>}
+                      {ev.name && <b>{ev.name}</b>}
+                      {ev.phase && <b>{ev.phase}</b>}
+                    </div>
+                    {(ev.text || ev.reason || ev.message || ev.result || ev.args || ev.from) && (
+                      <div className="rl-ev-body">
+                        {ev.from ? `${ev.from} → ${ev.to}: ${ev.reason || ''}`
+                          : ev.text || ev.message || ev.result || JSON.stringify(ev.args)}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {tab === 'checkpoints' && (
+        <div className="rl-cp-list">
+          {rewindMsg && <div className="noticebar" style={{ borderRadius: 8, padding: '7px 10px' }}>{rewindMsg}</div>}
+          {checkpoints.length === 0 ? (
+            <div className="env-empty">No file checkpoints recorded yet for this conversation.</div>
+          ) : checkpoints.map((cp) => (
+            <div key={cp.id} className="rl-cp-card">
+              <div className="rl-cp-head">
+                <b>{cp.at ? new Date(cp.at).toLocaleString() : cp.id}</b>
+                <button type="button" className="btn-mini" onClick={() => doRewind(cp.id)}>
+                  <Icon name="ArrowCounterClockwise" size={12} /> Rewind here
+                </button>
+              </div>
+              <div className="rl-cp-files">
+                {(cp.files || []).slice(0, 6).map((f, j) => (
+                  <span key={j}>{f.existed ? 'restore ' : 'remove '}{String(f.path || '').split('/').slice(-2).join('/')}</span>
+                ))}
+                {(cp.files || []).length > 6 && <span>+{cp.files.length - 6} more</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- Chat view ----------
-function ChatView({ messages, live, thinking, subAgents, swarmInfo, planMode, copyBlock, applyBlock, bottomRef, convId, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen }) {
+function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, copyMessage, editMessage, deleteMessage, retryMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen }) {
   return (
     <div className="chat" onClick={(e) => { copyBlock(e); applyBlock(e); }}>
       {planMode && planMode.active && (
@@ -3026,6 +3456,14 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, planMode, co
           <div className="conv-toolbar-title">{conv.title || 'Untitled'}</div>
           <div className="conv-toolbar-right">
             <ExportMenu conv={conv} exportConv={exportConv} T={T} />
+            <button
+              type="button"
+              className={'icon-btn conv-env-btn' + (runLogOpen ? ' active' : '')}
+              title={runLogOpen ? 'Hide run log & rewind' : 'Run log & checkpoints'}
+              onClick={(e) => { e.stopPropagation(); if (onToggleRunLog) onToggleRunLog(); }}
+            >
+              <Icon name="Activity" size={15} />
+            </button>
             <button
               type="button"
               className={'icon-btn conv-env-btn' + (envOpen ? ' active' : '')}
@@ -3046,30 +3484,7 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, planMode, co
       )}
       {messages.map((m, i) => <Message key={m.id} m={m} convId={convId} idx={i} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} />)}
       {(subAgents.length > 0 || swarmInfo) && (
-        <div className="subagents">
-          {swarmInfo && swarmInfo.supervisor && (
-            <span className="subagent supervisor" title={'Supervisor: ' + (swarmInfo.supervisor.model || 'model')}>
-              <Icon name="Sparkles" size={12} /> supervisor{swarmInfo.supervisor.model ? ' · ' + swarmInfo.supervisor.model : ''}{swarmInfo.phase ? ' · ' + swarmInfo.phase : ''}
-            </span>
-          )}
-          {subAgents.map((a) => (
-            <span
-              key={a.key}
-              className={'subagent ' + a.status + (a.role === 'supervisor' ? ' supervisor' : '')}
-              title={[a.role, a.tier && a.tier + ' tier', a.model, a.ms != null && (a.ms / 1000).toFixed(1) + 's',
-                a.progress && a.progress.tools ? a.progress.tools + ' tool calls' : null,
-                a.progress && a.progress.last ? '\n' + String(a.progress.last).slice(-300) : null].filter(Boolean).join(' · ')}
-            >
-              <Icon name={a.status === 'running' ? 'Clock' : a.status === 'error' ? 'Warning' : a.status === 'queued' ? 'History' : 'Check'} size={12} />
-              {' '}{a.name}
-              {a.tier ? <em className="tier">{a.tier}</em> : null}
-              {a.model ? <em className="model">{a.model}</em> : null}
-              {a.progress && a.status === 'running' && a.progress.chars ? <em className="model prog">{a.progress.chars > 999 ? (a.progress.chars / 1000).toFixed(1) + 'k' : a.progress.chars}</em> : null}
-              {a.progress && a.status === 'running' && a.progress.tools ? <em className="model prog">{a.progress.tools} tools</em> : null}
-              {a.progress && a.status !== 'running' && a.progress.tools ? <em className="model">{a.progress.tools} tools</em> : null}
-            </span>
-          ))}
-        </div>
+        <MissionControl subAgents={subAgents} swarmInfo={swarmInfo} swarmBoard={swarmBoard} />
       )}
       {live && <div className="msg assistant">
         <div className="avatar avatar-assistant"><Logo size={20} /></div>
@@ -5971,8 +6386,8 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
               type="button"
               className={'swarm-pill' + (swarmEnabled ? ' active' : '')}
               title={swarmEnabled
-                ? 'Swarm ON — the model may assemble a team of frontier models (Kimi, DeepSeek, GLM, GPT, Example) when a task is big'
-                : 'Swarm OFF — click to allow a frontier-model team for big tasks (multi-agent Task/Agent still runs automatically)'}
+                ? 'Swarm ON — Planner coordinates parallel role-pooled workers across a shared message board with automatic failover'
+                : 'Swarm OFF — click to enable multi-model Swarm orchestration (multi-agent Task/Agent still runs automatically)'}
               aria-pressed={swarmEnabled}
               aria-label={'Swarm ' + (swarmEnabled ? 'on' : 'off')}
               onClick={() => setSwarmEnabled(!swarmEnabled)}
@@ -6063,7 +6478,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
         </div>
       </div>
 
-      <div className="composer">
+      <div className={'composer' + (streaming ? ' is-streaming' : '')}>
         <textarea ref={inputRef} rows={1} placeholder={T('composer.placeholder')} onKeyDown={onKey} onInput={(e) => setHasText(!!e.target.value.trim())} onPaste={onPasteFiles} />
         <div className="composer-foot">
           <div className="composer-actions">
@@ -7357,6 +7772,29 @@ function RolePoolsEditor({ orchestrator, saveOrch }) {
   const [drafts, setDrafts] = useState({});
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
+  const [health, setHealth] = useState(null);
+
+  useEffect(() => {
+    if (!pools.enabled || !window.autobot || !window.autobot.poolStatus) { setHealth(null); return undefined; }
+    let alive = true;
+    const poll = async () => {
+      try {
+        const res = await window.autobot.poolStatus();
+        if (alive && res) setHealth(res);
+      } catch (_) {}
+    };
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => { alive = false; clearInterval(id); };
+  }, [pools.enabled, orchestrator]);
+
+  const rowByModel = useMemo(() => {
+    const m = new Map();
+    for (const r of (health && health.rows) || []) {
+      if (r && r.model && !m.has(r.model)) m.set(r.model, r);
+    }
+    return m;
+  }, [health]);
 
   const savePools = (patch) => {
     const next = { enabled: !!pools.enabled, gateway: { baseURL: gateway.baseURL || '', apiKey: gateway.apiKey || '' }, roles: { ...roles }, ...pools, ...patch };
@@ -7460,6 +7898,25 @@ function RolePoolsEditor({ orchestrator, saveOrch }) {
                 onChange={(e) => { const v = e.target.value; setDrafts((d) => ({ ...d, [r.id]: v })); }}
                 onBlur={() => commitText(r.id)}
               />
+              {pools.enabled && (role.models || []).length > 0 && (
+                <div className="pools-health">
+                  {(role.models || []).map((entry, idx) => {
+                    const mid = typeof entry === 'string' ? entry.split('@')[0].trim() : entry.model;
+                    if (!mid) return null;
+                    const st = rowByModel.get(mid);
+                    const cls = st && st.dead ? 'dead' : (st && st.coolingMs > 0 ? 'cooling' : 'ok');
+                    const meta = st && st.dead ? 'dead'
+                      : (st && st.coolingMs > 0 ? `${Math.ceil(st.coolingMs / 1000)}s` : (st && st.inflight > 0 ? `${st.inflight} active` : 'ready'));
+                    return (
+                      <span key={mid + ':' + idx} className={'pools-chip ' + cls} title={st && st.deadWhy ? st.deadWhy : mid}>
+                        <span className="pools-chip-dot" />
+                        <span>{mid}</span>
+                        <span className="pools-chip-meta">{meta}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })}

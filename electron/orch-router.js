@@ -223,11 +223,16 @@ function freellmPreset(baseURL) {
         { model: 'glm-5.3', max: 1 },
         { model: 'nemotron-3-ultra-550b-a55b', max: 2 },
       ] },
+      // The user's order first; the tail is tool-capable NVIDIA / Kilo / Groq
+      // capacity so N parallel coders spread off ElectronHub's shared credits.
       coder: { label: ROLE_LABEL.coder, maxConcurrent: 4, spread: false, models: [
         { model: 'qwen3.8-flash', max: 1 },
         { model: 'qwen3-coder-30b-a3b-instruct', max: 1 },
         { model: 'mistral-devstral-2512', max: 1 },
-        { model: 'qwen3.8-27b', max: 4 },
+        { model: 'qwen3.8-27b', max: 3 },
+        { model: 'nemotron-3-ultra-550b-a55b', max: 2 },
+        { model: 'gpt-oss-120b', max: 3 },
+        { model: 'kilo-auto', max: 2 },
       ] },
       vision: { label: ROLE_LABEL.vision, maxConcurrent: 2, models: [
         { model: 'qwen3.8-flash', max: 1 },

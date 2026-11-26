@@ -16,6 +16,7 @@ const bg = require('./bg');
 const replSession = require('./repl');
 const { expandPath } = require('./paths');
 const sandbox = require('./sandbox');
+const customtools = require('./customtools');
 
 const MAX_OUTPUT = 120000; // chars
 
@@ -1329,6 +1330,11 @@ const toolDefinitions = [
   { name: 'create_skill', description: 'Create a new custom skill from Markdown content (the model writes a SKILL.md-style document with name/description frontmatter).', parameters: { type: 'object', properties: { name: { type: 'string' }, content: { type: 'string', description: 'Full Markdown skill document' } }, required: ['name', 'content'] } },
   { name: 'delete_skill', description: 'Delete a custom skill by name.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
 
+  // ---- Creator Mode: hot-swappable custom runtime tools (DeepSeek Harness parity) ----
+  { name: 'CreateCustomTool', description: 'Create and immediately register a reusable runtime tool (node, bash, or python3). The tool receives JSON args on stdin and in env TOOL_ARGS_JSON, and becomes callable on the very next step.', parameters: { type: 'object', properties: { name: { type: 'string', description: 'Lowercase identifier ^[a-z][a-z0-9_]{2,48}$' }, description: { type: 'string' }, runtime: { type: 'string', enum: ['node', 'bash', 'python3'] }, parameters: { type: 'object', description: 'JSON Schema object for tool arguments' }, script: { type: 'string', description: 'Executable source code' }, timeoutMs: { type: 'number' } }, required: ['name', 'description', 'script'] } },
+  { name: 'ListCustomTools', description: 'List all saved custom runtime tools.', parameters: { type: 'object', properties: {} } },
+  { name: 'DeleteCustomTool', description: 'Delete a saved custom runtime tool by name.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+
   // ---- Example-parity surface (see parity.js / parity-defs.js) ----
   ...require('./parity-defs'),
 ];
@@ -1547,7 +1553,7 @@ async function runToolInner(name, args, ctx) {
   // B8 Claude Code mode: require user approval before mutating tools.
   const MUTATING = new Set([
     'Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'JavaScript', 'REPL',
-    'KillShell', 'Jira', 'Linear', 'POST',
+    'KillShell', 'Jira', 'Linear', 'POST', 'CreateCustomTool', 'DeleteCustomTool',
     'mcp__workspace__write_file', 'mcp__workspace__edit_file',
     'mcp__terminal__run_in_terminal', 'mcp__terminal__open_terminal_tab',
   ]);
@@ -1684,6 +1690,39 @@ async function runToolInner(name, args, ctx) {
     const goal = args.goal || args.text || '';
     if (setGoal) setGoal(goal);
     return 'Goal updated.';
+  }
+  if (name === 'ToolSearch') {
+    const q = String((args && (args.query || args.q)) || '').toLowerCase();
+    const matches = toolDefinitions.filter(
+      (t) => !q || t.name.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q)
+    );
+    if (!matches.length) return '(no matching tools)';
+    const top = matches.slice(0, 10);
+    if (typeof ctx.activateTools === 'function') {
+      try { ctx.activateTools(top.map((t) => t.name)); } catch (_) {}
+    }
+    return 'TOOLS (now active and callable):\n' + top.map((t) => `- ${t.name}: ${t.description}\n  parameters: ${JSON.stringify(t.parameters || {})}`).join('\n');
+  }
+  if (name === 'CreateCustomTool') {
+    try {
+      const spec = customtools.saveTool(args, { toolDefinitions, executorsByTool, executors });
+      if (typeof ctx.activateTools === 'function') {
+        try { ctx.activateTools([spec.name]); } catch (_) {}
+      }
+      return `Created and activated custom tool "${spec.name}" (${spec.runtime}). You can call ${spec.name} directly on the next step.`;
+    } catch (e) {
+      return { content: 'Error creating custom tool: ' + e.message, isError: true };
+    }
+  }
+  if (name === 'ListCustomTools') {
+    const list = customtools.listTools();
+    return list.length
+      ? 'CUSTOM TOOLS:\n' + list.map((t) => `- ${t.name} [${t.runtime}]: ${t.description}`).join('\n')
+      : '(no custom tools registered)';
+  }
+  if (name === 'DeleteCustomTool') {
+    const r = customtools.deleteTool(args && args.name, { toolDefinitions, executorsByTool, executors });
+    return r.ok ? (r.deleted ? `Deleted custom tool "${r.name}".` : `No custom tool "${r.name}" found.`) : { content: 'Error: ' + r.error, isError: true };
   }
   if (name === 'Artifact') {
     if (!createArtifact) return 'Artifact creation unavailable.';
@@ -1836,13 +1875,16 @@ async function runToolInner(name, args, ctx) {
     }
     if (FILE_TOOLS.has(name) || FILE_TOOLS.has(execName)) normalizeFileArgs(finalArgs);
     if (!finalArgs.cwd && ctx.cwd) finalArgs.cwd = ctx.cwd;
-    const content = await withTimeout(fn(finalArgs, { signal: ctx.signal }), toolTimeoutMs(name, finalArgs), name);
-    if (content && typeof content === 'object' && content.isError) return content;
+    const content = await withTimeout(fn(finalArgs, { signal: ctx.signal, cwd: finalArgs.cwd }), toolTimeoutMs(name, finalArgs), name);
+    if (content && typeof content === 'object' && (content.isError || typeof content.content === 'string')) return content;
     return { content: String(content) };
   } catch (e) {
     if (ctx.signal && ctx.signal.aborted) throw e;
     return { content: 'Tool error: ' + (e && e.message ? e.message : String(e)), isError: true };
   }
 }
+
+// Load persisted custom runtime tools (Creator Mode) at startup.
+try { customtools.registerAll(toolDefinitions, executorsByTool, executors); } catch (_) {}
 
 module.exports = { executors, toolDefinitions, runTool, executorsByTool, SLASH_COMMANDS, toolTimeoutMs, withTimeout, applyEdit, globToRegExp, expandBraces, formatNumbered };

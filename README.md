@@ -121,6 +121,30 @@ TaskStop, ListAgents, SendUserMessage, SetGoal, ToolSearch, Artifact, Jira, Line
 `mcp__memory__*`, `mcp__skills__*`, `mcp__secrets__*`) and any connected MCP server's
 tools (namespaced `mcp__<server>__<tool>`).
 
+### 🧭 Role pools (job-based routing for free gateways)
+
+When the session provider is the FreeLLMAPI router, every job gets its own
+ordered model pool that fails over **downward** (Settings → Role pools →
+*Load FreeLLMAPI preset*; stored as `pools` in `~/.autobot/orchestrator.json`):
+
+| Job | Used by | Default pool (`model @maxConcurrent`) |
+|---|---|---|
+| Planner / Reasoner | swarm supervisor (plan + read-only review), `opus` agents | `gpt-5.6-luna @1` → `glm-5.3 @1` → `nemotron-3-ultra-550b-a55b @2` |
+| Implementer / Coder | main turn, swarm workers, `Task` sub-agents (N in parallel) | `qwen3.8-flash @1` → `qwen3-coder-30b-a3b-instruct @1` → `mistral-devstral-2512 @1` → `qwen3.8-27b @3` → `nemotron-3-ultra-550b-a55b @2` → `gpt-oss-120b @3` → `kilo-auto @2` |
+| Vision | turns whose last message carries images | `qwen3.8-flash` → `qwen3.8-27b` → `glm-4.6v-flash` → `gemini-3.8-flash` |
+| Fast | `small` tier, `haiku`/Explore agents | `qwen3.8-27b` → `gpt-oss-120b` → `glm-4.7-flash` → `kilo-auto` |
+| Long context | history larger than the head model's window | `gpt-5.6-luna` → `qwen3.8-flash` → `minimax-m3` → `deepseek-v4-flash` |
+
+`electron/provider-gate.js` is shared by every agent in the process: a row that
+answers 429 is cooled for everyone until the router's `retryAtMs` / "reset ~Ns",
+a row that 404s or "lacks tool-calling" is skipped for the session, and
+`@maxConcurrent` makes parallel workers spread down the pool instead of queuing
+on ElectronHub's shared credits. Workers and sub-agents advertise a lean coding
+tool surface (~2k tokens instead of ~15k for all 141 tools — the rest stay
+callable through `ToolSearch`), which keeps Groq's per-minute token budget
+usable. Subscription sessions (Claude / ChatGPT / Gemini) ignore pools and use
+the classic orchestrator list.
+
 ### 🔄 Orchestrator Mode (multi-key failover)
 
 Add **100+ API keys** in **⚙️ Settings → Orchestrator Mode** and toggle it on. When a

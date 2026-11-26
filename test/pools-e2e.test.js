@@ -182,6 +182,17 @@ const lastRole = (b) => { const m = (b.messages || [])[b.messages.length - 1]; r
     assert.ok(outs.some((o) => /code-b/.test(o.content)));
   });
 
+  await test('a row that "lacks tool-calling" is remembered and skipped for tool requests', async () => {
+    calls.length = 0;
+    behavior['notools'] = () => ({ status: 429, json: { error: { message: 'All models exhausted: 1 route checked (1 model lacks tool-calling).' } } });
+    behavior['withtools'] = () => ({ text: 'tooled' });
+    const list = ['notools', 'withtools'].map((model) => llm.normalizeProvider({ baseURL: BASE, model, apiKey: 'k' }));
+    const tools = [{ type: 'function', function: { name: 'Read', parameters: { type: 'object', properties: {} } } }];
+    for (let i = 0; i < 3; i++) await llm.chatWithFailover({ list, getIndex: () => 0, getHome: () => 0, setIndex: () => {}, tools, messages: [{ role: 'user', content: 'x' }] });
+    assert.ok(gate.isDead(list[0]));
+    assert.strictEqual(calls.filter((c) => c.model === 'notools').length, 1, 'asked once, then skipped');
+  });
+
   console.log('Parsing:');
   await test('native-mode text fallback: <tool_call>, <function=…><parameter=…>, bare JSON; json fences ignored', () => {
     const p = llm.parseTextToolCalls;

@@ -128,6 +128,11 @@ contextBridge.exposeInMainWorld('autobot', {
   setOrchestrator: (patch) => ipcRenderer.invoke('autobot:setOrchestrator', patch),
   // FreeLLMAPI role-pool preset ({ enabled, gateway, roles }) for Settings → Role pools.
   poolsPreset: () => ipcRenderer.invoke('autobot:poolsPreset'),
+  poolStatus: () => ipcRenderer.invoke('autobot:poolStatus'),
+  sessionLog: (convId, opts) => ipcRenderer.invoke('autobot:sessionLog', convId, opts),
+  customToolList: () => ipcRenderer.invoke('autobot:customToolList'),
+  customToolSave: (tool) => ipcRenderer.invoke('autobot:customToolSave', tool),
+  customToolDelete: (name) => ipcRenderer.invoke('autobot:customToolDelete', name),
   getFeatures: () => ipcRenderer.invoke('autobot:getFeatures'),
   setFeatures: (patch) => ipcRenderer.invoke('autobot:setFeatures', patch),
   getDefaultCwd: (convId, title) => ipcRenderer.invoke('autobot:getDefaultCwd', convId, title),

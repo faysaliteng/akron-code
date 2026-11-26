@@ -21,6 +21,7 @@ const PLAN_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'ListDir', 'TodoWrite'
 const REVIEW_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'ListDir', 'Bash', 'TodoWrite']);
 const MAX_CONCURRENCY = 8;
 const MAX_ROUNDS_PER_MEMBER = 3;
+const MAX_DYNAMIC_WORKERS = 6;
 
 // ---------- tiers ----------
 
@@ -282,6 +283,10 @@ function workerPrompt(goal, task, board) {
   once near the start so you do not duplicate another worker's work.
 - swarm_wait({since}) sleeps until a new message arrives. Use it only when you
   are blocked on another worker; never poll it in a loop.
+- swarm_add_worker({name,title,prompt,role}) spawns a helper worker onto the
+  live board for an independent piece of work (it reports back to you).
+- swarm_kill_worker({name,reason}) stops a helper you spawned.
+- swarm_switch_model({model,role}) switches your model (or a helper's) if needed.
 - @name in a message wakes that member. Ask a specific member by name when you
   need a decision, not the whole board.
 You are not the supervisor: do not try to manage other agents.`
@@ -322,7 +327,9 @@ say so explicitly in the post.`;
 // thing is unit-testable with a fake runAgent.
 const BOARD_LIMIT = 4000;
 
-function createBoard() {
+function createBoard(hooks = {}) {
+  const onPost = typeof hooks.onPost === 'function' ? hooks.onPost : null;
+  const onMember = typeof hooks.onMember === 'function' ? hooks.onMember : null;
   const messages = [];
   const members = new Map();
   let seq = 0;
@@ -349,6 +356,7 @@ function createBoard() {
       messages.push(msg);
       if (messages.length > BOARD_LIMIT) messages.splice(0, messages.length - BOARD_LIMIT);
       notify();
+      if (onPost) { try { onPost({ ...msg }); } catch (_) {} }
       return msg;
     },
     read({ since = 0, channel = null, limit = 200, me = null } = {}) {
@@ -370,8 +378,12 @@ function createBoard() {
       const id = String(name || '');
       if (!id) return null;
       const cur = members.get(id) || { name: id, state: 'idle', posts: 0, lastSeq: 0 };
+      const before = cur.state + '|' + cur.posts + '|' + cur.model;
       Object.assign(cur, patch, { at: Date.now() });
       members.set(id, cur);
+      if (onMember && before !== cur.state + '|' + cur.posts + '|' + cur.model) {
+        try { onMember({ name: cur.name, state: cur.state, role: cur.role, tier: cur.tier, model: cur.model, posts: cur.posts || 0 }); } catch (_) {}
+      }
       return cur;
     },
     member(name) { return members.get(String(name || '')) || null; },
@@ -457,18 +469,26 @@ function boardTools(board, me, opts = {}) {
     });
 
   add('swarm_wait',
-    'Park until a new board message arrives (or `timeout_ms` elapses). Use only when blocked on another worker; never poll it in a loop.',
+    'Park until a new board message arrives (or `timeout_ms` elapses). Releases your worker slot while waiting so blocked work never deadlocks.',
     { type: 'object', properties: { since: { type: 'number', description: 'Last seq you have seen.' }, mentions_only: { type: 'boolean', description: 'Only wake for messages addressed to you.' }, timeout_ms: { type: 'number' } } },
     async (a = {}) => {
       const since = a.since == null ? lastSeq : Number(a.since);
       board.setMember(me, { state: 'waiting' });
-      const res = await board.wait({
-        me,
-        since,
-        mentionsOnly: !!a.mentions_only,
-        timeoutMs: a.timeout_ms || 20000,
-        signal: opts.signal,
-      });
+      // Release the concurrency slot while parked so unstarted or helper
+      // workers can run and actually produce the message we are waiting on.
+      if (typeof opts.onWaitStart === 'function') { try { await opts.onWaitStart(); } catch (_) {} }
+      let res;
+      try {
+        res = await board.wait({
+          me,
+          since,
+          mentionsOnly: !!a.mentions_only,
+          timeoutMs: a.timeout_ms || 20000,
+          signal: opts.signal,
+        });
+      } finally {
+        if (typeof opts.onWaitEnd === 'function') { try { await opts.onWaitEnd(); } catch (_) {} }
+      }
       board.setMember(me, { state: 'working' });
       if (!res.messages.length) return res.aborted ? 'board: wait aborted' : 'board: no new messages (timeout) — continue your own work';
       const hi = res.messages[res.messages.length - 1].seq;
@@ -481,6 +501,25 @@ function boardTools(board, me, opts = {}) {
     'List swarm members and their last known state.',
     { type: 'object', properties: {} },
     () => board.status().map((m) => `${m.name}: ${m.state}${m.posts ? ` (${m.posts} posts)` : ''}`).join('\n') || 'board: no members');
+
+  if (typeof opts.onAddWorker === 'function') {
+    add('swarm_add_worker',
+      'Spawn a helper worker onto this swarm for a sub-piece of work. Posts its brief on the board and runs it concurrently.',
+      { type: 'object', properties: { name: { type: 'string', description: 'Short lowercase handle (e.g. helper-tests)' }, title: { type: 'string' }, prompt: { type: 'string' }, role: { type: 'string', description: 'coder | fast | vision | planner' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, model: { type: 'string' }, owns: { type: 'array', items: { type: 'string' } } }, required: ['prompt'] },
+      async (a = {}) => opts.onAddWorker(me, a));
+  }
+  if (typeof opts.onKillWorker === 'function') {
+    add('swarm_kill_worker',
+      'Stop a helper worker you added (or any worker if you are supervisor).',
+      { type: 'object', properties: { name: { type: 'string' }, reason: { type: 'string' } }, required: ['name'] },
+      async (a = {}) => opts.onKillWorker(me, a));
+  }
+  if (typeof opts.onSwitchModel === 'function') {
+    add('swarm_switch_model',
+      'Switch your own model/role (or a helper you added) for subsequent steps/rounds.',
+      { type: 'object', properties: { name: { type: 'string', description: 'Member handle (defaults to yourself)' }, model: { type: 'string' }, role: { type: 'string' } } },
+      async (a = {}) => opts.onSwitchModel(me, a));
+  }
 
   const byName = new Map(tools.map((t) => [t.name, t.run]));
   return {
@@ -640,13 +679,51 @@ async function swarm(goal, opts = {}) {
   });
 
   // ---- 2. Dispatch ----
-  const board = createBoard();
-  board.setMember('supervisor', { state: 'planning', role: 'supervisor' });
+  // Every post and member state change is streamed to the UI live, so the
+  // Mission Control panel shows the board as it happens (Antigravity's feed).
+  const board = createBoard({
+    onPost: (msg) => emit({ type: 'swarm', phase: 'board', msg }),
+    onMember: (member) => emit({ type: 'swarm', phase: 'member', member }),
+  });
+  board.setMember('supervisor', { state: 'planning', role: 'supervisor', model: supervisor.model });
   const poolCap = poolOrch ? (router.roleLimit(poolOrch, 'coder') || MAX_CONCURRENCY) : MAX_CONCURRENCY;
   const limit = Math.max(1, Math.min(Number(opts.concurrency) || 4, poolCap, MAX_CONCURRENCY));
   const results = new Array(tasks.length);
   const rounds = new Map();
-  let cursor = 0;
+  const workerControllers = new Map(); // workerName -> AbortController
+  const taskByWorker = new Map();
+  const dynamicPromises = [];
+  let dynamicCount = 0;
+
+  // Concurrency semaphore so a worker parked in `swarm_wait` yields its slot
+  // and lets unstarted or dynamically spawned helpers run without deadlocking.
+  let activeSlots = 0;
+  const slotWaiters = [];
+  const acquireSlot = (sig) => {
+    if (sig && sig.aborted) return Promise.reject(new Error('aborted'));
+    if (activeSlots < limit) { activeSlots++; return Promise.resolve(); }
+    return new Promise((resolve, reject) => {
+      const w = {
+        resolve: () => {
+          if (sig) sig.removeEventListener('abort', onAb);
+          activeSlots++;
+          resolve();
+        },
+      };
+      const onAb = () => {
+        const idx = slotWaiters.indexOf(w);
+        if (idx >= 0) slotWaiters.splice(idx, 1);
+        reject(new Error('aborted'));
+      };
+      if (sig) sig.addEventListener('abort', onAb, { once: true });
+      slotWaiters.push(w);
+    });
+  };
+  const releaseSlot = () => {
+    activeSlots = Math.max(0, activeSlots - 1);
+    const next = slotWaiters.shift();
+    if (next) next.resolve();
+  };
 
   const usedNames = new Set(['supervisor']);
   const memberNameFor = (task) => {
@@ -660,29 +737,145 @@ async function swarm(goal, opts = {}) {
     task.__worker = name;
     return name;
   };
-  tasks.forEach((t) => board.setMember(memberNameFor(t), { state: 'pending', role: 'worker', tier: t.tier, model: t.model }));
+  tasks.forEach((t) => {
+    const wn = memberNameFor(t);
+    taskByWorker.set(wn, t);
+    board.setMember(wn, { state: 'pending', role: 'worker', tier: t.tier, model: t.model });
+  });
+
+  const onAddWorker = async (caller, a = {}) => {
+    if (opts.signal && opts.signal.aborted) return 'Swarm stopped.';
+    if (dynamicCount >= MAX_DYNAMIC_WORKERS) return `Helper limit reached (${MAX_DYNAMIC_WORKERS} helpers max per swarm).`;
+    const prompt = String(a.prompt || a.brief || '').trim();
+    if (!prompt) return 'Error: prompt required for swarm_add_worker.';
+    dynamicCount++;
+    const idx = tasks.length;
+    const roleKey = poolOrch ? (router.normalizeRole(a.role) || router.tierToRole(a.tier) || 'coder') : normalizeTier(a.tier);
+    const k = perRole.get(roleKey) || 0;
+    perRole.set(roleKey, k + 1);
+    const chain = chainFor(a.tier || 'heavy', k, a.role, a.model);
+    const provider = chain ? chain.providers[0] : (opts.provider || null);
+    const title = String(a.title || a.name || `helper-${dynamicCount}`).slice(0, 120);
+    const newTask = {
+      id: 'h' + dynamicCount,
+      title,
+      prompt,
+      tier: provider && provider.tier ? provider.tier : normalizeTier(a.tier, 'heavy'),
+      role: a.role ? router.normalizeRole(a.role) : null,
+      jobRole: poolOrch ? roleKey : null,
+      model: provider ? provider.model : null,
+      owns: Array.isArray(a.owns) ? a.owns.map(String).slice(0, 20) : [],
+      addedBy: caller,
+      index: idx,
+      provider,
+      chain,
+      __worker: a.name ? (() => {
+        const base = String(a.name).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'helper';
+        let nm = base; let n = 2;
+        while (usedNames.has(nm)) nm = base + '-' + (n++);
+        usedNames.add(nm);
+        return nm;
+      })() : undefined,
+    };
+    const handle = memberNameFor(newTask);
+    tasks.push(newTask);
+    results.push(null);
+    taskByWorker.set(handle, newTask);
+    board.setMember(handle, { state: 'pending', role: 'worker', tier: newTask.tier, model: newTask.model });
+    board.post({ from: caller, to: handle, channel: String(newTask.id), text: `Assigned @${handle} (${title}): ${prompt.slice(0, 240)}` });
+    const jobP = (async () => {
+      await acquireSlot(opts.signal);
+      try { results[idx] = await runOne(newTask, 1, `Spawned by @${caller}. Report back to @${caller} on the board when done.`); }
+      finally { releaseSlot(); }
+    })().catch(() => {});
+    dynamicPromises.push(jobP);
+    return `Spawned helper @${handle} (${newTask.id}, ${newTask.model || 'model'}). It is queued/running on the board.`;
+  };
+
+  const onKillWorker = (caller, a = {}) => {
+    const target = String(a.name || '').replace(/^@+/, '').trim();
+    if (!target || !taskByWorker.has(target)) return `No worker named "${target}".`;
+    const t = taskByWorker.get(target);
+    if (caller !== 'supervisor' && t.addedBy !== caller) {
+      return `Permission denied: @${caller} can only kill helpers it spawned (not @${target}).`;
+    }
+    t.__killed = true;
+    const wc = workerControllers.get(target);
+    if (wc) { try { wc.abort(); } catch (_) {} }
+    board.setMember(target, { state: 'killed', lastSeen: Date.now() });
+    board.post({ from: caller, to: target, channel: 'general', text: `Killed @${target}${a.reason ? ': ' + a.reason : ''}` });
+    return `Killed worker @${target}.`;
+  };
+
+  const onSwitchModel = (caller, a = {}) => {
+    const target = String(a.name || caller).replace(/^@+/, '').trim();
+    const t = taskByWorker.get(target);
+    if (!t) return `No worker named "${target}".`;
+    if (caller !== 'supervisor' && target !== caller && t.addedBy !== caller) {
+      return `Permission denied: @${caller} cannot switch @${target}'s model.`;
+    }
+    let nextChain = chainFor(t.tier, t.index || 0, a.role || t.jobRole, a.model || null);
+    if (a.model && (!nextChain || !nextChain.providers || !nextChain.providers.length || nextChain.providers[0].model !== a.model)) {
+      const base = t.provider || opts.provider || supervisor;
+      const pinned = { ...base, model: String(a.model), id: 'pinned:' + a.model };
+      const tail = (nextChain && nextChain.providers ? nextChain.providers : []).filter((p) => p && p.model !== pinned.model);
+      nextChain = { enabled: true, providers: [pinned].concat(tail), activeIndex: 0, role: 'pinned' };
+    }
+    if (!nextChain || !nextChain.providers || !nextChain.providers.length) {
+      return `No matching model/role found for "${a.model || a.role}".`;
+    }
+    t.chain = nextChain;
+    t.provider = nextChain.providers[0];
+    t.model = t.provider.model;
+    if (a.role) t.jobRole = router.normalizeRole(a.role) || t.jobRole;
+    board.setMember(target, { model: t.model });
+    return `Switched @${target} to ${t.model}.`;
+  };
 
   const runOne = async (task, round = 1, briefing = '') => {
     const name = task.title || task.id;
     const agentId = String(task.id);
     const p = task.provider || opts.provider;
     const workerName = memberNameFor(task);
+    if (task.__killed) {
+      return { id: agentId, name: workerName, title: task.title, tier: task.tier, role: task.jobRole, model: p ? p.model : null, baseURL: p ? p.baseURL : null, status: 'killed', ms: 0, result: '(killed)', round };
+    }
     rounds.set(workerName, round);
     const channel = String(task.channel || task.id || 'general');
-    const bus = boardTools(board, workerName, { channel, signal: opts.signal });
+    const workerAc = new AbortController();
+    const onParentAbort = () => workerAc.abort();
+    if (opts.signal) {
+      if (opts.signal.aborted) workerAc.abort();
+      else opts.signal.addEventListener('abort', onParentAbort, { once: true });
+    }
+    workerControllers.set(workerName, workerAc);
+    let isParked = false;
+    const bus = boardTools(board, workerName, {
+      channel,
+      signal: workerAc.signal,
+      onWaitStart: () => { if (!isParked) { isParked = true; releaseSlot(); } },
+      onWaitEnd: async () => {
+        if (!isParked) return;
+        try { await acquireSlot(workerAc.signal); isParked = false; }
+        catch (e) { isParked = false; activeSlots++; throw e; }
+      },
+      onAddWorker,
+      onKillWorker,
+      onSwitchModel,
+    });
     board.setMember(workerName, { state: 'working', role: 'worker', tier: task.tier, model: p ? p.model : null });
     const t0 = Date.now();
     let servedBy = p ? p.model : null;
     emit({ type: 'subagent', id: agentId, name, status: 'running', role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, round });
     try {
-      if (opts.signal && opts.signal.aborted) throw new Error('aborted');
+      if (workerAc.signal.aborted) throw new Error('aborted');
       const out = await runAgent({
         provider: p,
         orchestrator: task.chain || null,
         messages: [{ role: 'user', content: workerPrompt(String(goal), task, { me: workerName, channel }) + (briefing ? '\n\n' + briefing : '') }],
         maxSteps: opts.maxSteps || 0,
         cwd: opts.cwd,
-        signal: opts.signal,
+        signal: workerAc.signal,
         useMemory: opts.useMemory,
         extraTools: bus.defs,
         localTools: bus.localTools,
@@ -701,29 +894,35 @@ async function swarm(goal, opts = {}) {
         baseURL: p ? p.baseURL : null, status: 'done', ms, result, round };
     } catch (e) {
       const ms = Date.now() - t0;
-      const aborted = (opts.signal && opts.signal.aborted) || /abort/i.test(String(e && e.message));
-      board.setMember(workerName, { state: aborted ? 'stopped' : 'error', lastSeen: Date.now() });
-      emit({ type: 'subagent', id: agentId, name, status: aborted ? 'stopped' : 'error', role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, ms, round, error: String((e && e.message) || e).slice(0, 300) });
+      const killed = !!task.__killed;
+      const aborted = !killed && ((workerAc.signal.aborted) || /abort/i.test(String(e && e.message)));
+      const st = killed ? 'killed' : (aborted ? 'stopped' : 'error');
+      board.setMember(workerName, { state: st, lastSeen: Date.now() });
+      emit({ type: 'subagent', id: agentId, name, status: st, role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, ms, round, error: String((e && e.message) || e).slice(0, 300) });
       return { id: agentId, name: workerName, title: task.title, tier: task.tier, role: task.jobRole, model: servedBy,
-        baseURL: p ? p.baseURL : null, status: aborted ? 'stopped' : 'error', ms, result: 'Error: ' + (e && e.message), round };
+        baseURL: p ? p.baseURL : null, status: st, ms, result: killed ? '(killed)' : ('Error: ' + (e && e.message)), round };
+    } finally {
+      workerControllers.delete(workerName);
+      if (opts.signal) opts.signal.removeEventListener('abort', onParentAbort);
     }
   };
 
   const pool = async (jobs, fn) => {
-    let c = 0;
-    const worker = async () => {
-      while (c < jobs.length) {
-        if (opts.signal && opts.signal.aborted) return;
-        const j = jobs[c++];
-        await fn(j);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(limit, jobs.length) }, worker));
+    await Promise.all(jobs.map(async (j) => {
+      if (opts.signal && opts.signal.aborted) return;
+      try { await acquireSlot(opts.signal); } catch (_) { return; }
+      if (opts.signal && opts.signal.aborted) { releaseSlot(); return; }
+      try { await fn(j); } finally { releaseSlot(); }
+    }));
   };
 
   await pool(tasks.map((t, i) => i), async (i) => { results[i] = await runOne(tasks[i]); });
+  while (dynamicPromises.length) {
+    const batch = dynamicPromises.splice(0, dynamicPromises.length);
+    await Promise.all(batch);
+  }
   for (let i = 0; i < tasks.length; i++) {
-    if (!results[i]) results[i] = { id: String(tasks[i].id), name: memberNameFor(tasks[i]), title: tasks[i].title, tier: tasks[i].tier, model: tasks[i].model, status: 'stopped', ms: 0, result: '(not started — the swarm was stopped)', round: 0 };
+    if (!results[i]) results[i] = { id: String(tasks[i].id), name: memberNameFor(tasks[i]), title: tasks[i].title, tier: tasks[i].tier, model: tasks[i].model, status: tasks[i].__killed ? 'killed' : 'stopped', ms: 0, result: '(not started — the swarm was stopped)', round: 0 };
   }
 
   // ---- 2b. Stall monitor + mention wake-ups (event waves) ----
@@ -745,7 +944,7 @@ async function swarm(goal, opts = {}) {
         if (redo.has(who)) continue;
         if ((rounds.get(who) || 1) >= MAX_ROUNDS_PER_MEMBER) continue;
         const r = results[byName.get(who)];
-        if (!r || r.status === 'stopped') continue;
+        if (!r || r.status === 'stopped' || r.status === 'killed' || (tasks[byName.get(who)] && tasks[byName.get(who)].__killed)) continue;
         const since = Math.max(delivered.get(who) || 0, (board.member(who) || {}).readSeq || 0);
         const msgs = board.addressedTo(who, { since }).filter((m) => m.from !== who);
         if (msgs.length) redo.set(who, { reason: 'mention', msgs });
@@ -773,6 +972,10 @@ async function swarm(goal, opts = {}) {
         }
       });
     }
+  }
+  while (dynamicPromises.length) {
+    const batch = dynamicPromises.splice(0, dynamicPromises.length);
+    await Promise.all(batch);
   }
 
   const done = results.filter(Boolean);

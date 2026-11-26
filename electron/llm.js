@@ -1,6 +1,8 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { execFileSync } = require('child_process');
 const { toolDefinitions, runTool } = require('./tools');
 const swarm = require('./swarm');
 const hooks = require('./hooks');
@@ -10,6 +12,16 @@ const providertransport = require('./providertransport');
 const mcpSchema = require('./mcp-schema');
 const gate = require('./provider-gate');
 const router = require('./orch-router');
+
+const LEAN_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'Bash', 'LS', 'TodoWrite', 'WebFetch', 'WebSearch', 'ToolSearch']);
+const STANDARD_TOOLS = new Set([
+  'Bash', 'Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'LS', 'TodoWrite', 'WebFetch', 'WebSearch',
+  'Task', 'Agent', 'TaskOutput', 'TaskStop', 'Swarm', 'Workflow', 'ToolSearch', 'find_mcp_tools', 'Skill',
+  'TeamCreate', 'TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate', 'SendMessage',
+  'CreateCustomTool', 'ListCustomTools', 'DeleteCustomTool',
+  'AskUserQuestion', 'ExitPlanMode', 'KillShell', 'Artifact', 'Cd',
+  'browser_open', 'browser_navigate', 'browser_read', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_screenshot',
+]);
 
 // Sub-agents may delegate one more level (Antigravity helpers); deeper
 // recursion is refused so a confused model cannot fork itself forever.
@@ -928,7 +940,13 @@ async function chatWithFailover(opts) {
               gate.markDead(p, 'allowance spent', 60 * 60000);
               continue;
             }
-            gate.rateLimited(p, e.retryAfterMs);
+            // A router saying this model cannot call tools at all (FreeLLMAPI:
+            // "1 model lacks tool-calling") will say so on every tool request —
+            // remember it for the session instead of re-asking on each failover.
+            const noTools = tools && tools.length && /lacks tool[- ]calling|does not support (?:tools|tool calling|function calling)|tool(?:s| calling) (?:is |are )?not supported/i.test(String(e && e.message))
+              && !/rate-limited or on cooldown/i.test(String(e && e.message));
+            if (noTools) gate.markDead(p, 'model cannot call tools', 60 * 60000);
+            else gate.rateLimited(p, e.retryAfterMs);
             rateLimited = true;
             if (nx) {
               emit({ type: 'orchestrator', from: label(p), to: label(nx), reason: humanizeLLMError(e).slice(0, 200) });
@@ -1209,8 +1227,13 @@ function sanitizeHistory(messages, opts = {}) {
       }
       continue;
     }
-    // user (or anything unknown)
-    out.push({ role: 'user', content: str(m.content) });
+    // user (or anything unknown): preserve multimodal content arrays (image_url / image) intact.
+    if (Array.isArray(m.content)) {
+      const parts = m.content.filter((p) => p && typeof p === 'object' && (p.type === 'text' || p.type === 'image_url' || p.type === 'image' || typeof p.text === 'string'));
+      out.push({ role: 'user', content: parts.length ? parts : str(m.content) });
+    } else {
+      out.push({ role: 'user', content: str(m.content) });
+    }
     lastAssistantCalls = null;
   }
 
@@ -1277,7 +1300,7 @@ function sanitizeHistory(messages, opts = {}) {
     if (total > maxChars) {
       const trimOrder = out
         .map((m) => m)
-        .filter((m) => m.role !== 'system')
+        .filter((m) => m.role !== 'system' && typeof m.content === 'string')
         .sort((a, b) => str(b.content).length - str(a.content).length);
       for (const m of trimOrder) {
         if (total <= maxChars) break;
@@ -1497,8 +1520,15 @@ async function runAgent(opts) {
     return false;
   };
   let tools = toolDefinitions.filter((t) => isAllowed(t.name)).map((t) => ({ type: 'function', function: t }));
+  const allAllowedDefs = new Map();
+  for (const t of tools) allAllowedDefs.set(t.function.name, t.function);
   let extraToolsDeferred = false;
   const extra = opts.extraTools || [];
+  for (const t of extra) {
+    if (t && t.name && isAllowed(t.name)) {
+      allAllowedDefs.set(t.name, { name: t.name, description: t.description, parameters: t.inputSchema || t.parameters });
+    }
+  }
   // MCP servers publish verbose schemas; a big one (REA: 263 tools, ≈384 kB of
   // JSON) would cost ≈113 k prompt tokens on every step. Compact the schemas,
   // and when even the compacted surface is still too fat, defer it behind a
@@ -1552,6 +1582,23 @@ async function runAgent(opts) {
   const cap = toolCapFor(provider);
   if (cap) tools = trimToolsTo(tools, cap).tools;
 
+  // Tool profiles. 141 schemas are ~15k prompt tokens on EVERY request — more
+  // than a whole minute of a free tier's token budget (Groq TPM), so a free
+  // gateway rate-limits the first call of every worker. Like Claude Code's
+  // deferred tools, advertise a focused surface and keep the rest callable by
+  // name / discoverable through ToolSearch:
+  //   lean     — workers & sub-agents on a pool: the coding core (~2k tokens)
+  //   standard — the main agent on a pool: core + team/plan tools
+  //   full     — everything (subscription providers, explicit opt-in)
+  const profile = opts.toolProfile || (poolMode ? (depth >= 1 ? 'lean' : 'standard') : 'full');
+  if (profile === 'lean' || profile === 'standard') {
+    const keep = profile === 'lean' ? LEAN_TOOLS : STANDARD_TOOLS;
+    tools = tools.filter((t) => {
+      const nm = t.function && t.function.name;
+      return keep.has(nm) || isLocal(nm) || (toolAllow && toolAllow.has(nm));
+    });
+  }
+
   // Always ensure the core system prompt is the first message. The renderer may
   // send its own system message (style / project / web-search directives); that
   // stays as a second system message, but the core Akron Bot guidance (tool use,
@@ -1567,56 +1614,26 @@ async function runAgent(opts) {
     messages.unshift(corePrompt);
   }
 
-  // Fold the renderer's extra system messages (style / project / reasoning
-  // directives) INTO the core prompt. Some gateways reject or silently ignore a
-  // second system message, which made "be a coding agent" guidance disappear on
-  // exactly the models that needed it most.
+  // Collect extra system directives sent by the renderer and splice them out so
+  // everything is merged into messages[0] in strict static → semi-static → dynamic
+  // order for KV prefix-cache stability (DeepSeek / Anthropic / OpenAI).
+  const foldedDirectives = [];
   for (let i = messages.length - 1; i >= 1; i--) {
     if (messages[i].role === 'system') {
       const extra = String(messages[i].content || '').trim();
-      if (extra) messages[0].content += '\n\n' + extra;
+      if (extra) foldedDirectives.unshift(extra);
       messages.splice(i, 1);
     }
   }
 
-  // Inject the project working directory so every model (Gemma4, Kimi, DeepSeek,
-  // Nemotron, …) writes files into the SAME conversation project folder instead
-  // of an arbitrary location — Claude Desktop per-project parity.
-  if (currentCwd) {
-    messages[0].content += `\n\n<project_workspace>\nYour project working directory is: ${currentCwd}\nCreate and edit files in this folder by default (prefer relative paths). Run shell commands in this folder unless the user specifies another location. When the user asks for code or a file, write it here.\n</project_workspace>`;
-  }
-
-  // Inject the per-project mindmap so a model switch (gemma4 → Kimi → DeepSeek →
-  // Nemotron → TokenRouter) picks up the SAME project state — goal, progress,
-  // decisions, and files — without any shared provider state. Claude Desktop
-  // continuity parity: switching models mid-conversation keeps full context.
-  try {
-    const { read: readMindmap } = require('./mindmap');
-    const mm = readMindmap(currentCwd);
-    if (mm) messages[0].content += `\n\n<project_mindmap>\n${mm}\n</project_mindmap>`;
-  } catch (_) {}
-
-  // CLAUDE.md project memory hierarchy (global → ancestors → cwd → local),
-  // including @import expansion. This is what a project already checked into a
-  // Example repo carries, so its standing instructions apply here too.
+  // 1. Static per repo: CLAUDE.md project memory hierarchy (global → ancestors → cwd → local).
   try {
     const memory = require('./memory');
     const memText = memory.loadMemoryText(currentCwd);
     if (memText) messages[0].content += `\n\n<project_memory>\n${memText}\n</project_memory>`;
   } catch (_) {}
 
-  // Optionally inject memory into system prompt
-  const { memoryAsText } = require('./store');
-  if (opts.useMemory !== false) {
-    const mem = memoryAsText();
-    if (mem !== '(no saved memory)') {
-      messages[0].content += `\n\n<long_term_memory>\n${mem}\n</long_term_memory>`;
-    }
-  }
-
-  // Custom output style (settings.outputStyle → ~/.claude/output-styles/<name>.md)
-  // and statusline config live in settings; the output style body is appended to
-  // the system prompt exactly like Claude Code does.
+  // 2. Static per config: custom output style (~/.claude/output-styles/<name>.md).
   try {
     const cc = require('./claudeconfig');
     const { settings } = cc.loadSettings(currentCwd);
@@ -1638,7 +1655,7 @@ async function runAgent(opts) {
     }
   } catch (_) {}
 
-  // Sub-agent definitions the model can dispatch to via `subagent_type`.
+  // 3. Semi-static: sub-agent definitions the model can dispatch to via `subagent_type`.
   try {
     const agentdefs = require('./agentdefs');
     const defs = agentdefs.discover(currentCwd, { fresh: true });
@@ -1646,6 +1663,33 @@ async function runAgent(opts) {
       const roster = defs.map((d) => `- ${d.name}${d.model ? ` (model: ${d.model})` : ''}: ${d.description}`).join('\n');
       messages[0].content += `\n\n<subagent_types>\nWhen calling Task or Agent you may set subagent_type to one of these to run it with that definition (prompt + tool restrictions + model):\n${roster}\n</subagent_types>`;
     }
+  } catch (_) {}
+
+  // 4. Semi-static per session cwd: project working directory.
+  if (currentCwd) {
+    messages[0].content += `\n\n<project_workspace>\nYour project working directory is: ${currentCwd}\nCreate and edit files in this folder by default (prefer relative paths). Run shell commands in this folder unless the user specifies another location. When the user asks for code or a file, write it here.\n</project_workspace>`;
+  }
+
+  // 5. Per-turn renderer directives (style / web-search / context notes).
+  for (const dirText of foldedDirectives) {
+    messages[0].content += '\n\n' + dirText;
+  }
+
+  // 6. Semi-dynamic: user long-term memory.
+  const { memoryAsText } = require('./store');
+  if (opts.useMemory !== false) {
+    const mem = memoryAsText();
+    if (mem !== '(no saved memory)') {
+      messages[0].content += `\n\n<long_term_memory>\n${mem}\n</long_term_memory>`;
+    }
+  }
+
+  // 7. Dynamic (changes on every turn/edit): per-project mindmap at the very tail
+  // so model switches retain continuity while preserving the static prefix cache.
+  try {
+    const { read: readMindmap } = require('./mindmap');
+    const mm = readMindmap(currentCwd);
+    if (mm) messages[0].content += `\n\n<project_mindmap>\n${mm}\n</project_mindmap>`;
   } catch (_) {}
 
   // SessionStart + UserPromptSubmit. Claude Code fires both before the model
@@ -1735,7 +1779,29 @@ async function runAgent(opts) {
       emit({ type: 'notice', text });
     },
   });
-  const knownToolNames = new Set(tools.map((t) => t.function.name));
+  const knownToolNames = new Set([...allAllowedDefs.keys(), ...tools.map((t) => t.function.name)]);
+  const activateTools = (names) => {
+    if (!Array.isArray(names) || !names.length) return [];
+    const added = [];
+    const have = new Set(tools.map((t) => t.function && t.function.name).filter(Boolean));
+    for (const nm of names) {
+      const clean = String(nm || '').trim();
+      if (!clean || have.has(clean) || !isAllowed(clean)) continue;
+      if (cap && tools.length >= cap) break;
+      let def = toolDefinitions.find((t) => t.name === clean) || allAllowedDefs.get(clean);
+      if (!def && extra.length) {
+        const ex = extra.find((t) => t.name === clean);
+        if (ex) def = { name: ex.name, description: ex.description, parameters: ex.inputSchema || ex.parameters };
+      }
+      if (!def) continue;
+      tools.push({ type: 'function', function: def });
+      have.add(clean);
+      knownToolNames.add(clean);
+      allAllowedDefs.set(clean, def);
+      added.push(clean);
+    }
+    return added;
+  };
   if (textToolMode) messages[0].content += '\n\n' + TEXT_TOOL_PROTOCOL;
 
   // ── Live compaction helpers ──────────────────────────────────────────────
@@ -1747,6 +1813,14 @@ async function runAgent(opts) {
     const c = m && m.content;
     if (c == null) return 0;
     if (typeof c === 'string') return c.length;
+    if (Array.isArray(c)) {
+      return c.reduce((n, p) => {
+        if (!p || typeof p !== 'object') return n + String(p || '').length;
+        if (typeof p.text === 'string') return n + p.text.length;
+        if (p.type === 'image_url' || p.type === 'image') return n + 1500;
+        return n + 128;
+      }, 0);
+    }
     try { return JSON.stringify(c).length; } catch { return String(c).length; }
   };
   const historyChars = () => messages.reduce((n, m) => n + msgChars(m) + 64, 0);
@@ -2301,7 +2375,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       }
       // Unique handle: two agents with the same description must not share a
       // controller (TaskStop would stop the wrong one, ListAgents would hide one).
-      const baseName = String(args.description || args.name || 'sub-agent').slice(0, 80);
+      const baseName = String(args.name || args.description || 'sub-agent').slice(0, 80);
       let name = baseName;
       for (let k = 2; subagentControllers.has(name); k++) name = `${baseName} #${k}`;
       const ac = new AbortController();
@@ -2377,6 +2451,40 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         try { toolAllow = require('./agentdefs').allowedToolSet(def); } catch (_) { toolAllow = null; }
       }
       const defPrompt = def && def.body ? require('./agentdefs').promptFor(def) : null;
+      const teamName = args.team_name ? String(args.team_name).trim() : '';
+      if (teamName) {
+        try {
+          const tasks = require('./tasks');
+          tasks.addMember(teamName, {
+            name,
+            role: role || (def && def.name) || 'worker',
+            status: 'active',
+            model: subProvider ? subProvider.model : null,
+          });
+          if (toolAllow && !toolAllow.has('*')) {
+            for (const tmTool of ['TaskList', 'TaskGet', 'TaskUpdate', 'TaskCreate', 'SendMessage']) {
+              toolAllow.add(tmTool);
+            }
+          }
+        } catch (_) {}
+      }
+      // Git worktree isolation (`isolation: 'worktree'`): spawn subagent in an
+      // isolated branch worktree; auto-prune if clean, preserve if modified.
+      let subCwd = args.cwd || currentCwd;
+      let worktreeInfo = null;
+      if (args.isolation === 'worktree' && subCwd) {
+        try {
+          const gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: subCwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+          const baseHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: gitRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+          const slug = name.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 32) || 'sub';
+          const wtBranch = `wt-${slug}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`;
+          const wtDir = path.join(os.tmpdir(), `akron-${wtBranch}`);
+          execFileSync('git', ['worktree', 'add', '-b', wtBranch, wtDir, 'HEAD'], { cwd: gitRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+          const relSub = path.relative(gitRoot, subCwd);
+          subCwd = relSub && !relSub.startsWith('..') ? path.join(wtDir, relSub) : wtDir;
+          worktreeInfo = { gitRoot, wtDir, wtBranch, baseHead };
+        } catch (_) { worktreeInfo = null; }
+      }
       // Per-role parallelism cap (pool `maxConcurrent`): the N+1th coder waits
       // for a slot instead of piling onto rate-limited free tiers.
       const roleCap = role && orch ? router.roleLimit(orch, role) : 0;
@@ -2390,7 +2498,20 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           const rec = subagentControllers.get(name);
           if (rec) rec.status = 'running';
         }
-        const userPrompt = args.prompt || args.description || '';
+        let userPrompt = args.prompt || args.description || '';
+        if (teamName) {
+          let inboxBlock = '';
+          try {
+            const tasks = require('./tasks');
+            const drained = tasks.drainInbox({ team_name: teamName, name });
+            const msgs = Array.isArray(drained) ? drained : (drained && Array.isArray(drained.messages) ? drained.messages : []);
+            if (msgs.length) {
+              const formatted = msgs.map((m) => (typeof m === 'string' ? `- ${m}` : `- [${m.from || 'team'}] ${m.message || m.text || m.summary || JSON.stringify(m)}`)).join('\n');
+              inboxBlock = `\n\n<team_inbox team="${teamName}" agent="${name}">\n${formatted}\n</team_inbox>`;
+            }
+          } catch (_) {}
+          userPrompt = `[Team "${teamName}", your member name is "${name}". Use TaskList/TaskUpdate/SendMessage to coordinate.]\n\n${userPrompt}${inboxBlock}`;
+        }
         const subMsgs = defPrompt
           ? [{ role: 'system', content: defPrompt }, { role: 'user', content: userPrompt }]
           : [{ role: 'user', content: userPrompt }];
@@ -2398,7 +2519,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           provider: subProvider,
           orchestrator: subOrch,
           messages: subMsgs,
-          cwd: args.cwd || currentCwd,
+          cwd: subCwd,
           // The child's own `done` must not end the parent's stream in the UI;
           // the parent reports the child's status itself.
           emit: (evt) => {
@@ -2424,7 +2545,20 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           turnId: opts.turnId,
         });
         const last = [...subResult].reverse().find((m) => m.role === 'assistant' && m.content);
-        return last ? last.content : '(sub-agent completed)';
+        let outText = last ? last.content : '(sub-agent completed)';
+        if (worktreeInfo) {
+          let dirtyOrCommitted = false;
+          try {
+            const st = execFileSync('git', ['status', '--porcelain'], { cwd: worktreeInfo.wtDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+            const headCount = Number(execFileSync('git', ['rev-list', '--count', `${worktreeInfo.baseHead}..HEAD`], { cwd: worktreeInfo.wtDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()) || 0;
+            dirtyOrCommitted = Boolean(st) || headCount > 0;
+          } catch (_) { dirtyOrCommitted = true; }
+          if (dirtyOrCommitted) {
+            outText += `\n\n[Worktree preserved: path=${worktreeInfo.wtDir}, branch=${worktreeInfo.wtBranch}]`;
+            worktreeInfo = null;
+          }
+        }
+        return outText;
       } catch (e) {
         if (ac.signal.aborted || (opts.signal && opts.signal.aborted)) {
           failed = 'stopped';
@@ -2436,6 +2570,23 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         // end of the parent's turn.
         return `Error: sub-agent "${name}" failed — ${humanizeLLMError(e)}. Continue without it or retry with a narrower task.`;
       } finally {
+        if (worktreeInfo) {
+          let dirtyOrCommitted = false;
+          try {
+            const st = execFileSync('git', ['status', '--porcelain'], { cwd: worktreeInfo.wtDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+            const headCount = Number(execFileSync('git', ['rev-list', '--count', `${worktreeInfo.baseHead}..HEAD`], { cwd: worktreeInfo.wtDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()) || 0;
+            dirtyOrCommitted = Boolean(st) || headCount > 0;
+          } catch (_) {}
+          if (!dirtyOrCommitted) {
+            try { execFileSync('git', ['worktree', 'remove', '--force', worktreeInfo.wtDir], { cwd: worktreeInfo.gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+            try { fs.rmSync(worktreeInfo.wtDir, { recursive: true, force: true }); } catch (_) {}
+            try { execFileSync('git', ['worktree', 'prune'], { cwd: worktreeInfo.gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+            try { execFileSync('git', ['branch', '-D', worktreeInfo.wtBranch], { cwd: worktreeInfo.gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+          }
+        }
+        if (teamName) {
+          try { require('./tasks').setMemberStatus(teamName, name, failed ? 'stopped' : 'idle'); } catch (_) {}
+        }
         if (releaseRole) releaseRole();
         subagentControllers.delete(name);
         emit({ type: 'subagent', id: name, name, status: failed || 'done', role: 'worker', jobRole: role, model: subProvider ? subProvider.model : null, tier });
@@ -2511,6 +2662,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       // agents, Bash) — before this the ctx carried no signal at all.
       signal: opts.signal,
       depth,
+      activateTools,
       // settings.json `permissions.deny` applies to EVERY tool (e.g.
       // `deny: Read(./.env)`), not only to the mutating ones that prompt.
       checkDeny: (toolName, toolArgs) => {

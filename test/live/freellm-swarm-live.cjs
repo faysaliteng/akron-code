@@ -90,6 +90,17 @@ async function phaseAgent() {
   return out;
 }
 
+async function phaseFeature() {
+  console.log(`\n=== PHASE 3: main agent + parallel Task sub-agents — feature work on the existing project ===\n`);
+  const msgs = [{ role: 'user', content: `Project: ${dir} ("tasklite", already working). Do these two things, delegating them to TWO sub-agents in parallel with the Task tool (send both Task calls in ONE message), then verify yourself:
+A) Portability: \`npm test\` currently runs "node --test test/", which fails on Node 20-24 (a directory argument is not accepted there). Change the script to "node --test test/*.test.js" so it works on Node 18-26.
+B) Feature: full-text search. Add store.search(q) (case-insensitive match on title and tags), GET /tasks?q=<text> in src/server.js (combinable with the other filters), and a CLI command "node src/cli.js search <text>". Add tests for all three in the existing test files.
+After both sub-agents report, run \`npm test\` with Bash, fix anything still failing, and finish with the final test summary line.` }];
+  const out = await llm.runAgent({ provider, orchestrator: orch, messages: msgs, cwd: dir, emit: log, turnStart: true });
+  const last = [...out].reverse().find((m) => m.role === 'assistant' && m.content);
+  console.log('\nAGENT FINAL:\n' + String(last && last.content).slice(0, 1200));
+}
+
 function verify() {
   let ok = false, summary = '';
   try {
@@ -105,6 +116,7 @@ function verify() {
 (async () => {
   try {
     if (phase === 'swarm' || phase === 'both') await phaseSwarm();
+    if (phase === 'feature') await phaseFeature();
     let v = verify();
     if (!v.ok && (phase === 'agent' || phase === 'both')) {
       await phaseAgent();

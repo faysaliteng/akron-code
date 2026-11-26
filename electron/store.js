@@ -50,9 +50,10 @@ function readJSON(file, fallback) {
 
 function writeJSON(file, data) {
   ensureDir(path.dirname(file));
-  // mode only applies on create, so chmod after write: an existing 0644 file
-  // (from an older build) would otherwise stay world-readable.
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
+  // Atomic rename prevents a crash mid-write from leaving an empty/corrupt JSON.
+  const tmp = file + '.tmp.' + process.pid + '.' + Math.random().toString(36).slice(2, 6);
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tmp, file);
   try { fs.chmodSync(file, 0o600); } catch (_) {}
 }
 

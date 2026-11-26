@@ -35,7 +35,12 @@ function readJSON(file, fb) {
   try { if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) {}
   return fb;
 }
-function writeJSON(file, v) { ensureDir(path.dirname(file)); fs.writeFileSync(file, JSON.stringify(v, null, 2)); }
+function writeJSON(file, v) {
+  ensureDir(path.dirname(file));
+  const tmp = file + '.tmp.' + process.pid + '.' + Math.random().toString(36).slice(2, 6);
+  fs.writeFileSync(tmp, JSON.stringify(v, null, 2), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
 
 function safeName(n) {
   const s = String(n == null ? '' : n).trim();
@@ -207,6 +212,12 @@ function updateTask(input = {}) {
     }
     t.status = s;
   }
+  if (input.expectOwner !== undefined) {
+    const want = input.expectOwner === null ? null : String(input.expectOwner);
+    if ((t.owner || null) !== want) {
+      return { ok: false, error: `Task #${id} is already owned by ${t.owner || 'none'} (expected ${want || 'none'}).` };
+    }
+  }
   if (input.owner !== undefined) t.owner = input.owner === null ? null : String(input.owner);
   // metadata: a null value deletes that key (Example's contract).
   if (input.metadata && typeof input.metadata === 'object') {
@@ -256,7 +267,8 @@ function listTasks(input = {}) {
   const enriched = all.map((t) => {
     const openBlockers = (t.blockedBy || []).filter((b) => {
       const o = byId.get(String(b));
-      return !o || o.status !== 'completed';
+      // Deleted blockers do not hold dependents blocked forever.
+      return Boolean(o && o.status !== 'completed');
     });
     return { ...t, openBlockers, claimable: t.status === 'pending' && !t.owner && openBlockers.length === 0 };
   });
