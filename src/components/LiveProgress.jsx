@@ -1,4 +1,12 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+
+function fmtSecs(secs) {
+  const s = Math.max(0, Math.round(Number(secs) || 0));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem ? `${m}m ${rem}s` : `${m}m`;
+}
 
 function countLines(s) {
   const t = String(s == null ? '' : s);
@@ -58,7 +66,10 @@ export function summarizeChangedFiles(tools = [], checkpoints = []) {
 }
 
 export function LiveChecklistCard({ tools = [], subAgents = [], swarmInfo = null, streamingTool = null, streaming = false, durationMs = 0, Icon }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(() => Boolean(streaming));
+  useEffect(() => {
+    setOpen(Boolean(streaming));
+  }, [streaming]);
 
   const plan = useMemo(() => {
     // 1. Explicit TodoWrite checklist always wins.
@@ -114,9 +125,10 @@ export function LiveChecklistCard({ tools = [], subAgents = [], swarmInfo = null
   const streamSuffix = streaming && streamingTool && streamingTool.name
     ? ` · ${streamingTool.name}${streamingTool.bytes ? ` (${streamingTool.bytes >= 1024 ? (streamingTool.bytes / 1024).toFixed(1) + ' KB' : streamingTool.bytes + ' B'})` : ''}`
     : '';
+  const ratioLabel = (!streaming && done === 0 && plan.explicit) ? `${total} steps` : `${done}/${total} steps`;
   const headText = streaming
     ? `Progress · ${done}/${total} steps${streamSuffix}`
-    : `Worked for ${secs ? secs + 's · ' : ''}${done}/${total} steps`;
+    : `Worked for ${secs ? fmtSecs(secs) + ' · ' : ''}${ratioLabel}`;
 
   return (
     <div className={'live-plan-card' + (streaming ? ' is-live' : '')}>

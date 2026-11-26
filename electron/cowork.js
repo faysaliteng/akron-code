@@ -232,14 +232,38 @@ async function orchestrate(goal, workerNames, opts = {}) {
   }
 
   // A task-level model/tier override wins for that task's worker. A bare tier is
-  // resolved against the model pool (orchestrator providers + active provider),
-  // so cheap tiers get a cheap model and critical work gets the frontier model
-  // without the caller having to name a model id.
-  const roster = (Array.isArray(opts.tasks) && opts.tasks.some((t) => t.tier && !t.model))
+  // resolved against role pools (when active) or the flat model roster.
+  const router = require('./orch-router');
+  const poolOrch = opts.poolOrchestrator || opts.orchestrator;
+  const poolsOn = router.poolsActive(poolOrch, opts.provider);
+  const roster = (!poolsOn && Array.isArray(opts.tasks) && opts.tasks.some((t) => t.tier && !t.model))
     ? swarm.buildRoster({ orchestrator: opts.orchestrator, provider: opts.provider })
     : [];
+  const taskOrchs = new Map();
   if (Array.isArray(opts.tasks)) {
-    for (const e of entries) {
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (poolsOn) {
+        const role = router.tierToRole(e.tier) || 'coder';
+        const scoped = router.orchestratorFor(poolOrch, role, opts.provider, { index: i, preferModel: e.model });
+        if (scoped && scoped.providers && scoped.providers.length) {
+          taskOrchs.set(e.name, scoped);
+          const head = scoped.providers[0];
+          overrides[e.name] = {
+            ...(overrides[e.name] || {}),
+            baseURL: head.baseURL,
+            apiKey: head.apiKey,
+            model: e.model || head.model,
+            oauthProvider: head.oauthProvider || '',
+            transport: head.transport || '',
+            oauth: !!head.oauth,
+            accessToken: head.accessToken || '',
+            contextWindow: head.contextWindow || 0,
+            ...(e.tier ? { tier: swarm.normalizeTier(e.tier) } : {}),
+          };
+          continue;
+        }
+      }
       if (e.model || e.tier) {
         const picked = (!e.model && e.tier) ? swarm.pickProvider(roster, e.tier) : null;
         overrides[e.name] = {
@@ -283,8 +307,10 @@ async function orchestrate(goal, workerNames, opts = {}) {
     while (cursor < entries.length) {
       const i = cursor++;
       const e = entries[i];
+      const scopedOrch = taskOrchs.get(e.name);
       results[i] = await runWorker(e.name, goal, {
         ...opts,
+        ...(scopedOrch ? { orchestrator: scopedOrch } : {}),
         overrides,
         prompt: e.prompt,
         title: e.title,

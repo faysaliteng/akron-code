@@ -286,12 +286,24 @@ function sendMessage(args, ctx) {
   const to = String(args.to || args.name || args.recipient || '');
   const message = String(args.message || args.text || args.content || '');
   if (!to) return { content: 'Error: `to` required (a teammate name, or "team-lead").', isError: true };
-  if (!message) return { content: 'Error: `message` required.', isError: true };
+  if (!message && args.type !== 'shutdown_request' && args.shutdown !== true) {
+    return { content: 'Error: `message` required.', isError: true };
+  }
   const team = teamOf(args, ctx);
   const from = args.from || (ctx && ctx.agentName) || 'team-lead';
-  const r = tasks.sendMessage({ team_name: team, to, from, message, summary: args.summary });
+  const shutdown = args.type === 'shutdown_request' || args.shutdown === true;
+  const r = tasks.sendMessage({
+    team_name: team,
+    to,
+    from,
+    message: message || (shutdown ? 'Shutdown requested.' : ''),
+    summary: args.summary,
+  });
   if (!r.ok) return { content: 'Error: ' + r.error, isError: true };
-  return `Message queued for "${to}" in team "${team}"${args.summary ? ' — ' + args.summary : ''}.`;
+  const liveDelivered = typeof tasks.signalLiveMember === 'function'
+    ? tasks.signalLiveMember(team, to, { shutdown, wake: !shutdown, from, message })
+    : false;
+  return `Message queued for "${to}" in team "${team}"${args.summary ? ' — ' + args.summary : ''}${liveDelivered ? ' (delivered to active in-process teammate)' : ''}.`;
 }
 
 // ────────────────────────────────────────────────────────────

@@ -31,7 +31,7 @@ function highlightLine(text, matcher) {
   }
 }
 
-export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComment, onRewindDone, voiceOpts = {}, Icon }) {
+export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComment, onRewindDone, onClose, voiceOpts = {}, Icon }) {
   const [scope, setScope] = useState(target && (target.scope === 'all' ? 'all' : (target.checkpointId || target.turnLabel || (target.tools && target.tools.length))) ? (target.scope || 'turn') : 'all');
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -61,6 +61,23 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComme
   const searchInputRef = useRef(null);
   const menuWrapRef = useRef(null);
   const jumpWrapRef = useRef(null);
+  const paneRef = useRef(null);
+
+  useEffect(() => {
+    if (!onClose) return undefined;
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      if (searchOpen || draftAt || menuOpen || filesJumpOpen) return;
+      if (document.querySelector('.modal-overlay')) return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT') && (!paneRef.current || !paneRef.current.contains(ae))) return;
+      if (!paneRef.current || paneRef.current.contains(ae) || ae === document.body) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, searchOpen, draftAt, menuOpen, filesJumpOpen]);
 
   useEffect(() => {
     if (target && target.scope) setScope(target.scope);
@@ -304,7 +321,7 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComme
   };
 
   return (
-    <div className="rv-pane">
+    <div className="rv-pane" ref={paneRef} tabIndex={-1}>
       <div className="rv-subhead">
         <div className="rv-scope-bar">
           {scope === 'turn' ? (
@@ -369,6 +386,12 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComme
                   <button type="button" className="rv-pop-item" onClick={() => { setMenuOpen(false); handleRewind(); }}>
                     <Icon name="ArrowCounterClockwise" size={13} />
                     <span>Rewind this turn</span>
+                  </button>
+                )}
+                {onClose && (
+                  <button type="button" className="rv-pop-item" onClick={() => { setMenuOpen(false); onClose(); }}>
+                    <Icon name="X" size={13} />
+                    <span>Close Review</span>
                   </button>
                 )}
               </div>

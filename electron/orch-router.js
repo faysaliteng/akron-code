@@ -223,15 +223,16 @@ function freellmPreset(baseURL) {
         { model: 'glm-5.3', max: 1 },
         { model: 'nemotron-3-ultra-550b-a55b', max: 2 },
       ] },
-      // The user's order first; the tail is tool-capable NVIDIA / Kilo / Groq
-      // capacity so N parallel coders spread off ElectronHub's shared credits.
+      // The user's order first; tool-capable Groq / NVIDIA rows sit ahead of
+      // devstral-2512 so parallel coders failover to native-tool models first
+      // without burning a 429 retry.
       coder: { label: ROLE_LABEL.coder, maxConcurrent: 4, spread: false, models: [
         { model: 'qwen3.8-flash', max: 1 },
         { model: 'qwen3-coder-30b-a3b-instruct', max: 1 },
-        { model: 'mistral-devstral-2512', max: 1 },
         { model: 'qwen3.8-27b', max: 3 },
         { model: 'nemotron-3-ultra-550b-a55b', max: 2 },
         { model: 'gpt-oss-120b', max: 3 },
+        { model: 'mistral-devstral-2512', max: 1 },
         { model: 'kilo-auto', max: 2 },
       ] },
       vision: { label: ROLE_LABEL.vision, maxConcurrent: 2, models: [
@@ -240,7 +241,7 @@ function freellmPreset(baseURL) {
         { model: 'glm-4.6v-flash', max: 1 },
         { model: 'gemini-3.8-flash', max: 1 },
       ] },
-      fast: { label: ROLE_LABEL.fast, maxConcurrent: 6, models: [
+      fast: { label: ROLE_LABEL.fast, maxConcurrent: 6, spread: true, models: [
         { model: 'qwen3.8-27b', max: 4 },
         { model: 'gpt-oss-120b', max: 4 },
         { model: 'glm-4.7-flash', max: 2 },

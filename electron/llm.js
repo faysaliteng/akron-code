@@ -199,6 +199,13 @@ const SYSTEM_PROMPT = `You are Akron Bot, an agentic desktop coding assistant ru
 ## Verifying your work
 - After writing code, actually run it: e.g. \`node file.js\`, \`python3 file.py\`, \`npm run build\`, \`npx serve .\`.
 - Read the errors, fix the files, run again. Iterate until it works — do not report success on untested code.
+- If Write/Edit returns \`[SYNTAX WARNING]\`, fix that syntax error immediately with Edit before running commands or moving on.
+
+## Multi-agent coordination & fast coding
+- Batch independent read-only calls (Read, Glob, Grep, LS, Search, TodoWrite) **in one turn** — wave execution runs consecutive read/agent waves concurrently while mutating writes stay ordered.
+- Delegate independent investigations, reviews, or parallel module builds via \`Task\` / \`Agent\` (\`Explore\`, \`general-purpose\`, \`verifier\`, \`code-reviewer\`), and pass \`resume: "<agentId>"\` to continue an existing sub-agent with full prior context instead of restarting cold.
+- Always \`Read\` an existing file before \`Edit\`/\`MultiEdit\`; if warned that the file changed on disk, re-\`Read\` it before editing so concurrent agents never overwrite each other.
+- Before claiming a complex coding task is complete, verify it with \`Bash\` tests/builds or spawn a \`Task(subagent_type="verifier")\` check.
 
 ## When to stop
 - Verification is not the task. When the thing you built is confirmed working once, stop checking and report.
@@ -488,6 +495,7 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
     // isContextOverflow) so the agent loop compacts instead of quadrupling the
     // doomed round trip and then losing the message to an already-read body.
     if (isContextOverflow({ message: rejectedText })) break;
+    if (/(image_url|input_image|image content|multimodal|does not support images)/i.test(rejectedText)) break;
     let changed = false;
     if (req.stream_options && /stream_options|include_usage/i.test(rejectedText)) {
       delete req.stream_options;
@@ -2093,9 +2101,36 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
   // and is raised if a reply gets cut, so later retries in the same turn ask
   // for the bigger budget straight away instead of being cut a second time.
   let outCeiling = 0;
+  // Per-agent read-state mtime tracking so Edit/MultiEdit detects external or
+  // concurrent modifications since this agent last Read the file.
+  const agentReadMtimes = opts.readMtimes instanceof Map ? opts.readMtimes : new Map();
 
   for (let step = 0; step < maxSteps; step++) {
     if (opts.signal && opts.signal.aborted) throw new Error('aborted');
+    // Live teammate inbox delivery between steps: active team agents pick up
+    // new SendMessage payloads (or shutdown requests) mid-run without restart.
+    if (step > 0 && opts.teamContext && opts.teamContext.teamName && opts.teamContext.agentName) {
+      try {
+        const tasks = require('./tasks');
+        const drained = tasks.drainInbox({ team_name: opts.teamContext.teamName, name: opts.teamContext.agentName });
+        const incoming = Array.isArray(drained) ? drained : (drained && Array.isArray(drained.messages) ? drained.messages : []);
+        if (incoming.length) {
+          const shutdownReq = incoming.find((m) => m && typeof m === 'object' && (m.type === 'shutdown_request' || m.shutdown === true || /shutdown_request/i.test(String(m.summary || ''))));
+          if (shutdownReq) {
+            messages.push({ role: 'assistant', content: 'Received shutdown request from team; stopping cleanly.' });
+            emit({ type: 'done', messages, usage: { ...usageTotals } });
+            return messages;
+          }
+          const formatted = incoming.map((m) => (typeof m === 'string'
+            ? `- ${m}`
+            : `- [${m.from || 'team'}] ${m.message || m.text || m.summary || JSON.stringify(m)}`)).join('\n');
+          messages.push({
+            role: 'user',
+            content: `<team_inbox team="${opts.teamContext.teamName}" agent="${opts.teamContext.agentName}">\n${formatted}\n</team_inbox>`,
+          });
+        }
+      } catch (_) {}
+    }
     let message;
     // Count what this turn streamed so a discarded attempt (token-limit retry)
     // can be removed from the transcript instead of showing the same paragraph
@@ -2205,10 +2240,22 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     // (or trim the biggest result) and resend instead of dying mid-task.
     const chatRound = async (withTools, maxTokens) => {
       let tries = 0;
+      let imageFallbackTried = false;
       for (;;) {
         try {
           return await doChat(withTools, maxTokens);
         } catch (e) {
+          const msg = String((e && e.message) || e || '');
+          const imgErr = /\b(400|422)\b/.test(msg)
+            && /(image_url|input_image|image content|multimodal|does not support images|invalid.*content.*array)/i.test(msg);
+          if (imgErr && !imageFallbackTried && messages.some((m) => m && m._syntheticImageRead)) {
+            imageFallbackTried = true;
+            for (let k = messages.length - 1; k >= 0; k--) {
+              if (messages[k] && messages[k]._syntheticImageRead) messages.splice(k, 1);
+            }
+            emit({ type: 'notice', text: `${provider.model} does not accept inline image content — falling back to text-only tool output.` });
+            continue;
+          }
           if (!isContextOverflow(e) || (opts.signal && opts.signal.aborted)) throw e;
           if (tries >= 5) throw e;
           tries++;
@@ -2425,15 +2472,54 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
 
     // Context handed to built-in tools for sub-agents, questions, plan mode, shells, MCP resources.
     // Model roster for tier routing: the orchestrator pool + the active provider.
+    const AGENT_RUNS_DIR = path.join(os.homedir(), '.autobot', 'agent-runs');
+    const AGENT_OUT_DIR = path.join(os.homedir(), '.autobot', 'agents');
+    const buildForkContextDigest = (parentMsgs, maxChars = 5000) => {
+      try {
+        const recent = (Array.isArray(parentMsgs) ? parentMsgs : [])
+          .filter((m) => m && m.role !== 'system' && !m._syntheticImageRead)
+          .slice(-10)
+          .map((m) => {
+            let txt = '';
+            if (typeof m.content === 'string') txt = m.content;
+            else if (Array.isArray(m.content)) txt = m.content.map((p) => (p && typeof p.text === 'string' ? p.text : '[part]')).join(' ');
+            else if (m.content != null) txt = JSON.stringify(m.content);
+            txt = txt.replace(/\s+/g, ' ').trim().slice(0, 700);
+            const tc = Array.isArray(m.tool_calls) && m.tool_calls.length
+              ? ` [calls: ${m.tool_calls.map((c) => c.function && c.function.name).filter(Boolean).join(', ')}]`
+              : '';
+            return `[${m.role}${m.name ? ':' + m.name : ''}${tc}] ${txt}`;
+          })
+          .filter(Boolean);
+        let out = '';
+        for (let i = recent.length - 1; i >= 0; i--) {
+          const line = recent[i];
+          if (out.length + line.length + 2 > maxChars) break;
+          out = line + (out ? '\n' + out : '');
+        }
+        return out ? `\n\n<forked_parent_context>\n${out}\n</forked_parent_context>` : '';
+      } catch (_) { return ''; }
+    };
     const agentRoster = swarm.buildRoster({ orchestrator: orch, provider: providerList[getIndex()] });
     const runSubagent = async (args) => {
       args = args || {};
       if (depth >= MAX_AGENT_DEPTH) {
         return 'Sub-agents at this depth cannot spawn further sub-agents. Do this part of the work yourself with the tools you have.';
       }
+      // Resume support (Claude Code `resume: agentId`) + persisted output artifacts.
+      const resumeId = args.resume ? String(args.resume).replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 80) : '';
+      let priorRun = null;
+      if (resumeId) {
+        try {
+          const rf = path.join(AGENT_RUNS_DIR, `${resumeId}.json`);
+          if (fs.existsSync(rf)) priorRun = JSON.parse(fs.readFileSync(rf, 'utf8'));
+        } catch (_) { priorRun = null; }
+      }
+      const agentId = resumeId || (`agent_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`);
+      const startedAt = Date.now();
       // Unique handle: two agents with the same description must not share a
       // controller (TaskStop would stop the wrong one, ListAgents would hide one).
-      const baseName = String(args.name || args.description || 'sub-agent').slice(0, 80);
+      const baseName = String(args.name || (priorRun && priorRun.name) || args.description || 'sub-agent').slice(0, 80);
       let name = baseName;
       for (let k = 2; subagentControllers.has(name); k++) name = `${baseName} #${k}`;
       const ac = new AbortController();
@@ -2447,10 +2533,11 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       // carries its own system prompt, tool allowlist, and model — Claude Code's
       // `.claude/agents/*.md` contract.
       let def = null;
-      if (args.subagent_type || args.agent_type || args.type) {
+      const wantSubType = args.subagent_type || args.agent_type || args.type || (priorRun && priorRun.subagentType) || null;
+      if (wantSubType) {
         try {
           const agentdefs = require('./agentdefs');
-          def = agentdefs.resolve(args.subagent_type || args.agent_type || args.type, currentCwd);
+          def = agentdefs.resolve(wantSubType, currentCwd);
           if (!def) def = agentdefs.BUILTIN['general-purpose'];
         } catch (_) {}
       }
@@ -2510,6 +2597,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       }
       const defPrompt = def && def.body ? require('./agentdefs').promptFor(def) : null;
       const teamName = args.team_name ? String(args.team_name).trim() : '';
+      let liveUnreg = null;
       if (teamName) {
         try {
           const tasks = require('./tasks');
@@ -2519,6 +2607,11 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             status: 'active',
             model: subProvider ? subProvider.model : null,
           });
+          if (typeof tasks.registerLiveMember === 'function') {
+            liveUnreg = tasks.registerLiveMember(teamName, name, {
+              onSignal: (sig) => { if (sig && sig.shutdown) ac.abort(); },
+            });
+          }
           if (toolAllow && !toolAllow.has('*')) {
             for (const tmTool of ['TaskList', 'TaskGet', 'TaskUpdate', 'TaskCreate', 'SendMessage']) {
               toolAllow.add(tmTool);
@@ -2547,9 +2640,10 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       // for a slot instead of piling onto rate-limited free tiers.
       const roleCap = role && orch ? router.roleLimit(orch, role) : 0;
       let releaseRole = null;
-      subagentControllers.set(name, { controller: ac, status: roleCap ? 'queued' : 'running', started: Date.now(), model: subProvider && subProvider.model, tier, role, subagentType: def && def.name });
-      emit({ type: 'subagent', id: name, name, status: 'started', role: 'worker', jobRole: role, model: subProvider ? subProvider.model : null, tier, subagentType: def && def.name });
+      subagentControllers.set(name, { controller: ac, agentId, status: roleCap ? 'queued' : 'running', started: startedAt, model: subProvider && subProvider.model, tier, role, subagentType: def && def.name });
+      emit({ type: 'subagent', id: name, agentId, name, status: 'started', role: 'worker', jobRole: role, model: subProvider ? subProvider.model : null, tier, subagentType: def && def.name });
       let failed = null;
+      const subToolsRun = [];
       try {
         if (roleCap) {
           releaseRole = await gate.acquire({ gateKey: 'role|' + role, maxConcurrent: roleCap }, ac.signal);
@@ -2570,10 +2664,21 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           } catch (_) {}
           userPrompt = `[Team "${teamName}", your member name is "${name}". Use TaskList/TaskUpdate/SendMessage to coordinate.]\n\n${userPrompt}${inboxBlock}`;
         }
-        const subMsgs = defPrompt
-          ? [{ role: 'system', content: defPrompt }, { role: 'user', content: userPrompt }]
-          : [{ role: 'user', content: userPrompt }];
-        const subToolsRun = [];
+        if (args.fork_context === true && !(priorRun && Array.isArray(priorRun.messages))) {
+          userPrompt += buildForkContextDigest(messages);
+        }
+        let subMsgs;
+        if (priorRun && Array.isArray(priorRun.messages) && priorRun.messages.length) {
+          const priorBody = priorRun.messages.filter((m) => m && m.role !== 'system');
+          subMsgs = (defPrompt ? [{ role: 'system', content: defPrompt }] : []).concat(priorBody, [{ role: 'user', content: userPrompt }]);
+        } else {
+          subMsgs = defPrompt
+            ? [{ role: 'system', content: defPrompt }, { role: 'user', content: userPrompt }]
+            : [{ role: 'user', content: userPrompt }];
+        }
+        const subMaxSteps = Number(args.max_turns) > 0
+          ? Math.min(1000, Math.floor(Number(args.max_turns)))
+          : (opts.subagentMaxSteps || 0);
         const subResult = await runAgent({
           provider: subProvider,
           orchestrator: subOrch,
@@ -2586,7 +2691,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             if (evt.type === 'tool' && evt.name) subToolsRun.push(evt.name);
             emit({ ...evt, subagent: name });
           },
-          maxSteps: opts.subagentMaxSteps || 0,
+          maxSteps: subMaxSteps,
           useMemory: opts.useMemory,
           callMcpTool: opts.callMcpTool,
           mcpClient: opts.mcpClient,
@@ -2604,6 +2709,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           permissionMode,
           convId: opts.convId,
           turnId: opts.turnId,
+          teamContext: teamName ? { teamName, agentName: name } : null,
         });
         const last = [...(Array.isArray(subResult) ? subResult : [])].reverse().find((m) => m.role === 'assistant' && m.content && String(m.content).trim());
         let outText = last && last.content ? String(last.content) : '';
@@ -2625,6 +2731,23 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             worktreeInfo = null;
           }
         }
+        try {
+          fs.mkdirSync(AGENT_RUNS_DIR, { recursive: true });
+          fs.mkdirSync(AGENT_OUT_DIR, { recursive: true });
+          fs.writeFileSync(path.join(AGENT_RUNS_DIR, `${agentId}.json`), JSON.stringify({
+            agentId,
+            name,
+            subagentType: (def && def.name) || null,
+            model: subProvider ? subProvider.model : null,
+            cwd: subCwd,
+            updatedAt: Date.now(),
+            toolCount: subToolsRun.length,
+            messages: Array.isArray(subResult) ? subResult.slice(-60) : [],
+          }), 'utf8');
+          fs.writeFileSync(path.join(AGENT_OUT_DIR, `${agentId}.txt`), outText, 'utf8');
+        } catch (_) {}
+        const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
+        outText += `\n\n[agentId: ${agentId} · ${subToolsRun.length} tool${subToolsRun.length === 1 ? '' : 's'} · ${secs}s]`;
         return outText;
       } catch (e) {
         if (ac.signal.aborted || (opts.signal && opts.signal.aborted)) {
@@ -2637,6 +2760,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         // end of the parent's turn.
         return `Error: sub-agent "${name}" failed — ${humanizeLLMError(e)}. Continue without it or retry with a narrower task.`;
       } finally {
+        if (liveUnreg) liveUnreg();
         if (worktreeInfo) {
           let dirtyOrCommitted = false;
           try {
@@ -2656,7 +2780,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         }
         if (releaseRole) releaseRole();
         subagentControllers.delete(name);
-        emit({ type: 'subagent', id: name, name, status: failed || 'done', role: 'worker', jobRole: role, model: subProvider ? subProvider.model : null, tier });
+        emit({ type: 'subagent', id: name, agentId, name, status: failed || 'done', role: 'worker', jobRole: role, model: subProvider ? subProvider.model : null, tier, toolCount: subToolsRun.length, durationMs: Date.now() - startedAt });
         for (const sig of parents) sig.removeEventListener('abort', onAbort);
       }
     };
@@ -2806,6 +2930,8 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       setGoal,
       createArtifact,
       requestSecret,
+      readMtimes: agentReadMtimes,
+      allowRichRead: true,
     };
 
     // A tool call whose JSON was sliced by the output limit must never run with
@@ -2836,64 +2962,79 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         : `No MCP tool matched ${JSON.stringify((findArgs && findArgs.query) || '')}. Try a broader keyword, or omit "server".`;
     };
 
-    // Example runs independent read-only calls from the same turn concurrently
-    // and shows all of the rows at once. Doing them one-by-one made a 4-file
-    // read take 4 round trips of wall time and stacked rows progressively.
-    const PARALLEL_SAFE = new Set(['Read', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles', 'WebFetch', 'WebSearch', 'TaskList', 'TaskGet', 'CronList', 'ListMcpResources', 'find_mcp_tools', 'ToolSearch', 'list_skills', 'Skill']);
+    // Example runs independent read-only / agent calls concurrently in waves,
+    // while keeping mutating calls strictly ordered between waves.
+    const PARALLEL_SAFE = new Set([
+      'Read', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles',
+      'WebFetch', 'WebSearch', 'TodoWrite', 'TaskList', 'TaskGet', 'CronList',
+      'ListMcpResources', 'find_mcp_tools', 'ToolSearch', 'list_skills', 'Skill',
+      'ListAgents', 'ListCustomTools', 'list_notebooks', 'list_slash_commands', 'memory_list',
+    ]);
     // Claude Code runs several Task/Agent blocks from one message concurrently;
-    // they used to run one after another here. Bounded so a model that emits
-    // ten delegations cannot open ten streams on a free tier at once.
+    // bounded so a model that emits ten delegations cannot open ten streams at once.
     const PARALLEL_AGENT = new Set(['Task', 'Agent']);
-    if (!textCalls && calls.length > 1 && calls.every((tc) => PARALLEL_SAFE.has(tc.function.name) || PARALLEL_AGENT.has(tc.function.name))) {
-      const batch = calls.map((tc) => ({ tc, name: tc.function.name, args: parseArgs(tc.function.arguments) }));
-      batch.forEach((p) => emit({ type: 'tool', id: p.tc.id, name: p.name, args: p.args }));
-      const agentCap = Math.max(1, Number(process.env.AKRON_MAX_PARALLEL_AGENTS) || 4);
-      let agentsRunning = 0;
-      const agentWaiters = [];
-      const agentSlot = async () => {
-        if (agentsRunning < agentCap) { agentsRunning++; return; }
-        await new Promise((r) => agentWaiters.push(r));
-        agentsRunning++;
-      };
-      const agentFree = () => { agentsRunning--; const w = agentWaiters.shift(); if (w) w(); };
-      const results = await Promise.all(batch.map(async (p) => {
-        const isAgent = PARALLEL_AGENT.has(p.name);
-        if (isAgent) await agentSlot();
-        try { return await runOneParallel(p); } finally { if (isAgent) agentFree(); }
-      }));
-      if (opts.signal && opts.signal.aborted) throw new Error('aborted');
-      batch.forEach((p, i) => {
-        emit({ type: 'toolResult', id: p.tc.id, name: p.name, result: results[i].content, isError: results[i].isError });
-        messages.push({ role: 'tool', tool_call_id: p.tc.id, name: p.name, content: results[i].content });
-      });
-      continue;
-    }
-    async function runOneParallel(p) {
-      {
-        try {
-          if (isLocal(p.name)) {
-            const out = await localTools[p.name](p.args || {});
-            return { content: typeof out === 'string' ? out : String(out), isError: false };
+    const isWaveParallel = (tc) => {
+      const nm = tc && tc.function && tc.function.name;
+      return PARALLEL_SAFE.has(nm) || PARALLEL_AGENT.has(nm);
+    };
+    const partitionToolWaves = (list) => {
+      const waves = [];
+      let i = 0;
+      while (i < list.length) {
+        if (isWaveParallel(list[i])) {
+          let j = i + 1;
+          while (j < list.length && isWaveParallel(list[j])) j++;
+          if (j - i >= 2) {
+            waves.push({ parallel: true, items: list.slice(i, j) });
+            i = j;
+            continue;
           }
-          if (p.name === 'find_mcp_tools' && extraToolsDeferred) {
-            return { content: runFindMcpTools(p.args), isError: false };
-          }
-          if (toolAllow && !isAllowed(p.name)) return { content: `Tool "${p.name}" is not available to this sub-agent.`, isError: true };
-          const pre = await beforeTool(p.name, p.args);
-          if (pre.blocked) return { content: pre.planGate ? pre.reason : `Blocked by hook: ${pre.reason}`, isError: true };
-          const r = await runTool(p.name, pre.args, ctx);
-          const content = typeof r === 'string' ? r : r.content;
-          const isErr = (typeof r === 'object' && Boolean(r.isError))
-            || /^(Error|Tool error)/i.test(String(content).trim());
-          return { content: await afterTool(p.name, pre.args, String(content), isErr), isError: isErr };
-        } catch (e) {
-          if (opts.signal && opts.signal.aborted) throw e;
-          return { content: 'Error: ' + (e && e.message ? e.message : String(e)), isError: true };
         }
+        waves.push({ parallel: false, items: [list[i]] });
+        i++;
+      }
+      return waves;
+    };
+
+    const pendingImages = [];
+    const waves = (!textCalls && calls.length > 1)
+      ? partitionToolWaves(calls)
+      : calls.map((tc) => ({ parallel: false, items: [tc] }));
+    const agentCap = Math.max(1, Number(process.env.AKRON_MAX_PARALLEL_AGENTS) || 4);
+    let agentsRunning = 0;
+    const agentWaiters = [];
+    const agentSlot = async () => {
+      if (agentsRunning < agentCap) { agentsRunning++; return; }
+      await new Promise((r) => agentWaiters.push(r));
+      agentsRunning++;
+    };
+    const agentFree = () => { agentsRunning--; const w = agentWaiters.shift(); if (w) w(); };
+
+    async function runOneParallel(p) {
+      try {
+        if (isLocal(p.name)) {
+          const out = await localTools[p.name](p.args || {});
+          return { content: typeof out === 'string' ? out : String(out), isError: false };
+        }
+        if (p.name === 'find_mcp_tools' && extraToolsDeferred) {
+          return { content: runFindMcpTools(p.args), isError: false };
+        }
+        if (toolAllow && !isAllowed(p.name)) return { content: `Tool "${p.name}" is not available to this sub-agent.`, isError: true };
+        const pre = await beforeTool(p.name, p.args);
+        if (pre.blocked) return { content: pre.planGate ? pre.reason : `Blocked by hook: ${pre.reason}`, isError: true };
+        const r = await runTool(p.name, pre.args, ctx);
+        const content = typeof r === 'string' ? r : r.content;
+        const imageDataUrl = (r && typeof r === 'object' && r.imageDataUrl) ? r.imageDataUrl : null;
+        const isErr = (typeof r === 'object' && Boolean(r.isError))
+          || /^(Error|Tool error)/i.test(String(content).trim());
+        return { content: await afterTool(p.name, pre.args, String(content), isErr), isError: isErr, imageDataUrl };
+      } catch (e) {
+        if (opts.signal && opts.signal.aborted) throw e;
+        return { content: 'Error: ' + (e && e.message ? e.message : String(e)), isError: true };
       }
     }
 
-    for (const tc of calls) {
+    async function runOneSequential(tc) {
       if (opts.signal && opts.signal.aborted) throw new Error('aborted');
       const name = tc.function.name;
       let args = parseArgs(tc.function.arguments);
@@ -2906,6 +3047,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
 
       let result;
       let isError = false;
+      let imageDataUrl = null;
       // Host-local tools (swarm board) run in-process: no hooks, no shell, no
       // MCP round trip. They are pure memory operations on the board object.
       if (isLocal(name)) {
@@ -2919,7 +3061,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         emit({ type: 'toolResult', id: tc.id, name, result: String(result), isError });
         if (textCalls) messages.push({ role: 'user', content: `TOOL RESULT ${tc.id} (${name}):\n${result}` });
         else messages.push({ role: 'tool', tool_call_id: tc.id, name, content: String(result) });
-        continue;
+        return;
       }
       // A sub-agent definition's `tools:` list is a hard allowlist — a model that
       // tries a tool it was not granted gets a clear refusal, not a silent no-op.
@@ -2929,7 +3071,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         emit({ type: 'toolResult', id: tc.id, name, result, isError });
         if (textCalls) messages.push({ role: 'user', content: `TOOL RESULT ${tc.id} (${name}):\n${result}` });
         else messages.push({ role: 'tool', tool_call_id: tc.id, name, content: result });
-        continue;
+        return;
       }
       // Example's PreToolUse hook can veto or rewrite the call before it runs.
       const pre = await beforeTool(name, args);
@@ -2939,7 +3081,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         emit({ type: 'toolResult', id: tc.id, name, result, isError });
         if (textCalls) messages.push({ role: 'user', content: `TOOL RESULT ${tc.id} (${name}):\n${result}` });
         else messages.push({ role: 'tool', tool_call_id: tc.id, name, content: result });
-        continue;
+        return;
       }
       args = pre.args;
       // Record the pre-change state of any file this mutating tool will touch.
@@ -2974,6 +3116,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           const r = await runTool(name, args, ctx);
           result = typeof r === 'string' ? r : r.content;
           isError = typeof r === 'object' && Boolean(r.isError);
+          if (r && typeof r === 'object' && r.imageDataUrl) imageDataUrl = r.imageDataUrl;
         }
       } catch (e) {
         if (opts.signal && opts.signal.aborted) throw e;
@@ -3009,11 +3152,55 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
 
       emit({ type: 'toolResult', id: tc.id, name, result: String(result), isError });
       if (name === 'ExitPlanMode' || name === 'AskUserQuestion') planEnded = true;
+      if (imageDataUrl && !isError && !textToolMode) {
+        pendingImages.push({ name, summary: String(result).slice(0, 200), imageDataUrl });
+      }
       if (textCalls) {
         messages.push({ role: 'user', content: `TOOL RESULT ${tc.id} (${name}):\n${await afterTool(name, args, result, isError)}` });
       } else {
         messages.push({ role: 'tool', tool_call_id: tc.id, name, content: await afterTool(name, args, result, isError) });
       }
+    }
+
+    for (const wave of waves) {
+      if (opts.signal && opts.signal.aborted) throw new Error('aborted');
+      if (wave.parallel) {
+        const batch = wave.items.map((tc) => ({ tc, name: tc.function.name, args: parseArgs(tc.function.arguments) }));
+        batch.forEach((p) => emit({ type: 'tool', id: p.tc.id, name: p.name, args: p.args }));
+        let waveSig;
+        try { waveSig = 'WAVE|' + JSON.stringify(batch.map((b) => [b.name, b.args])); } catch { waveSig = 'WAVE|?'; }
+        if (waveSig === lastSig) repeatCount++; else { lastSig = waveSig; repeatCount = 1; }
+        const results = await Promise.all(batch.map(async (p) => {
+          const isAgent = PARALLEL_AGENT.has(p.name);
+          if (isAgent) await agentSlot();
+          try { return await runOneParallel(p); } finally { if (isAgent) agentFree(); }
+        }));
+        if (opts.signal && opts.signal.aborted) throw new Error('aborted');
+        batch.forEach((p, i) => {
+          let content = results[i].content;
+          if (repeatCount >= 2 && nudges < 5 && i === batch.length - 1) {
+            nudges++;
+            content += '\n\n[SYSTEM NOTE: You repeated the exact same parallel batch of calls. Use the results you already received or change approach.]';
+          }
+          emit({ type: 'toolResult', id: p.tc.id, name: p.name, result: content, isError: results[i].isError });
+          if (results[i].imageDataUrl && !results[i].isError && !textToolMode) {
+            pendingImages.push({ name: p.name, summary: String(content).slice(0, 200), imageDataUrl: results[i].imageDataUrl });
+          }
+          messages.push({ role: 'tool', tool_call_id: p.tc.id, name: p.name, content });
+        });
+      } else {
+        await runOneSequential(wave.items[0]);
+      }
+    }
+    if (pendingImages.length && !textToolMode) {
+      messages.push({
+        role: 'user',
+        _syntheticImageRead: true,
+        content: [
+          { type: 'text', text: pendingImages.map((x) => `[Image loaded via ${x.name}: ${x.summary}]`).join('\n') },
+          ...pendingImages.map((x) => ({ type: 'image_url', image_url: { url: x.imageDataUrl } })),
+        ],
+      });
     }
   }
 

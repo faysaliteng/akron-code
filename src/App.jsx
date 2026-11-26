@@ -656,6 +656,11 @@ export default function App() {
   const [activeProject, setActiveProject] = useState(() => loadJSON('autobot:activeProject', null));
   const [sessionPane, setSessionPane] = useState({ type: null, width: 480 }); // type: null | 'browser' | 'env' | 'runlog' | 'review' | 'subagents' | 'files' | 'terminal'
   const [openPaneTabs, setOpenPaneTabs] = useState(['review']);
+  const [settingsInitialSection, setSettingsInitialSection] = useState('providers');
+  const openSettingsAt = useCallback((sec = 'providers') => {
+    setSettingsInitialSection(sec || 'providers');
+    setShowSettings(true);
+  }, []);
   const lastPaneRef = useRef('review');
   const [reviewTarget, setReviewTarget] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null); // file the browser pane should show (generated site)
@@ -706,15 +711,15 @@ export default function App() {
   }, []);
 
   const closeSessionTab = useCallback((tabType) => {
-    setOpenPaneTabs((prev) => {
-      const next = prev.filter((t) => t !== tabType);
-      setSessionPane((p) => {
-        if (p.type !== tabType) return p;
-        return { ...p, type: next.length ? next[next.length - 1] : null };
-      });
-      return next.length ? next : ['review'];
+    const nextTabs = openPaneTabs.filter((t) => t !== tabType);
+    setOpenPaneTabs(nextTabs);
+    setSessionPane((p) => {
+      if (!tabType || p.type === tabType) {
+        return { ...p, type: nextTabs.length ? nextTabs[nextTabs.length - 1] : null };
+      }
+      return p;
     });
-  }, []);
+  }, [openPaneTabs]);
 
   const openReview = useCallback((target = null) => {
     setReviewTarget(target);
@@ -2641,22 +2646,58 @@ export default function App() {
       <div className="titlebar"><Logo size={16} active={streaming} /><span className="brand">Akron Bot</span><span className="sub">{T('brand.sub')}</span></div>
 
       <div className="layout">
-        {/* Sidebar — Example parity: wordmark / search / collapse, New chat, Recents, Tools, account+settings */}
+        {/* Sidebar — 3-zone layout: pinned Workspace + Dock, scrollable Recents, pinned Customizations & Settings */}
         <aside className={'sidebar' + (sidebarCollapsed ? ' collapsed' : '')}>
-          <div className="sidebar-head">
-            <div className="wordmark"><Logo size={18} /><span className="brand">Akron Bot</span></div>
-            <div className="sidebar-actions">
-              <button className="icon-btn" title={T('sidebar.search')} onClick={() => setPanel((p) => (p === 'search' ? 'chats' : 'search'))}><Icon name="Search" size={17} /></button>
-              <button className="icon-btn" title={sidebarCollapsed ? T('sidebar.expand') : T('sidebar.collapse')} onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
-                <Icon name={sidebarCollapsed ? 'SidebarOpen' : 'SidebarClose'} size={17} />
-              </button>
+          <div className="sidebar-top">
+            <div className="sidebar-head">
+              <div className="wordmark"><Logo size={18} /><span className="brand">Akron Bot</span></div>
+              <div className="sidebar-actions">
+                <button className="icon-btn" title={T('sidebar.search')} onClick={() => setPanel((p) => (p === 'search' ? 'chats' : 'search'))}><Icon name="Search" size={17} /></button>
+                <button className="icon-btn" title={sidebarCollapsed ? T('sidebar.expand') : T('sidebar.collapse')} onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
+                  <Icon name={sidebarCollapsed ? 'SidebarOpen' : 'SidebarClose'} size={17} />
+                </button>
+              </div>
             </div>
+
+            <button className="newchat" onClick={newChat}><Icon name="Add" size={16} /><span className="label">{T('sidebar.newChat')}</span></button>
+
+            <div className="section-label">Workspace</div>
+            <nav className="sidenav">
+              <button className={panel === 'search' ? 'on' : ''} onClick={() => setPanel('search')} title="Search conversations"><Icon name="Search" size={15} /><span className="label">Search</span><span className="kbd-hint">⌘⇧F</span></button>
+              <button className={panel === 'projects' ? 'on' : ''} onClick={() => setPanel('projects')} title={T('sidebar.projects')}><Icon name="Folder" size={15} /><span className="label">{T('sidebar.projects')}</span>{projects.length > 0 && <span className="count">{projects.length}</span>}</button>
+              <button className={panel === 'artifacts' ? 'on' : ''} onClick={() => setPanel('artifacts')} title={T('sidebar.artifacts')}><Icon name="Artifacts" size={15} /><span className="label">{T('sidebar.artifacts')}</span>{artifacts.length > 0 && <span className="count">{artifacts.length}</span>}</button>
+              <button className={panel === 'scheduled' ? 'on' : ''} onClick={() => setPanel('scheduled')} title="Automations & Scheduled Tasks"><Icon name="Clock" size={15} /><span className="label">Automations</span></button>
+              <div className="sidenav-dock">
+                <button
+                  className={(panel === 'chats' ? sessionPane.type === 'files' : panel === 'code') ? 'on' : ''}
+                  onClick={() => (panel === 'chats' ? toggleSessionPane('files') : setPanel('code'))}
+                  title="Code & Files"
+                >
+                  <Icon name="Code" size={14} /><span className="label">{T('sidebar.code')}</span>
+                </button>
+                <button
+                  className={(panel === 'chats' ? sessionPane.type === 'terminal' : panel === 'terminal') ? 'on' : ''}
+                  onClick={() => (panel === 'chats' ? toggleSessionPane('terminal') : setPanel('terminal'))}
+                  title={T('sidebar.terminal')}
+                >
+                  <Icon name="CommandLine" size={14} /><span className="label">{T('sidebar.terminal')}</span>
+                </button>
+                <button
+                  className={sessionPane.type === 'browser' ? 'on' : ''}
+                  onClick={() => toggleSessionPane('browser')}
+                  title={T('sidebar.browser')}
+                >
+                  <Icon name="Globe" size={14} /><span className="label">{T('sidebar.browser')}</span>
+                </button>
+              </div>
+            </nav>
           </div>
 
-          <button className="newchat" onClick={newChat}><Icon name="Add" size={16} /><span className="label">{T('sidebar.newChat')}</span></button>
-
-          <div className="sidebar-scroll">
-            <div className="section-label">{T('sidebar.recents')}</div>
+          <div className="sidebar-recents">
+            <div className="section-label recents-head">
+              <span>{T('sidebar.recents')}</span>
+              {convs.length > 0 && <span className="recents-count">{convs.length}</span>}
+            </div>
             <div className="convlist">
               {[...convs].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)).map((c) => (
                 <div key={c.id} className={'conv ' + (c.id === activeId && panel === 'chats' ? 'on' : '')} onClick={() => selectConv(c.id)}>
@@ -2668,33 +2709,30 @@ export default function App() {
               ))}
               {convs.length === 0 && <div className="muted">No conversations yet</div>}
             </div>
-
-            <div className="section-label">{T('sidebar.tools')}</div>
-            <nav className="sidenav">
-              <button className={panel === 'search' ? 'on' : ''} onClick={() => setPanel('search')}><Icon name="Search" size={15} /><span className="label">Search</span><span className="kbd-hint">⌘⇧F</span></button>
-              <button className={panel === 'artifacts' ? 'on' : ''} onClick={() => setPanel('artifacts')}><Icon name="Artifacts" size={15} /><span className="label">{T('sidebar.artifacts')}</span><span className="count">{artifacts.length}</span></button>
-              <button className={panel === 'memory' ? 'on' : ''} onClick={() => setPanel('memory')}><Icon name="Memory" size={15} /><span className="label">{T('sidebar.memory')}</span><span className="count">{memory.length}</span></button>
-              <button className={panel === 'skills' ? 'on' : ''} onClick={() => setPanel('skills')}><Icon name="Lightbulb" size={15} /><span className="label">{T('sidebar.skills')}</span><span className="count">{skills.filter((s) => s.enabled !== false).length}</span></button>
-              <button className={panel === 'projects' ? 'on' : ''} onClick={() => setPanel('projects')}><Icon name="Folder" size={15} /><span className="label">{T('sidebar.projects')}</span><span className="count">{projects.length}</span></button>
-              <button className={panel === 'plugins' ? 'on' : ''} onClick={() => setPanel('plugins')}><Icon name="Plugin" size={15} /><span className="label">{T('sidebar.plugins')}</span></button>
-              <button className={panel === 'scheduled' ? 'on' : ''} onClick={() => setPanel('scheduled')}><Icon name="Clock" size={15} /><span className="label">{T('sidebar.scheduled')}</span></button>
-              <button className={panel === 'notebooks' ? 'on' : ''} onClick={() => setPanel('notebooks')}><Icon name="Book" size={15} /><span className="label">{T('sidebar.notebooks')}</span></button>
-              <button className={panel === 'mcp' ? 'on' : ''} onClick={() => setPanel('mcp')}><Icon name="Connectors" size={15} /><span className="label">{T('sidebar.mcp')}</span><span className="count">{mcpServers.length}</span></button>
-              <button className={panel === 'terminal' ? 'on' : ''} onClick={() => setPanel('terminal')}><Icon name="CommandLine" size={15} /><span className="label">{T('sidebar.terminal')}</span></button>
-              <button className={panel === 'code' ? 'on' : ''} onClick={() => setPanel('code')}><Icon name="Code" size={15} /><span className="label">{T('sidebar.code')}</span></button>
-              <button className={sessionPane.type === 'browser' ? 'on' : ''} onClick={() => toggleSessionPane('browser')}><Icon name="Globe" size={15} /><span className="label">{T('sidebar.browser')}</span></button>
-            </nav>
           </div>
 
-          <div className="sidebar-foot">
-            <button className="account-row" onClick={() => setShowSettings(true)}>
-              <span className="avatar-dot">HB</span>
-              <span className="account-name">Akron Bot</span>
+          <div className="sidebar-bottom">
+            <button
+              type="button"
+              className="sidebar-custom-btn"
+              onClick={() => openSettingsAt('skills')}
+              title="Open Customizations in Settings (Skills, Plugins, MCP Connectors, Memory & Notebooks)"
+            >
+              <Icon name="Lightbulb" size={15} />
+              <span className="label">Customizations</span>
+              <span className="custom-meta">Skills · MCP</span>
             </button>
-            <button className="icon-btn settings-icon" title={T('sidebar.settings')} onClick={() => setShowSettings(true)}><Icon name="Settings" size={17} /></button>
-          </div>
-          <div className="sidebar-mark">
-            <a href="https://akronlogic.com" target="_blank" rel="noreferrer">akronlogic.com</a>
+
+            <div className="sidebar-foot">
+              <button className="account-row" onClick={() => openSettingsAt('providers')}>
+                <span className="avatar-dot">HB</span>
+                <span className="account-name">Akron Bot</span>
+              </button>
+              <button className="icon-btn settings-icon" title={T('sidebar.settings')} onClick={() => openSettingsAt('providers')}><Icon name="Settings" size={17} /></button>
+            </div>
+            <div className="sidebar-mark">
+              <a href="https://akronlogic.com" target="_blank" rel="noreferrer">akronlogic.com</a>
+            </div>
           </div>
         </aside>
 
@@ -2702,7 +2740,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => setPanel('plugins')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
+              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
@@ -2727,7 +2765,7 @@ export default function App() {
                   cwd={cwd} setCwd={setCwd} provider={provider} lastUsage={lastUsage}
                   mcpServers={mcpServers} features={features} saveFeat={saveFeat}
                   runSlashCommand={runSlashCommand}
-                  onOpenConnectors={() => setPanel('mcp')}
+                  onOpenConnectors={() => openSettingsAt('mcp')}
                   T={T}
                 />
               </SessionPane>
@@ -2746,6 +2784,7 @@ export default function App() {
                   allTools={allActiveTools}
                   onSendComment={(txt) => send(txt)}
                   onRewindDone={(r) => setError(`✅ Rewound: restored ${(r && r.restored) || 0}, removed ${(r && r.removed) || 0}.`)}
+                  onClose={() => closeSessionTab('review')}
                   voiceOpts={{ engine: settings.voiceEngine || 'auto', lang: settings.voiceLang || 'en-US' }}
                   Icon={Icon}
                 />
@@ -2775,7 +2814,7 @@ export default function App() {
             streaming={streaming} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
             queued={queued.filter((q) => q.convId === activeId)} unqueue={unqueue} editQueued={editQueued} sendQueuedNow={sendQueuedNow}
             settings={settings} onVoiceError={setError}
-            provider={provider} setProvider={setProvider} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); setShowSettings(true); }}
+            provider={provider} setProvider={setProvider} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt('providers'); }}
             providerKeys={providerKeys} setProviderKeys={setProviderKeys}
             attachments={attachments} setAttachments={setAttachments}
             reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
@@ -2793,7 +2832,21 @@ export default function App() {
       </div>
 
       {showSettings && (
-        <SettingsModal provider={provider} setProvider={setProvider} providerKeys={providerKeys} setProviderKeys={setProviderKeys} settings={settings} setSettings={setSettings} orchestrator={orchestrator} setOrchestrator={setOrchestrator} features={features} setFeatures={setFeatures} testProvider={testProvider} onClose={() => { setShowSettings(false); setPendingPreset(null); }} T={T} permissions={permissions} setPermissions={setPermissions} compliance={compliance} setCompliance={setCompliance} pendingPreset={pendingPreset} clearPendingPreset={() => setPendingPreset(null)} />
+        <SettingsModal
+          provider={provider} setProvider={setProvider} providerKeys={providerKeys} setProviderKeys={setProviderKeys}
+          settings={settings} setSettings={setSettings} orchestrator={orchestrator} setOrchestrator={setOrchestrator}
+          features={features} setFeatures={setFeatures} testProvider={testProvider}
+          onClose={() => { setShowSettings(false); setPendingPreset(null); }}
+          T={T} permissions={permissions} setPermissions={setPermissions}
+          compliance={compliance} setCompliance={setCompliance}
+          pendingPreset={pendingPreset} clearPendingPreset={() => setPendingPreset(null)}
+          initialSection={settingsInitialSection}
+          skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills}
+          mcpServers={mcpServers} mcpForm={mcpForm} setMcpForm={setMcpForm} connectMcp={connectMcp} disconnectMcp={disconnectMcp}
+          memory={memory} addMemory={addMemory} clearMemory={clearMemory}
+          notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells}
+          openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook}
+        />
       )}
 
       {question && (
@@ -2915,13 +2968,15 @@ function RunActivity({ live, thinking, startedAt }) {
   let target = '';
   if (running) {
     const d = describeTool(running.name, running.args);
-    label = d.verb + '…';
-    target = d.target;
+    const verb = (d && d.verb) ? d.verb : (running.name || 'Working');
+    label = verb + '…';
+    target = (d && d.target) || '';
   } else if (stTool && stTool.name) {
     const d = describeTool(stTool.name, stTool.target ? { path: stTool.target, file_path: stTool.target, query: stTool.target, tool: stTool.target, goal: stTool.target, command: stTool.target } : {});
     const kb = stTool.bytes >= 1024 ? (stTool.bytes / 1024).toFixed(1) + ' KB' : (stTool.bytes ? stTool.bytes + ' B' : '');
-    label = d.verb + '…';
-    target = [stTool.target || d.target, kb].filter(Boolean).join(' · ');
+    const verb = (d && d.verb) ? d.verb : (stTool.name || 'Working');
+    label = verb + '…';
+    target = [stTool.target || (d && d.target), kb].filter(Boolean).join(' · ');
   } else if (lastSeg && lastSeg.type === 'text' && live && live.content) {
     label = 'Writing…';
   } else if (last) {
@@ -3338,16 +3393,21 @@ function renderBoardText(text) {
   ));
 }
 
-function MissionControl({ subAgents, swarmInfo, swarmBoard }) {
-  const [collapsed, setCollapsed] = useState(false);
-  const [expandedKey, setExpandedKey] = useState(null);
-  const [showBoard, setShowBoard] = useState(true);
-  const boardEndRef = useRef(null);
-
+function MissionControl({ subAgents, swarmInfo, swarmBoard, inline = false, onOpenSubagents }) {
   const anyActive = Boolean(
     (swarmInfo && swarmInfo.phase !== 'done')
     || (subAgents || []).some((a) => a.status === 'running' || a.status === 'working' || a.status === 'queued' || a.status === 'waiting')
   );
+  const [collapsed, setCollapsed] = useState(() => Boolean(inline && !anyActive));
+  const [expandedKey, setExpandedKey] = useState(null);
+  const [showBoard, setShowBoard] = useState(true);
+  const boardEndRef = useRef(null);
+  const wasActiveRef = useRef(anyActive);
+  useEffect(() => {
+    if (inline && wasActiveRef.current && !anyActive) setCollapsed(true);
+    wasActiveRef.current = anyActive;
+  }, [inline, anyActive]);
+  const normSlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
   const now = useTicker(anyActive, 1000);
 
   useEffect(() => {
@@ -3368,7 +3428,7 @@ function MissionControl({ subAgents, swarmInfo, swarmBoard }) {
   const postsCount = (swarmBoard && swarmBoard.length) || 0;
 
   return (
-    <div className={'mc-panel' + (anyActive ? ' active' : '')}>
+    <div className={'mc-panel' + (anyActive ? ' active' : '') + (inline ? ' inline' : '')}>
       <button type="button" className="mc-head" onClick={() => setCollapsed((v) => !v)} aria-expanded={!collapsed}>
         <span className="mc-head-ico"><Icon name="Orbit" size={15} /></span>
         <span className="mc-title">{swarmInfo ? 'Swarm Mission Control' : 'Agent Workers'}</span>
@@ -3379,6 +3439,18 @@ function MissionControl({ subAgents, swarmInfo, swarmBoard }) {
           {counts.err > 0 && <span className="mc-pill err">{counts.err} err</span>}
           {postsCount > 0 && <span className="mc-pill">{postsCount} board</span>}
         </div>
+        {inline && onOpenSubagents && (
+          <span
+            className="mc-open-pane"
+            role="button"
+            tabIndex={0}
+            title="Open Subagents pane"
+            onClick={(e) => { e.stopPropagation(); onOpenSubagents(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onOpenSubagents(); } }}
+          >
+            Details →
+          </span>
+        )}
         <Icon name={collapsed ? 'CaretRight' : 'CaretDown'} size={13} className="mc-caret" />
       </button>
 
@@ -3402,7 +3474,7 @@ function MissionControl({ subAgents, swarmInfo, swarmBoard }) {
             </div>
           )}
 
-          <div className="mc-grid">
+          <div className={'mc-grid' + (!swarmInfo && (subAgents || []).length <= 1 ? ' single-worker' : '')}>
             {swarmInfo && swarmInfo.supervisor && (
               <div className={'mc-card supervisor ' + (swarmInfo.supervisorState || (curPhase === 'done' ? 'done' : 'running'))}>
                 <div className="mc-card-top">
@@ -3422,6 +3494,7 @@ function MissionControl({ subAgents, swarmInfo, swarmBoard }) {
               const expanded = expandedKey === a.key;
               const roleClass = a.jobRole || a.tier || 'coder';
               const elapsedMs = a.ms != null ? a.ms : (a.startedAt ? Math.max(0, now - a.startedAt) : 0);
+              const showHandle = a.handle && normSlug(a.handle) !== normSlug(a.name);
               return (
                 <button
                   type="button"
@@ -3432,7 +3505,7 @@ function MissionControl({ subAgents, swarmInfo, swarmBoard }) {
                   <div className="mc-card-top">
                     <span className={'mc-dot ' + a.status} />
                     <span className="mc-card-name" title={a.name}>
-                      {a.name}{a.handle && a.handle !== a.name ? ` · @${a.handle}` : ''}
+                      {a.name}{showHandle ? ` · @${a.handle}` : ''}
                     </span>
                     <span className={'mc-role ' + roleClass}>{a.jobRole || a.tier || 'worker'}</span>
                   </div>
@@ -3909,7 +3982,7 @@ function ChatView({ messages, live, thinking, subAgents, swarmInfo, swarmBoard, 
       )}
       {messages.map((m, i) => <Message key={m.id} m={m} convId={convId} idx={i} turnLabel={turnPrompts[i]} subAgentCount={subCount} taskCount={bgTasksCount} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} />)}
       {Boolean((subAgents && subAgents.length > 0) || swarmInfo) && (
-        <MissionControl subAgents={subAgents} swarmInfo={swarmInfo} swarmBoard={swarmBoard} />
+        <MissionControl subAgents={subAgents} swarmInfo={swarmInfo} swarmBoard={swarmBoard} inline onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} />
       )}
       {live && <div className="msg assistant">
         <div className="avatar avatar-assistant"><Logo size={20} /></div>
@@ -6094,22 +6167,30 @@ function SessionPane({ icon, title, activeType, openTabs = [], onSelectTab, onCl
                 <Icon name={meta.icon} size={13} />
                 <span className="sp-tab-label">{meta.label}</span>
                 {badge > 0 && <span className="sp-tab-badge">{badge}</span>}
-                {tabIds.length > 1 && (
-                  <button
-                    type="button"
-                    className="sp-tab-x"
-                    onClick={(e) => { e.stopPropagation(); onCloseTab && onCloseTab(tid); }}
-                    title={'Close ' + meta.label}
-                  >
-                    <Icon name="X" size={10} />
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="sp-tab-x"
+                  onClick={(e) => { e.stopPropagation(); if (onCloseTab) onCloseTab(tid); else if (onHide) onHide(); }}
+                  title={'Close ' + meta.label}
+                  aria-label={'Close ' + meta.label}
+                >
+                  <Icon name="X" size={11} />
+                </button>
               </div>
             );
           }) : (
             <div className="sp-tab on">
               <Icon name={icon} size={14} />
               <span className="sp-tab-label">{title}</span>
+              <button
+                type="button"
+                className="sp-tab-x"
+                onClick={(e) => { e.stopPropagation(); if (onHide) onHide(); }}
+                title={'Close ' + title}
+                aria-label={'Close ' + title}
+              >
+                <Icon name="X" size={11} />
+              </button>
             </div>
           )}
           <div className="sp-add-wrap" ref={addRef}>
@@ -6139,7 +6220,7 @@ function SessionPane({ icon, title, activeType, openTabs = [], onSelectTab, onCl
             )}
           </div>
         </div>
-        <button className="icon-btn session-pane-hide" onClick={onHide} title={'Hide ' + title}><Icon name="X" size={15} /></button>
+        <button type="button" className="icon-btn session-pane-hide" onClick={(e) => { e.stopPropagation(); onHide && onHide(); }} title={'Close ' + title} aria-label={'Close ' + title}><Icon name="X" size={15} /></button>
       </div>
       <div className="session-pane-body">{children}</div>
     </div>
@@ -8523,6 +8604,9 @@ function RolePoolsEditor({ orchestrator, saveOrch }) {
 const SETTINGS_SECTIONS = [
   { id: 'providers', label: 'Models & Providers', icon: 'Sparkles', sub: 'Primary endpoints, presets, local Ollama, and subscription sign-in.', keys: 'model provider ollama api key preset subscription oauth temperature token' },
   { id: 'orchestrator', label: 'Orchestrator & Pools', icon: 'Orbit', sub: 'Multi-model failover tiers and FreeLLMAPI role pools with live pool health.', keys: 'orchestrator pool planner coder vision fast longctx failover swarm' },
+  { id: 'skills', label: 'Skills & Plugins', icon: 'Lightbulb', sub: 'Manage SKILL.md packs, agent capabilities, and plugins.', keys: 'skills plugins packs extensions' },
+  { id: 'mcp', label: 'MCP Connectors', icon: 'Connectors', sub: 'Connect external Model Context Protocol servers & tools.', keys: 'mcp connectors servers tools' },
+  { id: 'memory', label: 'Memory & Notebooks', icon: 'Memory', sub: 'Long-term saved facts and interactive notebooks.', keys: 'memory facts notebooks cells' },
   { id: 'harness', label: 'Harness & Custom Tools', icon: 'AgentsSimple', sub: 'Creator Mode runtime tools, developer features, and agent capabilities.', keys: 'creator custom tool harness developer extension buddy remote control' },
   { id: 'rea', label: 'Reverse Engineering', icon: 'Orbit', sub: 'Built-in REA (morluto/rea) MCP & CLI, 263 tools, doctor & runtime.', keys: 'rea reverse engineer binary ghidra hopper ida rizin asar apk firmware mcp decompile' },
   { id: 'browser', label: 'Browser Extension', icon: 'Globe', sub: 'Zero-key Chrome extension bridge for live browser control & shared desktop models.', keys: 'chrome extension akron browser bot bridge websocket tabs 8766' },
@@ -8531,9 +8615,20 @@ const SETTINGS_SECTIONS = [
   { id: 'system', label: 'Appearance & System', icon: 'Palette', sub: 'Theme, language locale, memory injection, launch behavior, and runtimes.', keys: 'theme dark light locale language memory login quick entry runtime' },
 ];
 
-function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator, features, setFeatures, testProvider, onClose, T, permissions, setPermissions, compliance, setCompliance, pendingPreset, clearPendingPreset }) {
-  const [section, setSection] = useState('providers');
+function SettingsModal({
+  provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator,
+  features, setFeatures, testProvider, onClose, T, permissions, setPermissions, compliance, setCompliance,
+  pendingPreset, clearPendingPreset, initialSection = 'providers',
+  skills = [], toggleSkill, setAllSkills, refreshSkills,
+  mcpServers = [], mcpForm, setMcpForm, connectMcp, disconnectMcp,
+  memory = [], addMemory, clearMemory,
+  notebooks = [], activeNotebook, notebookCells = [], setNotebookCells, openNotebook, newNotebook, saveActiveNotebook, deleteActiveNotebook,
+}) {
+  const [section, setSection] = useState(initialSection || 'providers');
   const [navFilter, setNavFilter] = useState('');
+  useEffect(() => {
+    if (initialSection) setSection(initialSection);
+  }, [initialSection]);
 
   // Editing an endpoint/model by hand means this is no longer a signed-in
   // subscription selection — drop the OAuth binding so the gateway path wins.
@@ -8663,6 +8758,9 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
   const badgeFor = (id) => {
     if (id === 'providers') return (provider.model || '').split('/').pop().slice(0, 14) || 'Setup';
     if (id === 'orchestrator') return (orchestrator.pools && orchestrator.pools.enabled) ? 'Pools on' : (orchestrator.enabled ? 'On' : 'Off');
+    if (id === 'skills') return `${skills.filter((s) => s.enabled !== false).length}`;
+    if (id === 'mcp') return `${mcpServers.length}`;
+    if (id === 'memory') return `${memory.length}`;
     if (id === 'harness') return customTools.length ? `${customTools.length} tool${customTools.length === 1 ? '' : 's'}` : '';
     if (id === 'rea') return reaInfo && reaInfo.connected ? `${reaInfo.toolCount} tools` : (reaInfo && reaInfo.available ? 'Ready' : 'Setup');
     if (id === 'browser') return extStatus && extStatus.extensionConnected ? 'Live' : '8766';
@@ -9099,6 +9197,38 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
 
                 <div className="settings-card">
                   <ComplianceSection compliance={compliance} setCompliance={setCompliance} />
+                </div>
+              </>
+            )}
+
+            {section === 'skills' && (
+              <>
+                <div className="settings-card">
+                  <h3><Icon name="Lightbulb" size={14} /> Skills</h3>
+                  <SkillsView skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills} />
+                </div>
+                <div className="settings-card">
+                  <h3><Icon name="Plugin" size={14} /> Plugins &amp; Extensions</h3>
+                  <PluginsView />
+                </div>
+              </>
+            )}
+
+            {section === 'mcp' && (
+              <div className="settings-card">
+                <McpView mcpServers={mcpServers} mcpForm={mcpForm} setMcpForm={setMcpForm} connectMcp={connectMcp} disconnectMcp={disconnectMcp} />
+              </div>
+            )}
+
+            {section === 'memory' && (
+              <>
+                <div className="settings-card">
+                  <h3><Icon name="Memory" size={14} /> Long-Term Memory</h3>
+                  <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />
+                </div>
+                <div className="settings-card">
+                  <h3><Icon name="Book" size={14} /> Notebooks</h3>
+                  <NotebooksView notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells} openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook} />
                 </div>
               </>
             )}

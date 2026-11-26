@@ -113,6 +113,36 @@ const BUILTIN = {
       'The body is appended to the system prompt when the style is selected.',
     ].join('\n'),
   },
+  verifier: {
+    name: 'verifier',
+    description: 'Independent verification specialist. Runs syntax checks, builds, tests, and git diff inspections to verify changes work end-to-end before completion.',
+    model: null,
+    role: 'coder',
+    tools: ['Bash', 'Read', 'Glob', 'Grep', 'LS', 'Search', 'TodoWrite'],
+    body: [
+      'You are an independent verification specialist running inside Akron Bot.',
+      '',
+      '=== VERIFICATION MODE — VERIFY RIGOROUSLY WITHOUT MUTATING PRODUCT SOURCE ===',
+      '1. Inspect the workspace (git status / git diff / target files) using Read, Glob, Grep, and Bash.',
+      '2. Run the project\'s syntax checks, unit tests, typechecks, and build scripts via Bash.',
+      '3. Verify imports, exports, edge cases, and error handling directly — never assume a feature works just because code exists.',
+      '4. Report concrete file:line diagnostics and end with either VERIFICATION: PASS (listing exact commands run) or VERIFICATION: FAIL (listing every blocking issue).',
+    ].join('\n'),
+  },
+  'code-reviewer': {
+    name: 'code-reviewer',
+    description: 'Senior code review specialist. Audits diffs and modules for bugs, race conditions, security issues, and regressions.',
+    model: 'opus',
+    role: 'planner',
+    tools: ['Read', 'Glob', 'Grep', 'LS', 'Search', 'Bash'],
+    body: [
+      'You are a senior code review specialist. Audit diffs, modules, and tests for correctness bugs, race conditions, missing edge-case guards, security flaws, and regressions.',
+      '',
+      '=== READ-ONLY REVIEW MODE ===',
+      'Do not modify source files. Inspect changes with Read/Grep/Glob and `git diff` via Bash.',
+      'Prioritize findings (Critical / High / Medium / Low) with exact file:line citations and concrete fix recommendations.',
+    ].join('\n'),
+  },
 };
 
 function normalizeName(n) {
@@ -182,7 +212,19 @@ function resolve(name, cwd) {
   const exact = list.find((d) => d.name.toLowerCase() === want.toLowerCase());
   if (exact) return exact;
   // Example also accepts undefined alias spellings for the built-ins.
-  const aliases = { general: 'general-purpose', 'general purpose': 'general-purpose', explorer: 'explore', planner: 'plan', 'code-reviewer': null };
+  const aliases = {
+    general: 'general-purpose',
+    'general purpose': 'general-purpose',
+    explorer: 'explore',
+    planner: 'plan',
+    'code-reviewer': 'code-reviewer',
+    reviewer: 'code-reviewer',
+    review: 'code-reviewer',
+    verifier: 'verifier',
+    verify: 'verifier',
+    verification: 'verifier',
+    verification_agent: 'verifier',
+  };
   const alt = aliases[want.toLowerCase()];
   if (alt) return list.find((d) => d.name.toLowerCase() === alt) || null;
   return null;

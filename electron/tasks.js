@@ -330,10 +330,38 @@ function drainInbox(input = {}) {
   return { ok: true, messages: box };
 }
 
+// In-process live teammate handles: key = `${team}:${name}`
+const liveMembers = new Map();
+
+function liveKey(team, name) {
+  return `${safeName(team)}:${String(name || '').trim()}`;
+}
+
+function registerLiveMember(teamName, name, handle) {
+  const key = liveKey(teamName, name);
+  liveMembers.set(key, handle);
+  return () => {
+    if (liveMembers.get(key) === handle) liveMembers.delete(key);
+  };
+}
+
+function signalLiveMember(teamName, name, payload) {
+  const key = liveKey(teamName, name);
+  const handle = liveMembers.get(key);
+  if (!handle || typeof handle.onSignal !== 'function') return false;
+  try {
+    handle.onSignal(payload);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 module.exports = {
   ROOT, LEAD, TEAMS_DIR, TASKS_DIR,
   safeName, getTeam, ensureTeam, addMember, setMemberStatus, listTeams,
   createTeam, deleteTeam,
   createTask, getTask, updateTask, listTasks, formatTaskList, readAllTasks,
   sendMessage, drainInbox,
+  registerLiveMember, signalLiveMember,
 };

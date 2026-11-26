@@ -1,7 +1,8 @@
 'use strict';
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { exec, spawn } = require('child_process');
+const { exec, execFileSync, spawn } = require('child_process');
 const store = require('./store');
 const visualize = require('./visualize');
 const computer = require('./computer');
@@ -82,6 +83,46 @@ const READ_DEFAULT_LINES = 2000;
 const READ_MAX_LINE = 2000;      // chars per line
 const READ_MAX_CHARS = 100000;   // chars per Read call
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|ico|tiff?|heic|avif)$/i;
+const RASTER_IMAGE_MIME = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
+
+function quickSyntaxDiagnostic(fp) {
+  try {
+    const ext = path.extname(fp).toLowerCase();
+    if (!['.json', '.cjs', '.mjs', '.js', '.py'].includes(ext)) return '';
+    if (ext === '.json') {
+      JSON.parse(fs.readFileSync(fp, 'utf8'));
+      return '';
+    }
+    if (ext === '.js') {
+      const sample = fs.readFileSync(fp, 'utf8').slice(0, 8000);
+      const hasJsx = /<[A-Za-z][A-Za-z0-9.]*(\s|>|\/)/.test(sample)
+        && (/from\s+['"]react['"]/.test(sample) || /require\(\s*['"]react['"]\s*\)/.test(sample) || /export\s+default\s+function/.test(sample) || /React\./.test(sample));
+      if (hasJsx) return '';
+    }
+    if (ext === '.cjs' || ext === '.mjs' || ext === '.js') {
+      execFileSync(process.execPath, ['--check', fp], { timeout: 1500, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      return '';
+    }
+    if (ext === '.py') {
+      execFileSync('python3', ['-c', 'import ast,sys; ast.parse(open(sys.argv[1],"rb").read(), sys.argv[1])', fp], { timeout: 1500, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      return '';
+    }
+    return '';
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return '';
+    const rawErr = String((e && (e.stderr || e.message)) || e || '').trim();
+    const lines = rawErr.split('\n').filter((l) => !/^Node\.js v\d+/i.test(l.trim())).join('\n').trim();
+    const errText = (lines || rawErr).slice(0, 400);
+    if (!errText) return '';
+    return `\n\n[SYNTAX WARNING in ${path.basename(fp)}]\n${errText}\nFix this syntax error immediately with Edit before running commands or finishing.`;
+  }
+}
 
 function isBinaryBuffer(buf) {
   const n = Math.min(buf.length, 8192);
@@ -416,7 +457,7 @@ const executors = {
     });
   },
 
-  async read_file({ path: p, file_path: _fp, cwd, offset, limit, pages }) {
+  async read_file({ path: p, file_path: _fp, cwd, offset, limit, pages, _readMtimes, _allowRichRead }) {
     const target = p || _fp;
     if (!target) return 'Error: Read requires a "path" argument (alias: file_path).';
     const fp = resolvePath(target, cwd);
@@ -435,6 +476,7 @@ const executors = {
         exec(`pdftotext ${range}-layout ${JSON.stringify(fp)} -`, { maxBuffer: 16 * 1024 * 1024 }, (e, so, se) => resolve(e ? null : so));
       });
       if (out != null) {
+        if (_readMtimes instanceof Map) { try { _readMtimes.set(fp, Math.floor(fs.statSync(fp).mtimeMs)); } catch (_) {} }
         return formatNumbered(out, fp, offset, limit, pages ? '(empty PDF page range)' : '(PDF has no extractable text)');
       }
       if (pages) return `Error reading PDF: could not extract pages ${pages} (is pdftotext installed?)`;
@@ -446,8 +488,18 @@ const executors = {
         return `Error reading file: ${fp} does not exist (${e.code || e.message}).`;
       }
       if (st.isDirectory()) return `Error: ${fp} is a directory, not a file. Use Glob or Bash \`ls\` to list it.`;
+      if (_readMtimes instanceof Map) _readMtimes.set(fp, Math.floor(st.mtimeMs));
       if (IMAGE_EXT.test(fp)) {
-        return `Image file: ${fp} (${st.size} bytes, ${path.extname(fp).slice(1).toLowerCase()}). Image contents cannot be shown as text.`;
+        const ext = path.extname(fp).toLowerCase();
+        const mime = RASTER_IMAGE_MIME[ext];
+        if (_allowRichRead && mime && st.size <= 5 * 1024 * 1024) {
+          const imgBuf = fs.readFileSync(fp);
+          return {
+            content: `Image file: ${fp} (${st.size} bytes, ${ext.slice(1)}) — loaded for visual inspection.`,
+            imageDataUrl: `data:${mime};base64,${imgBuf.toString('base64')}`,
+          };
+        }
+        return `Image file: ${fp} (${st.size} bytes, ${ext.slice(1)}). Image contents cannot be shown as text.`;
       }
       const buf = fs.readFileSync(fp);
       if (isBinaryBuffer(buf)) {
@@ -465,7 +517,7 @@ const executors = {
     }
   },
 
-  async write_file({ path: p, file_path: _fp, content, cwd }) {
+  async write_file({ path: p, file_path: _fp, content, cwd, _readMtimes }) {
     const target = p || _fp;
     if (!target) return 'Error: Write requires a "path" argument, e.g. {"path":"index.html","content":"..."}. Point the file at the project folder with a relative path.';
     if (content === undefined || content === null) {
@@ -481,17 +533,20 @@ const executors = {
       // Guard against the classic "model wrote a fragment" failure: a file that
       // only contains a placeholder is worse than no file at all.
       fs.writeFileSync(fp, body, 'utf8');
-      const size = fs.statSync(fp).size;
+      const st = fs.statSync(fp);
+      if (_readMtimes instanceof Map) _readMtimes.set(fp, Math.floor(st.mtimeMs));
+      const size = st.size;
       const warn = /(\/\/\s*rest of (the )?(code|file)|\.\.\.\s*(rest|omitted)|<placeholder>)/i.test(body)
         ? ' WARNING: content contains a placeholder — rewrite the file with its COMPLETE contents.'
         : '';
-      return `Wrote ${size} bytes to ${fp}.${warn}`;
+      const diag = quickSyntaxDiagnostic(fp);
+      return `Wrote ${size} bytes to ${fp}.${warn}${diag}`;
     } catch (e) {
       return 'Error writing file (path=' + (p || '?') + '): ' + e.message;
     }
   },
 
-  async edit_file({ path: p, file_path: _fp, old_string, new_string, cwd, replace_all }) {
+  async edit_file({ path: p, file_path: _fp, old_string, new_string, cwd, replace_all, _readMtimes }) {
     const target = p || _fp;
     if (!target) return 'Error: Edit requires a "path" argument (alias: file_path).';
     let fp;
@@ -499,6 +554,15 @@ const executors = {
     const we = sandbox.isWriteAllowed(fp);
     if (we !== true) return 'Error: ' + we.reason;
     try {
+      if (_readMtimes instanceof Map && _readMtimes.has(fp)) {
+        try {
+          const curMtime = Math.floor(fs.statSync(fp).mtimeMs);
+          const seenMtime = _readMtimes.get(fp);
+          if (curMtime > seenMtime + 5) {
+            return `Error: ${fp} was modified on disk since you last Read it (by another agent or command). Call Read on ${fp} first to inspect the latest contents before editing.`;
+          }
+        } catch (_) {}
+      }
       let raw;
       try { raw = fs.readFileSync(fp, 'utf8'); }
       catch (e) {
@@ -506,7 +570,8 @@ const executors = {
         if (e.code === 'ENOENT' && old_string === '' && new_string != null) {
           fs.mkdirSync(path.dirname(fp), { recursive: true });
           fs.writeFileSync(fp, String(new_string), 'utf8');
-          return `Created ${fp}`;
+          if (_readMtimes instanceof Map) { try { _readMtimes.set(fp, Math.floor(fs.statSync(fp).mtimeMs)); } catch (_) {} }
+          return `Created ${fp}${quickSyntaxDiagnostic(fp)}`;
         }
         return `Error editing file: cannot read ${fp} (${e.code || e.message}). Use the Write tool to create it first.`;
       }
@@ -516,16 +581,18 @@ const executors = {
       const r = applyEdit(raw, String(old_string), new_string, !!replace_all);
       if (r.error) return editErrorText(r, fp, raw);
       fs.writeFileSync(fp, r.raw, 'utf8');
-      if (replace_all) return `Replaced ${r.count} occurrence${r.count === 1 ? '' : 's'} in ${fp}`;
-      return r.fuzzy
+      if (_readMtimes instanceof Map) { try { _readMtimes.set(fp, Math.floor(fs.statSync(fp).mtimeMs)); } catch (_) {} }
+      const diag = quickSyntaxDiagnostic(fp);
+      if (replace_all) return `Replaced ${r.count} occurrence${r.count === 1 ? '' : 's'} in ${fp}${diag}`;
+      return (r.fuzzy
         ? `Replaced 1 occurrence in ${fp} (matched after ignoring whitespace differences).`
-        : `Replaced 1 occurrence in ${fp}`;
+        : `Replaced 1 occurrence in ${fp}`) + diag;
     } catch (e) {
       return 'Error editing file: ' + e.message;
     }
   },
 
-  async multi_edit({ path: p, file_path: _fp, edits, cwd }) {
+  async multi_edit({ path: p, file_path: _fp, edits, cwd, _readMtimes }) {
     const target = p || _fp;
     if (!target) return 'Error: MultiEdit requires a "path" argument (alias: file_path).';
     let fp;
@@ -535,6 +602,15 @@ const executors = {
     try {
       if (!Array.isArray(edits) || !edits.length) {
         return 'Error: MultiEdit requires a non-empty "edits" array of {old_string, new_string} pairs.';
+      }
+      if (_readMtimes instanceof Map && _readMtimes.has(fp)) {
+        try {
+          const curMtime = Math.floor(fs.statSync(fp).mtimeMs);
+          const seenMtime = _readMtimes.get(fp);
+          if (curMtime > seenMtime + 5) {
+            return `Error: ${fp} was modified on disk since you last Read it (by another agent or command). Call Read on ${fp} first to inspect the latest contents before editing.`;
+          }
+        } catch (_) {}
       }
       let raw;
       try { raw = fs.readFileSync(fp, 'utf8'); }
@@ -559,7 +635,8 @@ const executors = {
         raw = r.raw;
       }
       fs.writeFileSync(fp, raw, 'utf8');
-      return `Applied ${edits.length} edit${edits.length === 1 ? '' : 's'} to ${fp}`;
+      if (_readMtimes instanceof Map) { try { _readMtimes.set(fp, Math.floor(fs.statSync(fp).mtimeMs)); } catch (_) {} }
+      return `Applied ${edits.length} edit${edits.length === 1 ? '' : 's'} to ${fp}${quickSyntaxDiagnostic(fp)}`;
     } catch (e) {
       return 'Error multi-editing file: ' + e.message;
     }
@@ -726,7 +803,11 @@ const executors = {
 
   async todo_write({ todos }) {
     if (!Array.isArray(todos)) return 'Error: todos array required';
-    const lines = todos.map((t) => `${t.status === 'completed' ? '[x]' : '[ ]'} ${t.content || t.title || ''}`);
+    const lines = todos.map((t) => {
+      const box = t.status === 'completed' ? '[x]' : t.status === 'in_progress' ? '[-]' : '[ ]';
+      const active = t.status === 'in_progress' && t.activeForm ? ` (${t.activeForm})` : '';
+      return `${box} ${t.content || t.title || ''}${active}`;
+    });
     return 'TODOS:\n' + lines.join('\n');
   },
 
@@ -1202,9 +1283,9 @@ const toolDefinitions = [
   { name: 'Grep', description: 'Search file contents for a regex pattern recursively. output_mode: content (default) | files_with_matches | count. Filter with glob/type, add context lines, and page results with offset/head_limit.', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string', description: 'File or directory to search' }, glob: { type: 'string', description: 'Only files matching this glob, e.g. "*.js"' }, type: { type: 'string', description: 'File type filter, e.g. js, py, rust' }, output_mode: { type: 'string', enum: ['content', 'files_with_matches', 'count'] }, context: { type: 'number', description: 'Lines of context around each match' }, head_limit: { type: 'number', description: 'Max results (default 250)' }, offset: { type: 'number', description: 'Skip first N results' }, multiline: { type: 'boolean', description: 'Allow patterns to span lines' }, '-i': { type: 'boolean', description: 'Case-insensitive' }, cwd: { type: 'string' } }, required: ['pattern'] } },
   { name: 'WebFetch', description: 'Fetch the contents of a URL, convert the page to readable markdown, and then answer the given prompt about it. Prefer this over shelling out to curl when you need to understand a web page.', parameters: { type: 'object', properties: { url: { type: 'string', description: 'Absolute http(s) URL to fetch' }, prompt: { type: 'string', description: 'What to extract/answer from the page' } }, required: ['url', 'prompt'] } },
   { name: 'WebSearch', description: 'Search the web and return top results (titles + URLs). Optionally restrict to or exclude specific domains.', parameters: { type: 'object', properties: { query: { type: 'string' }, allowed_domains: { type: 'array', items: { type: 'string' }, description: 'Only return results from these domains' }, blocked_domains: { type: 'array', items: { type: 'string' }, description: 'Exclude results from these domains' } }, required: ['query'] } },
-  { name: 'TodoWrite', description: 'Create/update a structured todo list to track multi-step work.', parameters: { type: 'object', properties: { todos: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, content: { type: 'string' }, status: { type: 'string', enum: ['pending', 'completed'] } } } } }, required: ['todos'] } },
-  { name: 'Task', description: 'Spawn a sub-agent to complete a self-contained, multi-step task and return its result. Use for parallelizable or independent work. Multiple Task/Agent blocks in one message run concurrently. Optionally pin it to a model or complexity tier, run it in the background, name it, or isolate it in a git worktree.', parameters: { type: 'object', properties: { description: { type: 'string', description: 'Short label (3–5 words)' }, prompt: { type: 'string', description: 'The full instructions for the sub-agent' }, subagent_type: { type: 'string', description: 'Agent type/persona, e.g. general-purpose, explore, plan' }, model: { type: 'string', description: 'Optional model id to run this sub-agent on' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'], description: 'Optional complexity tier; picks the matching model from the provider pool' }, run_in_background: { type: 'boolean', description: 'Run detached; returns an id for TaskOutput' }, name: { type: 'string', description: 'Teammate name for team coordination' }, team_name: { type: 'string', description: 'Team to join' }, mode: { type: 'string', description: 'Sub-agent permission mode' }, isolation: { type: 'string', enum: ['worktree'], description: 'Isolate in a git worktree' }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
-  { name: 'Agent', description: 'Spawn a sub-agent (alias of Task) to delegate a self-contained piece of work. Multiple Agent blocks in one message run concurrently.', parameters: { type: 'object', properties: { description: { type: 'string', description: 'Short label (3–5 words)' }, prompt: { type: 'string' }, subagent_type: { type: 'string' }, model: { type: 'string' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, run_in_background: { type: 'boolean', description: 'Run detached; returns an id for TaskOutput' }, name: { type: 'string' }, team_name: { type: 'string' }, mode: { type: 'string' }, isolation: { type: 'string', enum: ['worktree'] }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
+  { name: 'TodoWrite', description: 'Create/update a structured todo list to track multi-step work.', parameters: { type: 'object', properties: { todos: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, content: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] }, activeForm: { type: 'string', description: 'Present-participle label while status is in_progress (e.g. "Running tests")' }, priority: { type: 'string', enum: ['low', 'medium', 'high'] } } } } }, required: ['todos'] } },
+  { name: 'Task', description: 'Spawn a sub-agent to complete a self-contained, multi-step task and return its result. Use for parallelizable or independent work. Multiple Task/Agent blocks in one message run concurrently. Supports subagent_type (general-purpose, Explore, Plan, Bash, verifier, code-reviewer, etc.), resume by agentId, fork_context, max_turns, tier/model pinning, run_in_background, team_name, and worktree isolation.', parameters: { type: 'object', properties: { description: { type: 'string', description: 'Short label (3–5 words)' }, prompt: { type: 'string', description: 'The full instructions for the sub-agent' }, subagent_type: { type: 'string', description: 'Agent type/persona, e.g. general-purpose, Explore, Plan, verifier, code-reviewer' }, model: { type: 'string', description: 'Optional model id to run this sub-agent on' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'], description: 'Optional complexity tier; picks the matching model from the provider pool' }, resume: { type: 'string', description: 'Agent ID from a prior Task/Agent call to resume with full conversation history preserved' }, fork_context: { type: 'boolean', description: 'Include condensed parent conversation context so the sub-agent inherits prior discoveries' }, max_turns: { type: 'number', description: 'Optional max tool-use turns for this sub-agent' }, run_in_background: { type: 'boolean', description: 'Run detached; returns an id and output_file for TaskOutput' }, name: { type: 'string', description: 'Teammate name for team coordination' }, team_name: { type: 'string', description: 'Team to join' }, mode: { type: 'string', description: 'Sub-agent permission mode' }, isolation: { type: 'string', enum: ['worktree'], description: 'Isolate in a git worktree' }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
+  { name: 'Agent', description: 'Spawn a sub-agent (alias of Task) to delegate a self-contained piece of work. Multiple Agent blocks in one message run concurrently.', parameters: { type: 'object', properties: { description: { type: 'string', description: 'Short label (3–5 words)' }, prompt: { type: 'string' }, subagent_type: { type: 'string' }, model: { type: 'string' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, resume: { type: 'string', description: 'Agent ID from a prior Task/Agent call to resume with full conversation history preserved' }, fork_context: { type: 'boolean', description: 'Include condensed parent conversation context' }, max_turns: { type: 'number', description: 'Optional max tool-use turns for this sub-agent' }, run_in_background: { type: 'boolean', description: 'Run detached; returns an id and output_file for TaskOutput' }, name: { type: 'string' }, team_name: { type: 'string' }, mode: { type: 'string' }, isolation: { type: 'string', enum: ['worktree'] }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
   { name: 'Swarm', description: 'Run a user-enabled supervisor-led team on FRONTIER models only. The supervisor decomposes the goal into subtasks, tags each with a complexity tier, every subtask runs CONCURRENTLY on a frontier model, then the supervisor reviews and merges the results into one answer. Use for large builds or any task that splits into independent parts.', parameters: { type: 'object', properties: { goal: { type: 'string', description: 'The overall objective for the team' }, tasks: { type: 'array', description: 'Optional explicit subtasks; omit to let the supervisor plan', items: { type: 'object', properties: { title: { type: 'string' }, prompt: { type: 'string' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, model: { type: 'string' } } } }, concurrency: { type: 'number', description: 'Max subtasks running at once (default 4)' }, maxTasks: { type: 'number', description: 'Max subtasks the supervisor may create (default 6)' }, critique: { type: 'boolean', description: 'Run the supervisor review/merge step (default true)' }, cwd: { type: 'string' } }, required: ['goal'] } },
   { name: 'NotebookRead', description: 'Read the cells of a notebook by name.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
   { name: 'NotebookEdit', description: 'Edit a Jupyter notebook cell. Provide notebook_path and new_source. edit_mode: replace (default) | insert | delete. For insert, cell_id is the cell to insert AFTER (omit to insert at top); for delete, cell_id identifies the cell. Also accepts the legacy {name, cells} form to rewrite a stored notebook.', parameters: { type: 'object', properties: { notebook_path: { type: 'string', description: 'Path to the .ipynb file' }, cell_id: { type: 'string', description: 'Target cell id (for insert/replace/delete)' }, new_source: { type: 'string', description: 'New cell source' }, cell_type: { type: 'string', enum: ['code', 'markdown', 'raw'], description: 'Cell type (default code)' }, edit_mode: { type: 'string', enum: ['replace', 'insert', 'delete'], description: 'Default replace' }, name: { type: 'string', description: 'Legacy: stored notebook name' }, cells: { type: 'array', description: 'Legacy: full cell list', items: { type: 'object', properties: { language: { type: 'string' }, source: { type: 'string' } } } } }, required: ['notebook_path'] } },
@@ -1620,15 +1701,41 @@ async function runToolInner(name, args, ctx) {
     // TaskStop. Same job registry as background shells and monitors.
     if (args && args.run_in_background) {
       const label = args.description || args.name || 'sub-agent';
+      const agentsDir = path.join(os.homedir(), '.autobot', 'agents');
+      try { fs.mkdirSync(agentsDir, { recursive: true }); } catch (_) {}
+      const emitFn = typeof ctx.emit === 'function' ? ctx.emit : (() => {});
+      let jobRef = null;
+      let outputFile = '';
       const job = bg.startAgent({
         label,
         description: args.description,
         model: args.model || args.tier || null,
         // TaskStop aborts the signal; runSubagent honours args.signal as an
         // extra parent signal.
-        run: (signal) => runSubagent({ ...args, run_in_background: false, signal }),
+        run: async (signal) => {
+          await Promise.resolve();
+          const id = jobRef ? jobRef.id : ('bg_' + Date.now().toString(36));
+          outputFile = outputFile || path.join(agentsDir, `${id}.txt`);
+          try {
+            const res = await runSubagent({ ...args, run_in_background: false, signal });
+            const outText = res == null ? '(completed with no text output)' : String(res);
+            try { fs.writeFileSync(outputFile, outText, 'utf8'); } catch (_) {}
+            emitFn({ type: 'subagent', id, name: label, status: 'done', role: 'worker', background: true });
+            emitFn({ type: 'notice', text: `Background agent "${label}" (${id}) finished.` });
+            return outText;
+          } catch (e) {
+            const errText = 'Error: ' + (e && e.message ? e.message : String(e));
+            try { fs.writeFileSync(outputFile, errText, 'utf8'); } catch (_) {}
+            emitFn({ type: 'subagent', id, name: label, status: 'error', role: 'worker', background: true });
+            throw e;
+          }
+        },
       });
-      return `Started background agent "${label}" (${job.id}). Poll it with TaskOutput({task_id:"${job.id}"}) (optionally block:true) or stop it with TaskStop({task_id:"${job.id}"}).`;
+      jobRef = job;
+      outputFile = path.join(agentsDir, `${job.id}.txt`);
+      job.outputFile = outputFile;
+      emitFn({ type: 'subagent', id: job.id, name: label, status: 'started', role: 'worker', background: true });
+      return `Started background agent "${label}" (${job.id}). output_file: ${outputFile}\nPoll it with TaskOutput({task_id:"${job.id}"}) (optionally block:true) or stop it with TaskStop({task_id:"${job.id}"}).`;
     }
     const subOut = await withTimeout(runSubagent(args), toolTimeoutMs(name, args), name);
     return (subOut == null || subOut === '') ? '(sub-agent completed with no text output)' : subOut;
@@ -1852,6 +1959,7 @@ async function runToolInner(name, args, ctx) {
       runAgent: ctx.runAgent,
       provider: ctx.provider,
       orchestrator: ctx.orchestrator,
+      poolOrchestrator: ctx.poolOrchestrator,
       tasks: hasTasks ? args.tasks : undefined,
       concurrency: Number(args.concurrency) || 4,
       maxSteps: Number(args.maxSteps) || 0,
@@ -1988,7 +2096,11 @@ async function runToolInner(name, args, ctx) {
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) finalArgs = { ...parsed };
       } catch { /* leave as-is; the executor's own validation will explain */ }
     }
-    if (FILE_TOOLS.has(name) || FILE_TOOLS.has(execName)) normalizeFileArgs(finalArgs);
+    if (FILE_TOOLS.has(name) || FILE_TOOLS.has(execName)) {
+      normalizeFileArgs(finalArgs);
+      if (ctx.readMtimes instanceof Map) finalArgs._readMtimes = ctx.readMtimes;
+      if (ctx.allowRichRead) finalArgs._allowRichRead = true;
+    }
     if (!finalArgs.cwd && ctx.cwd) finalArgs.cwd = ctx.cwd;
     const content = await withTimeout(fn(finalArgs, { signal: ctx.signal, cwd: finalArgs.cwd }), toolTimeoutMs(name, finalArgs), name);
     if (content && typeof content === 'object' && (content.isError || typeof content.content === 'string')) return content;
