@@ -93,7 +93,7 @@ async function gatherOllamaModels() {
 
 function enrichRow(row) {
   if (!row || typeof row !== 'object') return row;
-  if (!row.apiKey && /:3001\b/.test(String(row.baseURL || ''))) {
+  if (!row.apiKey && /:(3001|31415)\b/.test(String(row.baseURL || ''))) {
     try {
       const cfg = freellm.loadConfig ? freellm.loadConfig() : null;
       if (cfg && cfg.token) return { ...row, apiKey: cfg.token };
@@ -122,7 +122,7 @@ async function gatherBackends() {
     ].map((x) => String(x || '').trim()).filter(Boolean))];
     norm.catalogModels = catalogModels;
     norm._isOllama = /11434/.test(String(norm.baseURL || ''));
-    norm._isFreeLlm = /:3001\b/.test(String(norm.baseURL || ''));
+    norm._isFreeLlm = /:(3001|31415)\b/.test(String(norm.baseURL || ''));
     backends.push(norm);
   };
 
@@ -175,7 +175,7 @@ function backendTransportKind(b) {
   if (!b) return '';
   if (b.transport) return String(b.transport);
   if (b._isOllama || /11434/.test(String(b.baseURL || ''))) return 'ollama';
-  if (b._isFreeLlm || /:3001\b/.test(String(b.baseURL || ''))) return 'freellm';
+  if (b._isFreeLlm || /:(3001|31415)\b/.test(String(b.baseURL || ''))) return 'freellm';
   return 'openai';
 }
 
@@ -562,6 +562,38 @@ function start(opts = {}) {
           extensionConnected: !!(state.activeSocket && state.activeSocket.readyState === 1),
           connectedClients: state.clients.size,
         });
+      }
+      if (pathname === '/v1/ext/tabs' || pathname === '/ext/tabs' || pathname === '/v1/ext/tool' || pathname === '/ext/tool') {
+        const ra = String((req.socket && req.socket.remoteAddress) || '');
+        const isLoop = ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1';
+        const origin = String((req.headers && req.headers.origin) || '');
+        const badOrigin = origin && !/^chrome-extension:\/\//i.test(origin);
+        if (!isLoop || badOrigin) {
+          return sendJson(res, 403, { ok: false, error: 'Loopback local control only' });
+        }
+        if (req.method === 'GET' && (pathname === '/v1/ext/tabs' || pathname === '/ext/tabs')) {
+          try {
+            const st = await status();
+            return sendJson(res, 200, { ok: true, ...st });
+          } catch (e) {
+            return sendJson(res, 500, { ok: false, error: e.message });
+          }
+        }
+        if (req.method === 'POST' && (pathname === '/v1/ext/tool' || pathname === '/ext/tool')) {
+          try {
+            const body = await readJsonBody(req);
+            const action = String((body && (body.action || body.tool)) || '').trim();
+            if (!action) return sendJson(res, 400, { ok: false, error: 'Missing action/tool' });
+            const rawArgs = (body && body.args && typeof body.args === 'object') ? body.args : {};
+            const { action: _a, tool: _t, args: _ar, tabId: rawTabId, ...rest } = body || {};
+            const mergedArgs = { ...rawArgs, ...rest };
+            const tabId = Number.isInteger(rawTabId) ? rawTabId : undefined;
+            const result = await callTool(action, mergedArgs, tabId);
+            return sendJson(res, 200, { ok: true, result });
+          } catch (e) {
+            return sendJson(res, 502, { ok: false, error: e.message });
+          }
+        }
       }
       if (req.method === 'GET' && pathname === '/v1/models') {
         const data = await gatherModels();

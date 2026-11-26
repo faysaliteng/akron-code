@@ -6,7 +6,7 @@
       "name": "Akron Code Desktop (All Models · Zero Key)",
       "type": "openai-compatible",
       "baseUrl": "http://127.0.0.1:8766/v1",
-      "apiKey": "akron-desktop-local",
+      "apiKey": "akron-local-zero-key",
       "replace": true,
       "models": [
         "akron-default",

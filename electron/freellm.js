@@ -17,6 +17,115 @@ const { Readable } = require('stream');
 
 const CONFIG_DIR = path.join(os.homedir(), '.autobot');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'freellm.json');
+const DEFAULT_EXTERNAL_URLS = ['http://127.0.0.1:31415/v1'];
+
+let _fallbackKeyProvider = null;
+function setFallbackKeyProvider(fn) {
+  _fallbackKeyProvider = typeof fn === 'function' ? fn : null;
+}
+
+function getFallbackKey() {
+  try {
+    if (_fallbackKeyProvider) {
+      const k = _fallbackKeyProvider();
+      if (k && typeof k === 'string') return k.trim();
+    }
+  } catch (_) {}
+  return '';
+}
+
+function hasInternalProviders(cfg) {
+  if (!cfg || !cfg.providers) return false;
+  return PROVIDER_IDS.some((id) => isConfigured(id, cfg));
+}
+
+function normalizeBase(u) {
+  return String(u || '').trim().replace(/\/+$/, '');
+}
+
+function isSelfLoopUrl(url, cfg) {
+  const b = normalizeBase(url);
+  if (!b || !cfg || !cfg.port) return false;
+  try {
+    const u = new URL(b);
+    const p = Number(u.port || (u.protocol === 'https:' ? 443 : 80));
+    const h = String(u.hostname || '').toLowerCase();
+    return p === Number(cfg.port) && (h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]');
+  } catch (_) {
+    return false;
+  }
+}
+
+function externalCandidates(cfg, opts) {
+  if (opts && opts.upstreamURL === false) return [];
+  if (process.env.FREELM_DISABLE_EXTERNAL === '1') return [];
+  const raw = [
+    opts && opts.upstreamURL,
+    cfg && cfg.upstreamURL,
+    process.env.FREELLM_UPSTREAM_URL,
+    ...DEFAULT_EXTERNAL_URLS,
+  ];
+  const seen = new Set();
+  const out = [];
+  for (const r of raw) {
+    const b = normalizeBase(r);
+    if (!b || seen.has(b) || isSelfLoopUrl(b, cfg)) continue;
+    seen.add(b);
+    out.push(b);
+  }
+  return out;
+}
+
+function extractCallerAuth(req, cfg) {
+  const out = {};
+  if (req && req.headers) {
+    const auth = req.headers.authorization;
+    const xk = req.headers['x-api-key'];
+    if (auth && String(auth).trim()) out.authorization = String(auth).trim();
+    if (xk && String(xk).trim()) out['x-api-key'] = String(xk).trim();
+  }
+  if (!out.authorization && !out['x-api-key']) {
+    const fb = getFallbackKey();
+    if (fb) out.authorization = 'Bearer ' + fb;
+    else if (cfg && cfg.token) out.authorization = 'Bearer ' + cfg.token;
+  }
+  return out;
+}
+
+async function probeExternalModels(cfg, authHeaders, opts) {
+  const cands = externalCandidates(cfg, opts);
+  for (const base of cands) {
+    try {
+      const res = await fetchUpstream(base + '/models', {
+        method: 'GET',
+        headers: { accept: 'application/json', 'user-agent': 'AkronBot-FreeLLMAPI/1.0', ...(authHeaders || {}) },
+      }, Math.min(1800, (opts && opts.timeoutMs) || 1800));
+      const text = await res.text().catch(() => '');
+      let json = null;
+      try { json = JSON.parse(text); } catch (_) {}
+      // Any JSON API response (200 models list, 401 invalid API key, 403/429) proves
+      // a live OpenAI-compatible / FreeLLMAPI Unified Router is listening here.
+      if (json && typeof json === 'object' && (res.status !== 404)) {
+        return { base, status: res.status, json, text };
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function probeExternalHealth(cfg, opts) {
+  const cands = externalCandidates(cfg, opts);
+  for (const base of cands) {
+    const root = base.replace(/\/v1$/i, '');
+    for (const url of [root + '/health', base + '/models']) {
+      try {
+        const res = await fetchUpstream(url, { method: 'GET', headers: { accept: 'application/json' } }, 900);
+        if (res && res.status && res.status !== 404) return base;
+      } catch (_) {}
+    }
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Provider registry. Every upstream speaks the OpenAI chat-completions shape,
@@ -385,12 +494,84 @@ function httpError(status, message) {
 }
 
 // ---------------------------------------------------------------------------
+// External FreeLLMAPI Unified Router transparent proxy (:31415 -> :3001)
+// ---------------------------------------------------------------------------
+async function proxyChatExternal(extBase, req, body, res, opts, cfg) {
+  const timeout = (opts && opts.timeoutMs) || (cfg && cfg.timeoutMs) || 120000;
+  const authHeaders = extractCallerAuth(req, cfg);
+  const headers = {
+    'content-type': 'application/json',
+    accept: body && body.stream ? 'text/event-stream' : 'application/json',
+    'user-agent': 'AkronBot-FreeLLMAPI/1.0',
+    ...authHeaders,
+  };
+  const upstream = await fetchUpstream(extBase + '/chat/completions', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  }, timeout);
+
+  if (!upstream.ok) {
+    const text = await upstream.text().catch(() => '');
+    throw httpError(upstream.status, describeError(upstream.status, text));
+  }
+
+  if (body && body.stream) {
+    if (!upstream.body) throw httpError(502, 'upstream returned an empty stream');
+    res.writeHead(200, {
+      'content-type': upstream.headers.get('content-type') || 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+      'x-freellm-upstream': extBase,
+    });
+    const nodeStream = Readable.fromWeb(upstream.body);
+    nodeStream.on('error', () => { try { res.end(); } catch (_) {} });
+    res.on('close', () => { try { nodeStream.destroy(); } catch (_) {} });
+    nodeStream.pipe(res);
+    return;
+  }
+
+  const text = await upstream.text();
+  let data;
+  try { data = JSON.parse(text); } catch (_) {
+    throw httpError(502, 'upstream returned non-JSON response');
+  }
+  sendJson(res, upstream.status || 200, data, { 'x-freellm-upstream': extBase });
+}
+
+// ---------------------------------------------------------------------------
 // Non-streaming completion with fallback
 // ---------------------------------------------------------------------------
 async function chat(cfg, body, opts) {
   const plan = resolveModel(body && body.model, cfg);
-  const list = candidates(cfg, plan);
-  if (!list.length) throw httpError(400, 'no FreeLLM provider is configured — add keys to ~/.autobot/freellm.json');
+  const list = hasInternalProviders(cfg) ? candidates(cfg, plan) : [];
+  if (!list.length) {
+    const ext = await probeExternalModels(cfg, extractCallerAuth(opts && opts.req, cfg), opts);
+    if (ext) {
+      const authHeaders = extractCallerAuth(opts && opts.req, cfg);
+      const upstream = await fetchUpstream(ext.base + '/chat/completions', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json',
+          'user-agent': 'AkronBot-FreeLLMAPI/1.0',
+          ...authHeaders,
+        },
+        body: JSON.stringify({ ...(body || {}), stream: false }),
+      }, (opts && opts.timeoutMs) || cfg.timeoutMs);
+      const text = await upstream.text();
+      if (!upstream.ok) throw httpError(upstream.status, describeError(upstream.status, text));
+      let data;
+      try { data = JSON.parse(text); } catch (_) { throw httpError(502, 'upstream returned a non-JSON response'); }
+      return { data, provider: 'freellm-external', model: (body && body.model) || 'auto', attempts: [] };
+    }
+    if (plan.mode === 'explicit' && PROVIDERS[plan.provider]) {
+      // Throw explicit provider missing error when user explicitly asked e.g. groq/...
+      candidates(cfg, plan);
+    }
+    throw httpError(400, 'no FreeLLM provider is configured — add keys to ~/.autobot/freellm.json or run FreeLLMAPI Unified Router');
+  }
   const attempts = [];
   const timeout = (opts && opts.timeoutMs) || cfg.timeoutMs;
   for (const cand of list) {
@@ -442,8 +623,18 @@ async function chat(cfg, body, opts) {
 // ---------------------------------------------------------------------------
 async function streamChat(cfg, body, res, opts) {
   const plan = resolveModel(body && body.model, cfg);
-  const list = candidates(cfg, plan);
-  if (!list.length) throw httpError(400, 'no FreeLLM provider is configured — add keys to ~/.autobot/freellm.json');
+  const list = hasInternalProviders(cfg) ? candidates(cfg, plan) : [];
+  if (!list.length) {
+    const ext = await probeExternalModels(cfg, extractCallerAuth(opts && opts.req, cfg), opts);
+    if (ext) {
+      await proxyChatExternal(ext.base, opts && opts.req, { ...(body || {}), stream: true }, res, opts, cfg);
+      return { provider: 'freellm-external', model: (body && body.model) || 'auto', attempts: [] };
+    }
+    if (plan.mode === 'explicit' && PROVIDERS[plan.provider]) {
+      candidates(cfg, plan);
+    }
+    throw httpError(400, 'no FreeLLM provider is configured — add keys to ~/.autobot/freellm.json or run FreeLLMAPI Unified Router');
+  }
   const attempts = [];
   const timeout = (opts && opts.timeoutMs) || cfg.timeoutMs;
   for (const cand of list) {
@@ -645,7 +836,11 @@ function createRouter(config, opts) {
         return;
       }
       if (req.method === 'GET' && (route === '/health' || route === '/v1/health' || route === '/status')) {
-        sendJson(res, 200, health(cfg));
+        const h = health(cfg);
+        if (!hasInternalProviders(cfg) || (opts && opts.upstreamURL) || cfg.upstreamURL) {
+          h.upstream = await probeExternalHealth(cfg, opts);
+        }
+        sendJson(res, 200, h);
         return;
       }
       if (req.method === 'GET' && (route === '/v1/providers' || route === '/providers')) {
@@ -653,6 +848,18 @@ function createRouter(config, opts) {
         return;
       }
       if (req.method === 'GET' && (route === '/v1/models' || route === '/models')) {
+        if (!hasInternalProviders(cfg) || (opts && opts.upstreamURL) || cfg.upstreamURL) {
+          const ext = await probeExternalModels(cfg, extractCallerAuth(req, cfg), opts);
+          if (ext) {
+            const payload = ext.json || { object: 'list', data: [] };
+            sendJson(res, ext.status, payload, { 'x-freellm-upstream': ext.base });
+            return;
+          }
+          if (!hasInternalProviders(cfg)) {
+            sendJson(res, 503, { error: { message: 'no FreeLLM provider configured — add keys to ~/.autobot/freellm.json or run FreeLLMAPI Unified Router', type: 'freellm_error', code: 503 } });
+            return;
+          }
+        }
         const data = await listModels(cfg, opts);
         sendJson(res, 200, { object: 'list', data });
         return;
@@ -663,16 +870,23 @@ function createRouter(config, opts) {
         let body;
         try { body = JSON.parse(raw); } catch (_) { throw httpError(400, 'invalid JSON body'); }
         if (!body || typeof body !== 'object') throw httpError(400, 'invalid JSON body');
+        if (!hasInternalProviders(cfg) || (opts && opts.upstreamURL) || cfg.upstreamURL) {
+          const ext = await probeExternalModels(cfg, extractCallerAuth(req, cfg), opts);
+          if (ext) {
+            await proxyChatExternal(ext.base, req, body, res, opts, cfg);
+            return;
+          }
+        }
         if (body.stream) {
           try {
-            await streamChat(cfg, body, res, opts);
+            await streamChat(cfg, body, res, { ...(opts || {}), req });
           } catch (err) {
             if (res.headersSent) { try { res.end(); } catch (_) {} return; }
             throw err;
           }
           return;
         }
-        const result = await chat(cfg, body, opts);
+        const result = await chat(cfg, body, { ...(opts || {}), req });
         sendJson(res, 200, result.data, {
           'x-freellm-provider': result.provider,
           'x-freellm-model': result.model,
@@ -758,6 +972,10 @@ module.exports = {
   createRouter,
   start,
   isConfigured,
+  hasInternalProviders,
+  setFallbackKeyProvider,
+  probeExternalModels,
+  probeExternalHealth,
   providerBase,
   _discoveryCache: discoveryCache,
   _healthState: healthState,

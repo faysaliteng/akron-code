@@ -762,7 +762,38 @@ function applyFeatures(features) {
  * fresh one lazily before each turn, and means a long-running session survives
  * token expiry without the user re-signing-in.
  */
+function freellmFallbackApiKey() {
+  try {
+    const s = store.getSettings() || {};
+    const p = s.provider || {};
+    if (p.apiKey && /localhost:(3001|31415)\b|127\.0\.0\.1:(3001|31415)\b/i.test(String(p.baseURL || ''))) {
+      return String(p.apiKey).trim();
+    }
+    const keys = s.providerKeys || {};
+    for (const u of ['http://127.0.0.1:31415/v1', 'http://localhost:31415/v1', 'http://localhost:3001/v1', 'http://127.0.0.1:3001/v1']) {
+      if (keys[u] && String(keys[u]).trim()) return String(keys[u]).trim();
+    }
+  } catch (_) {}
+  return '';
+}
+
+function hydrateLocalFreeLlmProvider(provider) {
+  if (!provider || typeof provider !== 'object') return provider;
+  if (provider.oauthProvider || provider.transport) return provider;
+  const base = String(provider.baseURL || '');
+  if (!/(localhost|127\.0\.0\.1):(3001|31415)\b/i.test(base)) return provider;
+  if (provider.apiKey && String(provider.apiKey).trim()) return provider;
+  const fallback = freellmFallbackApiKey();
+  if (fallback) return { ...provider, apiKey: fallback };
+  try {
+    const c = freellm.loadConfig ? freellm.loadConfig() : null;
+    if (c && c.token) return { ...provider, apiKey: c.token };
+  } catch (_) {}
+  return provider;
+}
+
 async function hydrateProvider(provider) {
+  provider = hydrateLocalFreeLlmProvider(provider);
   if (!provider || typeof provider !== 'object' || !provider.oauthProvider) return provider;
   let r;
   try {
@@ -2036,13 +2067,21 @@ ipcMain.handle('autobot:runtimesAutoUpdate', async (event, on) => {
   } catch (e) { return { ok: false, error: oneLine(e) }; }
 });
 
-ipcMain.handle('autobot:freellmStatus', () => {
-  try { return { ok: true, ...freellmStatus() }; } catch (e) { return { ok: false, error: oneLine(e) }; }
+ipcMain.handle('autobot:freellmStatus', async () => {
+  try { return { ok: true, ...(await freellmStatus()) }; } catch (e) { return { ok: false, error: oneLine(e) }; }
 });
 
 ipcMain.handle('autobot:freellmProviders', async () => {
   try {
     const cfg = freellm.loadConfig(freellm.CONFIG_FILE);
+    if (typeof freellm.hasInternalProviders === 'function' && !freellm.hasInternalProviders(cfg) && typeof freellm.probeExternalModels === 'function') {
+      const fb = freellmFallbackApiKey();
+      const headers = fb ? { authorization: 'Bearer ' + fb } : {};
+      const ext = await freellm.probeExternalModels(cfg, headers, { timeoutMs: 3000 });
+      if (ext && ext.json && Array.isArray(ext.json.data)) {
+        return { ok: true, models: ext.json.data, upstream: ext.base };
+      }
+    }
     const data = await freellm.listModels(cfg, { timeoutMs: 6000 });
     return { ok: true, models: data };
   } catch (e) {
@@ -3685,11 +3724,14 @@ let freellmHandle = null;
 let freellmError = null;
 
 function startFreeLLM() {
+  if (typeof freellm.setFallbackKeyProvider === 'function') {
+    freellm.setFallbackKeyProvider(() => freellmFallbackApiKey());
+  }
   freellm.start({ configPath: freellm.CONFIG_FILE }).then((handle) => {
     freellmHandle = handle;
     freellmError = null;
     const live = freellm.PROVIDER_IDS.filter((id) => freellm.isConfigured(id, handle.config));
-    console.log('FreeLLMAPI on ' + handle.url + ' (' + (live.join(', ') || 'no providers configured') + ')');
+    console.log('FreeLLMAPI on ' + handle.url + ' (' + (live.join(', ') || 'external router bridge / no internal keys') + ')');
   }).catch((err) => {
     freellmHandle = null;
     freellmError = (err && err.message) || 'failed to start';
@@ -3697,14 +3739,21 @@ function startFreeLLM() {
   });
 }
 
-function freellmStatus() {
+async function freellmStatus() {
   let cfg = null;
   try { cfg = freellm.loadConfig(freellm.CONFIG_FILE); } catch (_) {}
+  let upstream = null;
+  try {
+    if (typeof freellm.probeExternalHealth === 'function') {
+      upstream = await freellm.probeExternalHealth(cfg || {}, {});
+    }
+  } catch (_) {}
   return {
-    running: !!freellmHandle,
-    url: freellmHandle ? freellmHandle.url : 'http://127.0.0.1:' + ((cfg && cfg.port) || 3001) + '/v1',
+    running: !!freellmHandle || !!upstream,
+    url: upstream || (freellmHandle ? freellmHandle.url : 'http://127.0.0.1:' + ((cfg && cfg.port) || 3001) + '/v1'),
+    upstream: upstream || null,
     configFile: freellm.CONFIG_FILE,
-    error: freellmError,
+    error: upstream ? null : freellmError,
     providers: cfg ? freellm.PROVIDER_IDS.map((id) => ({
       id,
       label: freellm.PROVIDERS[id].label,
@@ -3763,7 +3812,9 @@ app.whenReady().then(() => {
     const extbridge = require('./extbridge');
     const injectFreeLlmKey = (row) => {
       if (!row || typeof row !== 'object') return row;
-      if (!row.apiKey && /:3001\b/.test(String(row.baseURL || ''))) {
+      if (!row.apiKey && /:(3001|31415)\b/.test(String(row.baseURL || ''))) {
+        const fb = freellmFallbackApiKey();
+        if (fb) return { ...row, apiKey: fb };
         try {
           const c = freellm.loadConfig ? freellm.loadConfig() : null;
           if (c && c.token) return { ...row, apiKey: c.token };
@@ -3807,24 +3858,36 @@ app.whenReady().then(() => {
           } catch (_) {}
         }
       } catch (_) {}
-      // 2. Local FreeLLMAPI gateway (127.0.0.1:3001/v1)
+      // 2. Local FreeLLMAPI gateway (127.0.0.1:3001/v1 or external :31415 Unified Router)
       try {
         const cfg = freellm.loadConfig ? freellm.loadConfig() : null;
-        if (cfg && cfg.token) {
+        const fbKey = freellmFallbackApiKey();
+        const extHealth = typeof freellm.probeExternalHealth === 'function'
+          ? await freellm.probeExternalHealth(cfg || {}, {}).catch(() => null)
+          : null;
+        const routerBase = extHealth || 'http://127.0.0.1:3001/v1';
+        const routerKey = fbKey || (cfg && cfg.token) || '';
+        if (routerKey && ((cfg && cfg.token) || extHealth)) {
           const aliasKeys = freellm.ALIASES ? Object.keys(freellm.ALIASES) : [];
-          const liveModels = freellm.listModels ? await Promise.resolve(freellm.listModels(cfg)).catch(() => []) : [];
+          let liveModels = [];
+          if (extHealth && typeof freellm.probeExternalModels === 'function') {
+            const extRes = await freellm.probeExternalModels(cfg || {}, { authorization: 'Bearer ' + routerKey }, { timeoutMs: 2500 }).catch(() => null);
+            if (extRes && extRes.json && Array.isArray(extRes.json.data)) liveModels = extRes.json.data;
+          } else if (freellm.listModels && cfg) {
+            liveModels = await Promise.resolve(freellm.listModels(cfg)).catch(() => []);
+          }
           const cleanLive = liveModels
             .map((m) => (typeof m === 'string' ? m : m && m.id))
             .map((id) => String(id || '').trim())
-            .filter((id) => id && !id.startsWith('[') && !/\s/.test(id) && /^(qwen|deepseek|nemotron|mistral|devstral|gpt-oss|kimi|glm|llama)/i.test(id))
+            .filter((id) => id && !id.startsWith('[') && !/\s/.test(id) && /^(qwen|deepseek|nemotron|mistral|devstral|gpt-oss|kimi|glm|llama|auto|fusion|claude)/i.test(id))
             .slice(0, 40);
           const catalogModels = [...new Set([...aliasKeys, ...cleanLive].filter(Boolean))];
           extras.push({
             id: 'freellmapi',
             name: 'FreeLLMAPI Pool',
-            baseURL: 'http://127.0.0.1:3001/v1',
-            apiKey: cfg.token,
-            model: catalogModels[0] || 'qwen3.8-flash',
+            baseURL: routerBase,
+            apiKey: routerKey,
+            model: catalogModels[0] || 'auto',
             catalogModels,
             supportsTools: true,
           });

@@ -327,6 +327,7 @@ const PRESETS = [
   { name: 'Ollama (local)', baseURL: 'http://localhost:11434/v1', model: 'llama3.1', apiKey: '', supportsTools: true },
   { name: 'LM Studio (local)', baseURL: 'http://localhost:1234/v1', model: 'local-model', apiKey: '', supportsTools: true },
   { name: 'FreeLLMAPI (local router)', baseURL: 'http://localhost:3001/v1', model: 'auto', apiKey: '', supportsTools: true },
+  { name: 'FreeLLMAPI · Unified Router', baseURL: 'http://127.0.0.1:31415/v1', model: 'auto', apiKey: '', supportsTools: true },
 
   // --- DeepSeek ---
   { name: 'DeepSeek (official)', baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: '', supportsTools: true },
@@ -361,6 +362,27 @@ const PRESETS = [
 // provider's credential. Presets that ship a working key seed the map.
 // Status classification lives in ./providerstatus-ui.mjs (unit-tested).
 const PRESET_KEYS = PRESETS.reduce((acc, p) => { if (p.apiKey && p.baseURL) acc[normBase(p.baseURL)] = p.apiKey; return acc; }, {});
+const FREELLM_LOOPBACK_BASES = [
+  'http://localhost:3001/v1',
+  'http://127.0.0.1:3001/v1',
+  'http://localhost:31415/v1',
+  'http://127.0.0.1:31415/v1',
+];
+const isFreeLlmLoopback = (base) => FREELLM_LOOPBACK_BASES.includes(normBase(base));
+const resolveLoopbackKey = (base, map, cur) => {
+  const nb = normBase(base);
+  const m = map || {};
+  if (nb && m[nb]) return m[nb];
+  if (nb && PRESET_KEYS[nb]) return PRESET_KEYS[nb];
+  if (cur && nb && normBase(cur.baseURL) === nb && cur.apiKey) return cur.apiKey;
+  if (nb && isFreeLlmLoopback(nb)) {
+    for (const alt of FREELLM_LOOPBACK_BASES) {
+      if (m[alt]) return m[alt];
+    }
+    if (cur && isFreeLlmLoopback(cur.baseURL) && cur.apiKey) return cur.apiKey;
+  }
+  return '';
+};
 
 // ---------- Styles (Claude Desktop parity: preset writing styles) ----------
 const STYLES = [
@@ -1640,10 +1662,12 @@ export default function App() {
     const runId = uid();
     runIdRef.current = runId;
 
+    const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
+    const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
     const started = await window.autobot.run({
       runId,
       messages: payloadMessages,
-      provider,
+      provider: effProvider,
       cwd: runCwd || undefined,
       useMemory: settings.useMemory,
       orchestrator,
@@ -1989,8 +2013,10 @@ export default function App() {
     setSwarmBoard([]);
     const runId = uid();
     runIdRef.current = runId;
+    const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
+    const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
     const started = await window.autobot.run({
-      runId, messages: payloadMessages, provider,
+      runId, messages: payloadMessages, provider: effProvider,
       cwd: runCwd || undefined, useMemory: settings.useMemory, orchestrator, permissions,
       convId, title: conv.title || '',
       swarm: swarmEnabled,
@@ -2037,7 +2063,9 @@ export default function App() {
 
   const testProvider = async () => {
     setError('');
-    const r = await window.autobot.testProvider(provider);
+    const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
+    const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
+    const r = await window.autobot.testProvider(effProvider);
     if (r.ok) setError('✅ Provider OK — reply: ' + r.reply);
     else setError('❌ Provider error: ' + r.error);
   };
@@ -7579,7 +7607,7 @@ function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, 
     // A keyed local router (FreeLLMAPI on :3001) refuses an anonymous
     // GET /models, so the scan must carry the same bearer the turn will use —
     // otherwise a working endpoint renders as "not set up" and lists nothing.
-    const keyForBase = (b) => (providerKeys || {})[b] || PRESET_KEYS[b] || (b === activeBase ? provider.apiKey : '') || '';
+    const keyForBase = (b) => resolveLoopbackKey(b, providerKeys, provider);
     const found = {};
     for (const b of bases) {
       const res = await Promise.resolve(window.autobot.ollamaModels(b, keyForBase(b))).catch(() => null);
@@ -7587,7 +7615,7 @@ function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, 
     }
     setOllama((prev) => ({ ...prev, ...found }));
     return found;
-  }, [provider.baseURL, provider.apiKey, providerKeys]);
+  }, [provider, providerKeys]);
 
   useEffect(() => {
     if (!modelMenuOpen) return;
@@ -7615,10 +7643,8 @@ function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, 
   };
 
   const keyFor = useCallback((p) => {
-    const base = normBase(p.baseURL);
-    const map = providerKeys || {};
-    return p.apiKey || map[base] || PRESET_KEYS[base] || (base && base === normBase(provider.baseURL) ? provider.apiKey : '') || '';
-  }, [providerKeys, provider.baseURL, provider.apiKey]);
+    return (p && p.apiKey) || resolveLoopbackKey(p && p.baseURL, providerKeys, provider);
+  }, [providerKeys, provider]);
 
   // When the picker opens (or a key changes), ask each configured endpoint for
   // its status once — a cheap authenticated GET /models, no tokens burned.
@@ -7665,7 +7691,7 @@ function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, 
     if (modelMenuOpen) return;
     const base = normBase(provider.baseURL);
     if (!base) return;
-    const apiKey = providerKeys[base] || PRESET_KEYS[base] || provider.apiKey || '';
+    const apiKey = resolveLoopbackKey(base, providerKeys, provider);
     if (!apiKey && !LOCAL_BASE.test(base)) return;
     if (statusOf(keyStatusRef.current, base, apiKey)) return;
     let cancelled = false;
@@ -7680,10 +7706,10 @@ function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, 
       });
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [provider.baseURL, provider.apiKey, providerKeys, modelMenuOpen]);
+  }, [provider, providerKeys, modelMenuOpen]);
 
   const activeBase = normBase(provider.baseURL);
-  const activeKey = providerKeys[activeBase] || PRESET_KEYS[activeBase] || provider.apiKey || '';
+  const activeKey = resolveLoopbackKey(activeBase, providerKeys, provider);
   const activeKeyState = statusOf(keyStatus, activeBase, activeKey);
   const activeDot = activeKeyState ? (activeKeyState.state === 'ok' ? 'ok' : (activeKeyState.state === 'out' || activeKeyState.state === 'badkey') ? 'out' : null) : null;
   const modelMenuRef = useRef(null);
