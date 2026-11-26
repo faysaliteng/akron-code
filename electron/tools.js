@@ -32,6 +32,275 @@ function truncate(s) {
   return s;
 }
 
+// ---------- Bash helpers ----------
+const BASH_DEFAULT_TIMEOUT = 120000;
+const BASH_MAX_TIMEOUT = 600000;
+const BASH_OUTPUT_LIMIT = 30000; // chars returned to the model (head + tail)
+
+function clampBashTimeout(t) {
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0) return BASH_DEFAULT_TIMEOUT;
+  // The schema says milliseconds, but free models often send seconds
+  // ("timeout": 60). Anything under 1000 is read as seconds.
+  const ms = n < 1000 ? n * 1000 : n;
+  return Math.min(Math.max(Math.round(ms), 1000), BASH_MAX_TIMEOUT);
+}
+
+// Keep the first half and the last half of a stream without ever holding more
+// than ~limit chars in memory. The tail matters most: that's where compilers
+// and test runners print the actual error.
+function boundedOutput(limit) {
+  const half = Math.floor(limit / 2);
+  let head = '';
+  let tail = '';
+  let dropped = 0;
+  return {
+    push(d) {
+      let s = String(d);
+      if (head.length < half) {
+        const take = Math.min(half - head.length, s.length);
+        head += s.slice(0, take);
+        s = s.slice(take);
+      }
+      if (!s) return;
+      tail += s;
+      if (tail.length > half) {
+        dropped += tail.length - half;
+        tail = tail.slice(tail.length - half);
+      }
+    },
+    text() {
+      if (!dropped) return head + tail;
+      return head + `\n\n…[${dropped} characters of output truncated]…\n\n` + tail;
+    },
+  };
+}
+
+// ---------- Read helpers ----------
+const READ_DEFAULT_LINES = 2000;
+const READ_MAX_LINE = 2000;      // chars per line
+const READ_MAX_CHARS = 100000;   // chars per Read call
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|ico|tiff?|heic|avif)$/i;
+
+function isBinaryBuffer(buf) {
+  const n = Math.min(buf.length, 8192);
+  for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
+  return false;
+}
+
+// Jupyter notebooks: show cells + text outputs instead of raw JSON.
+function renderNotebook(raw) {
+  let nb;
+  try { nb = JSON.parse(raw); } catch (_) { return null; }
+  if (!nb || !Array.isArray(nb.cells)) return null;
+  const src = (v) => (Array.isArray(v) ? v.join('') : String(v || ''));
+  return nb.cells.map((c, i) => {
+    const id = c.id || String(i);
+    let s = `<cell id="${id}" type="${c.cell_type || 'code'}">\n${src(c.source)}\n</cell>`;
+    const outs = (c.outputs || []).map((o) => {
+      if (o.text) return src(o.text);
+      if (o.data && o.data['text/plain']) return src(o.data['text/plain']);
+      if (o.ename) return `${o.ename}: ${o.evalue || ''}`;
+      if (o.data) return `[${Object.keys(o.data).join(', ')} output]`;
+      return '';
+    }).filter(Boolean);
+    if (outs.length) s += `\n<output>\n${outs.join('\n')}\n</output>`;
+    return s;
+  }).join('\n\n');
+}
+
+// `cat -n` style: 6-wide right-aligned line number, a tab, the line.
+function formatNumbered(raw, fp, offset, limit, emptyMsg) {
+  const text = String(raw == null ? '' : raw);
+  if (!text) return emptyMsg;
+  const lines = text.split('\n');
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+  const total = lines.length;
+  const start = Math.max(1, parseInt(offset, 10) || 1);
+  const lim = limit == null || limit === ''
+    ? READ_DEFAULT_LINES
+    : Math.max(1, Math.min(parseInt(limit, 10) || READ_DEFAULT_LINES, 50000));
+  if (start > total) return `(offset ${start} is past the end of ${fp} — the file has ${total} lines)`;
+  const end = Math.min(total, start - 1 + lim);
+  const out = [];
+  let size = 0;
+  let last = start - 1;
+  let capped = false;
+  for (let i = start; i <= end; i++) {
+    let l = lines[i - 1];
+    if (l.endsWith('\r')) l = l.slice(0, -1);
+    if (l.length > READ_MAX_LINE) l = l.slice(0, READ_MAX_LINE) + '… [line truncated]';
+    const row = String(i).padStart(6) + '\t' + l;
+    if (out.length && size + row.length + 1 > READ_MAX_CHARS) { capped = true; break; }
+    out.push(row);
+    size += row.length + 1;
+    last = i;
+  }
+  let s = out.join('\n');
+  if (capped) {
+    s += `\n…[output capped at ${READ_MAX_CHARS} characters — showing lines ${start}–${last} of ${total}; call Read with offset ${last + 1} to continue]`;
+  } else if (last < total) {
+    s += `\n…[${total - last} more lines — call Read with offset ${last + 1} to continue]`;
+  }
+  return s;
+}
+
+// ---------- Edit helpers ----------
+// Claude Code semantics: old_string must match exactly once unless
+// replace_all is set. A whitespace-tolerant fallback is allowed only when it
+// identifies exactly ONE region (and that region isn't wildly longer than
+// old_string). Returns { raw, count, fuzzy } or { error }.
+function countOccurrences(hay, needle) {
+  if (!needle) return 0;
+  let n = 0;
+  let i = hay.indexOf(needle);
+  while (i !== -1) { n++; i = hay.indexOf(needle, i + needle.length); }
+  return n;
+}
+
+function fuzzyMatches(raw, oldStr) {
+  const target = oldStr.replace(/\s+/g, ' ').trim();
+  if (!target) return [];
+  let normBuf = '';
+  const map = [];
+  let prevSpace = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (/\s/.test(ch)) {
+      if (!prevSpace && normBuf.length) { map[normBuf.length] = i; normBuf += ' '; }
+      prevSpace = true;
+    } else {
+      map[normBuf.length] = i;
+      normBuf += ch;
+      prevSpace = false;
+    }
+  }
+  const spans = [];
+  let at = normBuf.indexOf(target);
+  while (at !== -1) {
+    const start = map[at];
+    const lastIdx = map[at + target.length - 1];
+    spans.push({ start, end: lastIdx == null ? raw.length : lastIdx + 1 });
+    at = normBuf.indexOf(target, at + 1);
+  }
+  return spans;
+}
+
+function applyEdit(raw, oldString, newString, replaceAll) {
+  if (typeof oldString !== 'string' || oldString === '') return { error: 'empty' };
+  const ns0 = newString == null ? '' : String(newString);
+  if (oldString === ns0) return { error: 'same' };
+  // Keep the file's line endings: a CRLF file gets CRLF in both strings.
+  const crlf = raw.includes('\r\n');
+  const toFile = (s) => (crlf ? s.replace(/\r?\n/g, '\r\n') : s);
+  let os = toFile(oldString);
+  let ns = toFile(ns0);
+  let count = countOccurrences(raw, os);
+  if (!count && os !== oldString) { // mixed endings: try the string verbatim
+    const c2 = countOccurrences(raw, oldString);
+    if (c2) { os = oldString; ns = ns0; count = c2; }
+  }
+  if (count > 1 && !replaceAll) return { error: 'multiple', count };
+  if (count >= 1) {
+    if (replaceAll) return { raw: raw.split(os).join(ns), count, fuzzy: false };
+    const idx = raw.indexOf(os);
+    return { raw: raw.slice(0, idx) + ns + raw.slice(idx + os.length), count: 1, fuzzy: false };
+  }
+  if (replaceAll) return { error: 'notfound' };
+  const spans = fuzzyMatches(raw, oldString);
+  if (spans.length > 1) return { error: 'multiple', count: spans.length, fuzzy: true };
+  if (spans.length === 1) {
+    const { start, end } = spans[0];
+    const nlSpan = (raw.slice(start, end).match(/\n/g) || []).length;
+    const nlOld = (oldString.match(/\n/g) || []).length;
+    // Collapsing whitespace must not stretch one line of old_string over a
+    // big chunk of unrelated code.
+    if (nlSpan <= nlOld * 2 + 2) {
+      return { raw: raw.slice(0, start) + ns + raw.slice(end), count: 1, fuzzy: true };
+    }
+  }
+  return { error: 'notfound' };
+}
+
+function editErrorText(r, fp, raw, label) {
+  const where = label ? `${label}: ` : '';
+  if (r.error === 'empty') return `Error: ${where}old_string must be a non-empty string copied exactly from the file (use Read first).`;
+  if (r.error === 'same') return `Error: ${where}old_string and new_string are identical — there is nothing to change.`;
+  if (r.error === 'multiple') {
+    return `Error: ${where}old_string matches ${r.count} times in ${fp}${r.fuzzy ? ' (ignoring whitespace)' : ''}; add surrounding context to make it unique, or set replace_all:true to replace every occurrence. The file is unchanged.`;
+  }
+  return `Error: ${where}old_string not found in ${fp}. The file is unchanged. Read the file first and copy old_string exactly (including indentation).\n\n${fileHead(fp, raw)}\n\nRe-copy old_string exactly from the lines above (or use Write to replace the whole file).`;
+}
+
+// ---------- Glob helpers ----------
+const GLOB_MAX_DEPTH = 20;
+const GLOB_MAX_RESULTS = 1000;
+const GLOB_MAX_VISITS = 200000;
+const GLOB_SKIP_DIRS = new Set(['node_modules', '.git', '.hg', '.svn']);
+
+// `{a,b}` → ['a','b'] (nested braces supported).
+function expandBraces(p) {
+  const s = String(p);
+  let depth = 0;
+  let open = -1;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\') { i++; continue; }
+    if (c === '{') { if (depth === 0) open = i; depth++; }
+    else if (c === '}' && depth > 0) {
+      depth--;
+      if (depth === 0) {
+        const body = s.slice(open + 1, i);
+        const parts = [];
+        let d = 0; let last = 0;
+        for (let j = 0; j < body.length; j++) {
+          if (body[j] === '\\') { j++; continue; }
+          if (body[j] === '{') d++;
+          else if (body[j] === '}') d--;
+          else if (body[j] === ',' && d === 0) { parts.push(body.slice(last, j)); last = j + 1; }
+        }
+        parts.push(body.slice(last));
+        if (parts.length < 2) continue; // `{x}` is literal
+        const pre = s.slice(0, open);
+        const post = s.slice(i + 1);
+        const out = [];
+        for (const part of parts) for (const e of expandBraces(pre + part + post)) out.push(e);
+        return out;
+      }
+    }
+  }
+  return [s];
+}
+
+function globToRegExp(pattern) {
+  const p = String(pattern).replace(/\\/g, '/').replace(/^\.\//, '');
+  let re = '';
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i];
+    if (c === '*') {
+      if (p[i + 1] === '*') {
+        const atSegStart = i === 0 || p[i - 1] === '/';
+        if (atSegStart && p[i + 2] === '/') { re += '(?:.*/)?'; i += 2; continue; }
+        if (atSegStart && i + 2 === p.length) { re += '.*'; i += 1; continue; }
+        re += '[^/]*'; i += 1; continue;
+      }
+      re += '[^/]*';
+    } else if (c === '?') {
+      re += '[^/]';
+    } else if (c === '[') {
+      const close = p.indexOf(']', i + 2);
+      if (close === -1) { re += '\\['; continue; }
+      let body = p.slice(i + 1, close);
+      if (body[0] === '!') body = '^' + body.slice(1);
+      re += '[' + body.replace(/\\/g, '\\\\') + ']';
+      i = close;
+    } else {
+      re += c.replace(/[.+^${}()|[\]\\/]/g, '\\$&');
+    }
+  }
+  return new RegExp('^' + re + '$');
+}
+
 function resolvePath(p, cwd) {
   if (!p) throw new Error('path required');
   const expanded = expandPath(p);
@@ -59,7 +328,7 @@ const SLASH_COMMANDS = {
 
 // ---------- executors ----------
 const executors = {
-  async bash({ command, cwd, timeout, description, run_in_background, dangerouslyDisableSandbox }) {
+  async bash({ command, cwd, timeout, description, run_in_background, dangerouslyDisableSandbox }, execCtx) {
     if (!command) return 'Error: command required';
     // Example's Bash runs either to completion or detached. A detached job must
     // outlive the tool call and be addressable by TaskOutput / KillShell.
@@ -69,35 +338,80 @@ const executors = {
       return `Started background shell ${job.id}${label}.\nPoll: TaskOutput {"task_id":"${job.id}","block":true,"timeout":30000}\nStop:  KillShell {"shell_id":"${job.id}"}`;
     }
     if (dangerouslyDisableSandbox) { /* accepted: commands already run unsandboxed on macOS */ }
-    const t = Math.min(Number(timeout) || 60, 120) * 1000;
+    // Claude Code semantics: `timeout` is in MILLISECONDS (default 2 min, max 10 min).
+    const t = clampBashTimeout(timeout);
     const dir = resolveDir(cwd);
+    const abortSignal = execCtx && execCtx.signal;
+    if (abortSignal && abortSignal.aborted) return '[aborted before start]';
     return new Promise((resolve) => {
       // `-l` login shell → inherits ~/.zprofile / ~/.zshenv so brew, npm, pip,
       // and other toolchain binaries are on PATH exactly as they are in Terminal.
       // (spawn /bin/zsh with `-l -c` rather than exec `shell:'/bin/zsh -l'`,
       //  which Node would treat as a single executable name and ENOENT on.)
-      let out = '';
+      const buf = boundedOutput(BASH_OUTPUT_LIMIT);
       let settled = false;
+      let timedOut = false;
+      let aborted = false;
       let wrapped;
       try {
         wrapped = sandbox.wrapShell(command, { dangerouslyDisableSandbox });
       } catch (e) {
         return resolve(`Error: ${e.message}`);
       }
-      const child = spawn(wrapped.file, wrapped.args, { cwd: dir, timeout: t });
-      if (wrapped.note) out += `[${wrapped.note}]\n`;
-      const finish = (fn) => {
-        if (settled) return; settled = true;
-        if (out === '') out = '(no output)';
-        resolve(truncate(fn ? fn(out) : out));
+      let child;
+      try {
+        // detached → the command gets its own process group, so a timeout or an
+        // abort can kill the whole tree (npm → node → esbuild …), not just zsh.
+        child = spawn(wrapped.file, wrapped.args, { cwd: dir, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (e) {
+        return resolve(`Error (${e.code || 'spawn'}): ${e.message}`);
+      }
+      const note = wrapped.note ? `[${wrapped.note}]\n` : '';
+      const killGroup = () => {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {
+          try { child.kill('SIGKILL'); } catch (__) { /* already gone */ }
+        }
       };
-      child.stdout.on('data', (d) => { out += d; });
-      child.stderr.on('data', (d) => { out += (out ? '\n[stderr]\n' : '') + d; });
-      child.on('error', (e) => { if (out === '') out = `Error (${e.code || 'spawn'}): ${e.message}`; finish(); });
-      child.on('close', (code, signal) => {
-        if (code !== 0 && out === '') out = signal ? `Error (killed by ${signal})` : `Error (exit ${code})`;
-        finish();
+      let timer = null;
+      let graceTimer = null;
+      const onAbort = () => { if (settled) return; aborted = true; killGroup(); armGrace(); };
+      const cleanup = () => {
+        clearTimeout(timer); clearTimeout(graceTimer);
+        if (abortSignal) { try { abortSignal.removeEventListener('abort', onAbort); } catch (_) {} }
+      };
+      const finish = (code, sig, spawnErr) => {
+        if (settled) return; settled = true;
+        cleanup();
+        let out = buf.text();
+        if (spawnErr && !out) out = `Error (${spawnErr.code || 'spawn'}): ${spawnErr.message}`;
+        out = note + out;
+        const tail = [];
+        if (timedOut) tail.push(`[timed out after ${Math.round(t / 1000)}s — process killed]`);
+        else if (aborted) tail.push('[aborted — process killed]');
+        else if (sig) tail.push(`[killed by ${sig}]`);
+        else if (code != null && code !== 0) tail.push(`[exit code ${code}]`);
+        if (!out.trim() && !tail.length) out = '(no output)';
+        resolve(out + (tail.length ? (out && !out.endsWith('\n') ? '\n' : '') + tail.join('\n') : ''));
+        try { child.stdout.destroy(); child.stderr.destroy(); } catch (_) {}
+      };
+      // After a kill, `close` can stall if a grandchild escaped the group and
+      // still holds the pipes; never let that hang the tool call.
+      const armGrace = () => {
+        if (graceTimer) return;
+        graceTimer = setTimeout(() => finish(null, 'SIGKILL'), 2000);
+      };
+      timer = setTimeout(() => { timedOut = true; killGroup(); armGrace(); }, t);
+      if (abortSignal) abortSignal.addEventListener('abort', onAbort, { once: true });
+      child.stdout.on('data', (d) => buf.push(d));
+      child.stderr.on('data', (d) => buf.push(d));
+      child.on('error', (e) => finish(null, null, e));
+      // `exit` fires when zsh is done; `close` waits for every holder of the
+      // pipes. A backgrounded `server &` keeps them open forever, so settle a
+      // moment after exit even if close never comes.
+      child.on('exit', (code, sig) => {
+        setTimeout(() => finish(code, timedOut || aborted ? null : sig), 300);
       });
+      child.on('close', (code, sig) => finish(code, timedOut || aborted ? null : sig));
     });
   },
 
@@ -108,34 +422,43 @@ const executors = {
     const rd = sandbox.isReadAllowed(fp);
     if (rd !== true) return 'Error: ' + rd.reason;
     // PDFs: extract text (optionally a page window) instead of mojibake.
-    if (/\.pdf$/i.test(fp) && pages) {
-      const a = String(pages).split('-');
-      const first = Math.max(1, parseInt(a[0], 10) || 1);
-      const last = Math.max(first, parseInt(a[1], 10) || first);
+    if (/\.pdf$/i.test(fp)) {
+      let range = '';
+      if (pages) {
+        const a = String(pages).split('-');
+        const first = Math.max(1, parseInt(a[0], 10) || 1);
+        const last = Math.max(first, parseInt(a[1], 10) || first);
+        range = `-f ${first} -l ${last} `;
+      }
       const out = await new Promise((resolve) => {
-        exec(`pdftotext -f ${first} -l ${last} -layout ${JSON.stringify(fp)} -`, { maxBuffer: 16 * 1024 * 1024 }, (e, so, se) => resolve(e ? `Error reading PDF: ${se || e.message}` : so));
+        exec(`pdftotext ${range}-layout ${JSON.stringify(fp)} -`, { maxBuffer: 16 * 1024 * 1024 }, (e, so, se) => resolve(e ? null : so));
       });
-      return truncate(out || '(empty PDF page range)');
+      if (out != null) {
+        return formatNumbered(out, fp, offset, limit, pages ? '(empty PDF page range)' : '(PDF has no extractable text)');
+      }
+      if (pages) return `Error reading PDF: could not extract pages ${pages} (is pdftotext installed?)`;
+      // fall through: report as a binary file below
     }
     try {
-      const raw = fs.readFileSync(fp, 'utf8');
-      const lines = raw.split('\n');
-      const total = lines.length;
-      const perCall = 2000;
-      const start = Math.max(1, parseInt(offset, 10) || 1);
-      const count = limit === undefined || limit === null ? perCall : Math.max(1, Math.min(parseInt(limit, 10) || perCall, 50000));
-      if (start > total) {
-        return `(offset ${start} is past the end of ${fp} — the file has ${total} lines)`;
+      let st;
+      try { st = fs.statSync(fp); } catch (e) {
+        return `Error reading file: ${fp} does not exist (${e.code || e.message}).`;
       }
-      const slice = lines.slice(start - 1, start - 1 + count);
-      let out = slice.join('\n');
-      const endShown = start - 1 + slice.length;
-      if (total > endShown) {
-        out += `\n…[${total - endShown} more lines — call Read with offset ${endShown + 1} to continue]`;
-      } else if (start > 1 || count < total) {
-        out += `\n…[${fp} — lines ${start}–${endShown} of ${total}]`;
+      if (st.isDirectory()) return `Error: ${fp} is a directory, not a file. Use Glob or Bash \`ls\` to list it.`;
+      if (IMAGE_EXT.test(fp)) {
+        return `Image file: ${fp} (${st.size} bytes, ${path.extname(fp).slice(1).toLowerCase()}). Image contents cannot be shown as text.`;
       }
-      return out || '(empty file)';
+      const buf = fs.readFileSync(fp);
+      if (isBinaryBuffer(buf)) {
+        return `Binary file: ${fp} (${buf.length} bytes) — not shown. Use Bash (e.g. \`file\`, \`xxd | head\`) to inspect it.`;
+      }
+      const raw = buf.toString('utf8');
+      if (/\.ipynb$/i.test(fp)) {
+        const nb = renderNotebook(raw);
+        if (nb != null) return formatNumbered(nb, fp, offset, limit, '(empty notebook)');
+      }
+      if (raw === '') return `(${fp} exists but is empty)`;
+      return formatNumbered(raw, fp, offset, limit, '(empty file)');
     } catch (e) {
       return 'Error reading file: ' + e.message;
     }
@@ -178,33 +501,24 @@ const executors = {
       let raw;
       try { raw = fs.readFileSync(fp, 'utf8'); }
       catch (e) {
+        // Claude Code: an empty old_string on a missing file creates it.
+        if (e.code === 'ENOENT' && old_string === '' && new_string != null) {
+          fs.mkdirSync(path.dirname(fp), { recursive: true });
+          fs.writeFileSync(fp, String(new_string), 'utf8');
+          return `Created ${fp}`;
+        }
         return `Error editing file: cannot read ${fp} (${e.code || e.message}). Use the Write tool to create it first.`;
       }
-      if (old_string === undefined || old_string === '') {
+      if (old_string === undefined || old_string === null || old_string === '') {
         return 'Error: Edit requires a non-empty "old_string" copied exactly from the file (use Read first), plus "new_string".';
       }
-      const ns = new_string == null ? '' : String(new_string);
-      const replaceAll = !!replace_all;
-
-      // 1) exact or whitespace-tolerant match
-      if (replaceAll) {
-        const n = raw.split(old_string).length - 1;
-        if (n === 0) {
-          return `Error: old_string not found in ${fp}. The file is unchanged.\n\n${fileHead(fp, raw)}\n\nRe-copy old_string exactly from the lines above (or use Write to replace the whole file).`;
-        }
-        fs.writeFileSync(fp, raw.split(old_string).join(ns), 'utf8');
-        return `Replaced ${n} occurrence${n === 1 ? '' : 's'} in ${fp}`;
-      }
-      const r = replaceOnce(raw, old_string, ns);
-      if (r.raw != null) {
-        fs.writeFileSync(fp, r.raw, 'utf8');
-        return r.fuzzy
-          ? `Replaced 1 occurrence in ${fp} (matched after ignoring whitespace differences).`
-          : `Replaced 1 occurrence in ${fp}`;
-      }
-
-      // 2) give the model something actionable instead of a dead end
-      return `Error: old_string not found in ${fp}. The file is unchanged.\n\n${fileHead(fp, raw)}\n\nRe-copy old_string exactly from the lines above (or use Write to replace the whole file).`;
+      const r = applyEdit(raw, String(old_string), new_string, !!replace_all);
+      if (r.error) return editErrorText(r, fp, raw);
+      fs.writeFileSync(fp, r.raw, 'utf8');
+      if (replace_all) return `Replaced ${r.count} occurrence${r.count === 1 ? '' : 's'} in ${fp}`;
+      return r.fuzzy
+        ? `Replaced 1 occurrence in ${fp} (matched after ignoring whitespace differences).`
+        : `Replaced 1 occurrence in ${fp}`;
     } catch (e) {
       return 'Error editing file: ' + e.message;
     }
@@ -215,6 +529,8 @@ const executors = {
     if (!target) return 'Error: MultiEdit requires a "path" argument (alias: file_path).';
     let fp;
     try { fp = resolvePath(target, cwd); } catch (e) { return 'Error multi-editing file: ' + e.message; }
+    const we = sandbox.isWriteAllowed(fp);
+    if (we !== true) return 'Error: ' + we.reason;
     try {
       if (!Array.isArray(edits) || !edits.length) {
         return 'Error: MultiEdit requires a non-empty "edits" array of {old_string, new_string} pairs.';
@@ -224,20 +540,25 @@ const executors = {
       catch (e) {
         return `Error multi-editing file: cannot read ${fp} (${e.code || e.message}). Use the Write tool to create it first.`;
       }
-      let applied = 0;
-      for (const e of edits) {
+      const original = raw;
+      // Sequential and all-or-nothing: each edit sees the result of the
+      // previous ones, and nothing is written unless every edit applies.
+      for (let i = 0; i < edits.length; i++) {
+        const e = edits[i];
+        const label = `edit #${i + 1} of ${edits.length}`;
         if (!e || typeof e.old_string !== 'string' || e.old_string === '') {
-          return `Error: edit #${applied + 1} is missing a non-empty "old_string". No changes were applied.`;
+          return `Error: ${label} is missing a non-empty "old_string". No changes were applied.`;
         }
-        const r = replaceOnce(raw, e.old_string, e.new_string == null ? '' : String(e.new_string));
-        if (r.raw == null) {
-          return `Error: one old_string not found (edit #${applied + 1} of ${edits.length}); no changes applied.\n\n${fileHead(fp, raw, 40)}\n\nFix that edit's old_string (copy it exactly from the lines above) and resend.`;
+        const r = applyEdit(raw, e.old_string, e.new_string, !!e.replace_all);
+        if (r.error) {
+          const msg = editErrorText(r, fp, original, label);
+          return msg.replace('The file is unchanged.', 'No changes were applied (MultiEdit is all-or-nothing).')
+            + (/No changes were applied/.test(msg) ? '' : ' No changes were applied (MultiEdit is all-or-nothing).');
         }
         raw = r.raw;
-        applied++;
       }
       fs.writeFileSync(fp, raw, 'utf8');
-      return `Applied ${applied} edits to ${fp}`;
+      return `Applied ${edits.length} edit${edits.length === 1 ? '' : 's'} to ${fp}`;
     } catch (e) {
       return 'Error multi-editing file: ' + e.message;
     }
@@ -245,33 +566,58 @@ const executors = {
 
   async glob({ pattern, path: basePath, cwd }) {
     if (!pattern) return 'Error: Glob requires a "pattern".';
-    const base = basePath ? resolvePath(basePath, cwd) : resolveDir(cwd);
+    let pat = String(pattern).replace(/\\/g, '/');
+    let base = basePath ? resolvePath(basePath, cwd) : resolveDir(cwd);
+    // An absolute pattern (`/repo/src/**/*.ts`): its literal leading segments
+    // become the search root.
+    if (path.isAbsolute(expandPath(pat))) {
+      const segs = expandPath(pat).split('/');
+      const lit = [];
+      while (segs.length > 1 && !/[*?[\]{}]/.test(segs[0])) lit.push(segs.shift());
+      base = lit.join('/') || '/';
+      pat = segs.join('/');
+    }
     const gs = sandbox.isReadAllowed(base);
     if (gs !== true) return 'Error: ' + gs.reason;
-    const results = [];
-    const reStr = '^' + String(pattern)
-      .split(path.sep).join('/')
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-      .replace(/\*\*/g, '\u0000')
-      .replace(/\*/g, '[^/]*')
-      .replace(/\?/g, '[^/]')
-      .replace(/\u0000/g, '.*') + '$';
-    let re;
-    try { re = new RegExp(reStr); } catch { return 'Error: invalid pattern'; }
+    if (!fs.existsSync(base)) return `Error: path does not exist: ${base}`;
+    let res;
+    try { res = expandBraces(pat).map(globToRegExp); } catch { return 'Error: invalid pattern'; }
+    // Skip node_modules/.git unless the pattern names them; only descend into
+    // other dot-dirs when the pattern targets dot paths.
+    const wantsDot = /(^|\/)\./.test(pat);
+    const named = (d) => pat.includes(d);
+    const matches = [];
+    let visits = 0;
+    let truncatedWalk = false;
     const walk = (dir, depth) => {
-      if (depth > 8 || results.length > 5000) return;
+      if (depth > GLOB_MAX_DEPTH) { truncatedWalk = true; return; }
       let entries;
       try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
       for (const e of entries) {
+        if (++visits > GLOB_MAX_VISITS) { truncatedWalk = true; return; }
         const full = path.join(dir, e.name);
         const rel = path.relative(base, full).split(path.sep).join('/');
-        if (re.test(rel) && rel !== '') results.push(rel);
-        if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') walk(full, depth + 1);
+        let isDir = e.isDirectory();
+        if (e.isSymbolicLink()) { try { isDir = false; if (!fs.statSync(full).isFile()) continue; } catch { continue; } } // never follow dir links (cycles)
+        if (isDir) {
+          if (GLOB_SKIP_DIRS.has(e.name) && !named(e.name)) continue;
+          if (e.name.startsWith('.') && !wantsDot) continue;
+          walk(full, depth + 1);
+        } else if (res.some((re) => re.test(rel))) {
+          matches.push({ rel, full });
+        }
       }
     };
-    if (!fs.existsSync(base)) return `Error: path does not exist: ${base}`;
     walk(base, 0);
-    return results.length ? results.slice(0, 2000).join('\n') : '(no matches)';
+    if (!matches.length) return truncatedWalk ? '(no matches — search was cut short; narrow `path` or the pattern)' : '(no matches)';
+    // Claude Code orders Glob results by modification time, newest first.
+    for (const m of matches) { try { m.mtime = fs.statSync(m.full).mtimeMs; } catch { m.mtime = 0; } }
+    matches.sort((a, b) => (b.mtime - a.mtime) || (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+    let out = matches.slice(0, GLOB_MAX_RESULTS).map((m) => m.rel).join('\n');
+    if (matches.length > GLOB_MAX_RESULTS || truncatedWalk) {
+      out += `\n(Results are truncated: showing ${Math.min(matches.length, GLOB_MAX_RESULTS)} of ${matches.length}${truncatedWalk ? '+' : ''} matches. Use a more specific path or pattern.)`;
+    }
+    return out;
   },
 
   async grep({ pattern, path: p, cwd, glob: g, output_mode = 'content', context, type, head_limit = 250, offset = 0, multiline }) {
@@ -846,12 +1192,12 @@ function runCode(lang, code, cwd, timeoutMs) {
 // ---------- tool definitions (OpenAI function-calling schema) ----------
 // Names/descriptions mirror Claude Code's tool surface 1:1 where applicable.
 const toolDefinitions = [
-  { name: 'Bash', description: 'Run a shell command in zsh (run code, git, install deps, list/inspect files). Do NOT create or edit files with heredocs, echo, tee or sed -i — use Write/Edit for file content. Set run_in_background:true for long jobs (servers, builds, watches) and poll them with TaskOutput or stop them with KillShell.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'The command to execute' }, description: { type: 'string', description: 'Short human label shown in the UI (3–5 words)' }, cwd: { type: 'string', description: 'Working directory' }, timeout: { type: 'number', description: 'Timeout in ms (max 600000)' }, run_in_background: { type: 'boolean', description: 'Run detached; returns a shell id for TaskOutput/KillShell' }, dangerouslyDisableSandbox: { type: 'boolean', description: 'Accepted for parity; commands already run unsandboxed on macOS' } }, required: ['command'] } },
-  { name: 'Read', description: 'Read a text file from disk. Returns up to `limit` lines starting at 1-based `offset` (default 2000 lines per call). For PDFs, pass `pages` (e.g. "1-10") to extract a page range. Always Read a file before editing it.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias for path' }, offset: { type: 'number', description: '1-based line to start at' }, limit: { type: 'number', description: 'Max lines to return (default 2000)' }, pages: { type: 'string', description: 'PDF page range, e.g. "1-10"' }, cwd: { type: 'string' } }, required: ['path'] } },
+  { name: 'Bash', description: 'Run a shell command in zsh (run code, git, install deps, list/inspect files). Do NOT create or edit files with heredocs, echo, tee or sed -i — use Write/Edit for file content. Set run_in_background:true for long jobs (servers, builds, watches) and poll them with TaskOutput or stop them with KillShell.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'The command to execute' }, description: { type: 'string', description: 'Short human label shown in the UI (3–5 words)' }, cwd: { type: 'string', description: 'Working directory' }, timeout: { type: 'number', description: 'Timeout in milliseconds (default 120000, max 600000)' }, run_in_background: { type: 'boolean', description: 'Run detached; returns a shell id for TaskOutput/KillShell' }, dangerouslyDisableSandbox: { type: 'boolean', description: 'Accepted for parity; commands already run unsandboxed on macOS' } }, required: ['command'] } },
+  { name: 'Read', description: 'Read a text file from disk. Output is numbered like `cat -n` (line number, tab, line). Returns up to `limit` lines starting at 1-based `offset` (default 2000 lines; lines over 2000 chars are cut). For PDFs, pass `pages` (e.g. "1-10") to extract a page range. Binary files are detected and not dumped. Always Read a file before editing it; never copy the line-number prefix into old_string.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias for path' }, offset: { type: 'number', description: '1-based line to start at' }, limit: { type: 'number', description: 'Max lines to return (default 2000)' }, pages: { type: 'string', description: 'PDF page range, e.g. "1-10"' }, cwd: { type: 'string' } }, required: ['path'] } },
   { name: 'Write', description: 'Create a new file or fully overwrite an existing one. Provide the COMPLETE final contents (no placeholders, no elisions). Relative paths resolve inside the project folder. This is the only correct way to create files — never use bash heredocs.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File path, relative to the project folder' }, file_path: { type: 'string', description: 'Alias for path' }, content: { type: 'string', description: 'The complete file contents' }, cwd: { type: 'string' } }, required: ['path', 'content'] } },
-  { name: 'Edit', description: 'Make a targeted change to an existing file: replace old_string with new_string (first match). Read the file first and copy old_string exactly, including indentation. Whitespace drift is tolerated.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path (Example-style)' }, old_string: { type: 'string', description: 'Exact text to replace (copy from Read output)' }, new_string: { type: 'string', description: 'Replacement text' }, replace_all: { type: 'boolean', description: 'Replace every occurrence' }, cwd: { type: 'string' } }, required: ['path', 'old_string', 'new_string'] } },
-  { name: 'MultiEdit', description: 'Apply several {old_string,new_string} replacements to one file in a single call (all-or-nothing). Use instead of many separate Edits.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path' }, edits: { type: 'array', items: { type: 'object', properties: { old_string: { type: 'string' }, new_string: { type: 'string' } }, required: ['old_string', 'new_string'] } }, cwd: { type: 'string' } }, required: ['path', 'edits'] } },
-  { name: 'Glob', description: 'Find files matching a glob pattern (supports **, *, ?). Use `path` to set the search root.', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string', description: 'Directory to search from (default: cwd)' }, cwd: { type: 'string' } }, required: ['pattern'] } },
+  { name: 'Edit', description: 'Make a targeted change to an existing file: replace old_string with new_string. old_string must match exactly ONE place in the file (include surrounding lines to make it unique) unless replace_all is true. Read the file first and copy old_string exactly, including indentation (without the Read line-number prefix).', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path (Example-style)' }, old_string: { type: 'string', description: 'Exact text to replace (copy from Read output)' }, new_string: { type: 'string', description: 'Replacement text' }, replace_all: { type: 'boolean', description: 'Replace every occurrence' }, cwd: { type: 'string' } }, required: ['path', 'old_string', 'new_string'] } },
+  { name: 'MultiEdit', description: 'Apply several {old_string,new_string} replacements to one file in a single call, in order (each sees the previous result), all-or-nothing. Each old_string must be unique unless that edit sets replace_all. Use instead of many separate Edits.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path' }, edits: { type: 'array', items: { type: 'object', properties: { old_string: { type: 'string' }, new_string: { type: 'string' }, replace_all: { type: 'boolean' } }, required: ['old_string', 'new_string'] } }, cwd: { type: 'string' } }, required: ['path', 'edits'] } },
+  { name: 'Glob', description: 'Find files matching a glob pattern (supports **, *, ?, [abc], {a,b}), e.g. "**/*.{ts,tsx}". Results are sorted by modification time (newest first); node_modules and .git are skipped. Use `path` to set the search root.', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string', description: 'Directory to search from (default: cwd)' }, cwd: { type: 'string' } }, required: ['pattern'] } },
   { name: 'Grep', description: 'Search file contents for a regex pattern recursively. output_mode: content (default) | files_with_matches | count. Filter with glob/type, add context lines, and page results with offset/head_limit.', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string', description: 'File or directory to search' }, glob: { type: 'string', description: 'Only files matching this glob, e.g. "*.js"' }, type: { type: 'string', description: 'File type filter, e.g. js, py, rust' }, output_mode: { type: 'string', enum: ['content', 'files_with_matches', 'count'] }, context: { type: 'number', description: 'Lines of context around each match' }, head_limit: { type: 'number', description: 'Max results (default 250)' }, offset: { type: 'number', description: 'Skip first N results' }, multiline: { type: 'boolean', description: 'Allow patterns to span lines' }, '-i': { type: 'boolean', description: 'Case-insensitive' }, cwd: { type: 'string' } }, required: ['pattern'] } },
   { name: 'WebFetch', description: 'Fetch the contents of a URL, convert the page to readable markdown, and then answer the given prompt about it. Prefer this over shelling out to curl when you need to understand a web page.', parameters: { type: 'object', properties: { url: { type: 'string', description: 'Absolute http(s) URL to fetch' }, prompt: { type: 'string', description: 'What to extract/answer from the page' } }, required: ['url', 'prompt'] } },
   { name: 'WebSearch', description: 'Search the web and return top results (titles + URLs). Optionally restrict to or exclude specific domains.', parameters: { type: 'object', properties: { query: { type: 'string' }, allowed_domains: { type: 'array', items: { type: 'string' }, description: 'Only return results from these domains' }, blocked_domains: { type: 'array', items: { type: 'string' }, description: 'Exclude results from these domains' } }, required: ['query'] } },
@@ -1080,46 +1426,6 @@ const executorsByTool = {
   delete_skill: 'delete_skill',
 };
 
-/**
- * Run a built-in tool.
- * @param {string} name tool name
- * @param {object} args tool arguments
- * @param {object} ctx optional context: { cwd, shell, askUser, runSubagent, exitPlanMode, mcpListResources, mcpReadResource }
- */
-// Replace the first occurrence of `oldStr` in `raw`, tolerating whitespace
-// drift (indentation / trailing-space changes are the #1 reason models retry an
-// Edit forever). Returns { raw } on success or { raw: null, fuzzy: false }.
-function replaceOnce(raw, oldStr, newStr) {
-  const idx = raw.indexOf(oldStr);
-  if (idx !== -1) {
-    return { raw: raw.slice(0, idx) + newStr + raw.slice(idx + oldStr.length), fuzzy: false };
-  }
-  const norm = (s) => s.replace(/\s+/g, ' ').trim();
-  const target = norm(oldStr);
-  if (!target) return { raw: null, fuzzy: false };
-  let normBuf = '';
-  const map = new Map();
-  let prevSpace = false;
-  for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i];
-    if (/\s/.test(ch)) {
-      if (!prevSpace && normBuf.length) { map.set(normBuf.length, i); normBuf += ' '; }
-      prevSpace = true;
-    } else {
-      map.set(normBuf.length, i);
-      normBuf += ch;
-      prevSpace = false;
-    }
-  }
-  const nIdx = normBuf.indexOf(target);
-  if (nIdx === -1) return { raw: null, fuzzy: false };
-  const origStart = map.get(nIdx);
-  const lastNorm = nIdx + target.length - 1;
-  let origEnd = map.get(lastNorm);
-  origEnd = origEnd == null ? raw.length : origEnd + 1;
-  return { raw: raw.slice(0, origStart) + newStr + raw.slice(origEnd), fuzzy: true };
-}
-
 function fileHead(fp, raw, lines) {
   const head = raw.split('\n').slice(0, lines || 60).map((l, i) => String(i + 1).padStart(4) + '| ' + l).join('\n');
   return `First ${lines || 60} lines of ${path.basename(fp)}:\n${head}`;
@@ -1166,7 +1472,9 @@ const LONG_RUNNING = new Set([
 ]);
 function toolTimeoutMs(name, args) {
   if (LONG_RUNNING.has(name)) return 30 * 60 * 1000;
-  if (name === 'Bash') return 130 * 1000; // the executor caps zsh at 120s
+  // Bash enforces its own (ms) timeout and kills the process group; give it
+  // 10s of grace so its own message wins.
+  if (name === 'Bash' || name === 'mcp__workspace__bash') return Math.min(clampBashTimeout(args && args.timeout) + 10000, 610000);
   if (name === 'mcp__terminal__run_in_terminal') return 130 * 1000;
   if (name === 'browser_wait_for') return 45 * 1000;
   if (/^browser_/.test(name)) return 30 * 1000;
@@ -1185,8 +1493,40 @@ function withTimeout(promise, ms, label) {
   return Promise.race([Promise.resolve(promise), guard]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * Run a built-in tool. Never throws for a tool failure: any exception becomes
+ * { content: 'Tool error: …', isError: true } so the model can recover. Only an
+ * abort (ctx.signal aborted) propagates.
+ * @param {string} name tool name
+ * @param {object} args tool arguments
+ * @param {object} ctx optional context: { cwd, shell, askUser, runSubagent, exitPlanMode, mcpListResources, mcpReadResource, signal, checkDeny, approveTool, ... }
+ */
 async function runTool(name, args, ctx) {
   ctx = ctx || {};
+  try {
+    return await runToolInner(name, args, ctx);
+  } catch (e) {
+    if (ctx.signal && ctx.signal.aborted) throw e;
+    return { content: 'Tool error: ' + (e && e.message ? e.message : String(e)), isError: true };
+  }
+}
+
+// ctx.checkDeny(name, args) → falsy to proceed; true / 'reason' / { reason } /
+// { decision: 'deny', reason } to block. Applies to EVERY tool, read-only ones
+// included (settings.json `deny: ["Read(./.env)"]`).
+function denyReason(v) {
+  if (!v) return null;
+  if (v === true) return 'denied by permission rules';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'object') {
+    if (v.decision && v.decision !== 'deny') return null;
+    if (v.deny === false || v.denied === false) return null;
+    return v.reason || (v.rule ? `Denied by rule ${v.rule}` : 'denied by permission rules');
+  }
+  return null;
+}
+
+async function runToolInner(name, args, ctx) {
   // A provider that mangled the tool arguments used to look like a generic
   // "Unknown tool"/"path required" error, which made models give up and fall
   // back to bash heredocs. Tell them exactly what went wrong so they retry
@@ -1198,6 +1538,11 @@ async function runTool(name, args, ctx) {
     };
   }
   const { shell, askUser, runSubagent, exitPlanMode, mcpListResources, mcpReadResource, setCwd, listAgents, stopTask, sendUserMessage, setGoal, createArtifact, requestSecret, approveTool } = ctx;
+
+  if (typeof ctx.checkDeny === 'function') {
+    const why = denyReason(await ctx.checkDeny(name, args || {}));
+    if (why) return { content: `Blocked: ${name} — ${why}.`, isError: true, denied: true };
+  }
 
   // B8 Claude Code mode: require user approval before mutating tools.
   const MUTATING = new Set([
@@ -1235,29 +1580,35 @@ async function runTool(name, args, ctx) {
         label,
         description: args.description,
         model: args.model || args.tier || null,
-        run: () => runSubagent({ ...args, run_in_background: false }),
+        // TaskStop aborts the signal; runSubagent honours args.signal as an
+        // extra parent signal.
+        run: (signal) => runSubagent({ ...args, run_in_background: false, signal }),
       });
       return `Started background agent "${label}" (${job.id}). Poll it with TaskOutput({task_id:"${job.id}"}) (optionally block:true) or stop it with TaskStop({task_id:"${job.id}"}).`;
     }
-    return await runSubagent(args);
+    return await withTimeout(runSubagent(args), toolTimeoutMs(name, args), name);
   }
   if (name === 'Swarm') {
     if (!ctx.runAgent) return 'Swarm unavailable (no agent runner wired).';
     const goal = args.goal || args.objective || args.task || '';
     if (!goal) return 'Error: goal required.';
     try {
-      const out = await swarm.swarm(String(goal), {
+      const out = await withTimeout(swarm.swarm(String(goal), {
         runAgent: ctx.runAgent,
         provider: ctx.provider,
         orchestrator: ctx.orchestrator,
         emit: ctx.emit || (() => {}),
         tasks: Array.isArray(args.tasks) && args.tasks.length ? args.tasks : undefined,
-        concurrency: Number(args.concurrency) || 4,
+        concurrency: Math.min(Number(args.concurrency) || 4, 8),
         maxTasks: Number(args.maxTasks) || 6,
+        signal: ctx.signal,
+        poolOrchestrator: ctx.poolOrchestrator,
+        depth: ctx.depth,
         critique: args.critique !== false,
         cwd: args.cwd || ctx.cwd,
         maxSteps: Number(args.maxSteps) || 0,
-      });
+      }), toolTimeoutMs(name, args), name);
+      if (out && out.timedOut) return out;
       const table = out.results
         .map((r) => `- ${r.title} — ${r.tier} · ${r.model || 'model'} · ${r.status} (${r.ms}ms)`)
         .join('\n');
@@ -1271,6 +1622,7 @@ async function runTool(name, args, ctx) {
         : '';
       return `SWARM COMPLETE — ${out.results.length} agents, supervisor ${out.supervisor.model}, ${Math.round(out.ms / 1000)}s\n\nROSTER\n${table}${feed}\n\nFINAL ANSWER\n${out.answer}`;
     } catch (e) {
+      if (ctx.signal && ctx.signal.aborted) throw e;
       return 'Swarm error: ' + (e && e.message ? e.message : String(e));
     }
   }
@@ -1426,6 +1778,7 @@ async function runTool(name, args, ctx) {
       concurrency: Number(args.concurrency) || 4,
       maxSteps: Number(args.maxSteps) || 0,
       emit: ctx.emit,
+      signal: ctx.signal,
     });
     const lines = results.map((r) => {
       const who = r.provider ? `${r.title || r.name} (${r.provider.model} @ ${r.provider.baseURL})` : (r.title || r.name);
@@ -1483,12 +1836,13 @@ async function runTool(name, args, ctx) {
     }
     if (FILE_TOOLS.has(name) || FILE_TOOLS.has(execName)) normalizeFileArgs(finalArgs);
     if (!finalArgs.cwd && ctx.cwd) finalArgs.cwd = ctx.cwd;
-    const content = await withTimeout(fn(finalArgs), toolTimeoutMs(name, finalArgs), name);
+    const content = await withTimeout(fn(finalArgs, { signal: ctx.signal }), toolTimeoutMs(name, finalArgs), name);
     if (content && typeof content === 'object' && content.isError) return content;
     return { content: String(content) };
   } catch (e) {
-    return { content: 'Tool error: ' + e.message, isError: true };
+    if (ctx.signal && ctx.signal.aborted) throw e;
+    return { content: 'Tool error: ' + (e && e.message ? e.message : String(e)), isError: true };
   }
 }
 
-module.exports = { executors, toolDefinitions, runTool, executorsByTool, SLASH_COMMANDS, toolTimeoutMs, withTimeout };
+module.exports = { executors, toolDefinitions, runTool, executorsByTool, SLASH_COMMANDS, toolTimeoutMs, withTimeout, applyEdit, globToRegExp, expandBraces, formatNumbered };

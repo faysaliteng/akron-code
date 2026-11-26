@@ -259,8 +259,8 @@ const PRESETS = [
   { name: 'DeepSeek Reasoner', baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-reasoner', apiKey: '', supportsTools: true },
 
   // --- TokenRouter (Kimi K3.1 Pro + DeepSeek V4.1 Flash) ---
-  { name: 'TokenRouter · Kimi K3.1 Pro', baseURL: 'https://api.tokenrouter.com/v1', model: 'moonshotai/kimi-k3.1-pro', apiKey: 'sk-0xqsYQbMGNtG59gMI40gWfX7inTdZDuURr3DaBlymVuNKCwJ', supportsTools: true, maxTokens: 8192, reasoningLevel: 'auto' },
-  { name: 'TokenRouter · DeepSeek V4.1 Flash', baseURL: 'https://api.tokenrouter.com/v1', model: 'deepseek/deepseek-v4.1-flash-1017', apiKey: 'sk-0xqsYQbMGNtG59gMI40gWfX7inTdZDuURr3DaBlymVuNKCwJ', supportsTools: true, maxTokens: 8192, reasoningLevel: 'auto' },
+  { name: 'TokenRouter · Kimi K3.1 Pro', baseURL: 'https://api.tokenrouter.com/v1', model: 'moonshotai/kimi-k3.1-pro', apiKey: '', supportsTools: true, maxTokens: 8192, reasoningLevel: 'auto' },
+  { name: 'TokenRouter · DeepSeek V4.1 Flash', baseURL: 'https://api.tokenrouter.com/v1', model: 'deepseek/deepseek-v4.1-flash-1017', apiKey: '', supportsTools: true, maxTokens: 8192, reasoningLevel: 'auto' },
 
   // --- Free tiers (OpenAI-compatible) ---
   { name: 'Groq (free tier)', baseURL: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', apiKey: '', supportsTools: true },
@@ -268,7 +268,7 @@ const PRESETS = [
   { name: 'Mistral (La Plateforme)', baseURL: 'https://api.mistral.ai/v1', model: 'mistral-small-latest', apiKey: '', supportsTools: true },
   { name: 'Cohere', baseURL: 'https://api.cohere.com/v1', model: 'command-r-plus', apiKey: '', supportsTools: true },
   { name: 'Z.ai / Zhipu (GLM)', baseURL: 'https://api.z.ai/api/paas/v4', model: 'glm-4-plus', apiKey: '', supportsTools: true },
-  { name: 'NVIDIA NIM', baseURL: 'https://integrate.api.nvidia.com/v1', model: 'nvidia/nemotron-3.5-bolt-e4b', apiKey: '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', supportsTools: true },
+  { name: 'NVIDIA NIM', baseURL: 'https://integrate.api.nvidia.com/v1', model: 'nvidia/nemotron-3.5-bolt-e4b', apiKey: '', supportsTools: true },
   { name: 'HuggingFace Inference', baseURL: 'https://router.huggingface.co/v1', model: 'meta-llama/Llama-3.3-70B-Instruct', apiKey: '', supportsTools: true },
   { name: 'Together AI (free)', baseURL: 'https://api.together.xyz/v1', model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', apiKey: '', supportsTools: true },
   { name: 'OpenRouter (free models)', baseURL: 'https://openrouter.ai/api/v1', model: 'meta-llama/llama-3.1-8b-instruct:free', apiKey: '', supportsTools: true },
@@ -460,13 +460,46 @@ const buildPayloadMessages = (msgs) => msgs.map((m) => {
   return out;
 });
 
-const DEFAULT_PROVIDER = { baseURL: 'https://integrate.api.nvidia.com/v1', apiKey: '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', model: 'nvidia/nemotron-3.5-bolt-e4b', temperature: 0.7, maxTokens: 8192, reasoningLevel: 'auto', supportsTools: true };
+// Never ship a credential in the renderer bundle. The default is the keyless
+// local FreeLLMAPI router; a real key is only ever typed by the user (and then
+// persisted per endpoint in `autobot:providerKeys` / main's settings file).
+const DEFAULT_PROVIDER = { baseURL: 'http://localhost:3001/v1', apiKey: '', model: 'auto', temperature: 0.7, maxTokens: 8192, reasoningLevel: 'auto', supportsTools: true };
 
 // ---------- persistence helpers ----------
 function loadJSON(key, fallback) {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
 }
 function saveJSON(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
+
+// Dismiss a popover on outside mousedown, Escape, or when focus moves into a
+// guest <webview>/<iframe> (clicks inside a guest never reach this document, but
+// the host window blurs). A plain app switch does NOT dismiss: a sign-in that
+// opened the system browser, or a native file dialog, must not lose the menu.
+function useDismiss(open, refs, close) {
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  useEffect(() => {
+    if (!open) return undefined;
+    const inside = (t) => refs.some((r) => r && r.current && t && r.current.contains(t));
+    const onDown = (e) => { if (!inside(e.target)) closeRef.current(); };
+    const onKey = (e) => { if (e.key === 'Escape') closeRef.current(); };
+    const onBlur = () => {
+      setTimeout(() => {
+        const ae = document.activeElement;
+        const tag = ae && ae.tagName ? ae.tagName.toUpperCase() : '';
+        if (tag === 'WEBVIEW' || tag === 'IFRAME') closeRef.current();
+      }, 0);
+    };
+    document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+}
 
 // ---------- voice dictation (Web Speech API; matches Claude Desktop dictate) ----------
 let _rec = null;
@@ -548,6 +581,9 @@ export default function App() {
   // Jump-to-message target set by the global search panel; cleared once scrolled.
   const [pendingScroll, setPendingScroll] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  // A keyless preset clicked in the model picker: Settings opens with it staged
+  // and the session provider only switches once a key is saved.
+  const [pendingPreset, setPendingPreset] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [streaming, setStreaming] = useState(false);
@@ -561,6 +597,16 @@ export default function App() {
   const [queued, setQueued] = useState([]); // messages typed while a reply streams
   const [thinking, setThinking] = useState('');
   const [live, setLive] = useState(null); // { content, tools: [] }
+  // The live stream is mirrored in a ref and every update goes through
+  // setLiveSync, so commitLive can read the final stream synchronously instead
+  // of calling setConvs from inside a setLive updater — React.StrictMode runs
+  // updaters twice, which duplicated every assistant reply.
+  const liveRef = useRef(null);
+  const setLiveSync = useCallback((v) => {
+    const next = typeof v === 'function' ? v(liveRef.current) : v;
+    liveRef.current = next;
+    setLive(next);
+  }, []);
   const [cwd, setCwd] = useState('');
   const [error, setError] = useState('');
   const [question, setQuestion] = useState(null); // { id, type, text, options }
@@ -815,23 +861,35 @@ export default function App() {
       // settled). Those late events used to land after the NEXT run had already
       // started and clobber it — drop anything still tagged with an older run.
       if (evt.runId && runIdRef.current && evt.runId !== runIdRef.current
-        && /^(delta|thinking|tool|toolResult|done|complete|cancelled|error|notice|limit|retry)$/.test(evt.type)) return;
-      // A sub-agent's stream belongs to ITS row, never to the parent reply. Without
+        && /^(delta|thinking|tool|toolResult|done|complete|cancelled|error|notice|limit|retry|usage|subagent|swarm)$/.test(evt.type)) return;
+      // A sub-agent's events belong to ITS row, never to the parent reply. Without
       // this, three concurrent workers interleaved their tokens into one garbled
-      // paragraph ("done on cheadone on mid-…") and every worker tool row landed in
-      // the parent's tool list. Example keeps subagent output out of the transcript.
-      if (evt.subagent && /^(delta|thinking|tool|toolResult|retry|limit)$/.test(evt.type)) {
+      // paragraph ("done on cheadone on mid-…"), every worker tool row landed in
+      // the parent's tool list, and a child's `done` / `complete` / `error` ended
+      // the PARENT's stream (commitLive) mid-run. Anything tagged with a
+      // sub-agent is consumed here — except events that need the user (question,
+      // permission, consent, plan) or surface UI (artifact, preview, nested
+      // subagent/swarm rows), which still flow to the shared handlers below.
+      const subTag = evt.subagent != null ? String(evt.subagent) : (evt.agentId != null ? String(evt.agentId) : '');
+      if (subTag && !/^(question|plan|permission|computerUseConsent|permissionMode|planMode|artifact|preview|subagent|swarm|cwd|deeplink|compliance)$/.test(evt.type)) {
+        const agentKey = evt.agentId != null ? String(evt.agentId) : '';
         setSubAgents((prev) => prev.map((a) => {
-          if (a.key !== String(evt.subagent) && a.name !== String(evt.subagent)) return a;
+          if (a.key !== subTag && a.name !== subTag && !(agentKey && a.key === agentKey)) return a;
           const p = a.progress || { chars: 0, tools: 0, last: '' };
-          if (evt.type === 'delta') {
-            const chars = p.chars + String(evt.text || '').length;
-            return { ...a, progress: { ...p, chars, last: (p.last + String(evt.text || '')).slice(-400) } };
+          switch (evt.type) {
+            case 'delta': {
+              const chars = p.chars + String(evt.text || '').length;
+              return { ...a, progress: { ...p, chars, last: (p.last + String(evt.text || '')).slice(-400) } };
+            }
+            case 'thinking': return { ...a, progress: { ...p, think: (p.think || 0) + String(evt.text || '').length } };
+            case 'tool': return { ...a, progress: { ...p, tools: p.tools + 1, last: p.last || 'using ' + evt.name } };
+            case 'retry': return { ...a, progress: { ...p, retried: (p.retried || 0) + 1 } };
+            case 'notice': return { ...a, progress: { ...p, notice: String(evt.text || '') } };
+            case 'error': return { ...a, status: 'error', progress: { ...p, last: String(evt.message || 'error').slice(-400) } };
+            // done / complete / cancelled / usage / toolResult / limit: the
+            // lifecycle `subagent` event owns the row's final status.
+            default: return a;
           }
-          if (evt.type === 'thinking') return { ...a, progress: { ...p, think: (p.think || 0) + String(evt.text || '').length } };
-          if (evt.type === 'tool') return { ...a, progress: { ...p, tools: p.tools + 1, last: p.last || 'using ' + evt.name } };
-          if (evt.type === 'retry') return { ...a, progress: { ...p, retried: (p.retried || 0) + 1 } };
-          return a; // toolResult / limit — nothing to show on the parent row
         }));
         return;
       }
@@ -840,7 +898,7 @@ export default function App() {
           // The turn was cut at the token limit and is being re-generated. Drop
           // the truncated attempt so the transcript shows one clean answer, the
           // way Example replaces a cut-off message instead of stacking a second.
-          setLive((l) => {
+          setLiveSync((l) => {
             if (!l) return l;
             const segments = (l.segments || []).slice();
             let text = Number(evt.chars) || 0;
@@ -868,7 +926,7 @@ export default function App() {
           // string glued sentences together ("…planning.Empty project.") and stacked
           // every tool row above the whole reply, so a long run read as one wall of
           // text. Keep an ordered segment list instead: text, tools, text, tools…
-          setLive((l) => {
+          setLiveSync((l) => {
             const base = l || { content: '', tools: [], segments: [] };
             const segments = (base.segments || []).slice();
             const last = segments[segments.length - 1];
@@ -882,7 +940,7 @@ export default function App() {
           // not just in the status line. Keep it as an ordered segment so the
           // record reads: thinking → text → tools → text, in the real order.
           setThinking((t) => t + evt.text);
-          setLive((l) => {
+          setLiveSync((l) => {
             const base = l || { content: '', tools: [], segments: [] };
             const segments = (base.segments || []).slice();
             const last = segments[segments.length - 1];
@@ -896,18 +954,22 @@ export default function App() {
             return { ...base, segments };
           });
           break;
-        case 'tool':
-          setLive((l) => {
+        case 'tool': {
+          // A provider that omits the call id must not collapse every such row
+          // onto `undefined` (one shared key, results landing on the wrong row).
+          const tid = evt.id || uid();
+          setLiveSync((l) => {
             const base = l || { content: '', tools: [], segments: [] };
             const segments = (base.segments || []).slice();
             const last = segments[segments.length - 1];
-            if (last && last.type === 'tools') segments[segments.length - 1] = { type: 'tools', ids: [...last.ids, evt.id] };
-            else segments.push({ type: 'tools', ids: [evt.id] });
-            return { ...base, tools: [...base.tools, { id: evt.id, name: evt.name, args: evt.args, result: null, status: 'running' }], segments };
+            if (last && last.type === 'tools') segments[segments.length - 1] = { type: 'tools', ids: [...last.ids, tid] };
+            else segments.push({ type: 'tools', ids: [tid] });
+            return { ...base, tools: [...(base.tools || []), { id: tid, name: evt.name, args: evt.args, result: null, status: 'running' }], segments };
           });
           break;
+        }
         case 'toolResult':
-          setLive((l) => {
+          setLiveSync((l) => {
             if (!l) return l;
             return { ...l, tools: l.tools.map((t) => (t.id === evt.id ? { ...t, result: evt.result, status: evt.isError ? 'error' : 'done' } : t)) };
           });
@@ -1103,6 +1165,9 @@ export default function App() {
   // Which conversation the in-flight run belongs to (survives chat switching).
   const runConvRef = useRef(null);
   const runActiveRef = useRef(false);
+  // The conversation the current team (sub-agents / swarm) belongs to. The
+  // rows are global state, so without this they painted into every chat.
+  const teamConvRef = useRef(null);
   const runStartedAtRef = useRef(0);
   runStartedAtRef.current = runStartedAt;
   const commitLive = useCallback(() => {
@@ -1117,16 +1182,17 @@ export default function App() {
     setStreaming(false);
     setThinking('');
     const startedAt = runStartedAtRef.current;
-    setLive((l) => {
-      if (l && (l.content || l.tools.length)) {
-        // Bind the reply to the conversation the run was started from — the user
-        // may have switched chats while it streamed.
-        const msg = { id: uid(), role: 'assistant', content: l.content, tools: l.tools, segments: l.segments, ts: Date.now(), durationMs: startedAt ? Date.now() - startedAt : 0 };
-        setConvs((cs) => cs.map((c) => (c.id === target ? { ...c, messages: [...c.messages, msg] } : c)));
-      }
-      return null;
-    });
-  }, []);
+    // Read the stream from the ref and issue two independent state updates.
+    // Calling setConvs inside a setLive updater double-appended under StrictMode.
+    const l = liveRef.current;
+    setLiveSync(null);
+    if (l && (l.content || (l.tools && l.tools.length))) {
+      // Bind the reply to the conversation the run was started from — the user
+      // may have switched chats while it streamed.
+      const msg = { id: uid(), role: 'assistant', content: l.content, tools: l.tools || [], segments: l.segments, ts: Date.now(), durationMs: startedAt ? Date.now() - startedAt : 0 };
+      setConvs((cs) => cs.map((c) => (c.id === target ? { ...c, messages: [...c.messages, msg] } : c)));
+    }
+  }, [setLiveSync]);
 
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
@@ -1196,10 +1262,11 @@ export default function App() {
     // Pin the run to its conversation before any event can arrive.
     runConvRef.current = convId;
     runActiveRef.current = true;
+    teamConvRef.current = convId;
     setStreaming(true);
     setRunStartedAt(Date.now());
     setThinking('');
-    setLive({ content: '', tools: [] });
+    setLiveSync({ content: '', tools: [] });
     setSubAgents([]);
     setSwarmInfo(null);
     const runId = uid();
@@ -1225,7 +1292,7 @@ export default function App() {
       runConvRef.current = null;
       setStreaming(false);
       setThinking('');
-      setLive(null);
+      setLiveSync(null);
       setError(cleanErr(started.error || 'The provider rejected this run.'));
       if (started.needsSignIn) setModelMenuOpen(true);
     }
@@ -1348,7 +1415,7 @@ export default function App() {
 
   // Starting a new chat must not discard an in-flight run's stream — that run is
   // committed to its own conversation and `liveForActive` keeps it off-screen.
-  const newChat = () => { if (!streamingRef.current) setLive(null); setActiveId(null); setError(''); setPanel('chats'); inputRef.current?.focus(); };
+  const newChat = () => { if (!streamingRef.current) setLiveSync(null); setActiveId(null); setError(''); setPanel('chats'); inputRef.current?.focus(); };
   const selectConv = (id) => { setActiveId(id); setPanel('chats'); };
   const deleteConv = async (id) => {
     // Compliance gate first — under an HIPAA / ZDR profile Desktop refuses the
@@ -1402,7 +1469,8 @@ export default function App() {
     setConvs((cs) => cs.map((c) => (c.id === convId ? { ...c, messages: c.messages.filter((_, i) => i !== idx) } : c)));
   };
   const retryMessage = async (convId, idx) => {
-    if (streaming) return;
+    // Retry regenerates in place; it never queues behind a live run.
+    if (streamingRef.current || runActiveRef.current) { setNotice('Wait for the current reply to finish before retrying.'); return; }
     const conv = convsRef.current.find((c) => c.id === convId);
     if (!conv) return;
     const msgs = conv.messages;
@@ -1410,21 +1478,35 @@ export default function App() {
     while (userIdx >= 0 && msgs[userIdx].role !== 'user') userIdx--;
     if (userIdx < 0) return;
     const kept = msgs.slice(0, userIdx + 1);
+    setError('');
     setConvs((cs) => cs.map((c) => (c.id === convId ? { ...c, messages: kept } : c)));
     const payloadMessages = buildPayloadMessages(kept);
     const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject });
     if (directives.length) payloadMessages.unshift({ role: 'system', content: directives.join('\n') });
+    // Same project-folder rule as send(): never inherit another chat's cwd.
+    let runCwd = cwd;
+    if (convId !== activeIdRef.current || !runCwd) {
+      runCwd = await window.autobot.getWorkspace(convId)
+        || await window.autobot.getDefaultCwd(convId, conv.title || '');
+      if (runCwd) { saveJSON('autobot:workspace:' + convId, runCwd); if (convId === activeIdRef.current) setCwd(runCwd); }
+    }
+    // Pin the run to its conversation before any event can arrive — without
+    // this commitLive bailed (runActiveRef false), the composer spun forever
+    // and the regenerated reply was dropped.
+    runConvRef.current = convId;
+    runActiveRef.current = true;
+    teamConvRef.current = convId;
     setStreaming(true);
     setRunStartedAt(Date.now());
     setThinking('');
-    setLive({ content: '', tools: [] });
+    setLiveSync({ content: '', tools: [] });
     setSubAgents([]);
     setSwarmInfo(null);
     const runId = uid();
     runIdRef.current = runId;
     const started = await window.autobot.run({
       runId, messages: payloadMessages, provider,
-      cwd: cwd || undefined, useMemory: settings.useMemory, orchestrator, permissions,
+      cwd: runCwd || undefined, useMemory: settings.useMemory, orchestrator, permissions,
       convId, title: conv.title || '',
       swarm: swarmEnabled,
     });
@@ -1433,7 +1515,7 @@ export default function App() {
       runConvRef.current = null;
       setStreaming(false);
       setThinking('');
-      setLive(null);
+      setLiveSync(null);
       setError(cleanErr(started.error || 'The provider rejected this run.'));
       if (started.needsSignIn) setModelMenuOpen(true);
     }
@@ -1726,7 +1808,7 @@ export default function App() {
         clearMemory();
         setConvs([]);
         setActiveId(null);
-        setLive(null);
+        setLiveSync(null);
         setError('Reset complete.');
         break;
       case 'status':
@@ -2284,7 +2366,7 @@ export default function App() {
 
   const clearActiveConversation = () => {
     setConvs((cs) => cs.map((c) => (c.id === activeId ? { ...c, messages: [] } : c)));
-    setLive(null);
+    setLiveSync(null);
   };
 
   const artifacts = useMemo(() => {
@@ -2360,7 +2442,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={subAgents} swarmInfo={swarmInfo} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} />}
+              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} subAgents={teamConvRef.current === activeId ? subAgents : []} swarmInfo={teamConvRef.current === activeId ? swarmInfo : null} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} />}
@@ -2398,7 +2480,7 @@ export default function App() {
           <InputBar
             streaming={streaming} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
             queued={queued.filter((q) => q.convId === activeId)} unqueue={unqueue} sendQueuedNow={sendQueuedNow}
-            provider={provider} setProvider={setProvider} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={() => setShowSettings(true)}
+            provider={provider} setProvider={setProvider} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); setShowSettings(true); }}
             providerKeys={providerKeys} setProviderKeys={setProviderKeys}
             attachments={attachments} setAttachments={setAttachments}
             reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
@@ -2416,7 +2498,7 @@ export default function App() {
       </div>
 
       {showSettings && (
-        <SettingsModal provider={provider} setProvider={setProvider} providerKeys={providerKeys} setProviderKeys={setProviderKeys} settings={settings} setSettings={setSettings} orchestrator={orchestrator} setOrchestrator={setOrchestrator} features={features} setFeatures={setFeatures} testProvider={testProvider} onClose={() => setShowSettings(false)} T={T} permissions={permissions} setPermissions={setPermissions} compliance={compliance} setCompliance={setCompliance} />
+        <SettingsModal provider={provider} setProvider={setProvider} providerKeys={providerKeys} setProviderKeys={setProviderKeys} settings={settings} setSettings={setSettings} orchestrator={orchestrator} setOrchestrator={setOrchestrator} features={features} setFeatures={setFeatures} testProvider={testProvider} onClose={() => { setShowSettings(false); setPendingPreset(null); }} T={T} permissions={permissions} setPermissions={setPermissions} compliance={compliance} setCompliance={setCompliance} pendingPreset={pendingPreset} clearPendingPreset={() => setPendingPreset(null)} />
       )}
 
       {question && (
@@ -4657,6 +4739,9 @@ function BrowserView({ cwd, previewUrl }) {
   const [findText, setFindText] = useState('');
   const [findRes, setFindRes] = useState(null); // {active, total}
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+  const menuBtnRef = useRef(null);
+  useDismiss(menuOpen, [menuRef, menuBtnRef], () => setMenuOpen(false));
   const [expanded, setExpanded] = useState(false);   // ⌘↑ / ⌘↓
   const [responsive, setResponsive] = useState(false);
   const [cookiesShared, setCookiesShared] = useState(true);
@@ -4714,13 +4799,33 @@ function BrowserView({ cwd, previewUrl }) {
   }, []);
 
   const closeTab = (id) => {
-    setTabs((ts) => {
-      if (ts.length <= 1) return [{ id: 'tab' + nextTabNum.current++, launch: 'https://www.google.com', url: 'https://www.google.com', title: 'New Tab', loading: false }];
-      return ts.filter((t) => t.id !== id);
-    });
+    // Drop the dead <webview> handle: bindWebview skips ids it already knows,
+    // and tools/menus must never drive a destroyed guest.
+    const wv = webviews.current[id];
+    if (wv) {
+      try { const wid = wv.getWebContentsId(); if (wid) window.autobot.browserUnregister(wid); } catch {}
+      delete webviews.current[id];
+    }
+    if (previewTabRef.current === id) previewTabRef.current = null;
+    const idx = tabs.findIndex((t) => t.id === id);
+    if (idx < 0) return;
+    const remaining = tabs.filter((t) => t.id !== id);
+    if (!remaining.length) {
+      // Closing the last tab opens a fresh one AND selects it — the id used to
+      // be minted inside the updater while activeId fell back to 'tab1', which
+      // no longer existed, so the pane went blank.
+      const nid = 'tab' + nextTabNum.current++;
+      const home = 'https://www.google.com';
+      setTabs([{ id: nid, launch: home, url: home, title: 'New Tab', loading: false }]);
+      setActiveId(nid);
+      setOmnibox(home);
+      return;
+    }
+    setTabs((ts) => ts.filter((t) => t.id !== id));
     if (activeId === id) {
-      const remaining = tabs.filter((t) => t.id !== id);
-      setActiveId(remaining.length ? remaining[0].id : 'tab1');
+      const next = remaining[Math.min(idx, remaining.length - 1)];
+      setActiveId(next.id);
+      setOmnibox(next.url || '');
     }
   };
 
@@ -4945,7 +5050,7 @@ function BrowserView({ cwd, previewUrl }) {
         <div className="browser-tabs-actions">
           <button className="browser-act" onClick={() => openTab()} title="New tab"><Icon name="Add" size={14} /></button>
           <button className={'browser-act' + (expanded ? ' on' : '')} onClick={() => setExpanded(!expanded)} title={expanded ? 'Restore (⌘↓)' : 'Expand (⌘↑)'}><Icon name={expanded ? 'ArrowsIn' : 'ArrowsOut'} size={14} /></button>
-          <button className={'browser-act browser-menu-btn' + (menuOpen ? ' on' : '')} onClick={() => { setMenuNote(''); setMenuOpen(!menuOpen); }} title="Browser options"><Icon name="DotsHorizontal" size={15} /></button>
+          <button ref={menuBtnRef} className={'browser-act browser-menu-btn' + (menuOpen ? ' on' : '')} onClick={() => { setMenuNote(''); setMenuOpen(!menuOpen); }} title="Browser options"><Icon name="DotsHorizontal" size={15} /></button>
         </div>
       </div>
 
@@ -4964,7 +5069,7 @@ function BrowserView({ cwd, previewUrl }) {
       </div>
 
       {menuOpen && (
-        <div className="browser-menu" role="menu">
+        <div className="browser-menu" role="menu" ref={menuRef}>
           <button className="bm-item" role="menuitem" onClick={() => openExternal('brave')}><Icon name="ArrowUpRight" size={14} /><span className="bm-label">Open in Brave Browser</span></button>
           <button className="bm-item" role="menuitem" onClick={() => openExternal('default')}><Icon name="Globe" size={14} /><span className="bm-label">Open in default browser</span></button>
           <button className="bm-item" role="menuitem" onClick={copyLink}><Icon name="Copy" size={14} /><span className="bm-label">Copy link</span></button>
@@ -5294,6 +5399,10 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
   const permWrapRef = useRef(null);
   const [keyStatus, setKeyStatus] = useState(() => loadJSON('autobot:keyStatus', {}));
   const [keyProbing, setKeyProbing] = useState(false);
+  // The probe effects read the cache through a ref: having keyStatus in their
+  // deps while they also write it re-ran them on every verdict.
+  const keyStatusRef = useRef(keyStatus);
+  keyStatusRef.current = keyStatus;
   // Local model discovery: an Ollama box only runs the models that were pulled,
   // so the preset's hard-coded `llama3.1` pointed at a model that often does not
   // exist (404 → "cannot use"), and nothing else ever showed up in the picker.
@@ -5542,7 +5651,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
       const sig = base + '|' + keySig(apiKey);
       if (seen.has(sig)) continue;
       seen.add(sig);
-      if (statusOf(keyStatus, base, apiKey)) continue; // fresh verdict already cached
+      if (statusOf(keyStatusRef.current, base, apiKey)) continue; // fresh verdict already cached
       targets.push({ baseURL: base, apiKey });
     }
     if (!targets.length) return;
@@ -5562,8 +5671,9 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
         return next;
       });
     }).catch(() => {}).finally(() => { if (!cancelled) setKeyProbing(false); });
-    return () => { cancelled = true; };
-  }, [modelMenuOpen, keyFor, keyStatus]);
+    // A cancelled probe must not leave "checking keys…" stuck in the header.
+    return () => { cancelled = true; setKeyProbing(false); };
+  }, [modelMenuOpen, keyFor]);
 
   // The composer pill mirrors the active endpoint, so probe it once on load too.
   useEffect(() => {
@@ -5572,7 +5682,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
     if (!base) return;
     const apiKey = providerKeys[base] || PRESET_KEYS[base] || provider.apiKey || '';
     if (!apiKey && !LOCAL_BASE.test(base)) return;
-    if (statusOf(keyStatus, base, apiKey)) return;
+    if (statusOf(keyStatusRef.current, base, apiKey)) return;
     let cancelled = false;
     Promise.resolve(window.autobot.probeProviders([{ baseURL: base, apiKey }])).then((res) => {
       if (cancelled || !res || res._error) return;
@@ -5585,16 +5695,21 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
       });
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [provider.baseURL, provider.apiKey, providerKeys, modelMenuOpen, keyStatus]);
+  }, [provider.baseURL, provider.apiKey, providerKeys, modelMenuOpen]);
 
   const activeBase = normBase(provider.baseURL);
   const activeKey = providerKeys[activeBase] || PRESET_KEYS[activeBase] || provider.apiKey || '';
   const activeKeyState = statusOf(keyStatus, activeBase, activeKey);
   const activeDot = activeKeyState ? (activeKeyState.state === 'ok' ? 'ok' : (activeKeyState.state === 'out' || activeKeyState.state === 'badkey') ? 'out' : null) : null;
   const modelMenuRef = useRef(null);
+  const modelWrapRef = useRef(null);
+  useDismiss(modelMenuOpen, [modelWrapRef], () => setModelMenuOpen(false));
 
   // What the picker lists: every preset, except a reachable Ollama preset, which
   // expands into one row per model the server actually reports.
+  // Memoized: SessionModelList memoizes its 1000-row grouping on `rows`, which
+  // a fresh array every render defeated.
+  const pickerRows = useMemo(() => {
   const pickerRows = [];
   for (const p of PRESETS) {
     const base = normBase(p.baseURL);
@@ -5623,6 +5738,8 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
     }
     pickerRows.push({ key: p.name, preset: p, model: p.model, label: (p.model || 'custom').split('/').pop(), prov: p.name });
   }
+  return pickerRows;
+  }, [ollama, provider.baseURL, provider.model]);
   const ollamaEmpty = PRESETS.some((p) => {
     const b = normBase(p.baseURL);
     return /:11434\b/.test(b) && ollama[b] && !(ollama[b].ok && ollama[b].models && ollama[b].models.length);
@@ -5730,11 +5847,12 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
     if (model) setModelMenuOpen(false);
   };
 
-  // Unconfigured preset → preload it and jump straight to the key field.
+  // Unconfigured preset → open Settings with that preset staged. The session
+  // provider is NOT switched here: it only changes once a key is saved, so
+  // closing Settings leaves the working model untouched.
   const configurePreset = (p) => {
-    setProvider((v) => ({ ...v, baseURL: p.baseURL, model: p.model || v.model, apiKey: keyFor(p), supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto', oauthProvider: '', transport: '', accessToken: '', oauth: false }));
     setModelMenuOpen(false);
-    openSettings();
+    openSettings({ preset: p });
   };
 
   const attachFiles = async () => {
@@ -5964,7 +6082,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
             >
               <ContextMeter used={usedTokens(lastUsage)} win={ctxWindow} size={26} />
             </button>
-            <div className="model-pill-wrap">
+            <div className="model-pill-wrap" ref={modelWrapRef}>
               <button className={'model-pill' + (modelMenuOpen ? ' open' : '')} onClick={() => setModelMenuOpen(!modelMenuOpen)} title="Change model">
                 <Icon name="Agent" size={14} className="model-ico" />
                 <span className="model-name">{modelLabel}</span>
@@ -5989,7 +6107,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                         <button
                           key={r.key}
                           className={'model-opt' + (active ? ' on' : '') + (st.row ? ' ' + st.row : '')}
-                          title={r.local ? 'Local Ollama model — ' + r.model : (ollamaDown ? 'Ollama is not running — click to connect' : st.label)}
+                          title={r.local ? 'Local Ollama model — ' + r.model : (ollamaDown || st.row === 'dim' ? undefined : st.label)}
                           onClick={() => {
                             if (r.local) return pickModel(r.preset, r.model);
                             if (ollamaDown) return connectOllama();
@@ -5999,7 +6117,7 @@ function InputBar({ streaming, send, stop, inputRef, cwd, setCwd, runSlashComman
                         >
                           <span className={'model-dot ' + (r.local ? 'ok' : st.dot)} />
                           <span className="model-opt-name">{r.label}</span>
-                          <span className="model-opt-prov">{ollamaDown ? 'click to connect' : r.prov}</span>
+                          <span className="model-opt-prov">{ollamaDown ? 'click to connect' : (!r.local && st.row === 'dim' ? st.label : r.prov)}</span>
                           {active && <Icon name="Check" size={13} className="model-check" />}
                         </button>
                       );
@@ -7080,7 +7198,9 @@ function OrchModelChecklist({ orchestrator, provider, localModels, localBase, sa
     return out;
   }, [cat, provider, localModels, localBase]);
 
-  const entries = orchestrator.providers || [];
+  // Rows saved before ids existed get a derived one, so they key, toggle and
+  // re-tier individually (an undefined id used to match — and remove — them all).
+  const entries = useMemo(() => (orchestrator.providers || []).map((p, i) => (p && p.id ? p : { ...p, id: (p && (p.model || p.baseURL || p.oauthProvider)) ? orchId(p || {}) : 'legacy|' + i })), [orchestrator.providers]);
   const byId = useMemo(() => new Map(entries.map((p) => [p.id, p])), [entries]);
   const known = new Set();
   for (const g of groups) for (const r of g.rows) known.add(r.id);
@@ -7089,7 +7209,7 @@ function OrchModelChecklist({ orchestrator, provider, localModels, localBase, sa
   const legacy = entries.filter((p) => !known.has(p.id));
 
   const toggle = (row, on) => {
-    const cur = orchestrator.providers || [];
+    const cur = entries;
     if (on) {
       if (cur.some((p) => p.id === row.id)) return;
       const entry = {
@@ -7104,10 +7224,16 @@ function OrchModelChecklist({ orchestrator, provider, localModels, localBase, sa
         transport: row.transport || '',
         contextWindow: row.contextWindow || 0,
       };
-      saveOrch({ ...orchestrator, providers: [...cur, entry], activeIndex: cur.length ? orchestrator.activeIndex : 0 });
+      const ai = orchestrator.activeIndex;
+      saveOrch({ ...orchestrator, providers: [...cur, entry], activeIndex: cur.length && ai >= 0 && ai < cur.length ? ai : 0 });
     } else {
       const next = cur.filter((p) => p.id !== row.id);
-      saveOrch({ ...orchestrator, providers: next, activeIndex: next.length ? Math.min(Math.max(0, orchestrator.activeIndex), next.length - 1) : -1 });
+      // Re-anchor 'start' on the same model: removing a row above it used to
+      // shift the index and silently move the start marker to another model.
+      const startId = cur[orchestrator.activeIndex] ? cur[orchestrator.activeIndex].id : null;
+      let ai = startId ? next.findIndex((p) => p.id === startId) : -1;
+      if (ai < 0) ai = next.length ? 0 : -1;
+      saveOrch({ ...orchestrator, providers: next, activeIndex: ai });
     }
   };
   const setTier = (id, tier) => saveOrch({ ...orchestrator, providers: entries.map((p) => (p.id === id ? { ...p, tier } : p)) });
@@ -7188,7 +7314,161 @@ function OrchModelChecklist({ orchestrator, provider, localModels, localBase, sa
   );
 }
 
-function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator, features, setFeatures, testProvider, onClose, T, permissions, setPermissions, compliance, setCompliance }) {
+// ---------- Role pools (orchestrator.pools) ----------
+// One failover list per role, routed through a single OpenAI-compatible gateway.
+// Edited as text — one model per line, `model-id @N` caps that model at N
+// concurrent calls — and stored as `{ model, max }` objects.
+const POOL_ROLES = [
+  { id: 'planner', label: 'Planner / Reasoner' },
+  { id: 'coder', label: 'Implementer / Coder' },
+  { id: 'vision', label: 'Vision' },
+  { id: 'fast', label: 'Fast' },
+  { id: 'longctx', label: 'Long context' },
+];
+
+function parsePoolModels(text) {
+  const out = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    const m = line.match(/^(.*?)\s*@\s*(\d+)\s*$/);
+    const model = (m ? m[1] : line).trim();
+    if (!model) continue;
+    const max = m ? parseInt(m[2], 10) : 0;
+    out.push(max > 0 ? { model, max } : { model });
+  }
+  return out;
+}
+
+function serializePoolModels(models) {
+  return (Array.isArray(models) ? models : [])
+    .map((e) => (typeof e === 'string' ? { model: e } : e || {}))
+    .filter((e) => e.model)
+    .map((e) => e.model + (Number(e.max) > 0 ? ' @' + Number(e.max) : ''))
+    .join('\n');
+}
+
+function RolePoolsEditor({ orchestrator, saveOrch }) {
+  const pools = (orchestrator && orchestrator.pools) || {};
+  const roles = pools.roles || {};
+  const gateway = pools.gateway || {};
+  // Textareas keep their own text while focused so typing is never reformatted;
+  // they commit (parse → save) on blur.
+  const [drafts, setDrafts] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+
+  const savePools = (patch) => {
+    const next = { enabled: !!pools.enabled, gateway: { baseURL: gateway.baseURL || '', apiKey: gateway.apiKey || '' }, roles: { ...roles }, ...pools, ...patch };
+    saveOrch({ ...orchestrator, pools: next });
+  };
+  const saveRole = (id, patch) => {
+    const def = POOL_ROLES.find((r) => r.id === id);
+    const cur = roles[id] || { label: def ? def.label : id, models: [] };
+    savePools({ roles: { ...roles, [id]: { ...cur, ...patch } } });
+  };
+  const commitText = (id) => {
+    if (drafts[id] === undefined) return;
+    const models = parsePoolModels(drafts[id]);
+    setDrafts((d) => { const n = { ...d }; delete n[id]; return n; });
+    saveRole(id, { models });
+  };
+  const loadPreset = async () => {
+    if (!window.autobot || !window.autobot.poolsPreset) { setNote('Preset unavailable in this build.'); return; }
+    setBusy(true);
+    setNote('');
+    try {
+      const preset = await window.autobot.poolsPreset();
+      if (!preset || typeof preset !== 'object' || !preset.roles) { setNote('The preset came back empty.'); return; }
+      setDrafts({});
+      saveOrch({ ...orchestrator, pools: { ...preset, enabled: preset.enabled !== false } });
+      setNote('FreeLLMAPI preset loaded.');
+    } catch (e) {
+      setNote('Could not load the preset: ' + String((e && e.message) || e).slice(0, 160));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="pools-ed">
+      <div className="pools-top">
+        <label className="pools-toggle">
+          <input type="checkbox" checked={!!pools.enabled} onChange={(e) => savePools({ enabled: e.target.checked })} />
+          <span>Enable role pools</span>
+        </label>
+        <button type="button" className="btn-mini" disabled={busy} onClick={loadPreset}>
+          <Icon name="Download" size={12} /> {busy ? 'Loading…' : 'Load FreeLLMAPI preset'}
+        </button>
+      </div>
+      <p className="muted pools-help">
+        Pools apply only when the session provider is this gateway. Each role fails over downward; the swarm
+        supervisor uses Planner, workers use Coder, images use Vision, compaction/titles use Fast, oversized
+        prompts use Long context.
+      </p>
+      {note && <p className="muted pools-note">{note}</p>}
+      <div className="pools-gw">
+        <label className="pools-field pools-grow">
+          <span>Gateway base URL</span>
+          <input
+            key={'gw-url|' + (gateway.baseURL || '')}
+            defaultValue={gateway.baseURL || ''}
+            placeholder="http://127.0.0.1:3001/v1"
+            spellCheck={false}
+            onBlur={(e) => { const v = e.target.value.trim(); if (v !== (gateway.baseURL || '')) savePools({ gateway: { ...gateway, baseURL: v } }); }}
+          />
+        </label>
+        <label className="pools-field pools-key">
+          <span>Key (optional)</span>
+          <input
+            key={'gw-key|' + (gateway.apiKey ? 'set' : '')}
+            type="password"
+            defaultValue={gateway.apiKey || ''}
+            placeholder="reuse session key"
+            onBlur={(e) => { const v = e.target.value.trim(); if (v !== (gateway.apiKey || '')) savePools({ gateway: { ...gateway, apiKey: v } }); }}
+          />
+        </label>
+      </div>
+      <div className="pools-roles">
+        {POOL_ROLES.map((r) => {
+          const role = roles[r.id] || {};
+          const text = drafts[r.id] !== undefined ? drafts[r.id] : serializePoolModels(role.models);
+          const lines = Math.max(2, Math.min(6, text.split('\n').length));
+          return (
+            <div key={r.id} className="pools-role">
+              <div className="pools-role-head">
+                <span className="pools-role-name">{role.label || r.label}</span>
+                <span className="pools-role-id">{r.id}</span>
+                <label className="pools-field pools-max" title="Max parallel calls for this role">
+                  <span>max parallel</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="64"
+                    value={role.maxConcurrent != null ? role.maxConcurrent : ''}
+                    placeholder="—"
+                    onChange={(e) => { const n = parseInt(e.target.value, 10); saveRole(r.id, { maxConcurrent: Number.isFinite(n) && n > 0 ? n : undefined }); }}
+                  />
+                </label>
+              </div>
+              <textarea
+                className="pools-models"
+                rows={lines}
+                spellCheck={false}
+                value={text}
+                placeholder={'model-id @2\nfallback-model'}
+                onChange={(e) => { const v = e.target.value; setDrafts((d) => ({ ...d, [r.id]: v })); }}
+                onBlur={() => commitText(r.id)}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator, features, setFeatures, testProvider, onClose, T, permissions, setPermissions, compliance, setCompliance, pendingPreset, clearPendingPreset }) {
   // Editing an endpoint/model by hand means this is no longer a signed-in
   // subscription selection — drop the OAuth binding so the gateway path wins.
   const set = (k) => (e) => setProvider({ ...provider, [k]: e.target.value, ...(k === 'baseURL' || k === 'apiKey' ? { oauthProvider: '', transport: '', accessToken: '', oauth: false } : {}) });
@@ -7203,6 +7483,23 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
 
   const saveOrch = (next) => { setOrchestrator(next); window.autobot.setOrchestrator(next); };
   const saveFeat = (next) => { setFeatures(next); window.autobot.setFeatures(next); };
+
+  // Staged preset from the model picker (no key yet). Nothing is committed to
+  // the session provider until "Save key & use" — Cancel leaves it untouched.
+  const [stage, setStage] = useState(() => (pendingPreset ? { baseURL: pendingPreset.baseURL || '', model: pendingPreset.model || '', apiKey: keyForEntry(pendingPreset.baseURL) } : null));
+  useEffect(() => {
+    setStage(pendingPreset ? { baseURL: pendingPreset.baseURL || '', model: pendingPreset.model || '', apiKey: keyForEntry(pendingPreset.baseURL) } : null);
+  }, [pendingPreset]); // eslint-disable-line react-hooks/exhaustive-deps
+  const stageNeedsKey = !!(stage && !LOCAL_BASE.test(normBase(stage.baseURL)));
+  const stageReady = !!(stage && normBase(stage.baseURL) && stage.model && (!stageNeedsKey || String(stage.apiKey || '').trim()));
+  const commitStage = () => {
+    if (!stageReady) return;
+    const p = pendingPreset || {};
+    const key = String(stage.apiKey || '').trim();
+    setKeyForEntry(stage.baseURL, key);
+    setProvider((v) => ({ ...v, baseURL: stage.baseURL, model: stage.model, apiKey: key, supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto', oauthProvider: '', transport: '', accessToken: '', oauth: false }));
+    if (clearPendingPreset) clearPendingPreset();
+  };
 
   // Local Ollama — list only the models this machine actually has, and offer to
   // start the server if it is not running.
@@ -7243,6 +7540,25 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
         <h2>{T('settings.title')}</h2>
 
         <h3>{T('settings.provider')}</h3>
+        {stage && (
+          <div className="stage-key">
+            <div className="stage-key-head">
+              <Icon name="Lock" size={13} /> Set up <b>{(pendingPreset && pendingPreset.name) || 'provider'}</b>
+              <span className="muted"> — your current model stays active until you save.</span>
+            </div>
+            <div className="row">
+              <label>Base URL<input value={stage.baseURL} onChange={(e) => setStage({ ...stage, baseURL: e.target.value })} placeholder="https://api.example.com/v1" /></label>
+              <label>Model<input value={stage.model} onChange={(e) => setStage({ ...stage, model: e.target.value })} placeholder="model-id" /></label>
+            </div>
+            <label>API key{stageNeedsKey ? '' : ' (optional for a local endpoint)'}
+              <input type="password" autoFocus value={stage.apiKey} onChange={(e) => setStage({ ...stage, apiKey: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') commitStage(); }} placeholder="sk-…" />
+            </label>
+            <div className="stage-key-actions">
+              <button type="button" className="btn-mini" onClick={() => { if (clearPendingPreset) clearPendingPreset(); }}>Cancel</button>
+              <button type="button" className="btn-mini primary" disabled={!stageReady} onClick={commitStage}>Save key &amp; use</button>
+            </div>
+          </div>
+        )}
         <div className="presets">
           {PRESETS.map((p) => (
             <button key={p.name} className={provider.baseURL === p.baseURL && provider.model === p.model ? 'on' : ''} onClick={() => { const k = p.apiKey || keyForEntry(p.baseURL); setProvider((v) => ({ ...v, baseURL: p.baseURL, model: p.model, apiKey: k, supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto', oauthProvider: '', transport: '', accessToken: '', oauth: false })); if (k) setKeyForEntry(p.baseURL, k); }}>{p.name}</button>
@@ -7319,6 +7635,9 @@ function SettingsModal({ provider, setProvider, providerKeys, setProviderKeys, s
             />
           </>
         )}
+
+        <h3><Icon name="Users" size={14} /> Role pools</h3>
+        <RolePoolsEditor orchestrator={orchestrator} saveOrch={saveOrch} />
 
         <h3><Icon name="Lightbulb" size={14} /> {T('settings.features')}</h3>
         <label className="check"><input type="checkbox" checked={!!features.computerUse} onChange={(e) => saveFeat({ ...features, computerUse: e.target.checked })} /> Computer Use (screen + mouse/keyboard via macOS automation)</label>

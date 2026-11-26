@@ -92,14 +92,18 @@ async function main() {
     assert.match(String(r.content), /line1/);
     require('fs').unlinkSync(f);
   });
-  await test('Edit replaces first match', async () => {
-    const os = require('os'), path = require('path');
+  await test('Edit refuses an ambiguous match, replace_all replaces every one (Claude Code semantics)', async () => {
+    const os = require('os'), path = require('path'), fs = require('fs');
     const f = path.join(os.tmpdir(), 'autobot-edit-' + Date.now() + '.txt');
     await runTool('Write', { path: f, content: 'aaa bbb aaa' }, {});
-    await runTool('Edit', { path: f, old_string: 'aaa', new_string: 'XXX' }, {});
-    const r = await runTool('Read', { path: f }, {});
-    assert.strictEqual(String(r.content).trim(), 'XXX bbb aaa');
-    require('fs').unlinkSync(f);
+    const amb = await runTool('Edit', { path: f, old_string: 'aaa', new_string: 'XXX' }, {});
+    assert.match(String(amb.content || amb), /matches 2 times/);
+    assert.strictEqual(fs.readFileSync(f, 'utf8'), 'aaa bbb aaa', 'ambiguous edit must not touch the file');
+    await runTool('Edit', { path: f, old_string: 'aaa bbb', new_string: 'XXX bbb' }, {});
+    assert.strictEqual(fs.readFileSync(f, 'utf8'), 'XXX bbb aaa');
+    await runTool('Edit', { path: f, old_string: 'X', new_string: 'Y', replace_all: true }, {});
+    assert.strictEqual(fs.readFileSync(f, 'utf8'), 'YYY bbb aaa');
+    fs.unlinkSync(f);
   });
   await test('Glob finds files', async () => {
     const path = require('path');

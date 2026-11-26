@@ -126,6 +126,8 @@ contextBridge.exposeInMainWorld('autobot', {
   rewind: (convId, checkpointId) => ipcRenderer.invoke('autobot:rewind', convId, checkpointId),
   getOrchestrator: () => ipcRenderer.invoke('autobot:getOrchestrator'),
   setOrchestrator: (patch) => ipcRenderer.invoke('autobot:setOrchestrator', patch),
+  // FreeLLMAPI role-pool preset ({ enabled, gateway, roles }) for Settings → Role pools.
+  poolsPreset: () => ipcRenderer.invoke('autobot:poolsPreset'),
   getFeatures: () => ipcRenderer.invoke('autobot:getFeatures'),
   setFeatures: (patch) => ipcRenderer.invoke('autobot:setFeatures', patch),
   getDefaultCwd: (convId, title) => ipcRenderer.invoke('autobot:getDefaultCwd', convId, title),

@@ -84,8 +84,13 @@ function startShell({ command, cwd, shell = '/bin/zsh', env, dangerouslyDisableS
     cwd: cwd || process.cwd(),
     env: env || process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
   });
-  job.stop = () => { try { child.kill('SIGTERM'); } catch (_) {} };
+  job.stop = () => {
+    // Kill the whole tree (detached group), not just zsh.
+    try { process.kill(-child.pid, 'SIGTERM'); } catch (_) { try { child.kill('SIGTERM'); } catch (__) {} }
+    setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {} }, 3000).unref();
+  };
   child.stdout.on('data', (d) => append(job, d.toString()));
   child.stderr.on('data', (d) => append(job, d.toString()));
   child.on('error', (e) => { append(job, `\n[spawn error] ${e.message}`); finish(job, 'failed', e); });
@@ -103,14 +108,26 @@ function startShell({ command, cwd, shell = '/bin/zsh', env, dangerouslyDisableS
 }
 
 // ── Agent jobs ─────────────────────────────────────────────────────────────
-// `run` is any async function returning the agent's final text.
-function startAgent({ label, description, model, run } = {}) {
+// `run` is any async function returning the agent's final text. It receives
+// an AbortSignal that fires when the job is stopped (TaskStop), plus a helper
+// object: run(signal, { signal, isStopped }). Callers may also pass their own
+// `controller` (AbortController) and/or an `onStop` callback.
+function startAgent({ label, description, model, run, controller, onStop } = {}) {
   const job = create('agent', { label: label || description, description, model });
   let stopped = false;
-  job.stop = () => { stopped = true; finish(job, 'stopped'); };
+  const ac = controller || (typeof AbortController === 'function' ? new AbortController() : null);
+  const signal = ac ? ac.signal : undefined;
+  job.signal = signal;
+  job.stop = () => {
+    if (stopped) return;
+    stopped = true;
+    finish(job, 'stopped');
+    try { if (ac && !ac.signal.aborted) ac.abort(new Error('stopped by TaskStop')); } catch (_) {}
+    try { if (typeof onStop === 'function') onStop(job); } catch (_) {}
+  };
   job.done = (async () => {
     try {
-      const out = await Promise.resolve().then(() => (typeof run === 'function' ? run({ isStopped: () => stopped }) : ''));
+      const out = await Promise.resolve().then(() => (typeof run === 'function' ? run(signal, { signal, isStopped: () => stopped }) : ''));
       if (stopped) return;
       job.result = out == null ? '' : String(out);
       append(job, job.result);

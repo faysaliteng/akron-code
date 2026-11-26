@@ -16,10 +16,15 @@ class ShellManager {
   // Spawn a persistent shell in a given cwd.
   start({ cwd, shell = '/bin/zsh', pathPrefix = '' } = {}) {
     const id = 'sh' + this.nextId++;
-    const proc = spawn(shell, ['-i'], {
+    // `-s`: read commands from stdin even when the parent has a controlling
+    // TTY (terminal launch, test runner) — plain `zsh -i` reads /dev/tty there
+    // and every command times out. `detached` drops the TTY and gives the
+    // shell its own process group so kill() can take its children too.
+    const proc = spawn(shell, ['-i', '-s'], {
       cwd: cwd || process.cwd(),
       env: { ...process.env, TERM: 'xterm-256color', PS1: '' },
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
     });
     const entry = { proc, buffer: '', listeners: [], cwd: cwd || process.cwd() };
     this.shells.set(id, entry);

@@ -2370,6 +2370,16 @@ ipcMain.handle('autobot:rewind', (e, convId, checkpointId) => {
 });
 ipcMain.handle('autobot:getOrchestrator', () => store.getOrchestrator());
 ipcMain.handle('autobot:setOrchestrator', (e, patch) => store.setOrchestrator(patch));
+// Role pools: the FreeLLMAPI layout (planner / coder / vision / fast / longctx),
+// pointed at the configured local router.
+ipcMain.handle('autobot:poolsPreset', () => {
+  let base = 'http://127.0.0.1:3001/v1';
+  try {
+    const c = freellm.loadConfig ? freellm.loadConfig() : null;
+    if (c && c.port) base = 'http://' + (c.host || '127.0.0.1') + ':' + c.port + '/v1';
+  } catch (_) {}
+  return require('./orch-router').freellmPreset(base);
+});
 ipcMain.handle('autobot:getFeatures', () => store.getFeatures());
 ipcMain.handle('autobot:setFeatures', (e, patch) => {
   const features = store.setFeatures(patch);

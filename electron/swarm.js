@@ -13,6 +13,14 @@
 // module pure and testable, and avoids a require cycle.
 
 const TIER_RANK = { small: 0, heavy: 1, critical: 2 };
+const router = require('./orch-router');
+
+// The supervisor plans and reviews; it must not start building. Plan gets a
+// read-only surface; review may also run commands to verify the deliverable.
+const PLAN_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'ListDir', 'TodoWrite']);
+const REVIEW_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'ListDir', 'Bash', 'TodoWrite']);
+const MAX_CONCURRENCY = 8;
+const MAX_ROUNDS_PER_MEMBER = 3;
 
 // ---------- tiers ----------
 
@@ -121,11 +129,13 @@ function buildRoster(opts = {}) {
 // Pick the model a subtask of `tier` should run on. Exact tier wins; otherwise
 // pick the nearest tier, preferring cheaper models for small work and stronger
 // models for heavy/critical work.
-function pickProvider(roster, tier) {
+function pickProvider(roster, tier, index) {
   if (!roster || !roster.length) return null;
   const want = normalizeTier(tier);
-  const exact = roster.find((r) => r.tier === want);
-  if (exact) return exact;
+  // Several rows of the same tier: spread parallel workers across them
+  // (worker i gets row i mod n) instead of piling every worker onto the first.
+  const exacts = roster.filter((r) => r.tier === want);
+  if (exacts.length) return exacts[(Math.max(0, Number(index) || 0)) % exacts.length];
   const rank = TIER_RANK[want];
   const sorted = [...roster].sort((a, b) => {
     const da = Math.abs(TIER_RANK[a.tier] - rank);
@@ -206,7 +216,9 @@ function normalizePlan(raw, opts = {}) {
       title: String(title || '').slice(0, 120),
       prompt: String(prompt || title),
       tier: normalizeTier(t.tier || t.complexity || t.model_tier, 'heavy'),
+      role: router.normalizeRole(t.role || t.job) || null,
       model: t.model ? String(t.model) : null,
+      owns: Array.isArray(t.owns) ? t.owns.map(String).slice(0, 20) : [],
     });
   });
   if (!tasks.length) return null;
@@ -238,7 +250,9 @@ The available model tiers are: {ROSTER}
 Route expensive tiers to work that needs them and cheap tiers to mechanical work.
 
 Reply with ONLY a JSON object, no prose, no markdown fence:
-{"subtasks":[{"id":"t1","title":"short label","tier":"small|heavy|critical","prompt":"complete instructions for that agent","owns":["path/or/area"]}],"synthesis":"how to merge the results"}
+{"subtasks":[{"id":"t1","title":"short label","tier":"small|heavy|critical","role":"coder|vision|fast|planner","prompt":"complete instructions for that agent","owns":["path/or/area"]}],"synthesis":"how to merge the results"}
+("role" is optional: coder = implementation (default), vision = UI/screenshot work,
+fast = trivial/mechanical, planner = architecture/review.)
 
 USER GOAL:
 {GOAL}`;
@@ -337,15 +351,18 @@ function createBoard() {
       notify();
       return msg;
     },
-    read({ since = 0, channel = null, limit = 200 } = {}) {
+    read({ since = 0, channel = null, limit = 200, me = null } = {}) {
       const from = Math.max(0, Number(since) || 0);
       let out = messages.filter((m) => m.seq > from);
-      if (channel && channel !== '*') out = out.filter((m) => m.channel === channel || m.to);
+      // A channel filter keeps that channel plus messages addressed to the
+      // reader — not every directed message meant for someone else.
+      if (channel && channel !== '*') out = out.filter((m) => m.channel === channel || (m.to && (!me || m.to === me)));
       return out.slice(0, Math.max(1, Number(limit) || 200));
     },
     // Messages that concern `me`: an explicit `to`, or an @mention in the text.
     addressedTo(me, { since = 0 } = {}) {
-      const meRe = new RegExp('@' + String(me).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+      // `(?![\w-])`, not `\b`: @api must not match @api-2.
+      const meRe = new RegExp('@' + String(me).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i');
       return messages.filter((m) => m.seq > (Number(since) || 0)
         && (m.to === me || meRe.test(m.text)));
     },
@@ -430,10 +447,11 @@ function boardTools(board, me, opts = {}) {
     'Read the swarm board feed, oldest first. Returns messages newer than `since`. Call once near the start so you do not duplicate another worker.',
     { type: 'object', properties: { since: { type: 'number', description: 'Return messages with seq > since (default 0).' }, channel: { type: 'string', description: 'Optional channel filter.' }, limit: { type: 'number' } } },
     (a = {}) => {
-      const list = board.read({ since: a.since == null ? lastSeq : a.since, channel: a.channel || null, limit: a.limit || 200 });
+      const list = board.read({ since: a.since == null ? lastSeq : a.since, channel: a.channel || null, limit: a.limit || 200, me });
       if (!list.length) return 'board: no new messages';
       const hi = list[list.length - 1].seq;
       lastSeq = Math.max(lastSeq, hi);
+      board.setMember(me, { readSeq: Math.max((board.member(me) || {}).readSeq || 0, hi) });
       return list.map((m) => `#${m.seq} ${m.from}${m.to ? ' → @' + m.to : ''} [${m.channel}]: ${m.text}`).join('\n')
         + `\n(last seq ${hi} — pass since:${hi} next time)`;
     });
@@ -443,6 +461,7 @@ function boardTools(board, me, opts = {}) {
     { type: 'object', properties: { since: { type: 'number', description: 'Last seq you have seen.' }, mentions_only: { type: 'boolean', description: 'Only wake for messages addressed to you.' }, timeout_ms: { type: 'number' } } },
     async (a = {}) => {
       const since = a.since == null ? lastSeq : Number(a.since);
+      board.setMember(me, { state: 'waiting' });
       const res = await board.wait({
         me,
         since,
@@ -450,9 +469,11 @@ function boardTools(board, me, opts = {}) {
         timeoutMs: a.timeout_ms || 20000,
         signal: opts.signal,
       });
+      board.setMember(me, { state: 'working' });
       if (!res.messages.length) return res.aborted ? 'board: wait aborted' : 'board: no new messages (timeout) — continue your own work';
       const hi = res.messages[res.messages.length - 1].seq;
       lastSeq = Math.max(lastSeq, hi);
+      board.setMember(me, { readSeq: Math.max((board.member(me) || {}).readSeq || 0, hi) });
       return res.messages.map((m) => `#${m.seq} ${m.from}${m.to ? ' → @' + m.to : ''} [${m.channel}]: ${m.text}`).join('\n');
     });
 
@@ -476,18 +497,20 @@ async function decompose(opts) {
   if (typeof runAgent !== 'function' || !supervisor) return null;
   const prompt = SUPERVISOR_PLAN_PROMPT
     .replace('{MAX}', String(maxTasks))
-    .replace('{ROSTER}', rosterSummary(roster))
+    .replace('{ROSTER}', opts.rosterText || rosterSummary(roster))
     .replace('{GOAL}', goal);
   let text = '';
   try {
     const out = await runAgent({
       provider: supervisor,
+      orchestrator: opts.supervisorOrch || null,
       messages: [{ role: 'user', content: prompt }],
-      maxSteps: opts.maxSteps || 0,
+      maxSteps: 8,
       cwd: opts.cwd,
       signal: opts.signal,
       useMemory: false,
-      emit: (evt) => emit({ ...evt, subagent: 'supervisor', role: 'supervisor' }),
+      toolAllow: PLAN_TOOLS,
+      emit: (evt) => { if (evt && evt.type === 'done') return; emit({ ...evt, subagent: 'supervisor', role: 'supervisor' }); },
     });
     const last = [...(out || [])].reverse().find((m) => m.role === 'assistant' && m.content);
     text = last ? last.content : '';
@@ -510,19 +533,48 @@ async function swarm(goal, opts = {}) {
   if (!goal || !String(goal).trim()) throw new Error('swarm requires a goal');
   const emit = opts.emit || (() => {});
   const started = Date.now();
-  // Swarm runs only on frontier models: the supervisor and every worker draw
-  // from a frontier-only roster. (Automatic Task/Agent delegation still uses
-  // the full pool, including cheap models, and is unaffected.)
-  const roster = buildRoster({ orchestrator: opts.orchestrator, provider: opts.provider, frontierOnly: true });
+  // Role pools (FreeLLMAPI layout): supervisor on Planner, workers on Coder
+  // (or the role/tier the plan asks for), each with its own downward failover
+  // chain. Without pools the swarm keeps the frontier-only roster, but every
+  // worker now gets a failover chain too instead of a single pinned model.
+  const poolOrch = (opts.poolOrchestrator && router.poolsConfig(opts.poolOrchestrator))
+    ? opts.poolOrchestrator
+    : (opts.orchestrator && router.poolsActive(opts.orchestrator, opts.provider) ? opts.orchestrator : null);
+  const poolBase = opts.provider || null;
+  let roster;
+  if (poolOrch) {
+    roster = [];
+    for (const r of router.ROLES) {
+      for (const row of router.resolve(poolOrch, r, poolBase)) if (row.role === r) roster.push({ ...row, jobRole: r });
+    }
+  } else {
+    roster = buildRoster({ orchestrator: opts.orchestrator, provider: opts.provider, frontierOnly: true });
+  }
 
-  // Supervisor: an explicit pin wins; otherwise the strongest tier available.
-  const supervisor = opts.supervisor
-    ? { ...opts.supervisor, tier: 'critical' }
-    : (pickProvider(roster, 'critical') || (opts.provider ? { ...opts.provider, tier: 'critical' } : null));
+  // A failover chain (an orchestrator object runAgent understands) for one job.
+  const chainFor = (tier, index, roleHint, model) => {
+    if (poolOrch) {
+      const role = router.normalizeRole(roleHint) || router.tierToRole(tier) || 'coder';
+      return router.orchestratorFor(poolOrch, role, poolBase, { index, preferModel: model || undefined });
+    }
+    const base = (model && roster.find((r) => r.model === model)) || pickProvider(roster, tier, index);
+    if (!base) return null;
+    const rest = roster.filter((r) => r !== base);
+    const providers = [base].concat(rest.filter((r) => r.tier === base.tier), rest.filter((r) => r.tier !== base.tier));
+    return { enabled: true, providers, activeIndex: 0, role: 'pinned' };
+  };
 
+  // Supervisor: an explicit pin wins; otherwise Planner / the strongest tier.
+  let supervisorOrch = null;
+  let supervisor = null;
+  if (opts.supervisor) {
+    supervisor = { ...opts.supervisor, tier: 'critical' };
+  } else {
+    supervisorOrch = chainFor('critical', 0, 'planner');
+    supervisor = supervisorOrch ? { ...supervisorOrch.providers[0], tier: 'critical' }
+      : (opts.provider ? { ...opts.provider, tier: 'critical' } : null);
+  }
   if (!supervisor) throw new Error('swarm has no model to run on (configure a provider or an orchestrator tier)');
-  // The supervisor is normally already in the roster; only append it when the
-  // topology has no critical-tier entry (single-model setups).
   const keyOf = (r) => (r && r.oauthProvider
     ? 'oauth|' + r.oauthProvider + '|' + String(r.model || '')
     : String((r && r.baseURL) || '') + '|' + String((r && r.model) || ''));
@@ -530,13 +582,15 @@ async function swarm(goal, opts = {}) {
   if (!roster.some((r) => keyOf(r) === supKey)) {
     roster.push({ ...supervisor, tier: 'critical', role: 'supervisor' });
   }
+  const rosterText = poolOrch ? (router.summary(poolOrch, poolBase) || rosterSummary(roster)) : rosterSummary(roster);
 
   emit({
     type: 'swarm',
     phase: 'start',
     goal,
+    pools: !!poolOrch,
     supervisor: { model: supervisor.model, baseURL: supervisor.baseURL },
-    roster: roster.map((r) => ({ model: r.model, tier: r.tier })),
+    roster: roster.map((r) => ({ model: r.model, tier: r.tier, role: r.jobRole || undefined })),
   });
 
   // ---- 1. Plan ----
@@ -548,25 +602,33 @@ async function swarm(goal, opts = {}) {
   }
   if (!plan) {
     plan = await decompose({
-      runAgent, supervisor, roster, goal, emit,
+      runAgent, supervisor, supervisorOrch, roster, rosterText, goal, emit,
       maxTasks: opts.maxTasks, maxSteps: opts.maxSteps, cwd: opts.cwd, signal: opts.signal,
     });
   }
+  if (opts.signal && opts.signal.aborted) throw new Error('aborted');
   if (!plan) {
     source = 'fallback';
     plan = { subtasks: [{ id: 't1', title: 'Complete the goal', prompt: goal, tier: 'heavy', model: null, owns: [] }], synthesis: '' };
   }
 
+  // Count workers per job so each role's i-th worker starts i rows down its
+  // pool when the pool asks to spread.
+  const perRole = new Map();
   const tasks = plan.subtasks.map((t, i) => {
-    const provider = t.model
-      ? { ...pickProvider(roster, t.tier), model: t.model }
-      : pickProvider(roster, t.tier);
+    const roleKey = poolOrch ? (router.normalizeRole(t.role) || router.tierToRole(t.tier) || 'coder') : normalizeTier(t.tier);
+    const k = perRole.get(roleKey) || 0;
+    perRole.set(roleKey, k + 1);
+    const chain = chainFor(t.tier, k, t.role, t.model);
+    const provider = chain ? chain.providers[0] : (opts.provider || null);
     return {
       ...t,
       index: i,
       provider,
+      chain,
       model: provider ? provider.model : null,
-      tier: provider ? provider.tier : t.tier,
+      tier: provider && provider.tier ? provider.tier : t.tier,
+      jobRole: poolOrch ? roleKey : null,
     };
   });
 
@@ -574,22 +636,18 @@ async function swarm(goal, opts = {}) {
     type: 'swarm',
     phase: 'planned',
     source,
-    tasks: tasks.map((t) => ({ id: t.id, title: t.title, tier: t.tier, model: t.model })),
+    tasks: tasks.map((t) => ({ id: t.id, title: t.title, tier: t.tier, role: t.jobRole || undefined, model: t.model })),
   });
 
-  // ---- 2. Dispatch: every subtask is a distinct prompt on its own model ----
-  // One board for the whole swarm: workers post intent + hand-off notes, read
-  // each other's posts, and park in swarm_wait when blocked. The board is also
-  // the source of truth handed to the supervisor at review time.
+  // ---- 2. Dispatch ----
   const board = createBoard();
   board.setMember('supervisor', { state: 'planning', role: 'supervisor' });
-  const limit = Math.max(1, Number(opts.concurrency) || 4);
+  const poolCap = poolOrch ? (router.roleLimit(poolOrch, 'coder') || MAX_CONCURRENCY) : MAX_CONCURRENCY;
+  const limit = Math.max(1, Math.min(Number(opts.concurrency) || 4, poolCap, MAX_CONCURRENCY));
   const results = new Array(tasks.length);
+  const rounds = new Map();
   let cursor = 0;
 
-  // A member's board handle has to be something a *model* will type: `@api`,
-  // `@ui`, not `@t1`. Derive it from the subtask title, keep it stable across a
-  // re-brief (so mentions still reach the same member) and unique per swarm.
   const usedNames = new Set(['supervisor']);
   const memberNameFor = (task) => {
     if (task.__worker) return task.__worker;
@@ -602,20 +660,25 @@ async function swarm(goal, opts = {}) {
     task.__worker = name;
     return name;
   };
+  tasks.forEach((t) => board.setMember(memberNameFor(t), { state: 'pending', role: 'worker', tier: t.tier, model: t.model }));
 
   const runOne = async (task, round = 1, briefing = '') => {
     const name = task.title || task.id;
     const agentId = String(task.id);
     const p = task.provider || opts.provider;
     const workerName = memberNameFor(task);
+    rounds.set(workerName, round);
     const channel = String(task.channel || task.id || 'general');
     const bus = boardTools(board, workerName, { channel, signal: opts.signal });
-    board.setMember(workerName, { state: 'running', role: 'worker', tier: task.tier, model: p ? p.model : null });
+    board.setMember(workerName, { state: 'working', role: 'worker', tier: task.tier, model: p ? p.model : null });
     const t0 = Date.now();
-    emit({ type: 'subagent', id: agentId, name, status: 'running', role: 'worker', tier: task.tier, model: p ? p.model : null });
+    let servedBy = p ? p.model : null;
+    emit({ type: 'subagent', id: agentId, name, status: 'running', role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, round });
     try {
+      if (opts.signal && opts.signal.aborted) throw new Error('aborted');
       const out = await runAgent({
         provider: p,
+        orchestrator: task.chain || null,
         messages: [{ role: 'user', content: workerPrompt(String(goal), task, { me: workerName, channel }) + (briefing ? '\n\n' + briefing : '') }],
         maxSteps: opts.maxSteps || 0,
         cwd: opts.cwd,
@@ -623,104 +686,114 @@ async function swarm(goal, opts = {}) {
         useMemory: opts.useMemory,
         extraTools: bus.defs,
         localTools: bus.localTools,
-        emit: (evt) => emit({ ...evt, subagent: name, agentId, tier: task.tier, model: p ? p.model : null }),
+        emit: (evt) => {
+          if (!evt || evt.type === 'done') return;
+          if (evt.type === 'orchestrator' && evt.to) servedBy = evt.to;
+          emit({ ...evt, subagent: name, agentId, tier: task.tier, model: servedBy });
+        },
       });
       const last = [...(out || [])].reverse().find((m) => m.role === 'assistant' && m.content);
       const result = last ? last.content : '(worker finished with no text)';
       const ms = Date.now() - t0;
       board.setMember(workerName, { state: 'done', lastSeen: Date.now() });
-      emit({ type: 'subagent', id: agentId, name, status: 'done', role: 'worker', tier: task.tier, model: p ? p.model : null, ms });
-      return { id: agentId, name: workerName, title: task.title, tier: task.tier, model: p ? p.model : null,
+      emit({ type: 'subagent', id: agentId, name, status: 'done', role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, ms, round });
+      return { id: agentId, name: workerName, title: task.title, tier: task.tier, role: task.jobRole, model: servedBy,
         baseURL: p ? p.baseURL : null, status: 'done', ms, result, round };
     } catch (e) {
       const ms = Date.now() - t0;
-      board.setMember(workerName, { state: 'error', lastSeen: Date.now() });
-      emit({ type: 'subagent', id: agentId, name, status: 'error', role: 'worker', tier: task.tier, model: p ? p.model : null, ms });
-      return { id: agentId, name: workerName, title: task.title, tier: task.tier, model: p ? p.model : null,
-        baseURL: p ? p.baseURL : null, status: 'error', ms, result: 'Error: ' + e.message, round };
+      const aborted = (opts.signal && opts.signal.aborted) || /abort/i.test(String(e && e.message));
+      board.setMember(workerName, { state: aborted ? 'stopped' : 'error', lastSeen: Date.now() });
+      emit({ type: 'subagent', id: agentId, name, status: aborted ? 'stopped' : 'error', role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, ms, round, error: String((e && e.message) || e).slice(0, 300) });
+      return { id: agentId, name: workerName, title: task.title, tier: task.tier, role: task.jobRole, model: servedBy,
+        baseURL: p ? p.baseURL : null, status: aborted ? 'stopped' : 'error', ms, result: 'Error: ' + (e && e.message), round };
     }
   };
 
-  const next = async () => {
-    while (cursor < tasks.length) {
-      const i = cursor++;
-      results[i] = await runOne(tasks[i]);
-    }
+  const pool = async (jobs, fn) => {
+    let c = 0;
+    const worker = async () => {
+      while (c < jobs.length) {
+        if (opts.signal && opts.signal.aborted) return;
+        const j = jobs[c++];
+        await fn(j);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, jobs.length) }, worker));
   };
-  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, next));
 
-  // ---- 2b. Stall monitor + mention wake-ups ----
-  // Antigravity keeps a stall monitor that re-briefs a member whose turn ended
-  // without moving, and wakes a member that was addressed by name. Both are
-  // host-side here: one bounded extra round, only for members that need it.
+  await pool(tasks.map((t, i) => i), async (i) => { results[i] = await runOne(tasks[i]); });
+  for (let i = 0; i < tasks.length; i++) {
+    if (!results[i]) results[i] = { id: String(tasks[i].id), name: memberNameFor(tasks[i]), title: tasks[i].title, tier: tasks[i].tier, model: tasks[i].model, status: 'stopped', ms: 0, result: '(not started — the swarm was stopped)', round: 0 };
+  }
+
+  // ---- 2b. Stall monitor + mention wake-ups (event waves) ----
+  // Antigravity wakes a member whenever a post addresses it (by `to` or an
+  // @mention) and re-briefs a member whose turn ended without reporting. Run
+  // waves until nobody is addressed any more, bounded per member.
   if (opts.monitor !== false) {
-    const byName = new Map(results.filter(Boolean).map((r) => [r.name, r]));
-    // Re-briefing only makes sense once the board is actually in use. If no
-    // worker posted at all, the swarm ran as a plain fan-out; paying a second
-    // round on every worker there would double the token cost for no gain.
-    const boardInUse = board.messages.length > 0;
-    const stalled = !boardInUse ? [] : results.filter((r) => r && r.status === 'done'
-      && (!board.member(r.name) || !board.member(r.name).posts));
-    const addressed = new Map();
-    for (const m of board.messages) {
-      if (!m.to || m.from === m.to) continue;
-      if (!byName.has(m.to)) continue;
-      const cur = addressed.get(m.to) || [];
-      cur.push(m);
-      addressed.set(m.to, cur);
-    }
-    const redo = new Map();
-    for (const r of stalled) redo.set(r.name, { reason: 'stall' });
-    for (const [who, msgs] of addressed) {
-      if (redo.has(who)) continue;
-      const target = byName.get(who);
-      if (!target) continue;
-      if (target.round > 1) continue; // one wake-up per member
-      redo.set(who, { reason: 'mention', msgs });
-    }
-    if (redo.size) {
-      emit({ type: 'swarm', phase: 'monitor', stalled: stalled.map((r) => r.name), addressed: [...addressed.keys()] });
-      await Promise.all([...redo.entries()].map(async ([who, why]) => {
-        const idx = results.findIndex((r) => r && r.name === who);
-        if (idx < 0) return;
+    const delivered = new Map(); // member -> last seq it was woken for
+    for (let wave = 0; wave < MAX_ROUNDS_PER_MEMBER; wave++) {
+      if (opts.signal && opts.signal.aborted) break;
+      const byName = new Map(results.filter(Boolean).map((r, i) => [r.name, i]));
+      const redo = new Map();
+      if (wave === 0 && board.messages.length > 0) {
+        for (const r of results) {
+          if (r && r.status === 'done' && !((board.member(r.name) || {}).posts)) redo.set(r.name, { reason: 'stall' });
+        }
+      }
+      for (const [who] of byName) {
+        if (redo.has(who)) continue;
+        if ((rounds.get(who) || 1) >= MAX_ROUNDS_PER_MEMBER) continue;
+        const r = results[byName.get(who)];
+        if (!r || r.status === 'stopped') continue;
+        const since = Math.max(delivered.get(who) || 0, (board.member(who) || {}).readSeq || 0);
+        const msgs = board.addressedTo(who, { since }).filter((m) => m.from !== who);
+        if (msgs.length) redo.set(who, { reason: 'mention', msgs });
+      }
+      if (!redo.size) break;
+      emit({ type: 'swarm', phase: 'monitor', wave: wave + 1, stalled: [...redo].filter(([, w]) => w.reason === 'stall').map(([n]) => n), addressed: [...redo].filter(([, w]) => w.reason === 'mention').map(([n]) => n) });
+      await pool([...redo.entries()], async ([who, why]) => {
+        const idx = byName.get(who);
+        if (idx == null) return;
+        delivered.set(who, board.seq);
         const task = tasks[idx];
         const promptIntent = why.reason === 'stall'
           ? STALL_NOTE
           : 'A team member addressed you on the board:\n'
             + why.msgs.map((m) => `#${m.seq} ${m.from}: ${m.text}`).join('\n')
             + '\nAnswer them on the board and finish the part of your subtask that is still missing.';
-        // Re-brief, not restart: hand the worker its own prior report plus the
-        // board state, so round 2 continues the subtask instead of redoing it.
         const prior = results[idx] && results[idx].result
           ? `\n\nYOUR PREVIOUS REPORT:\n${String(results[idx].result).slice(0, 4000)}` : '';
-        const again = await runOne(task, 2, promptIntent + prior);
+        const again = await runOne(task, (rounds.get(who) || 1) + 1, promptIntent + prior);
         if (again.status === 'done') {
           results[idx] = { ...again,
             result: (results[idx] && results[idx].result ? results[idx].result + '\n\n' : '') + again.result };
+        } else if (results[idx]) {
+          results[idx] = { ...results[idx], result: results[idx].result + `\n\n(follow-up round ${again.round} ${again.status}: ${String(again.result).slice(0, 300)})` };
         }
-      }));
+      });
     }
   }
 
   const done = results.filter(Boolean);
-  emit({ type: 'swarm', phase: 'dispatched', results: done.map((r) => ({ id: r.id, title: r.title, tier: r.tier, model: r.model, status: r.status, ms: r.ms })) });
+  emit({ type: 'swarm', phase: 'dispatched', results: done.map((r) => ({ id: r.id, title: r.title, tier: r.tier, role: r.role, model: r.model, status: r.status, ms: r.ms })) });
+  if (opts.signal && opts.signal.aborted) throw new Error('aborted');
 
   // ---- 3. Supervisor review / merge ----
   let answer = '';
   let reviewError = null;
   if (opts.critique !== false) {
+    board.setMember('supervisor', { state: 'reviewing' });
     emit({ type: 'subagent', id: 'supervisor', name: 'supervisor (review)', status: 'running', role: 'supervisor', tier: 'critical', model: supervisor.model });
-    const report = done.map((r) => `### ${r.title} — ${r.tier} — ${r.model || 'model'} — ${r.status} (${r.ms}ms)\n${r.result}`).join('\n\n');
-    // The board is the swarm's shared state: what each worker claimed, what it
-    // handed off, and who asked whom for what. Give the supervisor that feed so
-    // it can catch two workers that duplicated work or agreed on different APIs.
+    const report = done.map((r) => `### ${r.title} — ${r.role || r.tier} — ${r.model || 'model'} — ${r.status} (${r.ms}ms)\n${r.result}`).join('\n\n');
     const feed = board.messages.length ? board.transcript({ limit: 200 }) : '';
     const boardBlock = feed ? `\n\nSWARM BOARD (workers' own messages, oldest first):\n${feed}\n` : '';
     const files = done.filter((r) => /\.(html?|css|js|jsx|tsx|ts|json|md|py)\b/i.test(r.result)).length
-      ? '\nThe team reported creating files. Make sure the final answer names the entry file.\n' : '';
+      ? '\nThe team reported creating files. Verify the key files exist (Read/Glob, or run the tests with Bash) and make sure the final answer names the entry file.\n' : '';
     try {
       const out = await runAgent({
         provider: supervisor,
+        orchestrator: supervisorOrch,
         messages: [{
           role: 'user',
           content: SUPERVISOR_MERGE_PROMPT
@@ -728,30 +801,35 @@ async function swarm(goal, opts = {}) {
             .replace('{RESULTS}', report + boardBlock)
             .replace('{GOAL}', String(goal)) + (plan.synthesis ? `\n\nMERGE INSTRUCTION FROM THE PLAN: ${plan.synthesis}` : ''),
         }],
-        maxSteps: opts.maxSteps || 0,
+        maxSteps: 24,
         cwd: opts.cwd,
         signal: opts.signal,
         useMemory: false,
-        emit: (evt) => emit({ ...evt, subagent: 'supervisor', role: 'supervisor' }),
+        toolAllow: REVIEW_TOOLS,
+        emit: (evt) => { if (evt && evt.type === 'done') return; emit({ ...evt, subagent: 'supervisor', role: 'supervisor' }); },
       });
-      const last = [...(out || [])].reverse().find((m) => m.role === 'assistant' && m.content);
+      const last = [...out].reverse().find((m) => m.role === 'assistant' && m.content);
       answer = last ? last.content : '';
     } catch (e) {
+      if (opts.signal && opts.signal.aborted) throw e;
       reviewError = e.message;
     }
+    board.setMember('supervisor', { state: reviewError ? 'error' : 'done' });
     emit({ type: 'subagent', id: 'supervisor', name: 'supervisor (review)', status: reviewError ? 'error' : 'done', role: 'supervisor', tier: 'critical', model: supervisor.model });
   }
 
   if (!answer) {
-    answer = done.map((r) => `### ${r.title} (${r.tier} · ${r.model || 'model'})\n${r.result}`).join('\n\n');
+    answer = done.map((r) => `### ${r.title} (${r.role || r.tier} · ${r.model || 'model'})\n${r.result}`).join('\n\n');
   }
 
   const summary = {
     supervisor: { model: supervisor.model, baseURL: supervisor.baseURL },
     planSource: source,
-    tasks,
+    pools: !!poolOrch,
+    tasks: tasks.map(({ chain, provider, ...t }) => ({ ...t, model: t.model })),
     results: done,
     board: board.messages.map((m) => ({ ...m })),
+    members: board.status(),
     answer,
     reviewError,
     ms: Date.now() - started,
@@ -763,6 +841,6 @@ async function swarm(goal, opts = {}) {
 module.exports = {
   TIER_RANK, normalizeTier, buildRoster, pickProvider, rosterSummary, isFrontier,
   extractJSON, normalizePlan, swarm, decompose,
-  createBoard, boardTools, STALL_NOTE,
+  createBoard, boardTools, STALL_NOTE, PLAN_TOOLS, REVIEW_TOOLS, MAX_CONCURRENCY,
   SUPERVISOR_PLAN_PROMPT, SUPERVISOR_MERGE_PROMPT,
 };

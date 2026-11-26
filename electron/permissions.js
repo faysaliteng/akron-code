@@ -51,11 +51,98 @@ function primaryArg(toolName, args) {
   return '';
 }
 
-// Match a `Bash(...)` specifier against a command.
+// Split a shell command into the simple commands it would run, so a rule
+// like `Bash(git diff:*)` can't be used to smuggle `git diff && rm -rf ~`.
+// Separators (outside quotes): && || ; | |& & and newlines. Command and
+// process substitutions — $(…), `…`, <(…), >(…) — are executed too, so their
+// bodies are split recursively and added as extra segments (they are also
+// expanded inside double quotes, like the shell does). Redirections such as
+// 2>&1 or &> are not separators.
+function splitCommand(command) {
+  const src = String(command || '');
+  const segs = [];
+  const subs = [];
+  let cur = '';
+  let i = 0;
+  let q = null; // "'" | '"'
+  const push = () => {
+    let t = cur.trim();
+    // strip subshell / group wrappers: `( a; b )`, `{ a; }` — only unbalanced
+    // ones, so `cat <(ls)` / `echo $(x)` stay intact.
+    const cnt = (str, ch) => str.split(ch).length - 1;
+    for (;;) {
+      let n = t;
+      if (/^[({]/.test(n) && cnt(n, n[0]) > cnt(n, n[0] === '(' ? ')' : '}')) n = n.slice(1).trim();
+      const last = n.slice(-1);
+      if ((last === ')' || last === '}') && cnt(n, last) > cnt(n, last === ')' ? '(' : '{')) n = n.slice(0, -1).trim();
+      if (n === t) break;
+      t = n;
+    }
+    if (t) segs.push(t);
+    cur = '';
+  };
+  const readParen = (from) => { // returns index of the matching ')'
+    let depth = 1;
+    let j = from;
+    let qq = null;
+    while (j < src.length) {
+      const c = src[j];
+      if (qq) {
+        if (c === '\\' && qq === '"') { j += 2; continue; }
+        if (c === qq) qq = null;
+      } else if (c === '\\') { j += 2; continue; }
+      else if (c === "'" || c === '"') qq = c;
+      else if (c === '(') depth++;
+      else if (c === ')') { depth--; if (depth === 0) return j; }
+      j++;
+    }
+    return src.length;
+  };
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (q === "'") { cur += c; if (c === "'") q = null; i++; continue; }
+    if (c === '\\') { cur += c + (n || ''); i += 2; continue; }
+    // substitutions (also live inside double quotes)
+    if ((c === '$' || ((c === '<' || c === '>') && !q)) && n === '(' && src[i + 2] !== '(') {
+      const end = readParen(i + 2);
+      subs.push(src.slice(i + 2, end));
+      cur += src.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (c === '`') {
+      let end = i + 1;
+      while (end < src.length && src[end] !== '`') { if (src[end] === '\\') end++; end++; }
+      subs.push(src.slice(i + 1, end));
+      cur += src.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (q === '"') { cur += c; if (c === '"') q = null; i++; continue; }
+    if (c === "'" || c === '"') { q = c; cur += c; i++; continue; }
+    if (c === '\n' || c === ';') { push(); i++; continue; }
+    if (c === '&' && n === '&') { push(); i += 2; continue; }
+    if (c === '|' && n === '|') { push(); i += 2; continue; }
+    if (c === '|') { push(); i += (n === '&' ? 2 : 1); continue; }
+    if (c === '&') {
+      const prev = cur.slice(-1);
+      if (prev === '>' || prev === '<' || n === '>') { cur += c; i++; continue; } // 2>&1, &>, >&
+      push(); i++; continue;
+    }
+    cur += c;
+    i++;
+  }
+  push();
+  for (const s of subs) for (const x of splitCommand(s)) segs.push(x);
+  return segs;
+}
+
+// Match a `Bash(...)` specifier against ONE simple command.
 //   "git diff:*"  → command === "git diff" or starts with "git diff "
 //   "npm:*"       → any npm subcommand
 //   "git push *"  → wildcard form
-function matchBash(spec, command) {
+function matchBashSegment(spec, command) {
   const cmd = String(command || '').trim();
   let s = String(spec || '').trim();
   if (!cmd) return false;
@@ -76,6 +163,20 @@ function matchBash(spec, command) {
     return re.test(cmd);
   }
   return cmd === s;
+}
+
+// Allow-semantics: a compound command matches only when EVERY simple command
+// in it matches the spec.
+function matchBash(spec, command) {
+  const segs = splitCommand(command);
+  if (!segs.length) return false;
+  return segs.every((seg) => matchBashSegment(spec, seg));
+}
+
+// Deny/ask-semantics: ANY simple command (or the whole string) matching wins.
+function matchBashAny(spec, command) {
+  if (matchBashSegment(spec, command)) return true;
+  return splitCommand(command).some((seg) => matchBashSegment(spec, seg));
 }
 
 function escapeRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -116,7 +217,7 @@ function parseRule(rule) {
   return { tool: m[1], specifier: m[2] == null ? null : m[2].trim() };
 }
 
-function ruleMatches(rule, toolName, args, cwd) {
+function ruleMatches(rule, toolName, args, cwd, { any = false } = {}) {
   const { tool, specifier } = parseRule(rule);
   // MCP wildcard forms: mcp__server__tool, or `mcp__server` / `mcp__*`.
   if (toolName.startsWith('mcp__')) {
@@ -129,7 +230,7 @@ function ruleMatches(rule, toolName, args, cwd) {
   }
   if (specifier == null) return true;
   const value = primaryArg(toolName, args || {});
-  if (toolName === 'Bash') return matchBash(specifier, value);
+  if (toolName === 'Bash') return any ? matchBashAny(specifier, value) : matchBash(specifier, value);
   // File-ish tools use glob matching; include cwd so absolute paths match `src/**`.
   if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'Read' || toolName === 'NotebookEdit' || toolName === 'NotebookRead') {
     const candidates = [value];
@@ -161,27 +262,72 @@ function loadPermissions(cwd) {
   };
 }
 
+// Tools acceptEdits auto-approves (file edits) and tools that never mutate.
+const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'mcp__workspace__write_file', 'mcp__workspace__edit_file']);
+const READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch', 'TodoWrite', 'BashOutput', 'TaskOutput', 'ListMcpResources', 'ReadMcpResource']);
+
+// First deny rule matching the call (for any tool, read-only ones included),
+// or null. Bash: deny if ANY simple command of a compound matches.
+function denyMatch(perms, toolName, args, { cwd = null } = {}) {
+  const P = perms || {};
+  for (const rule of asArray(P.deny)) {
+    if (ruleMatches(rule, toolName, args, cwd, { any: true })) return { decision: 'deny', reason: `Denied by rule ${rule}`, rule };
+  }
+  return null;
+}
+
+// Every simple command of a Bash call must be covered by SOME allow rule
+// (different segments may match different rules).
+function bashAllowRule(allow, args) {
+  const segs = splitCommand(primaryArg('Bash', args || {}));
+  if (!segs.length) return null;
+  let first = null;
+  for (const seg of segs) {
+    const hit = allow.find((rule) => {
+      const { tool, specifier } = parseRule(rule);
+      if (tool !== 'Bash') return false;
+      return specifier == null || matchBashSegment(specifier, seg);
+    });
+    if (!hit) return null;
+    if (!first) first = hit;
+  }
+  return first;
+}
+
 // Decide one tool call.
 //   → { decision: 'allow'|'deny'|'ask', reason, rule }
 // `mode` is the current permission pill (auto/manual/acceptEdits/plan/bypass).
+// A rule-less 'ask' (rule: null) means "no rule applies — let the caller apply
+// the mode", which is how main.js's approveTool treats it.
 function decide(perms, toolName, args, { cwd = null, mode = 'auto' } = {}) {
   const P = perms || { allow: [], deny: [], ask: [] };
-  // 1. deny wins outright.
-  for (const rule of P.deny) {
-    if (ruleMatches(rule, toolName, args, cwd)) return { decision: 'deny', reason: `Denied by rule ${rule}`, rule };
+  const allow = asArray(P.allow);
+  // 1. deny wins outright (any segment of a compound Bash command).
+  const d = denyMatch(P, toolName, args, { cwd });
+  if (d) return d;
+  // 2. ask (any segment).
+  for (const rule of asArray(P.ask)) {
+    if (ruleMatches(rule, toolName, args, cwd, { any: true })) return { decision: 'ask', reason: `Rule ${rule} requires confirmation`, rule };
   }
-  // 2. ask.
-  for (const rule of P.ask) {
-    if (ruleMatches(rule, toolName, args, cwd)) return { decision: 'ask', reason: `Rule ${rule} requires confirmation`, rule };
-  }
-  // 3. allow.
-  for (const rule of P.allow) {
-    if (ruleMatches(rule, toolName, args, cwd)) return { decision: 'allow', reason: `Allowed by rule ${rule}`, rule };
+  // 3. allow — only an explicit rule; for Bash every segment must be covered.
+  if (toolName === 'Bash') {
+    const r = bashAllowRule(allow, args);
+    if (r) return { decision: 'allow', reason: `Allowed by rule ${r}`, rule: r };
+  } else {
+    for (const rule of allow) {
+      if (ruleMatches(rule, toolName, args, cwd)) return { decision: 'allow', reason: `Allowed by rule ${rule}`, rule };
+    }
   }
   // 4. fall back to the session permission mode.
   const m = String(mode || 'auto');
   if (m === 'bypass' || m === 'bypassPermissions') return { decision: 'allow', reason: 'bypass mode', rule: null };
-  if (m === 'auto' || m === 'acceptEdits') return { decision: 'allow', reason: `${m} mode`, rule: null };
+  if (m === 'auto') return { decision: 'allow', reason: 'auto mode', rule: null };
+  if (m === 'acceptEdits') {
+    // acceptEdits auto-approves file edits only — Bash and other mutating
+    // tools still need a prompt.
+    if (EDIT_TOOLS.has(toolName) || READ_ONLY_TOOLS.has(toolName)) return { decision: 'allow', reason: 'acceptEdits mode', rule: null };
+    return { decision: 'ask', reason: 'acceptEdits mode only auto-approves file edits', rule: null };
+  }
   if (m === 'plan' || m === 'planMode') {
     // Plan mode is read-only; the run loop already enforces this, but a rule-less
     // mutating tool should still be denied here for a second line of defence.
@@ -196,6 +342,10 @@ module.exports = {
   PRIMARY_ARG,
   loadPermissions,
   decide,
+  denyMatch,
+  splitCommand,
+  matchBashSegment,
+  matchBashAny,
   ruleMatches,
   parseRule,
   matchBash,

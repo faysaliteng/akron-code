@@ -313,6 +313,39 @@ function structuredOutput(args, ctx) {
 // ────────────────────────────────────────────────────────────
 // Workflow — the JS DSL runtime (agent / parallel / pipeline / phase)
 // ────────────────────────────────────────────────────────────
+async function workflowAgent(a, ctx) {
+  if (ctx.signal && ctx.signal.aborted) throw new Error('aborted');
+  const router = require('./orch-router');
+  const swarmMod = require('./swarm');
+  const prompt = String(a.prompt || '');
+  const content = a.schema
+    ? `${prompt}\n\nReply with ONLY a JSON value matching this JSON Schema (no prose, no fence):\n${JSON.stringify(a.schema)}`
+    : prompt;
+  const sub = { messages: [{ role: 'user', content }], cwd: a.cwd || ctx.cwd, signal: ctx.signal };
+  const poolOrch = ctx.poolOrchestrator;
+  const role = router.normalizeRole(a.role) || (a.tier ? router.tierToRole(a.tier) : null) || (a.model && router.isModelAlias(a.model) ? router.aliasRole(a.model) : null);
+  const model = a.model && !router.isModelAlias(a.model) ? String(a.model) : null;
+  if (poolOrch && (role || model)) {
+    const scoped = router.orchestratorFor(poolOrch, role || 'coder', ctx.provider, { preferModel: model || undefined });
+    if (scoped) { sub.orchestrator = scoped; sub.provider = scoped.providers[0]; }
+  } else if ((role || model) && Array.isArray(ctx.agentRoster) && ctx.agentRoster.length) {
+    const tier = a.tier || (role ? router.ROLE_TIER[role] : 'heavy');
+    const base = (model && ctx.agentRoster.find((r) => r.model === model)) || swarmMod.pickProvider(ctx.agentRoster, tier);
+    if (base) {
+      sub.provider = model && base.model !== model ? { ...base, model } : base;
+      sub.orchestrator = { enabled: true, providers: [sub.provider].concat(ctx.agentRoster.filter((r) => r !== base)), activeIndex: 0, role: 'pinned' };
+    }
+  }
+  const out = await ctx.runAgent(sub);
+  const list = Array.isArray(out) ? out : [];
+  const last = [...list].reverse().find((m) => m && m.role === 'assistant' && m.content);
+  const text = typeof out === 'string' ? out : (last ? String(last.content) : '');
+  if (!a.schema) return text;
+  const parsed = swarmMod.extractJSON(text);
+  if (parsed != null) return parsed;
+  try { return JSON.parse(text.trim()); } catch (_) { return text; }
+}
+
 async function runWorkflowTool(args, ctx) {
   if (!ctx.runAgent) return { content: 'Workflow unavailable (no agent runner wired).', isError: true };
   try {
@@ -322,9 +355,14 @@ async function runWorkflowTool(args, ctx) {
       name: args.name,
       args: args.args,
       resumeFromRunId: args.resumeFromRunId || args.resume_from_run_id,
-      runAgent: ctx.runAgent,
+      // workflow.js calls agent({prompt, model, tier, role, schema, cwd}) and
+      // expects the agent's final TEXT back; ctx.runAgent takes {messages,
+      // provider} and returns the transcript. Adapt between the two — before
+      // this every Workflow agent ran with an empty message list.
+      runAgent: (a) => workflowAgent(a || {}, ctx),
       emit: ctx.emit || (() => {}),
       cwd: ctx.cwd,
+      signal: ctx.signal,
     });
     if (out.status !== 'completed') {
       return { content: `Workflow ${out.status}${out.error ? ' — ' + out.error : ''}\nscriptPath: ${out.scriptPath || '—'}`, isError: out.status === 'error' };
@@ -333,7 +371,7 @@ async function runWorkflowTool(args, ctx) {
       `WORKFLOW COMPLETE — ${out.runId} (${Math.round((out.durationMs || 0) / 1000)}s)`,
       `script: ${out.scriptPath || '—'}`,
       `agents: ${out.agentCalls} · cache hits: ${out.cacheHits}`,
-      out.phases && out.phases.length ? `phases: ${out.phases.join(' → ')}` : null,
+      out.phases && out.phases.length ? `phases: ${out.phases.map((p) => (p && typeof p === 'object' ? (p.name || p.title || JSON.stringify(p)) : String(p))).join(' → ')}` : null,
       out.output != null ? `output: ${typeof out.output === 'string' ? out.output : JSON.stringify(out.output, null, 2)}` : null,
       `result:\n${typeof out.result === 'string' ? out.result : JSON.stringify(out.result, null, 2)}`,
     ].filter(Boolean);

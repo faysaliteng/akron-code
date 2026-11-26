@@ -1402,6 +1402,45 @@ button { font-family: inherit; letter-spacing: inherit; }
 .orch-radio { flex: 0 0 auto; display: flex; align-items: center; gap: 3px; margin: 0 !important; font-size: 10px; color: var(--text-400); white-space: nowrap; }
 .orch-radio input { width: auto; margin: 0; }
 
+/* `.modal input, .modal select { width:100% }` and `.modal label { display:block }`
+   (0,1,1) out-specify the single-class .orch-* rules above, which put a
+   full-width tier <select> over the model name and clipped the 'start' radio.
+   Scope under .orch-pool (0,2,x) so the checklist row lays out as intended. */
+.orch-pool .orch-search { width: auto; flex: 1 1 auto; min-width: 0; margin: 0; padding: 5px 8px; font-size: 11px; }
+.orch-pool .orch-row { min-width: 0; }
+.orch-pool .orch-check { display: flex; align-items: center; gap: 6px; flex: 1 1 0; min-width: 0; margin: 0; }
+.orch-pool .orch-check input[type="checkbox"] { width: auto; margin: 0; padding: 0; flex: 0 0 auto; }
+.orch-pool .orch-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.orch-pool .orch-tier { width: auto; flex: 0 0 auto; margin: 0; padding: 2px 4px; font-size: 10px; }
+.orch-pool .orch-radio { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; margin: 0; }
+.orch-pool .orch-radio input[type="radio"] { width: auto; margin: 0; padding: 0; flex: 0 0 auto; }
+
+/* Staged preset (keyless model picked in the composer) */
+.modal .stage-key { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius-md); padding: 10px 12px 4px; margin-bottom: 12px; }
+.modal .stage-key-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--fs-footnote); color: var(--text-000); margin-bottom: 8px; }
+.modal .stage-key-actions { display: flex; justify-content: flex-end; gap: 6px; margin: 0 0 8px; }
+
+/* Role pools editor — every rule scoped (0,2,x) to beat the .modal input/label defaults */
+.pools-ed { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.pools-ed .pools-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pools-ed .pools-toggle { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text-000); cursor: pointer; }
+.pools-ed .pools-toggle input { width: auto; margin: 0; padding: 0; }
+.pools-ed .pools-help, .pools-ed .pools-note { margin: 0; font-size: 11px; line-height: 1.45; }
+.pools-ed .pools-gw { display: flex; gap: 8px; align-items: flex-end; }
+.pools-ed .pools-field { display: flex; flex-direction: column; gap: 3px; margin: 0; font-size: 11px; color: var(--text-400); min-width: 0; }
+.pools-ed .pools-field input { width: 100%; margin: 0; padding: 5px 8px; font-size: 11px; }
+.pools-ed .pools-grow { flex: 1 1 auto; }
+.pools-ed .pools-key { flex: 0 0 150px; }
+.pools-ed .pools-roles { display: flex; flex-direction: column; gap: 6px; }
+.pools-ed .pools-role { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-000); padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+.pools-ed .pools-role-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pools-ed .pools-role-name { font-size: var(--fs-footnote); font-weight: 600; color: var(--text-100); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pools-ed .pools-role-id { font-family: var(--micro); font-size: 10px; color: var(--text-400); border: 1px solid var(--border); border-radius: 999px; padding: 0 5px; flex: 0 0 auto; }
+.pools-ed .pools-max { flex-direction: row; align-items: center; gap: 5px; margin-left: auto; flex: 0 0 auto; white-space: nowrap; }
+.pools-ed .pools-max input { width: 54px; padding: 2px 6px; font-size: 11px; }
+.pools-ed .pools-models { width: 100%; box-sizing: border-box; resize: vertical; margin: 0; padding: 6px 8px; border: 1px solid var(--border-strong); background: var(--bg-100); color: var(--text-000); border-radius: var(--radius-md); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11px; line-height: 1.5; }
+.pools-ed .pools-models:focus { outline: none; border-color: var(--accent); }
+
 /* Accounts section — the app's real provider subscriptions. Every row here is
    backed by a token this app holds; there is no account backend and no mock
    identity card. */

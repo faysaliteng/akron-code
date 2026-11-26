@@ -8,6 +8,12 @@ const budgetPool = require('./budget');
 const modelCatalog = require('./model-catalog');
 const providertransport = require('./providertransport');
 const mcpSchema = require('./mcp-schema');
+const gate = require('./provider-gate');
+const router = require('./orch-router');
+
+// Sub-agents may delegate one more level (Antigravity helpers); deeper
+// recursion is refused so a confused model cannot fork itself forever.
+const MAX_AGENT_DEPTH = 2;
 
 // Opt-in JSONL tracer for live transport forensics. `AUTOBOT_TRACE` must be the
 // path of the FILE to append to (e.g. /tmp/akron/trace.jsonl); its parent
@@ -261,8 +267,11 @@ Rules:
 
 // Extract tool calls from an assistant text reply (fenced ```tool blocks or
 // <tool_use> tags). Returns the same shape as native tool_calls.
-function parseTextToolCalls(text) {
+function parseTextToolCalls(text, opts = {}) {
   if (!text || typeof text !== 'string') return [];
+  // Reasoning models leave <think> blocks in content; a call quoted inside the
+  // model's own deliberation is not a call.
+  text = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
   const out = [];
   let seq = 0;
   const push = (raw) => {
@@ -287,14 +296,57 @@ function parseTextToolCalls(text) {
     seq++;
     out.push({ id: 'txt_' + seq + '_' + Math.random().toString(36).slice(2, 7), type: 'function', function: { name, arguments: JSON.stringify(args) } });
   };
-  const fence = /```[ \t]*(?:tool|tool_use|json)?[ \t]*\r?\n([\s\S]*?)```/g;
   let m;
-  while ((m = fence.exec(text))) {
-    const body = m[1].trim();
-    if (/"(?:name|tool)"\s*:/.test(body)) push(body);
+  // Native mode only falls back to unambiguous call syntax: a ```json example
+  // in an explanation must never execute.
+  if (!opts.nativeFallback) {
+    const fence = /```[ \t]*(?:tool|tool_use|json)?[ \t]*\r?\n([\s\S]*?)```/g;
+    while ((m = fence.exec(text))) {
+      const body = m[1].trim();
+      if (/"(?:name|tool)"\s*:/.test(body)) push(body);
+    }
   }
   const tag = /<tool_use>([\s\S]*?)<\/tool_use>/g;
   while ((m = tag.exec(text))) push(m[1].trim());
+  // Qwen3-Coder / Llama style: <function=Write><parameter=path>…</parameter>…</function>
+  // or <function=Write>{json}</function>, usually inside <tool_call>…</tool_call>.
+  let rest = text;
+  const fn = /<function=([A-Za-z0-9_.:-]+)>([\s\S]*?)<\/function>/g;
+  while ((m = fn.exec(text))) {
+    const nm = m[1];
+    const body = m[2].trim();
+    let args = null;
+    if (/<parameter=/.test(body)) {
+      args = {};
+      const pr = /<parameter=([A-Za-z0-9_.-]+)>\r?\n?([\s\S]*?)\r?\n?<\/parameter>/g;
+      let q;
+      while ((q = pr.exec(body))) {
+        const v = q[2];
+        const t = v.trim();
+        if (/^(-?\d+(\.\d+)?|true|false|null)$/.test(t) || /^[[{]/.test(t)) {
+          try { args[q[1]] = JSON.parse(t); continue; } catch (_) { /* keep as string */ }
+        }
+        args[q[1]] = v;
+      }
+    } else if (body) {
+      try { args = JSON.parse(body); } catch (_) { args = null; }
+    } else {
+      args = {};
+    }
+    if (args && typeof args === 'object') push(JSON.stringify({ name: nm, arguments: args }));
+    rest = rest.replace(m[0], '');
+  }
+  // Hermes / Qwen: <tool_call>{"name":…,"arguments":…}</tool_call>
+  const tcall = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+  while ((m = tcall.exec(rest))) {
+    const body = m[1].trim();
+    if (body.startsWith('{')) push(body);
+  }
+  // A reply that is nothing but one call object.
+  if (!out.length) {
+    const t = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim();
+    if (t.startsWith('{') && t.endsWith('}') && /"name"\s*:/.test(t) && /"(?:arguments|parameters|input)"\s*:/.test(t)) push(t);
+  }
   return out;
 }
 
@@ -344,6 +396,10 @@ function normalizeProvider(p) {
     // it — dropping it here silently reverted every model to the 128k default.
     oauthProvider: p.oauthProvider || '',
     project: p.project || '',
+    // Pool/gate metadata: per-row concurrency cap and the job it serves.
+    maxConcurrent: Number(p.maxConcurrent) > 0 ? Number(p.maxConcurrent) : undefined,
+    role: p.role || '',
+    gateKey: p.gateKey || '',
   };
 }
 
@@ -361,6 +417,9 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
     temperature: provider.temperature,
     max_tokens: maxTokensOverride != null ? maxTokensOverride : provider.maxTokens,
     stream: true,
+    // Ask for the final usage chunk so the context meter and token budget work
+    // on OpenAI-compatible gateways; dropped below if an endpoint rejects it.
+    stream_options: { include_usage: true },
   };
   if (tools && tools.length) body.tools = tools;
   // Reasoning effort — OpenAI-style. Only send when the user picked a level; keep
@@ -390,12 +449,18 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
     // doomed round trip and then losing the message to an already-read body.
     if (isContextOverflow({ message: rejectedText })) break;
     let changed = false;
-    if (req.reasoning_effort) {
+    if (req.stream_options && /stream_options|include_usage/i.test(rejectedText)) {
+      delete req.stream_options;
+      changed = true;
+    } else if (req.reasoning_effort) {
       delete req.reasoning_effort;
       changed = true;
     } else if (req.max_tokens && /max_tokens|max_completion_tokens|maximum|too large|exceed/i.test(rejectedText)) {
       const next = Math.floor(Number(req.max_tokens) / 2);
       if (next >= 1024) { req.max_tokens = next; changed = true; }
+    } else if (req.stream_options) {
+      delete req.stream_options;
+      changed = true;
     }
     if (!changed) break;
     res = await doFetch(req);
@@ -419,6 +484,12 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
       const secs = Number(ra);
       if (Number.isFinite(secs) && secs > 0) err.retryAfterMs = Math.min(secs * 1000, 60000);
     }
+    // Routers (FreeLLMAPI) put the reset in the body: retryAtMs / "reset ~86s".
+    if (!err.retryAfterMs) {
+      const hint = gate.retryHintMs(text);
+      if (hint) err.retryAfterMs = hint;
+    }
+    err.endpoint = url;
     throw err;
   }
   const ct = res.headers.get('content-type') || '';
@@ -430,8 +501,14 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
     const msg = data.choices && data.choices[0] && data.choices[0].message;
     if (msg && typeof msg.reasoning_content === 'string' && msg.reasoning_content) onDelta(msg.reasoning_content, true);
     if (msg && typeof msg.content === 'string' && msg.content) onDelta(msg.content);
+    if (data && data.error && !msg) {
+      const err = new Error(`LLM ${Number(data.error.code) || 502}: ${JSON.stringify(data.error).slice(0, 400)}`);
+      err.status = Number(data.error.code) || 502;
+      throw err;
+    }
     return Object.assign({ content: '', tool_calls: [] }, msg, {
       finish_reason: data.choices && data.choices[0] && data.choices[0].finish_reason,
+      usage: data.usage || (msg && msg.usage) || undefined,
     });
   }
 
@@ -457,6 +534,11 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   while (true) {
     const { done, value } = await readWithStallGuard()
       .catch((e) => {
+        // A user Stop is never a partial success.
+        if (signal && signal.aborted) {
+          try { reader.cancel(); } catch (_) {}
+          throw e;
+        }
         // Keep whatever the model already emitted; only a totally silent stall
         // is worth retrying from scratch.
         if (message.content || message.tool_calls.length) {
@@ -466,8 +548,13 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
         try { reader.cancel(); } catch (_) {}
         throw e;
       });
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
+    if (done) {
+      // A last event without a trailing newline is still an event.
+      buf += decoder.decode();
+      if (buf.trim()) buf += '\n';
+      else break;
+    }
+    if (!done) buf += decoder.decode(value, { stream: true });
     let nl;
     while ((nl = buf.indexOf('\n')) !== -1) {
       const line = buf.slice(0, nl).trim();
@@ -477,6 +564,21 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
       if (payload === '[DONE]') continue;
       let json;
       try { json = JSON.parse(payload); } catch { continue; }
+      // Gateways report upstream failures mid-stream as an error event; that
+      // is a failed request (fail over / back off), not an empty success.
+      if (json.error && !(json.choices && json.choices.length)) {
+        const code = Number(json.error.code || json.error.status) || 502;
+        const err = new Error(`LLM ${code}: ${JSON.stringify(json.error).slice(0, 400)}`);
+        err.status = code >= 400 && code < 600 ? code : 502;
+        const hint = gate.retryHintMs(JSON.stringify(json.error));
+        if (hint) err.retryAfterMs = hint;
+        if (!message.content && !message.tool_calls.length) {
+          try { reader.cancel(); } catch (_) {}
+          throw err;
+        }
+        message.stalled = true;
+        continue;
+      }
       if (json.usage) message.usage = json.usage;
       const choice = json.choices && json.choices[0];
       if (!choice) continue;
@@ -487,19 +589,50 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
         onDelta(delta.content);
       }
       if (delta.reasoning_content) onDelta(delta.reasoning_content, true); // e.g. DeepSeek-style
+      else if (typeof delta.reasoning === 'string' && delta.reasoning) onDelta(delta.reasoning, true); // OpenRouter / Groq gpt-oss
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
-          const idx = tc.index != null ? tc.index : toolAcc.size;
+          // Index-less fragments: a fragment with an id we know continues that
+          // call; a fragment naming a function starts a new one; a bare
+          // argument fragment continues the most recent call.
+          let idx = tc.index;
+          const fnPart = tc.function || (tc.name != null || tc.arguments != null ? tc : null);
+          if (idx == null) {
+            if (tc.id) {
+              const hit = [...toolAcc].find(([, x]) => x.id === tc.id);
+              idx = hit ? hit[0] : 'n' + toolAcc.size;
+            } else if (fnPart && fnPart.name) {
+              // A provider that resends the name on every chunk: same name and
+              // the previous call's JSON is still open → continuation.
+              const keys = [...toolAcc.keys()];
+              const prev = keys.length ? toolAcc.get(keys[keys.length - 1]) : null;
+              let open = false;
+              if (prev && prev.function.name === fnPart.name && !prev.id) {
+                try { JSON.parse(prev.function.arguments || ''); } catch (_) { open = true; }
+              }
+              idx = open ? keys[keys.length - 1] : 'n' + toolAcc.size;
+            } else {
+              const keys = [...toolAcc.keys()];
+              idx = keys.length ? keys[keys.length - 1] : 'n0';
+            }
+          }
           let acc = toolAcc.get(idx);
+          // Same index, different id: a provider reusing index 0 for parallel
+          // calls (Gemini-compat). Keep them separate instead of gluing JSON.
+          if (acc && tc.id && acc.id && tc.id !== acc.id) {
+            idx = 'x' + toolAcc.size;
+            acc = null;
+          }
           if (!acc) {
             acc = { id: tc.id || '', type: 'function', function: { name: '', arguments: '' } };
             toolAcc.set(idx, acc);
             message.tool_calls.push(acc);
           }
           if (tc.id) acc.id = tc.id;
-          if (tc.function) {
-            if (tc.function.name) acc.function.name += tc.function.name;
-            const a = tc.function.arguments;
+          if (fnPart) {
+            // Some providers resend the full name on every chunk.
+            if (fnPart.name && acc.function.name !== fnPart.name) acc.function.name = acc.function.name && !fnPart.name.startsWith(acc.function.name) ? acc.function.name + fnPart.name : fnPart.name;
+            const a = fnPart.arguments;
             if (a != null) {
               // Standard OpenAI streaming sends `arguments` as a JSON *string*
               // fragment that must be concatenated. Some providers (and some
@@ -518,7 +651,12 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
         }
       }
     }
+    if (done) break;
   }
+  // Every call needs an id or its result cannot be paired (orphan → 400).
+  message.tool_calls.forEach((c, i) => {
+    if (!c.id) c.id = 'call_' + Date.now().toString(36) + '_' + i + Math.random().toString(36).slice(2, 6);
+  });
   return message;
 }
 
@@ -698,32 +836,44 @@ async function chatWithFailover(opts) {
   const n = list.length;
   // Advertised tools can be shaved mid-run when a provider says the request is
   // too big (Groq's 8000 TPM free tier, an endpoint capping at 128 tools).
-  // Retrying the identical payload only burns allowance, so on the first such
-  // rejection we halve the surface, remember the cap for the rest of the
-  // session, and retry the SAME provider immediately — the turn keeps going.
   const shaved = new Set();
   let reqMax = maxTokens;
-  // Rate limits (HTTP 429 / "too many requests") are TRANSIENT. Previously a
-  // single-provider setup threw immediately and the whole run died with a red
-  // banner mid-task. Now: try every provider once per round, then back off and
-  // retry the whole set — so a burst of tool-call round-trips survives 429s.
+  // Failover walks DOWN the list from the home row. Cooldowns, dead rows and
+  // per-model concurrency live in provider-gate, which every runAgent in the
+  // process shares: a row that just answered 429 to one swarm worker is skipped
+  // by all of them until its reset, and a saturated row (maxConcurrent) yields
+  // to a free row further down, which is what spreads parallel workers.
   const MAX_ROUNDS = 5;
-  const BACKOFF = [2000, 5000, 10000, 20000]; // wait before round 2..5
+  const BACKOFF = [2000, 5000, 10000, 20000]; // minimum wait before round 2..5
   let lastErr = null;
-  let waits = 0; // so repeated back-offs read as a list, not one glued run-on
+  let waits = 0;
+  const homeOf = () => (typeof opts.getHome === 'function' ? opts.getHome() : opts.getIndex());
+  const label = (p) => (p && (p.model || p.baseURL)) || 'model';
   for (let round = 0; round < MAX_ROUNDS; round++) {
     if (signal && signal.aborted) throw new Error('aborted');
-    const start = opts.getIndex();
+    const seq = n > 1 ? gate.order(list, homeOf()) : [0];
+    let candidates = seq.filter((i) => gate.usable(list[i]));
+    // Nothing usable right now: try the row whose cooldown ends first (a
+    // single-row setup always lands here after a 429, exactly like before).
+    if (!candidates.length) {
+      const alive = seq.filter((i) => !gate.isDead(list[i]));
+      candidates = alive.length ? [alive[0]] : (n === 1 ? [0] : []);
+    }
+    if (!candidates.length) break; // every row is dead for this session
     let rateLimited = false;
-    for (let a = 0; a < n; a++) {
-      const i = (start + a) % n;
+    for (let a = 0; a < candidates.length; a++) {
+      const i = candidates[a];
       const p = list[i];
+      const nextRow = () => {
+        for (let b = a + 1; b < candidates.length; b++) return list[candidates[b]];
+        return null;
+      };
+      let release = gate.tryAcquire(p);
+      if (!release) release = await gate.acquire(p, signal);
+      let retrySame = false;
       try {
         // A model can advertise a window this account cannot actually use
-        // (Anthropic serves Sonnet 4.x at 1M only with an entitled beta). The
-        // transport demotes the catalog when the provider says no; tell the user
-        // in prose so the context ring changing from 1M to 200K is explained
-        // instead of looking like a bug.
+        // (Anthropic serves Sonnet 4.x at 1M only with an entitled beta).
         const winPid = String(p.oauthProvider || '').split(':')[0] || p.transport || '';
         const winBefore = modelCatalog.contextWindowFor(p.model, winPid, p.contextWindow);
         const out = await chatCompletion(p, messages, tools, onDelta, signal, reqMax);
@@ -731,19 +881,18 @@ async function chatWithFailover(opts) {
         if (winAfter && winBefore && winAfter < winBefore) {
           emit({ type: 'notice', text: `${p.model} advertises ${modelCatalog.fmtWindow(winBefore)} but this account is not entitled to it — this session budgets ${modelCatalog.fmtWindow(winAfter)} and compacts to fit.` });
         }
+        gate.ok(p);
+        if (n > 1 && typeof opts.setIndex === 'function') opts.setIndex(i);
+        if (out && typeof out === 'object') out.servedBy = p.model;
         return out;
       } catch (e) {
         if (signal && signal.aborted) throw e;
         // The provider refused the request SHAPE (too many tools, request over a
         // per-minute token limit) — not the task. Halve the advertised surface
-        // once or twice, remember it for the session, and retry the same
-        // provider so the run continues instead of dying on a limit we can
-        // satisfy by asking for less.
-        if (isToolCapError(e) && shaved.size < 2) {
+        // and retry the same provider.
+        if (isToolCapError(e) && shaved.size < 2 && tools && tools.length) {
           const key = providerCapKey(p);
           const msg = String((e && (e.message || e.reason)) || '');
-          // A per-minute token limit also counts the reserved output budget, so
-          // shrink both the tool surface and the reserve when that is the wall.
           const tpmLike = /tokens per minute|\bTPM\b/i.test(msg);
           const before = tools.length;
           const nextCap = Math.max(CORE_TOOLS.size + 2, Math.floor(tools.length / 2));
@@ -754,50 +903,69 @@ async function chatWithFailover(opts) {
             tools = trimmed.tools;
             if (tpmLike && reqMax != null) reqMax = Math.max(1024, Math.floor(reqMax / 2));
             emit({ type: 'notice', text: `${p.model || 'The provider'} accepts fewer tools per request than we advertise — continuing with the ${tools.length} most useful ones (${trimmed.dropped.length} deferred; still callable via ToolSearch).` });
-            a--; // retry this provider with the smaller surface
-            continue;
+            retrySame = true;
           }
         }
-        // An oversized prompt is not transient: re-sending the identical history
-        // five times only stalls for ~37 s and then blames the provider. Hand it
-        // back to the agent loop, which compacts or chunks the input.
-        if (isContextOverflow(e)) throw e;
-        // Out of credit is per account, not per minute: no amount of waiting
-        // fixes it. Try the next account if there is one, otherwise hand it back
-        // so the agent loop can degrade to the text tool protocol.
-        if (isCreditExhausted(e)) {
-          if (n > 1 && a < n - 1) {
-            const next = (i + 1) % n;
-            opts.setIndex(next);
-            emit({ type: 'orchestrator', from: p.model || p.baseURL, to: list[next].model || list[next].baseURL, reason: humanizeLLMError(e).slice(0, 200) });
-            continue;
+        if (!retrySame) {
+          // An oversized prompt is not transient: hand it back to the agent
+          // loop, which compacts or chunks the input.
+          if (isContextOverflow(e)) throw e;
+          lastErr = e;
+          const nx = nextRow();
+          // Out of credit is per account, not per minute.
+          if (isCreditExhausted(e)) {
+            if (nx) {
+              gate.markDead(p, 'out of credit', 30 * 60000);
+              emit({ type: 'orchestrator', from: label(p), to: label(nx), reason: humanizeLLMError(e).slice(0, 200) });
+              continue;
+            }
+            throw e;
+          }
+          if (isRateLimitError(e)) {
+            // A spent subscription allowance carries its own reset time.
+            if (e && e.retryHopeless) {
+              if (!nx) throw e;
+              gate.markDead(p, 'allowance spent', 60 * 60000);
+              continue;
+            }
+            gate.rateLimited(p, e.retryAfterMs);
+            rateLimited = true;
+            if (nx) {
+              emit({ type: 'orchestrator', from: label(p), to: label(nx), reason: humanizeLLMError(e).slice(0, 200) });
+              continue;
+            }
+            break; // last candidate this round — fall through to backoff
+          }
+          // The gateway disowned the model or the credential (404 / 401 / 403,
+          // or a 400 naming an unknown model). With healthy rows below, that
+          // costs this row, not the turn.
+          const st = Number(e && e.status) || Number((/^\s*LLM\s+(\d{3})\b/.exec(String(e && e.message)) || [])[1] || 0);
+          const modelMissing = st === 404 || ((st === 400 || st === 422) && /model[^.]{0,60}(not (found|exist|supported|available|in the catalog)|unknown|invalid|does not exist)|unknown model|no such model/i.test(String(e && e.message)));
+          if ((modelMissing || st === 401 || st === 403) && n > 1) {
+            gate.markDead(p, humanizeLLMError(e).slice(0, 160), modelMissing ? 30 * 60000 : 10 * 60000);
+            if (nx) {
+              emit({ type: 'orchestrator', from: label(p), to: label(nx), reason: humanizeLLMError(e).slice(0, 200) });
+              continue;
+            }
+            // Every other row is cooling: try the soonest one next round.
+            if (list.some((q) => !gate.isDead(q))) { rateLimited = true; break; }
           }
           throw e;
         }
-        if (isRateLimitError(e)) {
-          // A spent subscription allowance carries its own reset time, so there
-          // is nothing to wait for: surface it now, in prose, with the reset.
-          if (e && e.retryHopeless) throw e;
-          lastErr = e;
-          rateLimited = true;
-          if (n > 1 && a < n - 1) {
-            const next = (i + 1) % n;
-            opts.setIndex(next);
-            emit({ type: 'orchestrator', from: p.model || p.baseURL, to: list[next].model || list[next].baseURL, reason: humanizeLLMError(e).slice(0, 200) });
-            continue;
-          }
-          break; // last provider this round — fall through to backoff
-        }
-        throw e;
+      } finally {
+        release();
       }
+      if (retrySame) a--;
     }
     if (!rateLimited) throw (lastErr || new Error('All providers failed.'));
     if (round < MAX_ROUNDS - 1) {
-      // HELIO_BACKOFF_MS pins the delay (tests + impatient operators) without
-      // changing the production ladder.
+      // HELIO_BACKOFF_MS pins the delay (tests + impatient operators).
       const envDelay = Number(process.env.HELIO_BACKOFF_MS);
-      const base = Number.isFinite(envDelay) ? envDelay : (BACKOFF[round] != null ? BACKOFF[round] : 20000);
-      const wait = Math.min(Math.max(base, (lastErr && lastErr.retryAfterMs) || 0), 45000);
+      const base = BACKOFF[round] != null ? BACKOFF[round] : 20000;
+      const soon = gate.soonestReset(list);
+      const wait = Number.isFinite(envDelay) && process.env.HELIO_BACKOFF_MS !== ''
+        ? envDelay
+        : Math.min(Math.max(base, soon, (lastErr && lastErr.retryAfterMs) || 0), 45000);
       const code = Number((lastErr && lastErr.status) || (/^\s*LLM\s+(\d{3})\b/.exec(String((lastErr && lastErr.message) || '')) || [])[1] || 0);
       const why = code && code !== 429 ? `provider error ${code}` : 'rate limited';
       const line = `${why} — waiting ${Math.round(wait / 1000)}s before retrying`;
@@ -1192,7 +1360,9 @@ async function runAgent(opts) {
     // Preserve native-transport fields too: an orchestrator pool may mix
     // gateways with subscription accounts, and dropping `transport`/tokens here
     // would silently send a subscription model down the OpenAI-compatible path.
-    providerList = orch.providers.map((p) => normalizeProvider({
+    const rows = orch.providers.filter((p) => p && p.enabled !== false);
+    providerList = (rows.length ? rows : orch.providers).map((p) => normalizeProvider({
+      maxConcurrent: p.maxConcurrent, role: p.role, gateKey: p.gateKey, supportsTools: p.supportsTools,
       baseURL: p.baseURL, apiKey: p.apiKey, model: p.model,
       temperature: p.temperature, maxTokens: p.maxTokens, reasoningLevel: p.reasoningLevel,
       transport: p.transport, oauth: p.oauth, accessToken: p.accessToken,
@@ -1205,9 +1375,48 @@ async function runAgent(opts) {
     }));
     activeIndex = Math.max(0, Math.min(Number(orch.activeIndex) || 0, providerList.length - 1));
   }
+  // Role pools (FreeLLMAPI layout). When the session provider is the pool
+  // gateway, the failover chain for this turn comes from the job's pool: the
+  // selected model's own pool (or Coder), Vision when the turn carries images,
+  // or the role a caller asked for. A role-scoped orchestrator (sub-agents,
+  // swarm workers) already IS a pool and is used as-is.
+  let poolMode = false;
+  if (orch && !orch.role && router.poolsActive(orch, opts.provider)) {
+    const role = opts.role || (router.hasImages(opts.messages) ? 'vision' : null);
+    const chain = router.chainFor(orch, opts.provider, role);
+    if (chain.length) {
+      providerList = chain.map((p) => normalizeProvider(p));
+      activeIndex = 0;
+      poolMode = true;
+      if (role === 'vision' && opts.turnStart) emit({ type: 'notice', text: 'This message has images, so it runs on the Vision pool (' + chain.map((p) => p.model).join(' → ') + ').' });
+    }
+  } else if (orch && orch.role && orch.pools) {
+    poolMode = true;
+  }
+  // Long context: when the history is bigger than the head row's window and a
+  // Long-context pool exists, move the turn there instead of amputating it.
+  if (poolMode && orch && router.poolsConfig(orch)) {
+    try {
+      const head = providerList[activeIndex];
+      const pidH = String(head.oauthProvider || '').split(':')[0] || head.transport || '';
+      const winH = modelCatalog.contextWindowFor(head.model, pidH, head.contextWindow);
+      const chars = (opts.messages || []).reduce((n, m) => n + (typeof (m && m.content) === 'string' ? m.content.length : JSON.stringify((m && m.content) || '').length), 0);
+      const cap = modelCatalog.budgetFor(winH).maxChars;
+      if (cap && chars > cap * 0.85 && head.role !== 'longctx') {
+        const lc = router.resolve(orch, 'longctx', head).filter((r) => r.role === 'longctx');
+        if (lc.length) {
+          providerList = lc.map((p) => normalizeProvider(p));
+          activeIndex = 0;
+          emit({ type: 'notice', text: `This conversation is larger than ${head.model}'s context window, so it moved to the Long-context pool (${lc.map((p) => p.model).join(' → ')}).` });
+        }
+      }
+    } catch (_) { /* routing hint only */ }
+  }
+  const homeIndex = activeIndex;
   const getIndex = () => activeIndex % providerList.length;
   const setIndex = (i) => { activeIndex = i % providerList.length; };
   const provider = providerList[getIndex()];
+  const depth = Number(opts.depth) || 0;
 
   // ── Oversized single input → sequential chunks ──────────────────────────
   // sanitizeHistory only drops *earlier* turns, so one pasted document larger
@@ -1280,6 +1489,8 @@ async function runAgent(opts) {
     // Swarm is an explicit user opt-in. When it is off, the tool is never
     // advertised to the model (multi-agent Task/Agent remains available).
     if (name === 'Swarm' && opts.swarm !== true) return false;
+    // Delegation depth guard: a sub-agent at the limit does the work itself.
+    if ((name === 'Task' || name === 'Agent' || name === 'Swarm') && depth >= MAX_AGENT_DEPTH) return false;
     if (!toolAllow) return true;
     if (toolAllow.has(name) || toolAllow.has('*')) return true;
     if (name.startsWith('mcp__') && (toolAllow.has('mcp') || toolAllow.has('mcp__*'))) return true;
@@ -1594,6 +1805,8 @@ async function runAgent(opts) {
   // so a prose-only finish gets nudged back onto the contract.
   let planEnded = false;
   let planNudges = 0;
+  let hookNudges = 0;
+  let subSpawnCount = 0;
 
   // Snapshot a file before a mutating tool touches it, so /rewind can restore
   // the working tree to any earlier turn. Best-effort: never blocks the tool.
@@ -1792,6 +2005,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       return chatWithFailover({
         list: providerList,
         getIndex,
+        getHome: () => homeIndex,
         setIndex,
         messages,
         tools: withTools ? tools : undefined,
@@ -1946,6 +2160,9 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       }
     }
 
+    // Stop pressed while the reply streamed: never run the calls it carried.
+    if (opts.signal && opts.signal.aborted) throw new Error('aborted');
+
     // Reasoning models (Kimi K3.1 Pro, DeepSeek V4.1 Flash) burn the token budget
     // on chain-of-thought BEFORE emitting the code/tool calls. When the stream is
     // cut at the token limit (finish_reason "length") the website/code silently
@@ -2015,8 +2232,10 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
 
     let calls = message.tool_calls && message.tool_calls.length ? message.tool_calls : [];
     let textCalls = false;
-    if (!calls.length && textToolMode) {
-      const parsed = parseTextToolCalls(message.content || '').filter((c) => knownToolNames.has(c.function.name));
+    if (!calls.length && (textToolMode || message.content)) {
+      // Free models often answer with <tool_call>/<function=…> text even when
+      // native tools are on; run those instead of ending the turn on raw JSON.
+      const parsed = parseTextToolCalls(message.content || '', { nativeFallback: !textToolMode }).filter((c) => knownToolNames.has(c.function.name));
       if (parsed.length) { calls = parsed; textCalls = true; }
     }
 
@@ -2050,8 +2269,11 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             messages.push({ role: 'user', content: `[hook] ${v.reason || 'Continue — the Stop hook says the work is not finished.'}` });
             continue;
           }
-          if (v.additionalContext) messages.push({ role: 'user', content: `[hook] ${v.additionalContext}` });
-          if (v.additionalContext) continue;
+          if (v.additionalContext && hookNudges < 5) {
+            hookNudges++;
+            messages.push({ role: 'user', content: `[hook] ${v.additionalContext}` });
+            continue;
+          }
         }
       }
       emit({ type: 'done', messages, usage: { ...usageTotals } });
@@ -2073,63 +2295,116 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     // Model roster for tier routing: the orchestrator pool + the active provider.
     const agentRoster = swarm.buildRoster({ orchestrator: orch, provider: providerList[getIndex()] });
     const runSubagent = async (args) => {
-      const name = args.description || args.name || 'sub-agent';
+      args = args || {};
+      if (depth >= MAX_AGENT_DEPTH) {
+        return 'Sub-agents at this depth cannot spawn further sub-agents. Do this part of the work yourself with the tools you have.';
+      }
+      // Unique handle: two agents with the same description must not share a
+      // controller (TaskStop would stop the wrong one, ListAgents would hide one).
+      const baseName = String(args.description || args.name || 'sub-agent').slice(0, 80);
+      let name = baseName;
+      for (let k = 2; subagentControllers.has(name); k++) name = `${baseName} #${k}`;
       const ac = new AbortController();
       const onAbort = () => ac.abort();
-      if (opts.signal) {
-        if (opts.signal.aborted) onAbort();
-        else opts.signal.addEventListener('abort', onAbort, { once: true });
+      const parents = [opts.signal, args.signal].filter((x) => x && typeof x.addEventListener === 'function');
+      for (const sig of parents) {
+        if (sig.aborted) onAbort();
+        else sig.addEventListener('abort', onAbort, { once: true });
       }
       // A delegated task may pin a sub-agent DEFINITION (`subagent_type`), which
-      // carries its own system prompt, tool allowlist, and model — Example's
+      // carries its own system prompt, tool allowlist, and model — Claude Code's
       // `.claude/agents/*.md` contract.
       let def = null;
       if (args.subagent_type || args.agent_type || args.type) {
         try {
           const agentdefs = require('./agentdefs');
           def = agentdefs.resolve(args.subagent_type || args.agent_type || args.type, currentCwd);
-          if (!def) {
-            // Unknown type: fall back to general-purpose but tell the caller.
-            def = agentdefs.BUILTIN['general-purpose'];
-          }
+          if (!def) def = agentdefs.BUILTIN['general-purpose'];
         } catch (_) {}
       }
-      // A delegated task may name the model it needs, or just its complexity
-      // tier. Example lets a subagent definition pin `model: sonnet|opus|haiku`;
-      // here the same idea maps onto the configured provider pool so cheap work
-      // runs on a cheap model and hard work lands on the frontier model.
+      // Model selection. `haiku|sonnet|opus|inherit` are ALIASES (agent
+      // definitions use them) and are never sent as wire ids — they map to a
+      // role/tier. A real model id pins that model first, with the rest of the
+      // pool behind it for failover. Nothing pinned → inherit the parent chain.
+      const rawModel = args.model || args.model_id || null;
       const defModel = def && def.model ? def.model : null;
-      const wantModel = args.model || args.model_id || defModel || null;
-      const wantTier = args.tier || args.complexity || null;
-      const pinned = Boolean(wantModel || wantTier);
-      let subProvider = providerList[getIndex()];
+      const aliasR = rawModel && router.isModelAlias(rawModel) ? router.aliasRole(rawModel)
+        : (!rawModel && defModel && router.isModelAlias(defModel) ? router.aliasRole(defModel) : undefined);
+      const wantModel = rawModel && !router.isModelAlias(rawModel) ? String(rawModel)
+        : (!rawModel && defModel && !router.isModelAlias(defModel) ? String(defModel) : null);
+      const wantRole = router.normalizeRole(args.role)
+        || (def && router.normalizeRole(def.role))
+        || aliasR
+        || ((args.tier || args.complexity) ? router.tierToRole(args.tier || args.complexity) : null);
+      const parentProvider = providerList[getIndex()];
+      let subProvider = parentProvider;
+      // Unpinned: inherit the parent's whole failover chain (pool or list).
+      let subOrch = poolMode && orch && orch.role ? orch
+        : (poolMode ? { enabled: true, providers: providerList, activeIndex: getIndex(), pools: orch && orch.pools, role: 'inherit' } : opts.orchestrator);
       let tier = null;
-      if (pinned) {
-        const base = swarm.pickProvider(agentRoster, wantTier || 'heavy') || subProvider;
-        subProvider = wantModel ? { ...base, model: String(wantModel) } : { ...base };
-        tier = base.tier || swarm.normalizeTier(wantTier, 'heavy');
+      let role = null;
+      const poolsOn = poolMode && orch && router.poolsConfig(orch);
+      if (poolsOn && (wantRole || wantModel || !(orch && orch.role))) {
+        role = wantRole || (orch && orch.role && orch.role !== 'inherit' ? orch.role : 'coder');
+        const scoped = router.orchestratorFor(orch, role, parentProvider, { index: subSpawnCount, preferModel: wantModel });
+        if (scoped) {
+          subOrch = scoped;
+          subProvider = scoped.providers[0];
+          tier = router.ROLE_TIER[role] || 'heavy';
+          if (wantModel && !scoped.providers.some((r) => r.model === wantModel)) {
+            // A gateway model outside the pool: the gateway serves it, so try it
+            // first and keep the pool behind it.
+            subProvider = { ...scoped.providers[0], model: wantModel, id: 'pinned:' + wantModel, maxConcurrent: undefined };
+            subOrch = { ...scoped, providers: [subProvider].concat(scoped.providers) };
+          }
+        }
+      } else if (!poolsOn && (wantModel || wantRole)) {
+        const wantTier = (args.tier || args.complexity) ? swarm.normalizeTier(args.tier || args.complexity)
+          : (wantRole ? (router.ROLE_TIER[wantRole] || 'heavy') : 'heavy');
+        const byModel = wantModel ? agentRoster.find((r) => r.model === wantModel) : null;
+        const base = byModel || swarm.pickProvider(agentRoster, wantTier) || parentProvider;
+        subProvider = byModel ? { ...byModel } : (wantModel ? { ...base, model: wantModel } : { ...base });
+        tier = base.tier || wantTier;
+        // Keep failover: chosen row first, same-tier rows next, the rest last.
+        const rest = agentRoster.filter((r) => r !== base && r !== byModel);
+        const chain = [subProvider].concat(rest.filter((r) => r.tier === tier), rest.filter((r) => r.tier !== tier));
+        subOrch = chain.length > 1 ? { enabled: true, providers: chain, activeIndex: 0, role: 'pinned' } : null;
       }
-      // Tool allowlist from the definition, or read-only enforcement for the
-      // built-in Explore/Plan types even when they were not explicitly resolved.
+      subSpawnCount++;
+      // Tool allowlist from the definition (read-only Explore/Plan types).
       let toolAllow = null;
       if (def) {
         try { toolAllow = require('./agentdefs').allowedToolSet(def); } catch (_) { toolAllow = null; }
       }
       const defPrompt = def && def.body ? require('./agentdefs').promptFor(def) : null;
-      subagentControllers.set(name, { controller: ac, status: 'running', started: Date.now(), model: subProvider && subProvider.model, tier, subagentType: def && def.name });
-      emit({ type: 'subagent', id: name, name, status: 'started', role: 'worker', model: subProvider ? subProvider.model : null, tier, subagentType: def && def.name });
+      // Per-role parallelism cap (pool `maxConcurrent`): the N+1th coder waits
+      // for a slot instead of piling onto rate-limited free tiers.
+      const roleCap = role && orch ? router.roleLimit(orch, role) : 0;
+      let releaseRole = null;
+      subagentControllers.set(name, { controller: ac, status: roleCap ? 'queued' : 'running', started: Date.now(), model: subProvider && subProvider.model, tier, role, subagentType: def && def.name });
+      emit({ type: 'subagent', id: name, name, status: 'started', role: 'worker', jobRole: role, model: subProvider ? subProvider.model : null, tier, subagentType: def && def.name });
+      let failed = null;
       try {
+        if (roleCap) {
+          releaseRole = await gate.acquire({ gateKey: 'role|' + role, maxConcurrent: roleCap }, ac.signal);
+          const rec = subagentControllers.get(name);
+          if (rec) rec.status = 'running';
+        }
         const userPrompt = args.prompt || args.description || '';
         const subMsgs = defPrompt
           ? [{ role: 'system', content: defPrompt }, { role: 'user', content: userPrompt }]
           : [{ role: 'user', content: userPrompt }];
         const subResult = await runAgent({
           provider: subProvider,
-          // A pinned provider must not be replaced by the parent's failover list.
-          orchestrator: pinned ? null : opts.orchestrator,
+          orchestrator: subOrch,
           messages: subMsgs,
           cwd: args.cwd || currentCwd,
-          emit: (evt) => emit({ ...evt, subagent: name }),
+          // The child's own `done` must not end the parent's stream in the UI;
+          // the parent reports the child's status itself.
+          emit: (evt) => {
+            if (!evt || evt.type === 'done' || evt.type === 'complete') return;
+            emit({ ...evt, subagent: name });
+          },
           maxSteps: opts.subagentMaxSteps || 0,
           useMemory: opts.useMemory,
           callMcpTool: opts.callMcpTool,
@@ -2142,28 +2417,40 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           extraTools: opts.extraTools,
           signal: ac.signal,
           toolAllow,
-          // A delegated agent inherits plan mode: Example's Explore phase runs
-          // read-only sub-agents, so they must not be able to write source.
+          depth: depth + 1,
+          // A delegated agent inherits plan mode: Explore runs read-only.
           permissionMode,
           convId: opts.convId,
           turnId: opts.turnId,
         });
         const last = [...subResult].reverse().find((m) => m.role === 'assistant' && m.content);
         return last ? last.content : '(sub-agent completed)';
+      } catch (e) {
+        if (ac.signal.aborted || (opts.signal && opts.signal.aborted)) {
+          failed = 'stopped';
+          if (opts.signal && opts.signal.aborted) throw e;
+          return `Sub-agent "${name}" was stopped before it finished.`;
+        }
+        failed = 'error';
+        // A child's provider failure is a tool result for the parent, not the
+        // end of the parent's turn.
+        return `Error: sub-agent "${name}" failed — ${humanizeLLMError(e)}. Continue without it or retry with a narrower task.`;
       } finally {
+        if (releaseRole) releaseRole();
         subagentControllers.delete(name);
-        emit({ type: 'subagent', id: name, name, status: 'done', role: 'worker', model: subProvider ? subProvider.model : null, tier });
-        if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
+        emit({ type: 'subagent', id: name, name, status: failed || 'done', role: 'worker', jobRole: role, model: subProvider ? subProvider.model : null, tier });
+        for (const sig of parents) sig.removeEventListener('abort', onAbort);
       }
     };
 
     const listAgents = () => {
       const entries = [...subagentControllers.entries()];
       if (!entries.length) return '(no agents running)';
-      return 'RUNNING AGENTS:\n' + entries.map(([n, s]) => `- ${n} [${s.status}]${s.model ? ' · ' + s.model : ''}${s.tier ? ' · ' + s.tier : ''} (${Math.round((Date.now() - s.started) / 1000)}s)`).join('\n');
+      return 'RUNNING AGENTS:\n' + entries.map(([n, s]) => `- ${n} [${s.status}]${s.model ? ' · ' + s.model : ''}${s.role ? ' · ' + s.role : (s.tier ? ' · ' + s.tier : '')} (${Math.round((Date.now() - s.started) / 1000)}s)`).join('\n');
     };
     const stopTask = (name) => {
-      const match = [...subagentControllers.entries()].find(([n]) => n === name || n.includes(name));
+      const all = [...subagentControllers.entries()];
+      const match = all.find(([n]) => n === name) || all.find(([n]) => n.toLowerCase() === String(name || '').toLowerCase()) || (name ? all.find(([n]) => n.includes(name)) : null);
       if (!match) return `No running agent matches "${name}".`;
       match[1].controller.abort();
       match[1].status = 'stopped';
@@ -2220,6 +2507,18 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       cwd: currentCwd,
       setCwd: (d) => { currentCwd = d; },
       shell: opts.shell,
+      // Stop must reach every nested runner (Swarm workers, cowork, Workflow
+      // agents, Bash) — before this the ctx carried no signal at all.
+      signal: opts.signal,
+      depth,
+      // settings.json `permissions.deny` applies to EVERY tool (e.g.
+      // `deny: Read(./.env)`), not only to the mutating ones that prompt.
+      checkDeny: (toolName, toolArgs) => {
+        try {
+          const permissions = require('./permissions');
+          return permissions.denyMatch(permissions.loadPermissions(currentCwd), toolName, toolArgs || {}, { cwd: currentCwd });
+        } catch (_) { return null; }
+      },
       runSubagent,
       // Agent runner + provider for cowork orchestration / bot bridges.
       runAgent: (subOpts) => runAgent({
@@ -2238,10 +2537,14 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         approveTool: opts.approveTool,
         extraTools: opts.extraTools,
         permissionMode,
+        signal: opts.signal,
+        depth: depth + 1,
         ...subOpts,
       }),
       get provider() { return providerList[getIndex()]; },
       orchestrator: opts.orchestrator || null,
+      // The un-scoped pool config (role pools) for Swarm/Workflow routing.
+      poolOrchestrator: poolMode && orch ? orch : null,
       emit,
       agentRoster,
       askUser: opts.askUser,
@@ -2307,10 +2610,36 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     // and shows all of the rows at once. Doing them one-by-one made a 4-file
     // read take 4 round trips of wall time and stacked rows progressively.
     const PARALLEL_SAFE = new Set(['Read', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles', 'WebFetch', 'WebSearch', 'TaskList', 'TaskGet', 'CronList', 'ListMcpResources']);
-    if (!textCalls && calls.length > 1 && calls.every((tc) => PARALLEL_SAFE.has(tc.function.name))) {
+    // Claude Code runs several Task/Agent blocks from one message concurrently;
+    // they used to run one after another here. Bounded so a model that emits
+    // ten delegations cannot open ten streams on a free tier at once.
+    const PARALLEL_AGENT = new Set(['Task', 'Agent']);
+    if (!textCalls && calls.length > 1 && calls.every((tc) => PARALLEL_SAFE.has(tc.function.name) || PARALLEL_AGENT.has(tc.function.name))) {
       const batch = calls.map((tc) => ({ tc, name: tc.function.name, args: parseArgs(tc.function.arguments) }));
       batch.forEach((p) => emit({ type: 'tool', id: p.tc.id, name: p.name, args: p.args }));
+      const agentCap = Math.max(1, Number(process.env.AKRON_MAX_PARALLEL_AGENTS) || 4);
+      let agentsRunning = 0;
+      const agentWaiters = [];
+      const agentSlot = async () => {
+        if (agentsRunning < agentCap) { agentsRunning++; return; }
+        await new Promise((r) => agentWaiters.push(r));
+        agentsRunning++;
+      };
+      const agentFree = () => { agentsRunning--; const w = agentWaiters.shift(); if (w) w(); };
       const results = await Promise.all(batch.map(async (p) => {
+        const isAgent = PARALLEL_AGENT.has(p.name);
+        if (isAgent) await agentSlot();
+        try { return await runOneParallel(p); } finally { if (isAgent) agentFree(); }
+      }));
+      if (opts.signal && opts.signal.aborted) throw new Error('aborted');
+      batch.forEach((p, i) => {
+        emit({ type: 'toolResult', id: p.tc.id, name: p.name, result: results[i].content, isError: results[i].isError });
+        messages.push({ role: 'tool', tool_call_id: p.tc.id, name: p.name, content: results[i].content });
+      });
+      continue;
+    }
+    async function runOneParallel(p) {
+      {
         try {
           if (isLocal(p.name)) {
             const out = await localTools[p.name](p.args || {});
@@ -2325,17 +2654,14 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             || /^(Error|Tool error)/i.test(String(content).trim());
           return { content: await afterTool(p.name, pre.args, String(content), isErr), isError: isErr };
         } catch (e) {
+          if (opts.signal && opts.signal.aborted) throw e;
           return { content: 'Error: ' + (e && e.message ? e.message : String(e)), isError: true };
         }
-      }));
-      batch.forEach((p, i) => {
-        emit({ type: 'toolResult', id: p.tc.id, name: p.name, result: results[i].content, isError: results[i].isError });
-        messages.push({ role: 'tool', tool_call_id: p.tc.id, name: p.name, content: results[i].content });
-      });
-      continue;
+      }
     }
 
     for (const tc of calls) {
+      if (opts.signal && opts.signal.aborted) throw new Error('aborted');
       const name = tc.function.name;
       let args = parseArgs(tc.function.arguments);
       emit({ type: 'tool', id: tc.id, name, args });
@@ -2387,18 +2713,43 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       if (WRITE_TOOLS.has(name)) takeCheckpoint(name, args);
       // Route virtual mcp__* names (built-in equivalents) to runTool first;
       // only unknown mcp__* (external MCP servers) go to callMcpTool.
-      if (name === 'find_mcp_tools' && extraToolsDeferred) {
-        const hits = mcpSchema.searchMcpTools(extra, args.query || args.q || '', args.server);
-        result = hits.length
-          ? `MCP tools matching ${JSON.stringify(args.query || '')} — call by exact name:\n`
-            + hits.map((h) => `\n### ${h.name}\n${h.description}\n${JSON.stringify(h.inputSchema)}`).join('\n')
-          : `No MCP tool matched ${JSON.stringify(args.query || '')}. Try a broader keyword, or omit "server".`;
-      } else if (name.startsWith('mcp__') && !localToolNames.has(name)) {
-        result = await opts.callMcpTool ? await opts.callMcpTool(name, args) : `MCP tool ${name} unavailable`;
-      } else {
-        const r = await runTool(name, args, ctx);
-        result = typeof r === 'string' ? r : r.content;
-        isError = typeof r === 'object' && Boolean(r.isError);
+      // Any executor may throw (an MCP server error, a child provider failure,
+      // a bug in a handler). That is a tool result the model can react to —
+      // never the end of the user's turn.
+      try {
+        if (name === 'find_mcp_tools' && extraToolsDeferred) {
+          const hits = mcpSchema.searchMcpTools(extra, args.query || args.q || '', args.server);
+          result = hits.length
+            ? `MCP tools matching ${JSON.stringify(args.query || '')} — call by exact name:\n`
+              + hits.map((h) => `\n### ${h.name}\n${h.description}\n${JSON.stringify(h.inputSchema)}`).join('\n')
+            : `No MCP tool matched ${JSON.stringify(args.query || '')}. Try a broader keyword, or omit "server".`;
+        } else if (name.startsWith('mcp__') && !localToolNames.has(name)) {
+          if (!opts.callMcpTool) {
+            result = `MCP tool ${name} unavailable`;
+            isError = true;
+          } else {
+            let to = null;
+            const r = await Promise.race([
+              Promise.resolve(opts.callMcpTool(name, args)),
+              new Promise((resolve) => { to = setTimeout(() => resolve({ content: `Tool error: ${name} did not respond within 300s and was abandoned.`, isError: true }), 300000); }),
+            ]).finally(() => clearTimeout(to));
+            if (r && typeof r === 'object' && !Array.isArray(r) && 'content' in r && typeof r.content === 'string') {
+              result = r.content;
+              isError = !!r.isError;
+            } else {
+              result = typeof r === 'string' ? r : JSON.stringify(r);
+              if (r && typeof r === 'object' && r.isError) isError = true;
+            }
+          }
+        } else {
+          const r = await runTool(name, args, ctx);
+          result = typeof r === 'string' ? r : r.content;
+          isError = typeof r === 'object' && Boolean(r.isError);
+        }
+      } catch (e) {
+        if (opts.signal && opts.signal.aborted) throw e;
+        result = 'Tool error: ' + (e && e.message ? e.message : String(e));
+        isError = true;
       }
       const resultStr = String(result);
       if (!isError && /^(Error|Tool error)/i.test(resultStr.trim())) isError = true;
