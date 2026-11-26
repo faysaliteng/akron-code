@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useVoiceDictation } from '../voice';
+import { DuetReviewPanel } from './DuetReviewPanel.jsx';
 import {
   fallbackDiffsFromTools,
   mergeDiffFiles,
@@ -31,7 +32,7 @@ function highlightLine(text, matcher) {
   }
 }
 
-export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComment, onRewindDone, onClose, voiceOpts = {}, Icon }) {
+export function CodeReviewPane({ convId, cwd, target, allTools = [], provider = null, orchestrator = null, onSendComment, onRewindDone, onClose, voiceOpts = {}, Icon }) {
   const [scope, setScope] = useState(target && (target.scope === 'all' ? 'all' : (target.checkpointId || target.turnLabel || (target.tools && target.tools.length))) ? (target.scope || 'turn') : 'all');
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -491,6 +492,15 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], onSendComme
       )}
 
       <div className="rv-body">
+        <DuetReviewPanel
+          convId={convId}
+          cwd={cwd}
+          target={target}
+          provider={provider}
+          orchestrator={orchestrator}
+          onSendComment={onSendComment}
+          Icon={Icon}
+        />
         {loading ? (
           <div className="env-empty"><Icon name="Spinner" size={14} className="spin" /> Loading diffs…</div>
         ) : files.length === 0 ? (

@@ -153,6 +153,7 @@ contextBridge.exposeInMainWorld('autobot', {
   rewind: (convId, checkpointId) => ipcRenderer.invoke('autobot:rewind', convId, checkpointId),
   turnDiffs: (convId, checkpointId, cwd) => ipcRenderer.invoke('autobot:turnDiffs', convId, checkpointId, cwd),
   gitDiffFiles: (cwd) => ipcRenderer.invoke('autobot:gitDiffFiles', cwd),
+  duetReview: (payload) => ipcRenderer.invoke('autobot:duetReview', payload),
   extBridgeStatus: () => ipcRenderer.invoke('autobot:extBridgeStatus'),
   extBridgeOpenFolder: () => ipcRenderer.invoke('autobot:extBridgeOpenFolder'),
   reaStatus: () => ipcRenderer.invoke('autobot:reaStatus'),

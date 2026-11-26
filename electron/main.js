@@ -3062,6 +3062,43 @@ ipcMain.handle('autobot:turnDiffs', (e, convId, checkpointId, cwd) => {
 ipcMain.handle('autobot:gitDiffFiles', (e, cwd) => {
   try { return require('./git').gitDiffFiles(cwd || workspace.ROOT); } catch (_) { return []; }
 });
+ipcMain.handle('autobot:duetReview', async (e, payload = {}) => {
+  try {
+    const duet = require('./duet-review');
+    const rawPrimary = payload.provider || store.getSettings().provider || {};
+    let primaryProvider;
+    try {
+      primaryProvider = await hydrateProvider(rawPrimary);
+    } catch (err) {
+      return { ok: false, error: err.message, needsSignIn: err.code === 'provider_needs_signin' };
+    }
+    const orch = payload.orchestrator || store.getOrchestrator();
+    const pick = duet.pickSecondOpinionProvider({
+      primary: primaryProvider,
+      orchestrator: orch,
+      withSpec: payload.withSpec || '',
+    });
+    let secondProvider = pick.provider || primaryProvider;
+    if (secondProvider !== primaryProvider) {
+      try {
+        secondProvider = await hydrateProvider(secondProvider);
+      } catch (_) {
+        secondProvider = primaryProvider;
+      }
+    }
+    return await duet.runDuetReview({
+      cwd: payload.cwd || workspace.ROOT,
+      convId: payload.convId || null,
+      target: payload.target || null,
+      primaryProvider,
+      secondProvider,
+      adversarial: Boolean(payload.adversarial),
+      diffFiles: Array.isArray(payload.diffFiles) ? payload.diffFiles : null,
+    });
+  } catch (err) {
+    return { ok: false, error: humanizeLLMError(err) };
+  }
+});
 ipcMain.handle('autobot:extBridgeStatus', () => {
   try { return require('./extbridge').status(); } catch (e) { return { running: false, error: e.message, tabs: [] }; }
 });

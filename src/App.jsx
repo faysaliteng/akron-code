@@ -2457,6 +2457,15 @@ export default function App() {
         setShowSettings(true);
         break;
       case 'review': {
+        const rawArg = String(arg || '').trim();
+        const adv = /--adversarial\b/i.test(rawArg);
+        const withMatch = /--with\s+("([^"]+)"|'([^']+)'|(\S+))/i.exec(rawArg);
+        const withSpec = withMatch ? (withMatch[2] || withMatch[3] || withMatch[4] || '') : '';
+        const wantDuet = adv || Boolean(withSpec) || /--duet\b/i.test(rawArg);
+        if (wantDuet) {
+          openReview({ scope: 'all', duetAutoRun: true, withSpec, adversarial: adv, at: Date.now() });
+          break;
+        }
         if (streaming) { note('A run is in progress — wait for it to finish before /review.'); break; }
         send('Review the current working-tree changes. Run `git diff` (or `git status` then read the changed files), then give a concise code review: correctness bugs, security issues, edge cases, and concrete fixes. Reference files and line numbers.');
         break;
@@ -3551,6 +3560,8 @@ export default function App() {
                   cwd={cwd}
                   target={reviewTarget}
                   allTools={allActiveTools}
+                  provider={provider}
+                  orchestrator={orchestrator}
                   onSendComment={(txt) => send(txt)}
                   onRewindDone={(r) => setError(`✅ Rewound: restored ${(r && r.restored) || 0}, removed ${(r && r.removed) || 0}.`)}
                   onClose={() => closeSessionTab('review')}
