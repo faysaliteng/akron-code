@@ -641,7 +641,20 @@ function humanizeLLMError(e) {
     body = body.slice(friendly.length).replace(/^\s*[—–-]+\s*/, '');
   }
   if (body.length > 200) body = body.slice(0, 197).trimEnd() + '…';
-  const head = friendly || (status ? `The provider returned HTTP ${status}` : raw.split('\n')[0].slice(0, 120));
+  // A 404 is the only status whose prose cannot be trusted on its own: "model
+  // or endpoint does not exist" covers a wrong path, a gateway that has never
+  // heard of the id, and a genuinely retired model. Name the URL that answered
+  // so the next person can tell those apart without a packet capture.
+  let where = '';
+  if (status === 404 && e && e.endpoint) {
+    try {
+      const u = new URL(String(e.endpoint));
+      where = ' (asked ' + u.host + u.pathname + ')';
+    } catch (_) {}
+  }
+  const head = friendly
+    ? friendly + where
+    : (status ? `The provider returned HTTP ${status}` : raw.split('\n')[0].slice(0, 120));
   // Only append the scrubbed detail when it is prose, not boilerplate. Gateway
   // pages are the status phrase repeated a few times with the server name, so
   // strip those tokens and see whether anything of substance is left.

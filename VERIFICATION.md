@@ -1750,12 +1750,65 @@ The app had shown `model 'claude-fable-5-2' not found`, but:
 Anthropic's own not-found wording is
 `{"type":"error","error":{"type":"not_found_error","message":"model: <id>"}}`, and
 no source file in `src/` or `electron/` produces the quoted form the banner showed
-— the banner was ours, describing a 429 as a missing model. The 429 path itself
-already carries the right words: `anthropicChat` sets
+— so the body in that banner did not come from Anthropic and did not come from us.
+The 429 path itself already carries the right words: `anthropicChat` sets
 `hint = "the Claude plan's 5-hour allowance is 100% used (resets 2:29 AM, in 65
 min); send this request again after the reset — nothing in the conversation is
 lost"` plus `retryHopeless`, and `humanizeLLMError()` prefers the hint. Live-proven
 end to end at 01:24 CET through the real transport.
+
+Measured again at 00:52 CET with a deliberately impossible id, same token,
+`/v1/messages`, `anthropic-beta: oauth-2025-04-20`, UA `claude-cli/2.1.332`:
+
+```
+POST /v1/messages {model:"claude-does-not-exist-9"}
+→ 404 {"type":"error","error":{"type":"not_found_error",
+        "message":"model: claude-does-not-exist-9"},"request_id":"req_011ChQcjoWd71EnBJQ1pkkUD"}
+POST /v1/messages {model:"claude-fable-5-2"}
+→ 429 {"type":"error","error":{"type":"rate_limit_error",
+        "message":"This request would exceed your account's rate limit. Please try again later."}}
+GET  /v1/models?limit=2
+→ 200 claude-fable-5-2, max_input_tokens 1000000
+```
+
+Anthropic writes `model: <id>` — colon, no quotes. The reported
+`model 'claude-fable-5-2' not found` (single quotes, "not found" suffix) is the
+wording of an **OpenAI-compatible gateway**, not Anthropic: the in-app
+FreeLLMAPI router's own miss reads `not found — try /v1/models or POST
+/v1/chat/completions` (`electron/freellm.js:683`), and its config
+(`~/.autobot/freellm.json`) carries seven upstreams and no `fable` id at all. So
+the screenshot was a gateway row asked for a model it does not host — a provider
+404 with an opaque body, which is exactly the case §35.6 makes diagnosable.
+
+### 35.6 A 404 now names the endpoint that answered
+
+`404` is the only status whose friendly prose is unfalsifiable: "model or endpoint
+does not exist" is equally true of a wrong path, a gateway that never heard of the
+id, and a genuinely retired model, and vendors' bodies rarely say which. Two lines
+fix it, and nothing else changes:
+
+- `httpError()` records `err.endpoint = res.url` (the **final** URL after redirects,
+  so a proxy that rewrote the request is visible too).
+- `humanizeLLMError()` appends `(asked host/path)` — for 404 only, and only when
+  the string actually parses as a URL.
+
+Live through the app (`probe-claude-404`, CDP against the dev build, 7/7):
+
+| call | banner |
+| --- | --- |
+| `chatOnce({oauthProvider:'claude:<acct>', model:'claude-does-not-exist-9'})` | `The provider says that model or endpoint does not exist (asked api.anthropic.com/v1/messages) — model: claude-does-not-exist-9` |
+| same, `model:'claude-fable-5-2'` | `The Claude plan's 5-hour allowance is 100% used (resets 2:30 AM, in 43 min); send this request again after the reset — nothing in the conversation is lost` |
+
+`test/error-banner.test.js` (8 assertions) pins the shape: the provider's words
+survive verbatim, a redirecting gateway shows the host it landed on, a missing or
+unparseable `endpoint` never prints `(asked )`, and 429 / 500 keep their own
+wording.
+
+Probing gotcha found the hard way: `publicRecord()` exposes `account` and
+`id`, **not** `key`. A probe that builds `oauthProvider` from `acct.key` gets
+`claude:undefined`, `hydrateProvider()` wraps it as
+`Claude needs to be signed in again…`, and the result reads like a credential
+regression that is not there. Always build it from `acct.account`.
 
 ### 35.5 Regression
 
@@ -1763,7 +1816,8 @@ All suites green in the standalone tree after a clean `npm ci` (578 packages),
 27 files: `provideroauth 254`, `providertransport 169`,
 `e2e 112`, `extensionhost 162`, `compliance 147`, `mcpoauth 146`, `swarm 62`,
 `hooks 49`, `freellm 37`, `reconnect-code 24`, `providerhydrate 18`,
-`model-catalog 22 groups`, `artifacttypes 82`, `sandbox 22`, `runtimes 23 groups`.
+`model-catalog 22 groups`, `artifacttypes 82`, `sandbox 22`, `runtimes 23 groups`,
+`error-banner 8`.
 `test/provideroauth.test.js` sets `AUTOBOT_HOME` to a scratch dir before `require`
 and asserts the real `~/.autobot/provider-oauth.json` bytes are unchanged — that
 suite had been corrupting the live store.

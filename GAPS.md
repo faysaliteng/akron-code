@@ -1629,6 +1629,7 @@ top-up is off"* — with `markupLeak:false` and `hasEnvelope:false`.
 | Orchestrator asked for provider/model/URL/key | Gone. Settings builds the roster from live catalogs (`OrchModelChecklist`): tick a model, pick a tier, pick a start index; `hydrateProvider()` runs in main for `autobot:run`, `chatOnce`, `compact` and the swarm path, and `llm.js` carries each ticked row's `contextWindow` into `budgetForModel`. `probe-orch`/`probe-orch-ctx` find `contextWindow: 1000000` persisted. |
 | The test suite mutated the live store | `test/provideroauth.test.js` set `AUTOBOT_HOME` **before** `require` (the module reads `DIR` at load) and the suite now asserts the real `~/.autobot/provider-oauth.json` bytes and directory listing are unchanged. Eight `corrupt-*` files it had produced were removed. |
 | Store failure looked like a sign-in notice | `.prov-notice` is overloaded; only `.prov-notice.warn` (now with a border) is a store failure, rendered on both account surfaces from `status.storeError`. |
+| "model 'claude-fable-5-2' not found" was undiagnosable | The body was not Anthropic's (`model: <id>`, colon) and matched no file here; live 404 test proves the id exists and the endpoint answers `not_found_error` with its own wording. A 404 now names the URL that answered — `err.endpoint = res.url`, `(asked api.anthropic.com/v1/messages)` — so a gateway miss is one look away. `probe-claude-404` 7/7, `test/error-banner.test.js` 8 assertions; 429/500 wording untouched. |
 
 ---
 

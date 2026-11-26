@@ -180,6 +180,12 @@ function httpError(transport, res, text) {
   const err = new Error('LLM ' + res.status + ': ' + body.slice(0, 400));
   err.status = res.status;
   err.transport = transport;
+  // Which URL actually answered. A 404 is the one status where the banner is
+  // otherwise undiagnosable: "model or endpoint does not exist" is true of a
+  // wrong path, a gateway that never heard of the model, and a retired id, and
+  // the body alone rarely says which. `Response.url` is the final URL after
+  // redirects, so a proxy that rewrote the request is visible here too.
+  if (res && typeof res.url === 'string' && res.url) err.endpoint = res.url;
   const ra = res.headers && res.headers.get ? res.headers.get('retry-after') : null;
   const secs = Number(ra);
   if (Number.isFinite(secs) && secs > 0) err.retryAfterMs = Math.min(secs * 1000, 60000);
