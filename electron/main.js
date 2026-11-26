@@ -3294,6 +3294,27 @@ ipcMain.handle('autobot:envToggleHostServer', async (e, enabled, opts) => {
 });
 ipcMain.handle('autobot:envGetHostToken', () => environments.getHostServerToken());
 
+// ---- Phase 3: Built-in Dependencies, LSP Auto-Install & GitHub Releases Auto-Updater ----
+const depManager = require('./dep-manager');
+const updater = require('./updater');
+ipcMain.handle('autobot:depsStatus', () => depManager.getDependenciesStatus());
+ipcMain.handle('autobot:depsInstallLsp', (e, id) => depManager.installLspServer(id, {
+  onProgress: (evt) => {
+    try { e.sender.send('autobot:event', { type: 'dep-lsp', ...evt }); } catch (_) {}
+  },
+}));
+ipcMain.handle('autobot:updateCheck', (e, opts) => updater.checkForUpdates({
+  currentVersion: app.getVersion(),
+  ...(opts || {}),
+}));
+ipcMain.handle('autobot:updateDownload', (e, opts) => updater.downloadAndVerifyUpdate({
+  ...(opts || {}),
+  onProgress: (prog) => {
+    try { e.sender.send('autobot:event', { type: 'app-update-progress', ...prog }); } catch (_) {}
+  },
+}));
+ipcMain.handle('autobot:updateApply', (e, stagedPath) => updater.applyUpdate(stagedPath));
+
 // Built-in Browser (renderer <webview> registers its guest WebContents; the
 // agent tools in tools.js control it through the same controller).
 // If an agent tool needs the browser and the pane is closed, ask every renderer

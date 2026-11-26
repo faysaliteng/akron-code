@@ -388,6 +388,11 @@ contextBridge.exposeInMainWorld('autobot', {
   envTestRemote: (profileOrId) => ipcRenderer.invoke('autobot:envTestRemote', profileOrId),
   envToggleHostServer: (enabled, opts) => ipcRenderer.invoke('autobot:envToggleHostServer', enabled, opts),
   envGetHostToken: () => ipcRenderer.invoke('autobot:envGetHostToken'),
+  depsStatus: () => ipcRenderer.invoke('autobot:depsStatus'),
+  depsInstallLsp: (id) => ipcRenderer.invoke('autobot:depsInstallLsp', id),
+  updateCheck: (opts) => ipcRenderer.invoke('autobot:updateCheck', opts),
+  updateDownload: (opts) => ipcRenderer.invoke('autobot:updateDownload', opts),
+  updateApply: (stagedPath) => ipcRenderer.invoke('autobot:updateApply', stagedPath),
   onEnvChanged: (cb) => {
     const h = (e, state) => cb(state);
     ipcRenderer.on('autobot:envChanged', h);

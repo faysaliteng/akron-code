@@ -9778,6 +9778,172 @@ function RuntimesSection() {
   );
 }
 
+function DependenciesAndUpdaterSection({ setNotice }) {
+  const [deps, setDeps] = useState(null);
+  const [installingId, setInstallingId] = useState('');
+  const [lspNote, setLspNote] = useState('');
+  const [upd, setUpd] = useState(null);
+  const [updBusy, setUpdBusy] = useState('');
+  const [updProg, setUpdProg] = useState(null);
+  const [staged, setStaged] = useState(null);
+  const api = (typeof window !== 'undefined' && window.autobot) || {};
+
+  const refreshDeps = useCallback(async () => {
+    if (!api.depsStatus) return;
+    try {
+      const r = await api.depsStatus();
+      if (r && r.ok) setDeps(r);
+    } catch (_) {}
+  }, [api]);
+
+  useEffect(() => { refreshDeps(); }, [refreshDeps]);
+
+  useEffect(() => {
+    if (!api.onEvent) return undefined;
+    return api.onEvent((evt) => {
+      if (!evt) return;
+      if (evt.type === 'dep-lsp' && evt.message) setLspNote(evt.message);
+      if (evt.type === 'app-update-progress') setUpdProg(evt);
+    });
+  }, [api]);
+
+  const installLsp = async (id) => {
+    if (!api.depsInstallLsp) return;
+    setInstallingId(id);
+    setLspNote(`Installing ${id} language server…`);
+    try {
+      const r = await api.depsInstallLsp(id);
+      if (r && r.ok) {
+        if (r.status) setDeps(r.status);
+        setLspNote(`✅ Installed ${id} language server (${r.path || 'ready'})`);
+        setNotice && setNotice(`Installed ${id} LSP server`);
+      } else {
+        setLspNote(`❌ Install failed: ${(r && r.error) || 'unknown'}`);
+      }
+    } finally {
+      setInstallingId('');
+    }
+  };
+
+  const checkAppUpdate = async () => {
+    if (!api.updateCheck) return;
+    setUpdBusy('check');
+    try {
+      const r = await api.updateCheck();
+      setUpd(r);
+      if (r && r.ok && r.updateAvailable) {
+        setNotice && setNotice(`Update available: Akron Code v${r.latestVersion}`);
+      }
+    } finally {
+      setUpdBusy('');
+    }
+  };
+
+  const downloadUpdate = async () => {
+    if (!upd || !upd.asset || !api.updateDownload) return;
+    setUpdBusy('download');
+    setUpdProg({ percent: 0 });
+    try {
+      const r = await api.updateDownload({ asset: upd.asset, sumsUrl: upd.sumsUrl });
+      if (r && r.ok) {
+        setStaged(r);
+        setNotice && setNotice(`Verified SHA-256 update ready: ${r.name}`);
+      } else {
+        setUpd((u) => ({ ...(u || {}), error: (r && r.error) || 'Download failed' }));
+      }
+    } finally {
+      setUpdBusy('');
+    }
+  };
+
+  const installStagedUpdate = async () => {
+    if (!staged || !staged.path || !api.updateApply) return;
+    const r = await api.updateApply(staged.path);
+    if (r && r.ok) setNotice && setNotice('Launching Akron Code installer…');
+  };
+
+  return (
+    <>
+      <div className="settings-card">
+        <h3>App Auto-Update (GitHub Releases)</h3>
+        <div className="env-prof-row">
+          <div className="env-prof-meta">
+            <span className="env-prof-title">Akron Code v{(upd && upd.currentVersion) || '1.0.0'}</span>
+            <span className="env-prof-sub">
+              {upd
+                ? (upd.ok
+                  ? (upd.updateAvailable ? `New version v${upd.latestVersion} available (${upd.asset?.name || 'package'})` : `Up to date (latest v${upd.latestVersion})`)
+                  : (upd.error || 'Could not check releases'))
+                : 'Checks GitHub Releases & verifies SHA-256 checksums (settings & chats preserved).'}
+            </span>
+          </div>
+          <div className="env-prof-actions">
+            <button type="button" className="btn-mini primary" disabled={!!updBusy} onClick={checkAppUpdate}>
+              {updBusy === 'check' ? 'Checking…' : 'Check for Updates'}
+            </button>
+            {upd && upd.updateAvailable && upd.asset && !staged && (
+              <button type="button" className="btn-mini" disabled={!!updBusy} onClick={downloadUpdate}>
+                {updBusy === 'download' ? `Downloading ${updProg?.percent || 0}%` : 'Download & Verify'}
+              </button>
+            )}
+            {staged && (
+              <button type="button" className="btn-mini primary" onClick={installStagedUpdate}>
+                Install v{upd?.latestVersion || ''}
+              </button>
+            )}
+          </div>
+        </div>
+        {upd && upd.releaseNotes && (
+          <pre className="bic-html" style={{ marginTop: 8 }}>{upd.releaseNotes.slice(0, 600)}</pre>
+        )}
+      </div>
+
+      <div className="settings-card">
+        <h3>Built-in Dependencies &amp; Optional LSP Servers</h3>
+        {deps && (
+          <p className="muted" style={{ marginTop: -4 }}>
+            Core stack: <b>{deps.healthyCount}/{deps.totalBundled}</b> bundled modules healthy
+          </p>
+        )}
+        <div className="env-prof-list">
+          {((deps && deps.bundled) || []).map((b) => (
+            <div key={b.id} className="env-prof-row">
+              <div className="env-prof-meta">
+                <span className="env-prof-title">{b.label}</span>
+                <span className="env-prof-sub">{b.detail}</span>
+              </div>
+              <span className={'mc-pill ' + (b.ok ? 'done' : 'err')}>{b.ok ? 'Bundled' : 'Fallback'}</span>
+            </div>
+          ))}
+        </div>
+
+        <h4 style={{ margin: '16px 0 6px', fontSize: 13 }}>Optional Language Servers (LSP)</h4>
+        <div className="env-prof-list">
+          {((deps && deps.lspServers) || []).map((l) => (
+            <div key={l.id} className="env-prof-row">
+              <div className="env-prof-meta">
+                <span className="env-prof-title">{l.label}</span>
+                <span className="env-prof-sub">{l.languages} · {l.installed ? l.path : 'Not installed'}</span>
+              </div>
+              <div className="env-prof-actions">
+                <button
+                  type="button"
+                  className={'btn-mini ' + (l.installed ? '' : 'primary')}
+                  disabled={!!installingId}
+                  onClick={() => installLsp(l.id)}
+                >
+                  {installingId === l.id ? 'Installing…' : (l.installed ? 'Repair / Update' : 'Auto-Install')}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        {lspNote && <p className="muted" style={{ marginTop: 8 }}>{lspNote}</p>}
+      </div>
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Orchestrator pool — data-driven checklist
 //
@@ -10453,6 +10619,7 @@ const SETTINGS_SECTIONS = [
   { id: 'server', group: 'ext', label: 'Server & Pairing', icon: 'Plug', sub: 'Local HTTP/WebSocket host endpoint, bridge health, and device info.', keys: 'server pairing port 8766 endpoint websocket health' },
   { id: 'voice', group: 'ext', label: 'Voice & Dictation', icon: 'Microphone', sub: 'Built-in offline ONNX Whisper speech model & fast gateway transcription.', keys: 'voice dictation whisper microphone speech audio language' },
   { id: 'shortcuts', group: 'system', label: 'Shortcuts', icon: 'Keyboard', sub: 'Keyboard shortcuts for fast navigation and editing.', keys: 'shortcuts hotkeys keybindings keyboard cmd ctrl' },
+  { id: 'runtimes', group: 'system', label: 'Runtimes & Updates', icon: 'Refresh', sub: 'Built-in IDE dependencies, optional LSP installers, bundled CLIs & app auto-updater.', keys: 'runtimes updates auto-update github release lsp dependencies repair' },
   { id: 'security', group: 'system', label: 'Permissions & Security', icon: 'LockShield', sub: 'Tool consent rules, Computer Use, Chrome CDP, bridges, and compliance.', keys: 'permission security computer use chrome cdp bridge compliance trusted folders' },
   { id: 'system', group: 'system', label: 'Appearance & System', icon: 'Palette', sub: 'Theme, language locale, memory injection, launch behavior, and runtimes.', keys: 'theme dark light locale language memory login quick entry runtime' },
 ];
@@ -11341,6 +11508,15 @@ function SettingsModal({
                   ))}
                 </div>
               </div>
+            )}
+
+            {section === 'runtimes' && (
+              <>
+                <DependenciesAndUpdaterSection setNotice={setNotice} />
+                <div className="settings-card">
+                  <RuntimesSection />
+                </div>
+              </>
             )}
 
             {section === 'system' && (

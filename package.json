@@ -25,13 +25,18 @@
   "dependencies": {
     "@vscode/ripgrep": "^1.18.0",
     "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
     "mermaid": "^10.9.8",
     "monaco-editor": "^0.58.0",
     "node-pty": "^1.1.0",
+    "ssh2": "^1.17.0",
     "ws": "^8.23.0"
   },
   "devDependencies": {
+    "@electron/fuses": "^2.1.3",
     "@vitejs/plugin-react": "^4.3.4",
     "dompurify": "^3.1.6",
     "electron": "^33.2.0",
@@ -51,7 +56,9 @@
       "**/electron/ide/pty-worker.js",
       "**/node_modules/node-pty/**/*",
       "**/node_modules/@vscode/ripgrep/**/*",
-      "**/node_modules/@vscode/ripgrep-*/**/*"
+      "**/node_modules/@vscode/ripgrep-*/**/*",
+      "**/node_modules/@parcel/watcher/**/*",
+      "**/node_modules/@parcel/watcher-*/**/*"
     ],
     "compression": "maximum",
     "files": [
@@ -127,7 +134,11 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "artifactName": "AkronCode-${version}-win-setup-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "AkronCode-${version}-win-portable-${arch}.${ext}"
     },
     "linux": {
       "target": [
@@ -139,5 +150,8 @@
   "allowScripts": {
     "electron@33.4.11": true,
     "esbuild@0.21.5": true
+  },
+  "optionalDependencies": {
+    "@parcel/watcher": "^2.6.0"
   }
 }

@@ -20,9 +20,11 @@ const LANG_TO_SERVER = {
 };
 
 function findBinary(bin, cwd) {
+  const os = require('os');
   const ext = process.platform === 'win32' ? '.cmd' : '';
   const searchDirs = [];
   if (cwd) searchDirs.push(path.join(cwd, 'node_modules', '.bin'));
+  searchDirs.push(path.join(os.homedir(), '.autobot', 'lsp-servers', 'node_modules', '.bin'));
   if (process.env.PATH) searchDirs.push(...process.env.PATH.split(path.delimiter));
   if (process.platform !== 'win32') {
     searchDirs.push('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin');
