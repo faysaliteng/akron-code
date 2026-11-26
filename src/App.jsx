@@ -11681,16 +11681,25 @@ function SettingsModal({
 // QuestionModal extracted to src/features/AppModals.jsx
 
 function PermissionRulesSection({ cwd, setNotice }) {
-  const [perms, setPerms] = useState({ allow: [], deny: [], ask: [] });
+  const [perms, setPerms] = useState({ allow: [], deny: [], ask: [], customRules: [] });
   const [ruleInput, setRuleInput] = useState('');
   const [ruleList, setRuleList] = useState('allow');
+  const [customLabel, setCustomLabel] = useState('');
+  const [customPattern, setCustomPattern] = useState('');
+  const [customMode, setCustomMode] = useState('ask');
+  const [ledgerStatus, setLedgerStatus] = useState(null);
+  const [ledgerEntries, setLedgerEntries] = useState([]);
   const [busy, setBusy] = useState(false);
 
   const loadRules = useCallback(async () => {
     try {
       if (window.autobot && window.autobot.getPermissions) {
         const res = await window.autobot.getPermissions(cwd);
-        if (res) setPerms({ allow: res.allow || [], deny: res.deny || [], ask: res.ask || [] });
+        if (res) setPerms({ allow: res.allow || [], deny: res.deny || [], ask: res.ask || [], customRules: res.customRules || [] });
+      }
+      if (window.autobot && window.autobot.listAuditLedger) {
+        const entries = await window.autobot.listAuditLedger(12);
+        if (Array.isArray(entries)) setLedgerEntries(entries);
       }
     } catch (_) {}
   }, [cwd]);
@@ -11724,6 +11733,45 @@ function PermissionRulesSection({ cwd, setNotice }) {
     }
   };
 
+  const handleSaveCustom = async () => {
+    if (!customPattern.trim() || !window.autobot?.saveCustomRule) return;
+    setBusy(true);
+    try {
+      const r = await window.autobot.saveCustomRule({ label: customLabel.trim() || customPattern.trim(), pattern: customPattern.trim(), mode: customMode });
+      if (r && r.ok) {
+        setCustomLabel('');
+        setCustomPattern('');
+        await loadRules();
+        setNotice && setNotice(`Saved custom rule: ${r.rule.label}`);
+      }
+    } finally { setBusy(false); }
+  };
+
+  const handleInstallStarter = async () => {
+    if (!window.autobot?.installStarterRules) return;
+    setBusy(true);
+    try {
+      const r = await window.autobot.installStarterRules();
+      if (r && r.ok) {
+        await loadRules();
+        setNotice && setNotice(`Installed ${r.installed} Safe Starter Pack rules`);
+      }
+    } finally { setBusy(false); }
+  };
+
+  const handleVerifyLedger = async () => {
+    if (!window.autobot?.verifyAuditLedger) return;
+    const res = await window.autobot.verifyAuditLedger();
+    setLedgerStatus(res);
+  };
+
+  const CUSTOM_MODE_LABELS = {
+    auto: 'Take action without asking',
+    explicit: 'Take action when you say so',
+    ask: 'Ask before taking action',
+    handoff: 'Hand off to you',
+  };
+
   const groups = [
     { key: 'allow', label: 'Always Allow', rules: perms.allow || [], badge: 'allow' },
     { key: 'ask', label: 'Always Ask', rules: perms.ask || [], badge: 'ask' },
@@ -11734,11 +11782,60 @@ function PermissionRulesSection({ cwd, setNotice }) {
     <div className="perm-rules-card">
       <div className="perm-rules-head">
         <div>
-          <h3><Icon name="LockShield" size={14} /> Saved Permission Rules</h3>
-          <p className="muted">Scoped rules saved in <code>~/.autobot/settings.json</code> and project <code>.claude/settings.json</code>.</p>
+          <h3><Icon name="LockShield" size={14} /> Custom Rules &amp; Guardrails</h3>
+          <p className="muted">4-tier autonomous action policy + Safe Starter Pack + scoped rules in <code>~/.autobot/settings.json</code>.</p>
         </div>
-        <button type="button" className="btn-subtle" onClick={loadRules} disabled={busy}>Refresh</button>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button type="button" className="btn-mini primary" onClick={handleInstallStarter} disabled={busy} data-testid="install-starter-pack-btn">
+            Install Safe Starter Pack
+          </button>
+          <button type="button" className="btn-subtle" onClick={loadRules} disabled={busy}>Refresh</button>
+        </div>
       </div>
+
+      <div className="perm-rules-add-row" style={{ marginBottom: 10 }}>
+        <input
+          type="text"
+          value={customLabel}
+          onChange={(e) => setCustomLabel(e.target.value)}
+          placeholder="Rule label (e.g. Deploy script)"
+          aria-label="Custom rule label"
+        />
+        <input
+          type="text"
+          value={customPattern}
+          onChange={(e) => setCustomPattern(e.target.value)}
+          placeholder="Tool/Pattern (e.g. Bash(git push:*) or POST)"
+          aria-label="Custom rule pattern"
+        />
+        <select value={customMode} onChange={(e) => setCustomMode(e.target.value)} aria-label="Custom rule mode">
+          <option value="auto">Take action without asking</option>
+          <option value="explicit">Take action when you say so</option>
+          <option value="ask">Ask before taking action</option>
+          <option value="handoff">Hand off to you</option>
+        </select>
+        <button type="button" className="primary" onClick={handleSaveCustom} disabled={busy || !customPattern.trim()}>
+          Save Policy
+        </button>
+      </div>
+
+      {(perms.customRules || []).length > 0 && (
+        <div className="perm-rules-list" style={{ marginBottom: 12 }}>
+          {(perms.customRules || []).map((cr) => (
+            <div key={cr.id || cr.pattern} className={`perm-rule-chip kind-${cr.mode === 'handoff' ? 'deny' : cr.mode === 'auto' ? 'allow' : 'ask'}`}>
+              <span><b>{cr.label || cr.pattern}</b> · <code>{cr.pattern}</code> · {CUSTOM_MODE_LABELS[cr.mode] || cr.mode}</span>
+              <button
+                type="button"
+                className="perm-rule-del"
+                onClick={() => window.autobot?.deleteCustomRule && window.autobot.deleteCustomRule({ id: cr.id, pattern: cr.pattern }).then(loadRules)}
+                title="Remove custom rule"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="perm-rules-add-row">
         <select value={ruleList} onChange={(e) => setRuleList(e.target.value)} aria-label="Rule list">
@@ -11785,6 +11882,32 @@ function PermissionRulesSection({ cwd, setNotice }) {
             )}
           </div>
         ))}
+      </div>
+
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(128,128,128,0.18)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <div>
+            <strong>Hash-Chained Audit Ledger</strong>
+            <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}><code>~/.autobot/audit-ledger.jsonl</code></span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {ledgerStatus && (
+              <span className={`pill ${ledgerStatus.ok ? 'ok' : 'bad'}`} data-testid="audit-ledger-status">
+                {ledgerStatus.ok ? `Verified (${ledgerStatus.entries} entries)` : `Integrity Fail (#${ledgerStatus.brokenAt})`}
+              </span>
+            )}
+            <button type="button" className="btn-mini" onClick={handleVerifyLedger} data-testid="verify-audit-ledger-btn">
+              Verify Audit Ledger
+            </button>
+          </div>
+        </div>
+        {ledgerEntries.length > 0 && (
+          <div style={{ fontSize: 11, fontFamily: 'var(--mono-font, monospace)', opacity: 0.8, maxHeight: 96, overflowY: 'auto' }}>
+            {ledgerEntries.slice(0, 5).map((e) => (
+              <div key={e.seq}>#{e.seq} {e.ts} [{e.event?.type || 'event'}] {e.event?.tool || ''} → {String(e.hash || '').slice(0, 14)}…</div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

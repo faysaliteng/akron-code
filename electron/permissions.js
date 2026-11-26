@@ -222,10 +222,11 @@ function parseRule(rule) {
 
 function ruleMatches(rule, toolName, args, cwd, { any = false } = {}) {
   const { tool, specifier } = parseRule(rule);
-  // MCP wildcard forms: mcp__server__tool, or `mcp__server` / `mcp__*`.
+  // MCP wildcard forms: mcp__server__tool, `mcp__server`, `mcp__server__*`, or `mcp__*`.
   if (toolName.startsWith('mcp__')) {
     if (tool === toolName) return true;
     if (tool.startsWith('mcp__') && (tool === 'mcp' || toolName.startsWith(tool + '__') || tool === 'mcp__*')) return true;
+    if (tool.startsWith('mcp__') && tool.endsWith('*') && toolName.startsWith(tool.slice(0, -1))) return true;
   }
   if (tool !== toolName && !(tool === '*' && !specifier)) {
     // A rule can name a tool family such as `Edit`; never match a different tool.
@@ -258,6 +259,7 @@ function loadPermissions(cwd) {
     allow: asArray(p.allow),
     deny: asArray(p.deny),
     ask: asArray(p.ask),
+    customRules: Array.isArray(p.customRules) ? p.customRules : [],
     defaultMode: MODES.includes(p.defaultMode) ? p.defaultMode : null,
     additionalDirectories: asArray(p.additionalDirectories),
     sources,
@@ -302,12 +304,36 @@ function bashAllowRule(allow, args) {
 // `mode` is the current permission pill (auto/manual/acceptEdits/plan/bypass).
 // A rule-less 'ask' (rule: null) means "no rule applies — let the caller apply
 // the mode", which is how main.js's approveTool treats it.
-function decide(perms, toolName, args, { cwd = null, mode = 'auto' } = {}) {
+function decide(perms, toolName, args, { cwd = null, mode = 'auto', userPrompt = '' } = {}) {
   const P = perms || { allow: [], deny: [], ask: [] };
   const allow = asArray(P.allow);
   // 1. deny wins outright (any segment of a compound Bash command).
   const d = denyMatch(P, toolName, args, { cwd });
   if (d) return d;
+  // 1b. OpenAI Dots-style 4-tier custom rules (`handoff`, `ask`, `explicit`, `auto`).
+  const customRules = Array.isArray(P.customRules) ? P.customRules : (Array.isArray(P.raw && P.raw.customRules) ? P.raw.customRules : []);
+  for (const cr of customRules) {
+    if (!cr || cr.enabled === false || !cr.pattern) continue;
+    if (!ruleMatches(cr.pattern, toolName, args, cwd, { any: true })) continue;
+    const cm = String(cr.mode || 'ask');
+    const label = cr.label || cr.pattern;
+    if (cm === 'handoff') {
+      return { decision: 'deny', handoff: true, reason: `Hand off to user required by rule "${label}"`, rule: cr.pattern, customMode: cm };
+    }
+    if (cm === 'ask') {
+      return { decision: 'ask', reason: `Rule "${label}" asks before taking action`, rule: cr.pattern, customMode: cm };
+    }
+    if (cm === 'explicit') {
+      const promptLower = String(userPrompt || '').toLowerCase();
+      const kws = Array.isArray(cr.keywords) && cr.keywords.length ? cr.keywords : [String(toolName || '').toLowerCase()];
+      const explicitOk = promptLower && kws.some((k) => k && promptLower.includes(String(k).toLowerCase()));
+      if (explicitOk) return { decision: 'allow', reason: `Explicitly requested by user (${label})`, rule: cr.pattern, customMode: cm };
+      return { decision: 'ask', reason: `Rule "${label}" requires explicit request from you`, rule: cr.pattern, customMode: cm };
+    }
+    if (cm === 'auto') {
+      return { decision: 'allow', reason: `Auto-allowed by custom rule "${label}"`, rule: cr.pattern, customMode: cm };
+    }
+  }
   // 2. ask (any segment).
   for (const rule of asArray(P.ask)) {
     if (ruleMatches(rule, toolName, args, cwd, { any: true })) return { decision: 'ask', reason: `Rule ${rule} requires confirmation`, rule };
@@ -483,11 +509,103 @@ function removePermissionRule({ rule, list = 'allow', settingsPath = null } = {}
   return { ok: true, removed: prev.length !== next.length, rule: clean, list: targetList, settingsPath: filePath, rules: next };
 }
 
+const CUSTOM_MODES = [
+  { id: 'auto', label: 'Take action without asking' },
+  { id: 'explicit', label: 'Take action when you say so' },
+  { id: 'ask', label: 'Ask before taking action' },
+  { id: 'handoff', label: 'Hand off to you' },
+];
+
+const SAFE_STARTER_PACK = [
+  { id: 'starter-external-post', label: 'External messages & webhook POSTs', pattern: 'POST', mode: 'ask', keywords: ['post', 'webhook', 'send message', 'notify'] },
+  { id: 'starter-git-push', label: 'Git push & PR merges', pattern: 'Bash(git push:*)', mode: 'ask', keywords: ['git push', 'push to github'] },
+  { id: 'starter-deploy', label: 'Production deploys & package publish', pattern: 'Bash(npm publish:*)', mode: 'ask', keywords: ['npm publish', 'deploy'] },
+  { id: 'starter-destructive-rm', label: 'Destructive deletes & hard resets', pattern: 'Bash(rm -rf:*)', mode: 'ask', keywords: ['rm -rf', 'delete folder'] },
+  { id: 'starter-billing-handoff', label: 'Purchases, billing & account mutations', pattern: 'mcp__billing__*', mode: 'handoff', keywords: [] },
+];
+
+function isSafeAllowRule(ruleStr) {
+  const s = String(ruleStr || '').trim();
+  if (!s) return false;
+  if (s === '*' || s === 'Bash(*)' || s === 'Bash(*:*)') return false;
+  if (/&&|\|\||;|\r|\n|`|\$\(/.test(s)) return false;
+  const parsed = parseRule(s);
+  if (parsed.tool === 'Bash' && parsed.specifier) {
+    const first = parsed.specifier.split(/\s+/)[0].replace(/:.*$/, '').toLowerCase();
+    if (DANGEROUS_BASH_VERBS.has(first)) return false;
+  }
+  return true;
+}
+
+function loadCustomRules(settingsPath = null) {
+  const filePath = settingsPath || defaultUserSettingsPath();
+  const data = readJsonSettings(filePath);
+  const perms = (data.permissions && typeof data.permissions === 'object') ? data.permissions : {};
+  return Array.isArray(perms.customRules) ? perms.customRules : [];
+}
+
+function saveCustomRule({ id = null, label = '', pattern, mode = 'ask', keywords = [], settingsPath = null } = {}) {
+  const cleanPat = String(pattern || '').trim();
+  if (!cleanPat) return { ok: false, error: 'Rule pattern is required.' };
+  const validModes = new Set(CUSTOM_MODES.map((m) => m.id));
+  const cleanMode = validModes.has(mode) ? mode : 'ask';
+  const filePath = settingsPath || defaultUserSettingsPath();
+  const data = readJsonSettings(filePath);
+  const perms = (data.permissions && typeof data.permissions === 'object') ? { ...data.permissions } : {};
+  const list = Array.isArray(perms.customRules) ? perms.customRules.slice() : [];
+  const rid = id || ('cr_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5));
+  const entry = {
+    id: rid,
+    label: String(label || cleanPat).trim(),
+    pattern: cleanPat,
+    mode: cleanMode,
+    keywords: Array.isArray(keywords) ? keywords : String(keywords || '').split(',').map((s) => s.trim()).filter(Boolean),
+    enabled: true,
+    updatedAt: Date.now(),
+  };
+  const idx = list.findIndex((r) => r.id === rid || r.pattern === cleanPat);
+  if (idx >= 0) list[idx] = { ...list[idx], ...entry, id: list[idx].id };
+  else list.push(entry);
+  perms.customRules = list;
+  data.permissions = perms;
+  writeJsonSettings(filePath, data);
+  return { ok: true, rule: entry, customRules: list };
+}
+
+function deleteCustomRule({ id, pattern = null, settingsPath = null } = {}) {
+  const filePath = settingsPath || defaultUserSettingsPath();
+  const data = readJsonSettings(filePath);
+  const perms = (data.permissions && typeof data.permissions === 'object') ? { ...data.permissions } : {};
+  const list = Array.isArray(perms.customRules) ? perms.customRules : [];
+  const next = list.filter((r) => r.id !== id && (!pattern || r.pattern !== pattern));
+  perms.customRules = next;
+  data.permissions = perms;
+  writeJsonSettings(filePath, data);
+  return { ok: true, customRules: next };
+}
+
+function installSafeStarterPack({ settingsPath = null } = {}) {
+  const filePath = settingsPath || defaultUserSettingsPath();
+  let customRules = loadCustomRules(filePath);
+  for (const r of SAFE_STARTER_PACK) {
+    const res = saveCustomRule({ ...r, settingsPath: filePath });
+    if (res.ok) customRules = res.customRules;
+  }
+  return { ok: true, installed: SAFE_STARTER_PACK.length, customRules };
+}
+
 module.exports = {
   MODES,
+  CUSTOM_MODES,
+  SAFE_STARTER_PACK,
   PRIMARY_ARG,
   DANGEROUS_BASH_VERBS,
   loadPermissions,
+  loadCustomRules,
+  saveCustomRule,
+  deleteCustomRule,
+  installSafeStarterPack,
+  isSafeAllowRule,
   decide,
   denyMatch,
   splitCommand,

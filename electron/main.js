@@ -1085,7 +1085,11 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     if (m[1] === 'gdrive' && !mcp.servers.has('gdrive')) {
       return await gdrive.callTool(m[2], args || {}, mcp);
     }
-    return await mcp.callTool(m[1], m[2], args);
+    const rawOut = await mcp.callTool(m[1], m[2], args);
+    if (m[1] !== 'rea' && typeof rawOut === 'string' && rawOut.trim()) {
+      return require('./untrusted').wrapUntrusted(rawOut, { source: `mcp:${m[1]}` });
+    }
+    return rawOut;
   };
 
   // Ask the user a structured question (pauses agent, resumes on answer).
@@ -1178,11 +1182,31 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       if (!computeruse.satisfies(st.grant, want)) {
         const granted = await new Promise((resolve) => {
           const id = 'cu' + Date.now();
-          pendingComputerUse = { id, resolve, tier: want };
+          let onAbort = null;
+          pendingComputerUse = {
+            id,
+            resolve: (ok) => {
+              if (onAbort && ac && ac.signal) {
+                try { ac.signal.removeEventListener('abort', onAbort); } catch (_) {}
+              }
+              resolve(ok);
+            },
+            tier: want,
+          };
+          if (ac && ac.signal) {
+            if (ac.signal.aborted) {
+              pendingComputerUse = null;
+              return resolve(false);
+            }
+            onAbort = () => {
+              if (pendingComputerUse && pendingComputerUse.id === id) {
+                pendingComputerUse = null;
+                resolve(false);
+              }
+            };
+            ac.signal.addEventListener('abort', onAbort, { once: true });
+          }
           send({ type: 'computerUseConsent', id, tier: want, tool: cuName, sensitive });
-          setTimeout(() => {
-            if (pendingComputerUse && pendingComputerUse.id === id) { pendingComputerUse = null; resolve(false); }
-          }, 300000);
         });
         if (!granted) {
           send({ type: 'notice', text: 'Computer Use blocked — you did not grant screen access.' });
@@ -1197,8 +1221,11 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     // forces a prompt, allow skips it.
     try {
       const perms = require('./permissions').loadPermissions(runCwd);
-      const verdict = require('./permissions').decide(perms, toolName, toolArgs || {}, { cwd: runCwd, mode });
+      const lastUser = Array.isArray(messages) ? [...messages].reverse().find((m) => m && m.role === 'user') : null;
+      const userPrompt = lastUser ? (typeof lastUser.content === 'string' ? lastUser.content : JSON.stringify(lastUser.content || '')) : '';
+      const verdict = require('./permissions').decide(perms, toolName, toolArgs || {}, { cwd: runCwd, mode, userPrompt });
       if (verdict.decision === 'deny') {
+        try { require('./audit-ledger').appendAuditEntry({ actor: 'policy', convId, action: toolName, decision: 'deny', detail: { reason: verdict.reason, rule: verdict.rule, handoff: !!verdict.handoff } }); } catch (_) {}
         send({ type: 'notice', text: `Blocked: ${toolName} — ${verdict.reason}` });
         return false;
       }
@@ -2999,6 +3026,21 @@ ipcMain.handle('autobot:addPermissionRule', (e, payload) => {
 });
 ipcMain.handle('autobot:removePermissionRule', (e, payload) => {
   try { return require('./permissions').removePermissionRule(payload || {}); } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('autobot:installStarterRules', () => {
+  try { return require('./permissions').installSafeStarterPack(); } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('autobot:saveCustomRule', (e, payload) => {
+  try { return require('./permissions').saveCustomRule(payload || {}); } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('autobot:deleteCustomRule', (e, payload) => {
+  try { return require('./permissions').deleteCustomRule(payload || {}); } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('autobot:verifyAuditLedger', () => {
+  try { return require('./audit-ledger').verifyAuditLedger(); } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('autobot:listAuditLedger', (e, limit) => {
+  try { return require('./audit-ledger').listAuditEntries({ limit: Number(limit) || 30 }); } catch (_) { return []; }
 });
 ipcMain.handle('autobot:notify', (_e, payload) => notificationService.notify(payload || {}));
 ipcMain.handle('autobot:checkPermission', (e, toolName, toolArgs, cwd, mode) => {

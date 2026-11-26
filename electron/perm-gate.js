@@ -1,6 +1,8 @@
 'use strict';
 
 const permissions = require('./permissions');
+let auditLedger = null;
+try { auditLedger = require('./audit-ledger'); } catch (_) {}
 
 function createPermissionGate({
   suggestSafeAllowRule = permissions.suggestSafeAllowRule,
@@ -129,10 +131,11 @@ function createPermissionGate({
       return {
         allow: !!payload.allow,
         scope,
+        rule: typeof payload.rule === 'string' ? payload.rule.trim() : null,
         feedback: typeof payload.feedback === 'string' ? payload.feedback.trim() : '',
       };
     }
-    return { allow: false, scope: 'once', feedback: '' };
+    return { allow: false, scope: 'once', rule: null, feedback: '' };
   }
 
   function answer(id, payload) {
@@ -143,7 +146,8 @@ function createPermissionGate({
     const norm = normalizePayload(payload);
     let appliedRule = null;
     if (norm.allow) {
-      const candidate = entry.suggestedRule;
+      const explicitSafe = norm.rule && permissions.isSafeAllowRule && permissions.isSafeAllowRule(norm.rule) ? norm.rule : null;
+      const candidate = explicitSafe || entry.suggestedRule;
       if (norm.scope === 'conversation' && candidate && entry.convId) {
         addSessionRule(entry.convId, candidate);
         appliedRule = candidate;
@@ -162,6 +166,20 @@ function createPermissionGate({
       rule: appliedRule,
       feedback: norm.feedback,
     };
+    if (auditLedger && typeof auditLedger.appendAuditEntry === 'function') {
+      try {
+        auditLedger.appendAuditEntry({
+          type: 'permission_decision',
+          id,
+          convId: entry.convId || null,
+          tool: entry.toolName,
+          allow: norm.allow,
+          scope: norm.scope,
+          rule: appliedRule,
+          feedback: norm.feedback ? norm.feedback.slice(0, 200) : '',
+        });
+      } catch (_) {}
+    }
     settleEntry(id, outcome, { emitCleared: true, reason: norm.allow ? 'approved' : 'denied' });
     return { ok: true, id, ...outcome };
   }

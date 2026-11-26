@@ -24,6 +24,9 @@ const codebaseIndex = require('./ide/codebase-index');
 const codemode = require('./codemode');
 const skillLearner = require('./skill-learner');
 const osSandbox = require('./os-sandbox');
+const untrusted = require('./untrusted');
+const auditLedger = require('./audit-ledger');
+const sideEffectsGuard = auditLedger.createIdempotencyGuard();
 
 const MAX_OUTPUT = 120000; // chars
 
@@ -818,9 +821,9 @@ const executors = {
           .replace(/<[^>]+>/g, ' ')
           .replace(/\s+/g, ' ')
           .trim();
-        return truncate(text.slice(0, 30000));
+        return untrusted.wrapUntrusted(truncate(text.slice(0, 30000)), { source: 'WebFetch', url });
       }
-      return truncate(await res.text());
+      return untrusted.wrapUntrusted(truncate(await res.text()), { source: 'WebFetch', url });
     } catch (e) {
       return 'Error fetching URL: ' + e.message;
     }
@@ -842,7 +845,7 @@ const executors = {
         if (ud) url = decodeURIComponent(ud[1]);
         hits.push(`${title}\n  ${url}`);
       }
-      return hits.length ? hits.join('\n\n') : '(no results)';
+      return hits.length ? untrusted.wrapUntrusted(hits.join('\n\n'), { source: 'WebSearch', url: query }) : '(no results)';
     } catch (e) {
       return 'Error searching: ' + e.message;
     }
@@ -1062,7 +1065,7 @@ const executors = {
   },
 
   // ---- Jira / Linear integrations (config-gated) ----
-  async jira({ action, jql, issueKey, project, summary, description }) {
+  async jira({ action, jql, issueKey, project, summary, description, idempotency_key }) {
     const base = process.env.JIRA_BASE_URL || '';
     const email = process.env.JIRA_EMAIL || '';
     const token = process.env.JIRA_API_TOKEN || '';
@@ -1071,6 +1074,13 @@ const executors = {
     }
     const auth = 'Basic ' + Buffer.from(`${email}:${token}`).toString('base64');
     const act = (action || 'search').toLowerCase();
+    const idemKey = act === 'create' ? (idempotency_key || `jira:create:${project || ''}:${summary || ''}`) : null;
+    if (idemKey) {
+      const gate = sideEffectsGuard.beginExecution(idemKey, { tool: 'Jira', action: act, project });
+      if (!gate.allowed) {
+        return `Skipped duplicate Jira create (idempotency state: ${gate.state}).`;
+      }
+    }
     try {
       let url, method = 'GET', body;
       if (act === 'search' || act === 'list') {
@@ -1086,14 +1096,22 @@ const executors = {
       }
       const res = await fetch(url, { method, headers: { authorization: auth, 'content-type': 'application/json', accept: 'application/json' }, body });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) return `Jira error ${res.status}: ${JSON.stringify(data).slice(0, 500)}`;
+      if (!res.ok) {
+        if (idemKey) sideEffectsGuard.finishExecution(idemKey, 'uncertain', `HTTP ${res.status}`);
+        return `Jira error ${res.status}: ${JSON.stringify(data).slice(0, 500)}`;
+      }
+      if (idemKey) {
+        sideEffectsGuard.finishExecution(idemKey, 'completed', data.key || 'created');
+        try { auditLedger.appendAuditEntry({ type: 'side_effect', tool: 'Jira', action: act, key: data.key || null }); } catch (_) {}
+      }
       if (act === 'search' || act === 'list') {
         const issues = data.issues || [];
         if (!issues.length) return '(no Jira issues found)';
-        return issues.map((i) => `- ${i.key}: ${(i.fields && i.fields.summary) || ''}`).join('\n');
+        return untrusted.wrapUntrusted(issues.map((i) => `- ${i.key}: ${(i.fields && i.fields.summary) || ''}`).join('\n'), { source: 'Jira' });
       }
-      return truncate(JSON.stringify(data, null, 2));
+      return untrusted.wrapUntrusted(truncate(JSON.stringify(data, null, 2)), { source: 'Jira' });
     } catch (e) {
+      if (idemKey) sideEffectsGuard.finishExecution(idemKey, 'uncertain', e.message);
       return 'Jira error: ' + e.message;
     }
   },
@@ -1155,7 +1173,7 @@ const executors = {
   // ---- Chrome (CDP) ----
   async chrome_list_tabs() {
     const ts = await chrome.getTargets();
-    return ts.length ? ts.map((t) => `- ${t.id}: ${t.title} (${t.url})`).join('\n') : '(no Chrome tabs found)';
+    return ts.length ? untrusted.wrapUntrusted(ts.map((t) => `- ${t.id}: ${t.title} (${t.url})`).join('\n'), { source: 'ChromeCDP' }) : '(no Chrome tabs found)';
   },
   async chrome_navigate({ url, targetId }) {
     const { cdp } = await chrome.connectToTarget(targetId);
@@ -1168,7 +1186,7 @@ const executors = {
     const { cdp } = await chrome.connectToTarget(targetId);
     const v = await chrome.evaluate(cdp, expression);
     cdp.close();
-    return String(v);
+    return untrusted.wrapUntrusted(String(v), { source: 'ChromeCDP' });
   },
   async chrome_screenshot({ targetId }) {
     const { cdp } = await chrome.connectToTarget(targetId);
@@ -1207,7 +1225,7 @@ const executors = {
   async browser_read() {
     const r = await browser.read();
     if (!r.ok) return 'Browser error: ' + r.error;
-    return truncate(`PAGE: ${r.title}\nURL: ${r.url}\n\n${r.text || '(no visible text)'}`);
+    return untrusted.wrapUntrusted(truncate(`PAGE: ${r.title}\nURL: ${r.url}\n\n${r.text || '(no visible text)'}`), { source: 'BrowserDOM', url: r.url || '' });
   },
   async browser_snapshot() {
     const r = await browser.read();
@@ -1216,7 +1234,7 @@ const executors = {
     if (r.links && r.links.length) { lines.push('\nLINKS:'); r.links.forEach((l) => lines.push('- ' + l)); }
     if (r.buttons && r.buttons.length) { lines.push('\nBUTTONS:'); r.buttons.forEach((b) => lines.push('- ' + b)); }
     if (r.inputs && r.inputs.length) { lines.push('\nINPUTS:'); r.inputs.forEach((i) => lines.push(`- <${i.tag}> name="${i.name}" type="${i.type}" placeholder="${i.placeholder}"`)); }
-    return truncate(lines.join('\n'));
+    return untrusted.wrapUntrusted(truncate(lines.join('\n')), { source: 'BrowserDOM', url: r.url || '' });
   },
   async browser_click({ selector, index }) {
     const r = await browser.click(selector, index);
@@ -2148,8 +2166,13 @@ async function runToolInner(name, args, ctx) {
       const mergedArgs = { ...(nested && typeof nested === 'object' ? nested : {}), ...rest };
       const tabId = Number.isInteger(rawTab) ? rawTab : undefined;
       const out = await bridge.callTool(action, mergedArgs, tabId);
-      if (out && typeof out === 'object' && typeof out.text === 'string') return out.text;
-      return typeof out === 'string' ? out : JSON.stringify(out, null, 2);
+      const textOut = (out && typeof out === 'object' && typeof out.text === 'string')
+        ? out.text
+        : (typeof out === 'string' ? out : JSON.stringify(out, null, 2));
+      if (/^(read_|find|list_tabs|execute_javascript)/.test(action)) {
+        return untrusted.wrapUntrusted(textOut, { source: `ChromeBot:${action}` });
+      }
+      return textOut;
     } catch (e) {
       return { content: 'External browser error: ' + String((e && e.message) || e), isError: true };
     }
