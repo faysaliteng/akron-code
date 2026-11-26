@@ -191,6 +191,10 @@ contextBridge.exposeInMainWorld('autobot', {
   shellKill: (id) => ipcRenderer.invoke('autobot:shellKill', id),
 
   gitInfo: (cwd) => ipcRenderer.invoke('autobot:gitInfo', cwd),
+  worktreeList: (cwd) => ipcRenderer.invoke('autobot:worktreeList', cwd),
+  worktreeAdd: (cwd, branch, targetDir) => ipcRenderer.invoke('autobot:worktreeAdd', cwd, branch, targetDir),
+  worktreeRemove: (cwd, targetDir) => ipcRenderer.invoke('autobot:worktreeRemove', cwd, targetDir),
+  serverInfo: () => ipcRenderer.invoke('autobot:serverInfo'),
   gitRun: (cwd, args) => ipcRenderer.invoke('autobot:gitRun', cwd, args),
   diff: (oldText, newText, label) => ipcRenderer.invoke('autobot:diff', oldText, newText, label),
 

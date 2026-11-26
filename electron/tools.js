@@ -407,14 +407,25 @@ const executors = {
       }
       let child;
       try {
-        // detached → the command gets its own process group, so a timeout or an
-        // abort can kill the whole tree (npm → node → esbuild …), not just zsh.
-        child = spawn(wrapped.file, wrapped.args, { cwd: dir, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        // detached → on POSIX the command gets its own process group so timeout/abort can
+        // kill the whole tree. On Windows use windowsHide + taskkill /T /F.
+        child = spawn(wrapped.file, wrapped.args, {
+          cwd: dir,
+          detached: process.platform !== 'win32',
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
       } catch (e) {
         return resolve(`Error (${e.code || 'spawn'}): ${e.message}`);
       }
       const note = wrapped.note ? `[${wrapped.note}]\n` : '';
       const killGroup = () => {
+        if (process.platform === 'win32' && child && child.pid) {
+          try {
+            spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+            return;
+          } catch (_) {}
+        }
         try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {
           try { child.kill('SIGKILL'); } catch (__) { /* already gone */ }
         }
@@ -1259,14 +1270,16 @@ function runCode(lang, code, cwd, timeoutMs) {
     if (lang === 'javascript' || lang === 'js' || lang === 'node') {
       cmd = 'node -e ' + JSON.stringify(String(code));
     } else if (lang === 'python' || lang === 'py' || lang === 'python3') {
-      cmd = 'python3 -c ' + JSON.stringify(String(code));
+      cmd = (process.platform === 'win32' ? 'python' : 'python3') + ' -c ' + JSON.stringify(String(code));
     } else if (lang === 'bash' || lang === 'sh' || lang === 'shell') {
-      cmd = '/bin/zsh -c ' + JSON.stringify(String(code));
+      cmd = process.platform === 'win32'
+        ? 'powershell.exe -NoLogo -NoProfile -NonInteractive -Command ' + JSON.stringify(String(code))
+        : '/bin/zsh -c ' + JSON.stringify(String(code));
     } else {
       resolve(`Unsupported REPL language "${lang}". Supported: javascript/node, python, bash/shell.`);
       return;
     }
-    exec(cmd, { cwd: resolveDir(cwd), timeout: t, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    exec(cmd, { cwd: resolveDir(cwd), timeout: t, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
       let out = '';
       if (stdout) out += stdout;
       if (stderr) out += (out ? '\n[stderr]\n' : '') + stderr;

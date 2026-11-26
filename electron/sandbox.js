@@ -244,8 +244,11 @@ function profileFor(pol) {
  */
 function wrapShell(command, opts = {}) {
   const pol = load().sandbox;
+  const shellCmd = process.platform === 'win32'
+    ? { file: 'powershell.exe', args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String(command)] }
+    : { file: '/bin/zsh', args: ['-l', '-c', String(command)] };
   if (!pol.enabled || opts.dangerouslyDisableSandbox) {
-    return { file: '/bin/zsh', args: ['-l', '-c', String(command)], sandboxed: false };
+    return { ...shellCmd, sandboxed: false };
   }
   if (process.platform !== 'darwin' || !fs.existsSync(SANDBOX_EXEC)) {
     if (pol.failIfUnavailable) {
@@ -253,7 +256,7 @@ function wrapShell(command, opts = {}) {
       err.code = 'SANDBOX_UNAVAILABLE';
       throw err;
     }
-    return { file: '/bin/zsh', args: ['-l', '-c', String(command)], sandboxed: false, note: 'sandbox unavailable — ran unsandboxed' };
+    return { ...shellCmd, sandboxed: false, note: 'sandbox unavailable — ran unsandboxed' };
   }
   const profile = profileFor(pol);
   return {

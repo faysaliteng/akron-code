@@ -3127,13 +3127,29 @@ ipcMain.handle('autobot:shellRead', (e, id) => shells.read(id));
 ipcMain.handle('autobot:shellList', () => shells.list());
 ipcMain.handle('autobot:shellKill', (e, id) => shells.kill(id));
 
-// Repo-aware "Claude Code" mode (B8): git introspection + unified diff.
+// Repo-aware "Claude Code" mode (B8): git introspection, worktrees + unified diff.
 ipcMain.handle('autobot:gitInfo', async (e, cwd) => git.gitInfo(cwd));
+ipcMain.handle('autobot:worktreeList', async (e, cwd) => git.listWorktrees(cwd));
+ipcMain.handle('autobot:worktreeAdd', async (e, cwd, branch, targetDir) => git.addWorktree(cwd, branch, targetDir));
+ipcMain.handle('autobot:worktreeRemove', async (e, cwd, targetDir) => git.removeWorktree(cwd, targetDir));
+ipcMain.handle('autobot:serverInfo', async () => {
+  const st = require('./extbridge').status();
+  return {
+    port: st.port || 8766,
+    url: `http://127.0.0.1:${st.port || 8766}`,
+    wsUrl: `ws://127.0.0.1:${st.port || 8766}`,
+    platform: process.platform,
+    arch: process.arch,
+    pid: process.pid,
+    extensionConnected: !!st.extensionConnected,
+    connectedClients: st.connectedClients || 0,
+  };
+});
 ipcMain.handle('autobot:gitRun', async (e, cwd, args) => {
   try {
     const { exec } = require('child_process');
     const out = await new Promise((resolve) => {
-      exec('git ' + args.join(' '), { cwd: cwd || process.cwd(), timeout: 15000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      exec('git ' + args.join(' '), { cwd: cwd || process.cwd(), timeout: 15000, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
         resolve({ ok: !err, stdout: String(stdout || ''), stderr: String(stderr || '') });
       });
     });

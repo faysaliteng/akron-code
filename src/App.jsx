@@ -70,6 +70,67 @@ function ProvNotice({ text, warn, className }) {
   );
 }
 
+// ---------- OpenCode-style UI sound synthesizer (WebAudio) ----------
+const SOUND_PRESETS = [
+  { id: 'staplebops-01', label: 'Staplebops 01', notes: [523.25, 659.25], dur: 0.08, type: 'sine' },
+  { id: 'staplebops-02', label: 'Staplebops 02', notes: [587.33, 440.0], dur: 0.09, type: 'triangle' },
+  { id: 'staplebops-05', label: 'Staplebops 05', notes: [493.88, 659.25, 783.99], dur: 0.075, type: 'sine' },
+  { id: 'aurora-01', label: 'Aurora Chime', notes: [659.25, 880.0, 1046.5], dur: 0.09, type: 'sine' },
+  { id: 'soft-pulse', label: 'Soft Pulse', notes: [392.0, 523.25], dur: 0.07, type: 'triangle' },
+  { id: 'none', label: 'None (Muted)', notes: [], dur: 0, type: 'sine' },
+];
+
+function playUiSound(presetId) {
+  try {
+    const preset = SOUND_PRESETS.find((s) => s.id === presetId);
+    if (!preset || !preset.notes.length) return;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+    preset.notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = preset.type || 'sine';
+      osc.frequency.setValueAtTime(freq, now + idx * 0.07);
+      gain.gain.setValueAtTime(0.0001, now + idx * 0.07);
+      gain.gain.exponentialRampToValueAtTime(0.08, now + idx * 0.07 + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.07 + preset.dur + 0.05);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + idx * 0.07);
+      osc.stop(now + idx * 0.07 + preset.dur + 0.07);
+    });
+    setTimeout(() => { try { ctx.close(); } catch (_) {} }, 500);
+  } catch (_) {}
+}
+
+function sendDesktopNotification(kind, title, body, settings) {
+  try {
+    const notif = (settings && settings.notifications) || { agent: true, permissions: true, questions: true, errors: false };
+    const sounds = (settings && settings.sounds) || { agent: 'staplebops-01', permissions: 'staplebops-02', questions: 'staplebops-05', errors: 'none' };
+    if (sounds[kind] && sounds[kind] !== 'none') playUiSound(sounds[kind]);
+    if (!notif[kind]) return;
+    if (typeof Notification !== 'undefined') {
+      if (Notification.permission === 'granted') {
+        new Notification(title || 'Akron Code', { body: String(body || '').slice(0, 140), silent: true });
+      } else if (Notification.permission === 'default' && Notification.requestPermission) {
+        Notification.requestPermission().then((p) => {
+          if (p === 'granted') new Notification(title || 'Akron Code', { body: String(body || '').slice(0, 140), silent: true });
+        }).catch(() => {});
+      }
+    }
+  } catch (_) {}
+}
+
+// ---------- DeepSeek Harness runtime profiles ----------
+const HARNESS_PROFILES = [
+  { id: 'full', name: 'Full IDE', hint: 'All 146+ tools, subagents, browser & computer use', prompt: '' },
+  { id: 'fast', name: 'Fast Coder', hint: 'Minimal deliberation, rapid Read → Edit → Test loop', prompt: '[Harness Profile: Fast Coder] Move directly to Read/Edit/Bash with crisp, concise edits and immediate verification.' },
+  { id: 'architect', name: 'Deep Architect', hint: 'System boundaries, design tradeoffs & multi-file invariants', prompt: '[Harness Profile: Deep Architect] Analyze module boundaries, invariants, and tradeoffs thoroughly before modifying code.' },
+  { id: 'security', name: 'Security & REA', hint: 'Audit-first hardening, secret safety & binary inspection', prompt: '[Harness Profile: Security & REA] Prioritize security boundaries, input validation, and binary/package verification via REA tools.' },
+];
+
 // ---------- chat notice bar ----------
 // The bar above the composer carries compaction notes, goal echoes and the
 // orchestrator-pool drop ("Left 1 orchestrator model out of this turn — …").
@@ -414,6 +475,8 @@ const msgText = (m) => {
 const buildDirectives = (styleId, reasoningLevel, opts = {}) => {
   const style = STYLES.find((s) => s.id === styleId);
   const d = [];
+  const profile = opts.harnessProfile ? HARNESS_PROFILES.find((p) => p.id === opts.harnessProfile) : null;
+  if (profile && profile.prompt) d.push(profile.prompt);
   if (style && style.prompt) d.push('[Style: ' + style.name + '] ' + style.prompt);
   if (reasoningLevel && reasoningLevel !== 'auto') {
     const dir = {
@@ -570,9 +633,28 @@ async function filesToAttachments(files) {
 export default function App() {
   const [convs, setConvs] = useState(() => loadJSON('autobot:convs', []));
   const [activeId, setActiveId] = useState(() => loadJSON('autobot:activeId', null));
+  const [openTabIds, setOpenTabIds] = useState(() => {
+    const savedTabs = loadJSON('autobot:openTabs', null);
+    const curId = loadJSON('autobot:activeId', null);
+    if (Array.isArray(savedTabs) && savedTabs.length) return savedTabs;
+    return curId ? [curId] : [];
+  });
+  useEffect(() => { saveJSON('autobot:openTabs', openTabIds); }, [openTabIds]);
+  useEffect(() => {
+    if (!activeId) return;
+    setOpenTabIds((tabs) => (tabs.includes(activeId) ? tabs : [...tabs, activeId]));
+  }, [activeId]);
   const [provider, setProvider] = useState(() => hydrateProvider(loadJSON('autobot:provider', {}), DEFAULT_PROVIDER, PRESETS));
   const [providerKeys, setProviderKeys] = useState(() => loadJSON('autobot:providerKeys', {}));
-  const [settings, setSettings] = useState(() => loadJSON('autobot:settings', { theme: 'dark', useMemory: true, locale: 'en' }));
+  const [settings, setSettings] = useState(() => {
+    const base = loadJSON('autobot:settings', { theme: 'dark', useMemory: true, locale: 'en' });
+    return {
+      ...base,
+      harnessProfile: base.harnessProfile || 'full',
+      notifications: { agent: true, permissions: true, questions: true, errors: false, ...(base.notifications || {}) },
+      sounds: { agent: 'staplebops-01', permissions: 'staplebops-02', questions: 'staplebops-05', errors: 'none', ...(base.sounds || {}) },
+    };
+  });
   const T = useCallback((k) => _t(settings.locale, k), [settings.locale]);
   const [orchestrator, setOrchestrator] = useState(() => ({ enabled: false, providers: [], activeIndex: -1 }));
   const [features, setFeatures] = useState(() => ({ computerUse: true, chrome: false, bridges: false, quickEntry: true, computerUseTeach: false, buddy: false, remoteControl: false, extensions: false, developerMode: false, trustedFolders: false, chromeHost: '127.0.0.1', chromePort: 9222 }));
@@ -1107,6 +1189,7 @@ export default function App() {
         case 'complete':
           if (evt && evt.usage) setLastUsage({ ...evt.usage, model: evt.usage.model || (evt.usage && evt.usage.model) || null, at: Date.now() });
           commitLive();
+          sendDesktopNotification('agent', 'Akron Code', 'Agent finished working in your workspace.', settings);
           break;
         case 'cancelled':
           // Stopping keeps whatever the model had already produced.
@@ -1116,18 +1199,22 @@ export default function App() {
           // Preserve anything already streamed, then show the failure.
           commitLive();
           setError(cleanErr(evt.message));
+          sendDesktopNotification('errors', 'Akron Code · Error', cleanErr(evt.message), settings);
           // A dead credential is fixed by signing in, not by retrying — open the
           // model menu so the button that resolves it is one click away.
           if (evt.needsSignIn) setModelMenuOpen(true);
           break;
         case 'question':
           setQuestion({ id: evt.id, type: 'question', text: evt.question, options: evt.options || [] });
+          sendDesktopNotification('questions', 'Akron Code needs input', evt.question, settings);
           break;
         case 'plan':
           setQuestion({ id: evt.id, type: 'plan', text: evt.plan, options: [] });
+          sendDesktopNotification('questions', 'Akron Code · Plan approval', 'Review proposed execution plan.', settings);
           break;
         case 'permission':
           setPermission({ id: evt.id, tool: evt.tool, args: evt.args || {}, summary: evt.summary || '' });
+          sendDesktopNotification('permissions', 'Permission required', `${evt.tool}: ${evt.summary || 'approval needed'}`, settings);
           break;
         case 'computerUseConsent':
           // Desktop's `computer:request_access` / `request_full_control` /
@@ -1479,7 +1566,7 @@ export default function App() {
     setConvs((cs) => cs.map((c) => (c.id === convId ? { ...c, messages: [...c.messages, userMsg] } : c)));
 
     const payloadMessages = buildPayloadMessages([...currentMessages, userMsg]);
-    const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject });
+    const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile });
     if (directives.length) payloadMessages.unshift({ role: 'system', content: directives.join('\n') });
 
     // Only consume the composer's attachment tray when this send came from the
@@ -1524,7 +1611,7 @@ export default function App() {
       setError(cleanErr(started.error || 'The provider rejected this run.'));
       if (started.needsSignIn) setModelMenuOpen(true);
     }
-  }, [activeId, convs, provider, cwd, settings.useMemory, streaming, orchestrator, attachments, styleId, webSearch, activeProject, permissions, swarmEnabled]);
+  }, [activeId, convs, provider, cwd, settings.useMemory, settings.harnessProfile, streaming, orchestrator, attachments, styleId, webSearch, activeProject, permissions, swarmEnabled]);
 
   const stop = useCallback(() => {
     if (runIdRef.current) window.autobot.cancel(runIdRef.current);
@@ -1672,7 +1759,19 @@ export default function App() {
       }
     }
     setConvs((cs) => cs.filter((c) => c.id !== id));
-    if (activeId === id) setActiveId(null);
+    setOpenTabIds((tabs) => {
+      const next = tabs.filter((t) => t !== id);
+      if (activeId === id) setActiveId(next.length ? next[next.length - 1] : null);
+      return next;
+    });
+  };
+  const closeWorkspaceTab = (id, e) => {
+    if (e) e.stopPropagation();
+    setOpenTabIds((tabs) => {
+      const next = tabs.filter((t) => t !== id);
+      if (activeId === id) setActiveId(next.length ? next[next.length - 1] : null);
+      return next;
+    });
   };
   const renameConv = (id, title) => {
     const clean = String(title || '').trim();
@@ -1797,7 +1896,7 @@ export default function App() {
     setError('');
     setConvs((cs) => cs.map((c) => (c.id === convId ? { ...c, messages: kept } : c)));
     const payloadMessages = buildPayloadMessages(kept);
-    const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject });
+    const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile });
     if (directives.length) payloadMessages.unshift({ role: 'system', content: directives.join('\n') });
     // Same project-folder rule as send(): never inherit another chat's cwd.
     let runCwd = cwd;
@@ -2281,6 +2380,34 @@ export default function App() {
         note(r && r.ok ? '✅ Created `CLAUDE.md` at `' + r.path + '`. Edit it to describe this project.' : '❌ Could not write CLAUDE.md: ' + ((r && r.error) || 'unknown'));
         break;
       }
+      case 'note': {
+        const topic = String(argText || '').trim();
+        if (!topic) {
+          note('Use `/note <decision title>` to record an Agent Note in `.agents/notes/` (DeepSeek Harness pattern).');
+          break;
+        }
+        const day = new Date().toISOString().slice(0, 10);
+        const slug = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'decision';
+        const relPath = `.agents/notes/implemented/architecture/${day}-${slug}.md`;
+        const content = [
+          `# Agent Note: ${topic}`,
+          '',
+          'Status: implemented',
+          '',
+          '## Problem',
+          'Describe the constraint, failure mode, or design tension this decision resolves.',
+          '',
+          '## Decision',
+          `- Recorded in Akron Code workspace (\`${cwd || '.'}\`).`,
+          '',
+          '## Verification',
+          '- Concrete checks / E2E tests covering this change.',
+          '',
+        ].join('\n');
+        const r = await window.autobot.writeFile({ file: relPath, content, cwd });
+        note(r && r.ok ? `✅ Created Agent Note at \`${relPath}\`.` : `❌ Could not write Agent Note: ${(r && r.error) || 'unknown'}`);
+        break;
+      }
       case 'todos': {
         let todos = null;
         for (let i = (messages || []).length - 1; i >= 0; i--) {
@@ -2378,6 +2505,10 @@ export default function App() {
       }
       case 'subagents': {
         showSessionPane('subagents');
+        break;
+      }
+      case 'worktrees': {
+        openSettingsAt('worktrees');
         break;
       }
       case 'gdrive': {
@@ -2793,9 +2924,39 @@ export default function App() {
     onHide: () => setSessionPane((p) => ({ ...p, type: null })),
   };
 
+  const isWinHost = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform || '');
+  const visibleTabs = openTabIds.map((id) => convs.find((c) => c.id === id)).filter(Boolean);
+
   return (
-    <div className="app" data-theme={settings.theme} dir={localeDir(settings.locale)} lang={settings.locale}>
-      <div className="titlebar"><Logo size={16} active={streaming} /><span className="brand">Akron Code</span><span className="sub">{T('brand.sub')}</span></div>
+    <div className="app" data-theme={settings.theme} data-platform={isWinHost ? 'win32' : 'darwin'} dir={localeDir(settings.locale)} lang={settings.locale}>
+      <div className="titlebar">
+        <div className="titlebar-brand">
+          <Logo size={16} active={streaming} />
+          <span className="brand">Akron Code</span>
+          <span className="sub">{T('brand.sub')}</span>
+        </div>
+        <div className="ws-tabs" role="tablist" aria-label="Workspace sessions">
+          {visibleTabs.map((tab) => (
+            <div
+              key={tab.id}
+              role="tab"
+              aria-selected={tab.id === activeId && panel === 'chats'}
+              className={'ws-tab' + (tab.id === activeId && panel === 'chats' ? ' on' : '')}
+              onClick={() => selectConv(tab.id)}
+              title={tab.title || 'Untitled session'}
+            >
+              {streaming && runConvRef.current === tab.id && <span className="ws-tab-dot" />}
+              <span className="ws-tab-label">{tab.title || 'Untitled session'}</span>
+              <button type="button" className="ws-tab-x" aria-label="Close tab" onClick={(e) => closeWorkspaceTab(tab.id, e)}>
+                <Icon name="X" size={10} />
+              </button>
+            </div>
+          ))}
+          <button type="button" className="ws-tab-add" title="New session tab" aria-label="New session tab" onClick={newChat}>
+            <Icon name="Add" size={14} />
+          </button>
+        </div>
+      </div>
 
       <div className="layout">
         {/* Sidebar — 3-zone layout: pinned Workspace + Dock, scrollable Recents, pinned Customizations & Settings */}
@@ -3005,6 +3166,7 @@ export default function App() {
           memory={memory} addMemory={addMemory} clearMemory={clearMemory}
           notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells}
           openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook}
+          cwd={cwd} setCwd={setCwd}
           onOpenGdrive={() => setGdriveModalOpen(true)}
           gdriveState={gdriveState}
         />
@@ -8482,7 +8644,7 @@ function AccountSection({ T, provider, setProvider }) {
         <div key={pv.id} className="prov-group acct-prov">
           <div className="prov-head">
             <span className="prov-name">{pv.label}</span>
-            <span className="acct-count">{pv.accounts.length ? pv.accounts.length + ' ' + T('account.count') : T('account.none')}</span>
+            <span className="acct-count">{pv.accounts.length === 1 ? '1 account' : (pv.accounts.length ? pv.accounts.length + ' ' + T('account.count') : T('account.none'))}</span>
           </div>
 
           {pv.accounts.map((a) => {
@@ -9294,14 +9456,18 @@ function RolePoolsEditor({ orchestrator, saveOrch }) {
 
 const SETTINGS_SECTIONS = [
   { id: 'providers', label: 'Models & Providers', icon: 'Sparkles', sub: 'Primary endpoints, presets, local Ollama, and subscription sign-in.', keys: 'model provider ollama api key preset subscription oauth temperature token' },
-  { id: 'orchestrator', label: 'Orchestrator & Pools', icon: 'Orbit', sub: 'Multi-model failover tiers and FreeLLMAPI role pools with live pool health.', keys: 'orchestrator pool planner coder vision fast longctx failover swarm' },
+  { id: 'notifications', label: 'Notifications', icon: 'Notification', sub: 'Choose when to receive desktop notifications and hear synthesized sounds.', keys: 'notifications sound chime staplebops alert agent permissions questions errors' },
+  { id: 'orchestrator', label: 'Orchestrator & Pools', icon: 'Orbit', sub: 'DeepSeek Harness profiles, multi-model failover tiers, and role pools.', keys: 'orchestrator pool planner coder vision fast longctx failover swarm profile harness' },
+  { id: 'worktrees', label: 'Worktrees', icon: 'GitBranch', sub: 'Create and switch isolated git worktree checkouts for parallel branches.', keys: 'git worktree branch checkout parallel workspace' },
   { id: 'skills', label: 'Skills & Plugins', icon: 'Lightbulb', sub: 'Manage SKILL.md packs, agent capabilities, and plugins.', keys: 'skills plugins packs extensions' },
   { id: 'mcp', label: 'MCP Connectors', icon: 'Connectors', sub: 'Connect external Model Context Protocol servers & tools.', keys: 'mcp connectors servers tools' },
   { id: 'memory', label: 'Memory & Notebooks', icon: 'Memory', sub: 'Long-term saved facts and interactive notebooks.', keys: 'memory facts notebooks cells' },
   { id: 'harness', label: 'Harness & Custom Tools', icon: 'AgentsSimple', sub: 'Creator Mode runtime tools, developer features, and agent capabilities.', keys: 'creator custom tool harness developer extension buddy remote control' },
   { id: 'rea', label: 'Reverse Engineering', icon: 'Orbit', sub: 'Built-in REA (morluto/rea) MCP & CLI, 263 tools, doctor & runtime.', keys: 'rea reverse engineer binary ghidra hopper ida rizin asar apk firmware mcp decompile' },
   { id: 'browser', label: 'Browser Extension', icon: 'Globe', sub: 'Zero-key Chrome extension bridge for live browser control & shared desktop models.', keys: 'chrome extension akron browser bot bridge websocket tabs 8766' },
+  { id: 'server', label: 'Server & Pairing', icon: 'Plug', sub: 'Local HTTP/WebSocket host endpoint, bridge health, and device info.', keys: 'server pairing port 8766 endpoint websocket health' },
   { id: 'voice', label: 'Voice & Dictation', icon: 'Microphone', sub: 'Built-in offline ONNX Whisper speech model & fast gateway transcription.', keys: 'voice dictation whisper microphone speech audio language' },
+  { id: 'shortcuts', label: 'Shortcuts', icon: 'Keyboard', sub: 'Keyboard shortcuts for fast navigation and editing.', keys: 'shortcuts hotkeys keybindings keyboard cmd ctrl' },
   { id: 'security', label: 'Permissions & Security', icon: 'LockShield', sub: 'Tool consent rules, Computer Use, Chrome CDP, bridges, and compliance.', keys: 'permission security computer use chrome cdp bridge compliance trusted folders' },
   { id: 'system', label: 'Appearance & System', icon: 'Palette', sub: 'Theme, language locale, memory injection, launch behavior, and runtimes.', keys: 'theme dark light locale language memory login quick entry runtime' },
 ];
@@ -9314,6 +9480,7 @@ function SettingsModal({
   mcpServers = [], mcpForm, setMcpForm, connectMcp, disconnectMcp,
   memory = [], addMemory, clearMemory,
   notebooks = [], activeNotebook, notebookCells = [], setNotebookCells, openNotebook, newNotebook, saveActiveNotebook, deleteActiveNotebook,
+  cwd, setCwd,
   onOpenGdrive, gdriveState,
 }) {
   const [section, setSection] = useState(initialSection || 'providers');
@@ -9441,6 +9608,42 @@ function SettingsModal({
     onError: (e) => setVoiceTestErr(e),
   });
 
+  // Worktrees & local Server info
+  const [wtInfo, setWtInfo] = useState({ isRepo: false, root: null, worktrees: [] });
+  const [wtBranch, setWtBranch] = useState('');
+  const [wtBusy, setWtBusy] = useState(false);
+  const [wtMsg, setWtMsg] = useState('');
+  const refreshWorktrees = useCallback(async () => {
+    if (!window.autobot || !window.autobot.worktreeList) return;
+    try {
+      const r = await window.autobot.worktreeList(cwd || undefined);
+      if (r) setWtInfo(r);
+    } catch (_) {}
+  }, [cwd]);
+  useEffect(() => {
+    if (section === 'worktrees') refreshWorktrees();
+  }, [section, refreshWorktrees]);
+
+  const [serverMeta, setServerMeta] = useState(null);
+  const refreshServerMeta = useCallback(async () => {
+    if (!window.autobot || !window.autobot.serverInfo) return;
+    try {
+      const r = await window.autobot.serverInfo();
+      if (r) setServerMeta(r);
+    } catch (_) {}
+  }, []);
+  useEffect(() => {
+    if (section === 'server') refreshServerMeta();
+  }, [section, refreshServerMeta]);
+
+  const notifCfg = { agent: true, permissions: true, questions: true, errors: false, ...(settings.notifications || {}) };
+  const soundCfg = { agent: 'staplebops-01', permissions: 'staplebops-02', questions: 'staplebops-05', errors: 'none', ...(settings.sounds || {}) };
+  const toggleNotif = (k) => setSettings({ ...settings, notifications: { ...notifCfg, [k]: !notifCfg[k] } });
+  const setSoundPreset = (k, val) => {
+    setSettings({ ...settings, sounds: { ...soundCfg, [k]: val } });
+    if (val && val !== 'none') playUiSound(val);
+  };
+
   const q = navFilter.trim().toLowerCase();
   const visibleSections = q
     ? SETTINGS_SECTIONS.filter((s) => s.label.toLowerCase().includes(q) || s.keys.includes(q) || s.sub.toLowerCase().includes(q))
@@ -9449,13 +9652,16 @@ function SettingsModal({
 
   const badgeFor = (id) => {
     if (id === 'providers') return (provider.model || '').split('/').pop().slice(0, 14) || 'Setup';
+    if (id === 'notifications') return notifCfg.agent ? 'On' : 'Off';
     if (id === 'orchestrator') return (orchestrator.pools && orchestrator.pools.enabled) ? 'Pools on' : (orchestrator.enabled ? 'On' : 'Off');
+    if (id === 'worktrees') return wtInfo.worktrees && wtInfo.worktrees.length ? `${wtInfo.worktrees.length}` : '';
     if (id === 'skills') return `${skills.filter((s) => s.enabled !== false).length}`;
     if (id === 'mcp') return `${mcpServers.length}`;
     if (id === 'memory') return `${memory.length}`;
     if (id === 'harness') return customTools.length ? `${customTools.length} tool${customTools.length === 1 ? '' : 's'}` : '';
     if (id === 'rea') return reaInfo && reaInfo.connected ? `${reaInfo.toolCount} tools` : (reaInfo && reaInfo.available ? 'Ready' : 'Setup');
     if (id === 'browser') return extStatus && extStatus.extensionConnected ? 'Live' : '8766';
+    if (id === 'server') return '8766';
     if (id === 'voice') return settings.voiceEngine === 'local' ? 'Whisper' : 'Auto';
     if (id === 'security') return permissions;
     if (id === 'system') return settings.theme || 'dark';
@@ -9463,19 +9669,19 @@ function SettingsModal({
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay settings-fullscreen" onClick={onClose}>
       <div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
         <aside className="settings-sidebar" aria-label="Settings categories">
-          <div className="settings-brand">
-            <Logo size={18} />
-            <span>{T('settings.title')}</span>
-          </div>
+          <button type="button" className="settings-back-btn" onClick={onClose}>
+            <Icon name="ArrowLeft" size={14} />
+            <span>Back to app</span>
+          </button>
           <div className="settings-filter">
             <Icon name="Search" size={13} />
             <input
               value={navFilter}
               onChange={(e) => setNavFilter(e.target.value)}
-              placeholder="Filter settings…"
+              placeholder="Search settings…"
             />
           </div>
           <nav className="settings-nav">
@@ -9503,16 +9709,19 @@ function SettingsModal({
 
         <section className="settings-main">
           <header className="settings-head">
-            <div>
-              <h2>{activeMeta.label}</h2>
-              <p className="settings-head-sub">{activeMeta.sub}</p>
+            <div className="settings-head-inner">
+              <div>
+                <h2>{activeMeta.label}</h2>
+                <p className="settings-head-sub">{activeMeta.sub}</p>
+              </div>
+              <button type="button" className="icon-btn" onClick={onClose} title="Close settings">
+                <Icon name="X" size={16} />
+              </button>
             </div>
-            <button type="button" className="icon-btn" onClick={onClose} title="Close settings">
-              <Icon name="X" size={16} />
-            </button>
           </header>
 
           <div className="settings-body">
+            <div className="settings-body-inner">
             {section === 'providers' && (
               <>
                 {stage && (
@@ -9594,8 +9803,86 @@ function SettingsModal({
               </>
             )}
 
+            {section === 'notifications' && (
+              <>
+                <div>
+                  <h3 className="oc-sec-title">Desktop notifications</h3>
+                  <div className="oc-group">
+                    {[
+                      { k: 'agent', title: 'Agent', sub: 'Show system notification when the agent is complete or needs attention' },
+                      { k: 'permissions', title: 'Permissions', sub: 'Show system notification when a permission is required' },
+                      { k: 'questions', title: 'Questions', sub: 'Show system notification when the agent asks a question' },
+                      { k: 'errors', title: 'Errors', sub: 'Show system notification when an error occurs' },
+                    ].map((row) => (
+                      <div key={row.k} className="oc-row">
+                        <div className="oc-row-meta">
+                          <div className="oc-row-title">{row.title}</div>
+                          <div className="oc-row-sub">{row.sub}</div>
+                        </div>
+                        <div className="oc-row-ctrl">
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={!!notifCfg[row.k]}
+                            className={'oc-switch' + (notifCfg[row.k] ? ' on' : '')}
+                            onClick={() => toggleNotif(row.k)}
+                          >
+                            <span className="oc-switch-knob" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="oc-sec-title">Sound effects</h3>
+                  <div className="oc-group">
+                    {[
+                      { k: 'agent', title: 'Agent', sub: 'Play sound when the agent is complete or needs attention' },
+                      { k: 'permissions', title: 'Permissions', sub: 'Play sound when a permission is required' },
+                      { k: 'questions', title: 'Questions', sub: 'Play sound when the agent asks a question' },
+                      { k: 'errors', title: 'Errors', sub: 'Play sound when an error occurs' },
+                    ].map((row) => (
+                      <div key={row.k} className="oc-row">
+                        <div className="oc-row-meta">
+                          <div className="oc-row-title">{row.title}</div>
+                          <div className="oc-row-sub">{row.sub}</div>
+                        </div>
+                        <div className="oc-row-ctrl">
+                          <select className="oc-select" value={soundCfg[row.k] || 'none'} onChange={(e) => setSoundPreset(row.k, e.target.value)}>
+                            {SOUND_PRESETS.map((sp) => <option key={sp.id} value={sp.id}>{sp.label}</option>)}
+                          </select>
+                          <button type="button" className="btn-mini" title="Preview sound" onClick={() => playUiSound(soundCfg[row.k] || 'staplebops-01')}>
+                            <Icon name="Play" size={11} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+
             {section === 'orchestrator' && (
               <>
+                <div>
+                  <h3 className="oc-sec-title">DeepSeek Harness Runtime Profile</h3>
+                  <div className="oc-group">
+                    <div className="oc-row">
+                      <div className="oc-row-meta">
+                        <div className="oc-row-title">Active harness profile</div>
+                        <div className="oc-row-sub">Controls system instruction focus, cache-prefix discipline, and agent aggressiveness.</div>
+                      </div>
+                      <div className="oc-row-ctrl">
+                        <select className="oc-select" value={settings.harnessProfile || 'full'} onChange={(e) => setSettings({ ...settings, harnessProfile: e.target.value })}>
+                          {HARNESS_PROFILES.map((hp) => <option key={hp.id} value={hp.id}>{hp.name}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="settings-card">
                   <h3><Icon name="Settings" size={14} /> {T('settings.orchestrator')}</h3>
                   <label className="check"><input type="checkbox" checked={!!orchestrator.enabled} onChange={(e) => saveOrch({ ...orchestrator, enabled: e.target.checked })} /> Enable — multi-model pool for failover AND swarm tier routing</label>
@@ -9925,6 +10212,136 @@ function SettingsModal({
               </>
             )}
 
+            {section === 'worktrees' && (
+              <>
+                <div>
+                  <h3 className="oc-sec-title">Create isolated git worktree</h3>
+                  <div className="settings-card">
+                    <p className="muted" style={{ marginTop: 0 }}>
+                      Check out another branch in a parallel directory without disturbing your active workspace. Switch any session into a worktree in one click.
+                    </p>
+                    <div className="row">
+                      <label>New or existing branch
+                        <input value={wtBranch} onChange={(e) => setWtBranch(e.target.value)} placeholder="feat/native-win32-perf" />
+                      </label>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <button
+                        type="button"
+                        className="btn-mini primary"
+                        disabled={wtBusy || !wtBranch.trim()}
+                        onClick={async () => {
+                          if (!window.autobot || !window.autobot.worktreeAdd) return;
+                          setWtBusy(true); setWtMsg('');
+                          try {
+                            const r = await window.autobot.worktreeAdd(cwd || undefined, wtBranch.trim());
+                            if (r && r.ok) {
+                              setWtInfo(r);
+                              setWtBranch('');
+                              setWtMsg(`✅ Created worktree at ${r.path}`);
+                            } else {
+                              setWtMsg(`❌ ${(r && r.error) || 'Failed to create worktree'}`);
+                            }
+                          } finally { setWtBusy(false); }
+                        }}
+                      >
+                        <Icon name="GitBranch" size={12} /> Create worktree
+                      </button>
+                      <button type="button" className="btn-mini" onClick={refreshWorktrees}><Icon name="Refresh" size={12} /> Refresh</button>
+                      {wtMsg && <span className="muted" style={{ margin: 0 }}>{wtMsg}</span>}
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="oc-sec-title">Repository worktrees {wtInfo.root ? `(${wtInfo.worktrees.length})` : ''}</h3>
+                  <div className="oc-group">
+                    {!wtInfo.isRepo ? (
+                      <div className="oc-row"><div className="oc-row-meta"><div className="oc-row-title">Open a git repository workspace to inspect worktrees</div><div className="oc-row-sub">Current workspace: {cwd || '~'}</div></div></div>
+                    ) : wtInfo.worktrees.map((w) => (
+                      <div key={w.path} className="oc-row">
+                        <div className="oc-row-meta">
+                          <div className="oc-row-title">{w.branch || '(detached)'} {w.main ? '· main' : ''}</div>
+                          <div className="oc-row-sub">{w.path} {w.head ? `· ${w.head}` : ''}</div>
+                        </div>
+                        <div className="oc-row-ctrl">
+                          <button type="button" className="btn-mini" onClick={() => { if (setCwd) { setCwd(w.path); setWtMsg(`✅ Workspace switched to ${w.path}`); } }}>
+                            {cwd === w.path ? 'Active' : 'Use'}
+                          </button>
+                          {!w.main && (
+                            <button
+                              type="button"
+                              className="btn-mini"
+                              onClick={async () => {
+                                if (!window.autobot || !window.autobot.worktreeRemove) return;
+                                const r = await window.autobot.worktreeRemove(cwd || undefined, w.path);
+                                if (r && r.ok) setWtInfo(r);
+                                else setWtMsg(`❌ ${(r && r.error) || 'Failed to remove worktree'}`);
+                              }}
+                            >Remove</button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {section === 'server' && (
+              <div>
+                <h3 className="oc-sec-title">Local Host &amp; Bridge Endpoints</h3>
+                <div className="oc-group">
+                  <div className="oc-row">
+                    <div className="oc-row-meta">
+                      <div className="oc-row-title">Local Gateway API (Zero-Key Extension Bridge)</div>
+                      <div className="oc-row-sub"><code>{(serverMeta && serverMeta.url) || 'http://127.0.0.1:8766'}</code> · {serverMeta && serverMeta.extensionConnected ? 'Akron Browser Bot connected' : 'Ready for connections'}</div>
+                    </div>
+                    <div className="oc-row-ctrl">
+                      <button type="button" className="btn-mini" onClick={() => { navigator.clipboard?.writeText((serverMeta && serverMeta.url) || 'http://127.0.0.1:8766'); setError('✅ Copied server URL'); }}>Copy URL</button>
+                      <button type="button" className="btn-mini" onClick={refreshServerMeta}><Icon name="Refresh" size={12} /></button>
+                    </div>
+                  </div>
+                  <div className="oc-row">
+                    <div className="oc-row-meta">
+                      <div className="oc-row-title">WebSocket Control Channel</div>
+                      <div className="oc-row-sub"><code>{(serverMeta && serverMeta.wsUrl) || 'ws://127.0.0.1:8766'}</code> · {serverMeta ? `${serverMeta.connectedClients || 0} client(s)` : 'Listening'}</div>
+                    </div>
+                  </div>
+                  <div className="oc-row">
+                    <div className="oc-row-meta">
+                      <div className="oc-row-title">Host Runtime</div>
+                      <div className="oc-row-sub">{serverMeta ? `${serverMeta.platform} / ${serverMeta.arch} · PID ${serverMeta.pid}` : 'Akron Code Desktop Host'}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {section === 'shortcuts' && (
+              <div>
+                <h3 className="oc-sec-title">Keyboard Shortcuts</h3>
+                <div className="oc-group">
+                  {[
+                    ['New conversation tab', '⌘ / Ctrl + N'],
+                    ['Command palette', '⌘ / Ctrl + K'],
+                    ['Search conversations', '⌘ / Ctrl + Shift + F'],
+                    ['Find in chat', '⌘ / Ctrl + F'],
+                    ['Toggle sidebar', '⌘ / Ctrl + B'],
+                    ['Open Settings', '⌘ / Ctrl + ,'],
+                    ['Slash actions & skills menu', '/'],
+                    ['File & agent @mentions', '@'],
+                    ['Quick Entry global launcher', '⌘ / Ctrl + Shift + Space'],
+                  ].map(([title, kbd]) => (
+                    <div key={title} className="oc-row">
+                      <div className="oc-row-meta"><div className="oc-row-title">{title}</div></div>
+                      <div className="oc-row-ctrl"><span className="oc-kbd">{kbd}</span></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {section === 'system' && (
               <>
                 <div className="settings-card">
@@ -9952,13 +10369,16 @@ function SettingsModal({
                 </div>
               </>
             )}
+            </div>
           </div>
 
           <footer className="settings-foot">
-            <span className="muted" style={{ margin: 0 }}>{provider.model ? `Active model: ${provider.model}` : 'Configure a provider to begin'}</span>
-            <div className="modal-actions">
-              <button onClick={testProvider}>Test connection</button>
-              <button className="primary" onClick={onClose}>{T('settings.done')}</button>
+            <div className="settings-foot-inner">
+              <span className="muted" style={{ margin: 0 }}>{provider.model ? `Active model: ${provider.model}` : 'Configure a provider to begin'}</span>
+              <div className="modal-actions">
+                <button onClick={testProvider}>Test connection</button>
+                <button className="primary" onClick={onClose}>{T('settings.done')}</button>
+              </div>
             </div>
           </footer>
         </section>

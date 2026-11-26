@@ -68,10 +68,13 @@ function view(job, { full = false } = {}) {
 }
 
 // ── Shell jobs ─────────────────────────────────────────────────────────────
-function startShell({ command, cwd, shell = '/bin/zsh', env, dangerouslyDisableSandbox } = {}) {
+function startShell({ command, cwd, shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh', env, dangerouslyDisableSandbox } = {}) {
   if (!command) throw new Error('command required');
   const job = create('shell', { command, cwd });
-  let file = shell; let args = ['-l', '-c', String(command)];
+  let file = shell;
+  let args = process.platform === 'win32'
+    ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String(command)]
+    : ['-l', '-c', String(command)];
   try {
     const sandbox = require('./sandbox');
     const wrapped = sandbox.wrapShell(command, { dangerouslyDisableSandbox });
@@ -84,9 +87,13 @@ function startShell({ command, cwd, shell = '/bin/zsh', env, dangerouslyDisableS
     cwd: cwd || process.cwd(),
     env: env || process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
+    detached: process.platform !== 'win32',
+    windowsHide: true,
   });
   job.stop = () => {
+    if (process.platform === 'win32' && child && child.pid) {
+      try { spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); return; } catch (_) {}
+    }
     // Kill the whole tree (detached group), not just zsh.
     try { process.kill(-child.pid, 'SIGTERM'); } catch (_) { try { child.kill('SIGTERM'); } catch (__) {} }
     setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {} }, 3000).unref();
@@ -144,10 +151,15 @@ function startAgent({ label, description, model, run, controller, onStop } = {})
 // Each stdout line is an event; `onLine` receives them live.
 function startMonitor({ command, description, timeoutMs = 300000, persistent = false, cwd, onLine, onExit } = {}) {
   const job = create('monitor', { command, description });
-  const child = spawn('/bin/zsh', ['-l', '-c', String(command)], {
+  const shFile = process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh';
+  const shArgs = process.platform === 'win32'
+    ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String(command)]
+    : ['-l', '-c', String(command)];
+  const child = spawn(shFile, shArgs, {
     cwd: cwd || process.cwd(),
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
   let timer = null;
   job.stop = () => {

@@ -26,6 +26,7 @@ class ShellManager {
       env: { ...process.env, TERM: 'xterm-256color', PS1: '' },
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
+      windowsHide: true,
     });
     const entry = { proc, buffer: '', listeners: [], cwd: cwd || process.cwd() };
     this.shells.set(id, entry);
@@ -34,12 +35,17 @@ class ShellManager {
     // .zshrc, and third-party installers there (`export PATH="$HOME/.grok/bin:$PATH"`)
     // otherwise put an older global agent ahead of the bundled/self-updated one.
     if (pathPrefix) {
-      const quoted = String(pathPrefix)
-        .split(path.delimiter)
-        .filter(Boolean)
-        .map((d) => '"' + d.replace(/(["\\$`])/g, '\\$1') + '"')
-        .join(path.delimiter);
-      try { proc.stdin.write('export PATH=' + quoted + ':"$PATH"\n'); } catch (_) { /* ignore */ }
+      if (process.platform === 'win32') {
+        const joined = String(pathPrefix).split(path.delimiter).filter(Boolean).join(';');
+        try { proc.stdin.write(`$env:PATH = "${joined.replace(/"/g, '`"')};" + $env:PATH\n`); } catch (_) {}
+      } else {
+        const quoted = String(pathPrefix)
+          .split(path.delimiter)
+          .filter(Boolean)
+          .map((d) => '"' + d.replace(/(["\\$`])/g, '\\$1') + '"')
+          .join(path.delimiter);
+        try { proc.stdin.write('export PATH=' + quoted + ':"$PATH"\n'); } catch (_) { /* ignore */ }
+      }
     }
 
     const feed = (d) => {

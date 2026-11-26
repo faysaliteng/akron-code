@@ -509,15 +509,15 @@ function toAnthropicBody(provider, messages, tools, maxTokens) {
     });
   }
   // 3-breakpoint ephemeral prompt caching for multi-turn agent loops when large
-  // enough to meet Anthropic's minimum cacheable block threshold (>=4096 chars).
+  // enough to meet Anthropic's minimum cacheable block threshold (>=1024 chars).
   try {
-    if (body.tools && body.tools.length && JSON.stringify(body.tools).length >= 4096) {
+    if (body.tools && body.tools.length && JSON.stringify(body.tools).length >= 1024) {
       body.tools[body.tools.length - 1] = { ...body.tools[body.tools.length - 1], cache_control: { type: 'ephemeral' } };
     }
-    if (body.system && body.system.length && JSON.stringify(body.system).length >= 4096) {
+    if (body.system && body.system.length && JSON.stringify(body.system).length >= 1024) {
       body.system[body.system.length - 1] = { ...body.system[body.system.length - 1], cache_control: { type: 'ephemeral' } };
     }
-    if (body.messages && body.messages.length && JSON.stringify(body.messages).length >= 4096) {
+    if (body.messages && body.messages.length && JSON.stringify(body.messages).length >= 1024) {
       for (let i = body.messages.length - 1; i >= 0; i--) {
         const bm = body.messages[i];
         if (bm && bm.role === 'user' && Array.isArray(bm.content) && bm.content.length) {

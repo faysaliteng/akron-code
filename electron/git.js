@@ -10,8 +10,8 @@ const path = require('path');
 
 function run(cmd, cwd, timeoutMs = 8000) {
   return new Promise((resolve) => {
-    exec(cmd, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, shell: '/bin/zsh' }, (err, stdout) => {
-      resolve(err ? null : String(stdout || '').replace(/\n+$/, ''));
+    exec(cmd, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, shell: process.platform === 'win32' ? true : '/bin/zsh', windowsHide: true }, (err, stdout) => {
+      resolve(err ? null : String(stdout || '').replace(/\r?\n+$/, ''));
     });
   });
 }
@@ -292,4 +292,61 @@ function gitDiffFiles(cwd) {
   return files;
 }
 
-module.exports = { gitInfo, findRoot, unifiedDiff, gitDiffFiles, parseGitDiffOutput };
+// Git Worktrees (OpenCode-style parallel branch isolation).
+async function listWorktrees(cwd) {
+  const root = await findRoot(cwd || process.cwd());
+  if (!root) return { isRepo: false, root: null, worktrees: [] };
+  const raw = await run('git worktree list --porcelain', root);
+  if (!raw) return { isRepo: true, root, worktrees: [{ path: root, branch: await run('git rev-parse --abbrev-ref HEAD', root) || '', main: true }] };
+  const blocks = raw.split(/\r?\n\r?\n/).filter(Boolean);
+  const worktrees = [];
+  for (let i = 0; i < blocks.length; i++) {
+    const lines = blocks[i].split(/\r?\n/).filter(Boolean);
+    const entry = { path: '', head: '', branch: '', bare: false, detached: false, main: i === 0 };
+    for (const ln of lines) {
+      if (ln.startsWith('worktree ')) entry.path = ln.slice(9).trim();
+      else if (ln.startsWith('HEAD ')) entry.head = ln.slice(5).trim().slice(0, 8);
+      else if (ln.startsWith('branch ')) entry.branch = ln.slice(7).trim().replace(/^refs\/heads\//, '');
+      else if (ln === 'bare') entry.bare = true;
+      else if (ln === 'detached') entry.detached = true;
+    }
+    if (entry.path) worktrees.push(entry);
+  }
+  return { isRepo: true, root, worktrees };
+}
+
+async function addWorktree(cwd, branch, targetDir) {
+  const root = await findRoot(cwd || process.cwd());
+  if (!root) return { ok: false, error: 'Not inside a git repository.' };
+  const safeBranch = String(branch || '').trim().replace(/[^\w./-]+/g, '-');
+  if (!safeBranch) return { ok: false, error: 'Branch name is required.' };
+  const dest = targetDir && String(targetDir).trim()
+    ? path.resolve(root, String(targetDir).trim())
+    : path.join(path.dirname(root), `${path.basename(root)}-${safeBranch.replace(/[\\/]+/g, '-')}`);
+  try {
+    execFileSync('git', ['worktree', 'add', '-b', safeBranch, dest], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { ok: true, path: dest, branch: safeBranch, ...(await listWorktrees(root)) };
+  } catch (e) {
+    // Branch might already exist — try attaching existing branch without -b
+    try {
+      execFileSync('git', ['worktree', 'add', dest, safeBranch], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      return { ok: true, path: dest, branch: safeBranch, ...(await listWorktrees(root)) };
+    } catch (e2) {
+      return { ok: false, error: String((e2 && e2.stderr) || (e && e.stderr) || (e2 && e2.message) || e) };
+    }
+  }
+}
+
+async function removeWorktree(cwd, targetDir) {
+  const root = await findRoot(cwd || process.cwd());
+  if (!root) return { ok: false, error: 'Not inside a git repository.' };
+  if (!targetDir) return { ok: false, error: 'Worktree path required.' };
+  try {
+    execFileSync('git', ['worktree', 'remove', '--force', String(targetDir)], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { ok: true, ...(await listWorktrees(root)) };
+  } catch (e) {
+    return { ok: false, error: String((e && e.stderr) || (e && e.message) || e) };
+  }
+}
+
+module.exports = { gitInfo, findRoot, unifiedDiff, gitDiffFiles, parseGitDiffOutput, listWorktrees, addWorktree, removeWorktree };

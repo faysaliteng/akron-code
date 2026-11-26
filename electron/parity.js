@@ -717,7 +717,13 @@ async function monitor(args, ctx) {
         emit({ type: 'monitor', phase: 'done', description, reason, lines: lines.length });
         resolve(`Monitor "${description}" finished (${reason}) — ${lines.length} event line(s)${lines.length ? ':\n' + lines.slice(-200).join('\n') : ''}`);
       };
-      try { child = spawn('/bin/zsh', ['-lc', command], { cwd: ctx.cwd, stdio: ['ignore', 'pipe', 'pipe'] }); }
+      try {
+        const shFile = process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh';
+        const shArgs = process.platform === 'win32'
+          ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String(command)]
+          : ['-lc', command];
+        child = spawn(shFile, shArgs, { cwd: ctx.cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      }
       catch (e) { return resolve({ content: 'Monitor failed: ' + e.message, isError: true }); }
       const timer = setTimeout(() => done(`timeout after ${Math.round(timeoutMs / 1000)}s`), timeoutMs);
       const onLine = (line) => { if (!line.trim()) return; lines.push(line); emit({ type: 'monitor', phase: 'line', description, line }); };

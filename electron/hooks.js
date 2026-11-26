@@ -102,7 +102,11 @@ function runCommandHook(hook, payload, cwd) {
   return new Promise((resolve) => {
     let settled = false;
     const done = (r) => { if (!settled) { settled = true; resolve(r); } };
-    const child = spawn('/bin/zsh', ['-l', '-c', hook.command], { cwd: cwd || process.cwd() });
+    const shFile = process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh';
+    const shArgs = process.platform === 'win32'
+      ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', hook.command]
+      : ['-l', '-c', hook.command];
+    const child = spawn(shFile, shArgs, { cwd: cwd || process.cwd(), windowsHide: true });
     let out = '';
     let err = '';
     const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} done({ exitCode: 124, stdout: out, stderr: 'timeout', timedOut: true }); }, Math.max(1, hook.timeout || 60) * 1000);

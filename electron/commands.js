@@ -367,6 +367,8 @@ const BUILTIN = [
   { name: 'desktop', description: 'Already running in the desktop app', guiEquivalent: true },
   { name: 'tui', description: 'Terminal renderer (not applicable to the GUI)', guiEquivalent: true },
   { name: 'keybindings', description: 'Keyboard shortcuts (Settings → Shortcuts)', guiEquivalent: true },
+  { name: 'note', description: 'Record an Agent Note in .agents/notes/ (DeepSeek Harness)', guiEquivalent: true },
+  { name: 'worktrees', description: 'Manage isolated git worktrees (Settings → Worktrees)', guiEquivalent: true },
   { name: 'scroll-speed', description: 'Scroll speed follows the OS setting', guiEquivalent: true },
   { name: 'wellbeing', description: 'Break reminders are handled by the OS', guiEquivalent: true },
   { name: 'privacy-settings', description: 'Show data-handling settings', guiEquivalent: true },
