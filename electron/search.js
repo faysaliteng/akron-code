@@ -15,6 +15,7 @@ const { execFile } = require('child_process');
 const store = require('./store');
 const sandbox = require('./sandbox');
 const { expandPath } = require('./paths');
+const sessionDb = require('./session-db');
 
 const RG = 'rg';
 
@@ -78,14 +79,22 @@ function searchRecords(query) {
   return hits;
 }
 
-/** Unified search across disk. */
+/** Unified search across disk + SQLite session transcripts. */
 async function searchAll({ query, cwd, glob, limit = 80 }) {
   if (!query) return { query, hits: [] };
-  const [files, records] = await Promise.all([
+  const [files, records, chats] = await Promise.all([
     searchFiles({ query, cwd, glob, limit }),
     Promise.resolve(searchRecords(query)),
+    sessionDb.searchConversationsDb(query, { limit: Math.min(25, limit) }).catch(() => []),
   ]);
-  return { query, hits: [...files, ...records].slice(0, limit) };
+  const chatHits = (chats || []).map((c) => ({
+    kind: 'conversation',
+    convId: c.convId,
+    title: c.title || 'Chat',
+    text: c.snippet || c.title || '',
+    score: c.score,
+  }));
+  return { query, hits: [...files, ...records, ...chatHits].slice(0, limit) };
 }
 
 module.exports = { searchFiles, searchRecords, searchAll };

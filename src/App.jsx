@@ -961,6 +961,25 @@ export default function App() {
 
   // persist
   useEffect(() => { saveJSON('autobot:convs', convs); }, [convs]);
+  // One-time non-destructive sync of existing localStorage chats to SQLite WAL+FTS (~/.autobot/akron.db)
+  // plus throttled incremental sync for instant full-text search across sessions.
+  const dbMigratedRef = useRef(false);
+  useEffect(() => {
+    if (!window.autobot?.dbMigrate || dbMigratedRef.current) return;
+    dbMigratedRef.current = true;
+    if (Array.isArray(convs) && convs.length) {
+      window.autobot.dbMigrate(convs).catch(() => {});
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!window.autobot?.dbUpsertConv || !activeId) return;
+    const cur = Array.isArray(convs) ? convs.find((c) => c.id === activeId) : null;
+    if (!cur) return;
+    const t = setTimeout(() => {
+      window.autobot.dbUpsertConv(cur).catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [convs, activeId]);
   useEffect(() => { saveJSON('autobot:activeId', activeId); }, [activeId]);
   useEffect(() => { saveJSON('autobot:provider', provider); }, [provider]);
   useEffect(() => { saveJSON('autobot:providerKeys', providerKeys); }, [providerKeys]);

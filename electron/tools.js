@@ -22,6 +22,8 @@ const editGuard = require('./ide/edit-guard');
 const applyPatchMod = require('./apply-patch');
 const codebaseIndex = require('./ide/codebase-index');
 const codemode = require('./codemode');
+const skillLearner = require('./skill-learner');
+const osSandbox = require('./os-sandbox');
 
 const MAX_OUTPUT = 120000; // chars
 
@@ -391,7 +393,14 @@ const executors = {
       const label = description ? ` (${description})` : '';
       return `Started background shell ${job.id}${label}.\nPoll: TaskOutput {"task_id":"${job.id}","block":true,"timeout":30000}\nStop:  KillShell {"shell_id":"${job.id}"}`;
     }
-    if (dangerouslyDisableSandbox) { /* accepted: commands already run unsandboxed on macOS */ }
+    if (dangerouslyDisableSandbox) { /* accepted: explicit permission-gated bypass */ }
+    else {
+      const canonical = osSandbox.checkCanonicalCommand(command, {
+        profile: 'workspace-write',
+        protectCredentials: !!sandbox.load().sandbox.enabled,
+      });
+      if (!canonical.ok) return `Sandbox blocked: ${canonical.reason}`;
+    }
     // Claude Code semantics: `timeout` is in MILLISECONDS (default 2 min, max 10 min).
     const t = clampBashTimeout(timeout);
     const dir = resolveDir(cwd);
@@ -870,10 +879,12 @@ const executors = {
   },
 
   // ---- Memory ----
-  async memory_add({ content }) {
+  async memory_add({ content, category, scope, cwd }) {
     if (!content) return 'Error: content required';
-    store.addMemory(content);
-    return 'Saved to memory.';
+    const res = skillLearner.addStructuredMemory({ content, category, scope, cwd });
+    if (!res.ok) return 'Error: ' + (res.error || 'failed to save memory');
+    if (res.deduplicated) return `Updated existing [${res.category}] memory entry.`;
+    return `Saved [${res.category}] memory${res.projectMemoryPath ? ` (also updated ${res.projectMemoryPath})` : ''}.`;
   },
 
   async memory_list() {
@@ -907,6 +918,12 @@ const executors = {
     const r = store.addCustomSkill(name, content);
     if (!r.ok) return 'Error: ' + r.error;
     return `Created custom skill "${r.name}" (saved to ${r.file}). It is now available via list_skills and Skill.`;
+  },
+
+  async extract_skill({ name, description, triggers, steps, pitfalls, verification, content, scope, cwd }) {
+    const r = skillLearner.extractSkillToDisk({ name, description, triggers, steps, pitfalls, verification, content, scope, cwd });
+    if (!r.ok) return { content: 'Error: ' + (r.error || 'Failed to extract skill.'), isError: true };
+    return `Extracted reusable skill "${r.name}" to ${r.file} (${r.bytes} bytes). Available via list_skills and Skill.`;
   },
 
   async delete_skill({ name }) {
@@ -1397,7 +1414,8 @@ const toolDefinitions = [
   { name: 'Skill', description: 'Load the full instructions for a skill by name.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
   { name: 'ListMcpResources', description: 'List resources exposed by a connected MCP server.', parameters: { type: 'object', properties: { server: { type: 'string' } } } },
   { name: 'ReadMcpResource', description: 'Read a resource from a connected MCP server by URI.', parameters: { type: 'object', properties: { server: { type: 'string' }, uri: { type: 'string' } }, required: ['uri'] } },
-  { name: 'memory_add', description: 'Persist a fact/note to long-term memory.', parameters: { type: 'object', properties: { content: { type: 'string' } }, required: ['content'] } },
+  { name: 'memory_add', description: 'Persist a categorized, deduplicated fact/note to long-term memory.', parameters: { type: 'object', properties: { content: { type: 'string' }, category: { type: 'string', enum: ['architecture', 'build-test', 'style', 'pitfalls', 'workflow', 'general'] }, scope: { type: 'string', enum: ['user', 'project'] }, cwd: { type: 'string' } }, required: ['content'] } },
+  { name: 'ExtractSkill', description: 'Persist a solved debugging/build workflow into a reusable SKILL.md (with triggers, steps, pitfalls, and verification).', parameters: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, triggers: { type: 'array', items: { type: 'string' } }, steps: { type: 'array', items: { type: 'string' } }, pitfalls: { type: 'array', items: { type: 'string' } }, verification: { type: 'string' }, content: { type: 'string' }, scope: { type: 'string', enum: ['user', 'project'] }, cwd: { type: 'string' } }, required: ['name'] } },
   { name: 'memory_list', description: 'List everything saved to long-term memory.', parameters: { type: 'object', properties: {} } },
   { name: 'memory_delete', description: 'Delete a memory entry by its index.', parameters: { type: 'object', properties: { index: { type: 'number' } }, required: ['index'] } },
   { name: 'list_skills', description: 'List available skills.', parameters: { type: 'object', properties: {} } },
@@ -1577,6 +1595,7 @@ const executorsByTool = {
   SlashCommand: 'slash_command',
   KillShell: 'kill_shell',
   memory_add: 'memory_add',
+  ExtractSkill: 'extract_skill',
   memory_list: 'memory_list',
   memory_delete: 'memory_delete',
   list_skills: 'list_skills',
@@ -1776,7 +1795,7 @@ async function runToolInner(name, args, ctx) {
 
   // B8 Claude Code mode: require user approval before mutating tools.
   const MUTATING = new Set([
-    'Bash', 'Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'RunToolScript', 'NotebookEdit', 'JavaScript', 'REPL',
+    'Bash', 'Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'ExtractSkill', 'RunToolScript', 'NotebookEdit', 'JavaScript', 'REPL',
     'KillShell', 'Jira', 'Linear', 'POST', 'CreateCustomTool', 'DeleteCustomTool',
     'mcp__workspace__write_file', 'mcp__workspace__edit_file',
     'mcp__terminal__run_in_terminal', 'mcp__terminal__open_terminal_tab',

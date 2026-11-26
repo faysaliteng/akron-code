@@ -22,7 +22,7 @@ const STANDARD_TOOLS = new Set([
   'Glob', 'Grep', 'LS', 'Search', 'TodoWrite', 'WebFetch', 'WebSearch',
   'Task', 'Agent', 'TaskOutput', 'TaskStop', 'ListAgents', 'Swarm', 'Workflow', 'ToolSearch', 'find_mcp_tools', 'Skill', 'list_skills',
   'TeamCreate', 'TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate', 'SendMessage',
-  'CreateCustomTool', 'ListCustomTools', 'DeleteCustomTool', 'ext_browser', 'rea',
+  'CreateCustomTool', 'ListCustomTools', 'DeleteCustomTool', 'ExtractSkill', 'ext_browser', 'rea',
   'EnterWorktree', 'ExitWorktree', 'EnterPlanMode',
   'AskUserQuestion', 'ExitPlanMode', 'KillShell', 'Artifact', 'Cd',
   'memory_add', 'memory_list', 'mcp__visualize__visualize',
@@ -2033,7 +2033,7 @@ async function runAgent(opts) {
   // Anti-thrash state. Weak tool-callers often repeat the exact same failing
   // call (or retry a broken Write) until the step budget runs out. Track it and
   // steer them back on course instead of silently burning tokens.
-  const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'NotebookEdit', 'mcp__workspace__write_file', 'mcp__workspace__edit_file', 'Artifact']);
+  const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'ExtractSkill', 'NotebookEdit', 'mcp__workspace__write_file', 'mcp__workspace__edit_file', 'Artifact']);
   let wroteSomething = false;
   let lastPreview = null;
   let lastSig = '';

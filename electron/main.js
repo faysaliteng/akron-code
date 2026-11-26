@@ -2711,6 +2711,7 @@ ipcMain.handle('autobot:getSettings', () => store.getSettings());
 const sandbox = require('./sandbox');
 const secretstore = require('./secretstore');
 const search = require('./search');
+const sessionDb = require('./session-db');
 ipcMain.handle('autobot:getSandbox', () => sandbox.describe());
 ipcMain.handle('autobot:setSandbox', (e, patch) => {
   const cur = store.getSettings() || {};
@@ -2729,9 +2730,15 @@ ipcMain.handle('autobot:secretGet', (e, name) => secretstore.get(String(name)));
 ipcMain.handle('autobot:secretDelete', (e, name) => secretstore.del(String(name)));
 ipcMain.handle('autobot:secretList', () => secretstore.list());
 ipcMain.handle('autobot:secretStatus', () => secretstore.status());
-// ── Transcript / workspace search ──
+// ── Transcript / workspace search & SQLite session store ──
 ipcMain.handle('autobot:searchAll', (e, payload) => search.searchAll(payload || {}));
 ipcMain.handle('autobot:searchFiles', (e, payload) => search.searchFiles(payload || {}));
+ipcMain.handle('autobot:dbMigrate', (e, convs) => sessionDb.migrateFromLocalStorage(convs || []));
+ipcMain.handle('autobot:dbListConvs', (e, opts) => sessionDb.listConversations(opts || {}));
+ipcMain.handle('autobot:dbGetConv', (e, id) => sessionDb.getConversation(id));
+ipcMain.handle('autobot:dbUpsertConv', (e, conv) => sessionDb.upsertConversation(conv));
+ipcMain.handle('autobot:dbDeleteConv', (e, id) => sessionDb.deleteConversation(id));
+ipcMain.handle('autobot:dbSearch', (e, query, opts) => sessionDb.searchConversationsDb(query, opts || {}));
 ipcMain.handle('autobot:setSettings', (e, patch) => {
   const next = store.setSettings(patch);
   // Launch-at-login is an OS setting, not just a stored flag (Desktop parity:

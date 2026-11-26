@@ -256,6 +256,27 @@ function wrapShell(command, opts = {}) {
   if (!pol.enabled || opts.dangerouslyDisableSandbox) {
     return { ...shellCmd, sandboxed: false };
   }
+  const canonical = osSandbox.checkCanonicalCommand(command, {
+    profile: opts.profile || pol.profile || 'workspace-write',
+    protectCredentials: true,
+  });
+  if (!canonical.ok) {
+    const err = new Error(canonical.reason || 'Sandbox blocked command chain');
+    err.code = 'SANDBOX_POLICY_DENIED';
+    throw err;
+  }
+  if (opts.profile || pol.osEnforce) {
+    const osWrapped = osSandbox.wrapWithProfile(command, {
+      cwd: opts.cwd || process.cwd(),
+      profile: opts.profile || pol.profile || 'workspace-write',
+      denyRead: (pol.filesystem && pol.filesystem.denyRead) || [],
+      denyWrite: (pol.filesystem && pol.filesystem.denyWrite) || [],
+      allowNetwork: !(opts.profile === 'strict-isolated' || pol.profile === 'strict-isolated'),
+    });
+    if (osWrapped.sandboxed || !pol.failIfUnavailable) {
+      return osWrapped;
+    }
+  }
   if (process.platform !== 'darwin' || !fs.existsSync(SANDBOX_EXEC)) {
     if (pol.failIfUnavailable) {
       const err = new Error('sandbox required but unavailable on this platform');
@@ -272,11 +293,14 @@ function wrapShell(command, opts = {}) {
   };
 }
 
+const osSandbox = require('./os-sandbox');
+
 /** Human-readable summary for the settings pane. */
 function describe() {
   const pol = load();
   return {
     enabled: !!pol.sandbox.enabled,
+    profile: pol.sandbox.profile || 'workspace-write',
     failIfUnavailable: !!pol.sandbox.failIfUnavailable,
     managedSource: pol.managedSource,
     filesystem: pol.sandbox.filesystem,
@@ -288,6 +312,7 @@ function describe() {
     credentials: pol.sandbox.credentials,
     sandboxAvailable: process.platform === 'darwin' && fs.existsSync(SANDBOX_EXEC),
     backend: process.platform === 'darwin' && fs.existsSync(SANDBOX_EXEC) ? 'sandbox-exec' : 'none',
+    osCapabilities: osSandbox.detectCapabilities(),
     managed: !!pol.managedSource,
   };
 }
@@ -302,4 +327,5 @@ module.exports = {
   wrapShell,
   describe,
   managed,
+  osSandbox,
 };

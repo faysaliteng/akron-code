@@ -187,6 +187,19 @@ const SKILL_PROMPTS = {
       'Task: $ARGUMENTS',
     ].join('\n'),
   },
+  learn: {
+    description: 'Extract solved debugging steps, conventions, or workflows into a reusable SKILL.md on disk.',
+    body: [
+      'Review the debugging problem, architecture pattern, or build/test workflow solved in this conversation and persist reusable knowledge for future sessions.',
+      '',
+      '1. Call `ExtractSkill` with a concise kebab-case `name`, clear `description`, `triggers`, numbered `steps`, `pitfalls`, and exact `verification` commands.',
+      '2. Only record patterns, fixes, or commands you directly observed working in this session.',
+      '3. Also store key project facts with `memory_add` (using `category` such as `build-test`, `architecture`, or `pitfalls`) if concise.',
+      '4. Tell the user the file path created (`~/.autobot/skills/<slug>/SKILL.md` or `.claude/skills/<slug>/SKILL.md`).',
+      '',
+      'Focus: $ARGUMENTS',
+    ].join('\n'),
+  },
 };
 
 function skillCommand(name) {
@@ -389,6 +402,7 @@ const BUILTIN = [
   { name: 'heapdump', description: 'Terminal JS heap dump (not applicable)', guiEquivalent: true },
   { name: 'bridge-kick', description: 'Inject bridge failure states (dev tooling)', guiEquivalent: true },
   { name: 'pro-trial-expired', description: 'Anthropic trial billing surface (not applicable)', guiEquivalent: true },
+  { name: 'learn', description: 'Extract a reusable SKILL.md from a solved workflow or bug fix', argumentHint: '[skill-name or topic]', guiEquivalent: true },
 ];
 
 function listForUi(cwd) {
