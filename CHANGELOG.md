@@ -2,6 +2,22 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.5.2] - 2026-11-27
+
+### Fixed & Upgraded
+- **Antigravity Thinking Timeout & Honest Retry Reporting (`electron/providertransport.js`, `electron/llm.js`):**
+  - Raised default connect timeout (`120s`, `180s` for deep-thinking/frontier models) and stream stall timeout (`150s`) so deep-thinking models like `gemini-4-carbon` do not abort at `45s` before the first byte.
+  - Stopped mislabeling HTTP-less connection timeouts as `'rate limited'`: timeouts now report `'provider connection timed out'`, cap single-provider timeout retries at 2 attempts, and emit `status` + `notice` events rather than injecting fake lines into the model's `Thought` block.
+- **Click-to-Open `.md` Files & Rendered Document Preview (`src/utils/linkAndFileHelpers.js`, `src/components/chat/DocPreviewPane.jsx`, `src/components/CodeReviewPane.jsx`, `src/ide/MonacoPane.jsx`, `src/App.jsx`):**
+  - Made inline file references in Markdown messages (`` `report.md` ``) and `file://` links clickable (`DocPreviewPane` Rendered/Raw Markdown viewer on click, Monaco IDE on `Alt+Click`).
+  - Added **Preview** & **Open** buttons plus a custom right-click context menu (`Preview Rendered File`, `Open in IDE Editor`, `Expand / Collapse Diff`, `Copy File Path`) in `CodeReviewPane`, fixed `IdeWorkbench` external string-path handling (`{ path, at }`), and added a **Preview** toggle for Markdown files inside `MonacoPane`.
+- **Built-in Browser Link Routing & Bare Domain Linkification (`src/utils/appHelpers.jsx`, `src/utils/linkAndFileHelpers.js`, `src/components/browser/BrowserPaneView.jsx`, `electron/main.js`):**
+  - Automatically linkifies bare domain+path URLs in assistant Markdown (e.g. `community.lovable.app/events`, `luma.com/lovable`), routes clicked web links into Akron Code's built-in Browser pane (`newTab` preserved when another site is open, `Alt+Click` opens external browser), and adds a `will-navigate` guard in `main.js`.
+- **Dynamic Live Model Discovery, Retired-Model Fallback & Per-Model Thinking Controls (`electron/model-catalog.js`, `electron/providertransport.js`, `electron/ipc/ipc-oauth-models.js`, `electron/llm.js`, `src/components/chat/InputBarView.jsx`):**
+  - Grouped discrete Antigravity sibling tiers (`-minimal/-low/-medium/-high/-xhigh`) into `thinkingVariants` / `thinkingLevels`, propagated Anthropic/Codex/Grok thinking capability metadata, added 30-min periodic background catalog refresh + `Refresh models` button, auto-replaced retired/removed models in `hydrateProvider` / `validateOrchestrator` / mid-turn `404`, and updated composer `Thinking` menu (`XHigh`, `N/A` disabled pill for non-thinking models, and sibling auto-switching).
+- **Capability Report Tooling Fixes (`electron/tools/browser-executors.js`, `electron/computer.js`):**
+  - Fixed `require('../browser-bot-v2')` path in `browser_read` / `browser_vault_autofill` and added JXA `isNil` function guard + `Array.isArray` / `System Events` fallback in macOS `listWindowsStructured`.
+
 ## [1.5.1] - 2026-11-27
 
 ### Fixed & Wired End-to-End

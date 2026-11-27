@@ -3745,4 +3745,66 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
   user-select: none;
 }
 
+/* Clickable file chips & rendered links */
+.md .md-file-chip {
+  cursor: pointer;
+  color: var(--accent, #34d399);
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  padding: 1px 6px;
+  border-radius: 5px;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+.md .md-file-chip:hover {
+  background: rgba(52, 211, 153, 0.18);
+  border-color: rgba(52, 211, 153, 0.55);
+  text-decoration: underline;
+}
+.md a[href] {
+  color: var(--accent, #34d399);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.rv-file-act {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 500;
+  color: var(--text-200);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px; padding: 2px 7px;
+  cursor: pointer;
+}
+.rv-file-act:hover {
+  color: #fff;
+  background: rgba(52, 211, 153, 0.18);
+  border-color: rgba(52, 211, 153, 0.45);
+}
+.doc-preview-pane { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.doc-preview-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  padding: 10px 12px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02);
+}
+.doc-preview-meta { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; }
+.doc-preview-name { font-size: 13px; font-weight: 600; color: var(--text-100); white-space: nowrap; }
+.doc-preview-path { font-size: 11px; color: var(--text-300); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-preview-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.doc-preview-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.doc-preview-seg .btn-mini { border: none; border-radius: 0; }
+.doc-preview-seg .btn-mini.active { background: rgba(52, 211, 153, 0.18); color: #fff; }
+.doc-preview-body { flex: 1 1 auto; overflow: auto; padding: 14px 16px; }
+.doc-preview-raw {
+  margin: 0; padding: 12px; border-radius: 8px;
+  background: rgba(0,0,0,0.22); border: 1px solid var(--border);
+  font-family: var(--mono); font-size: 12px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text;
+}
+.doc-preview-error {
+  display: flex; align-items: flex-start; gap: 10px; padding: 12px; border-radius: 8px;
+  border: 1px solid rgba(248, 113, 113, 0.35); background: rgba(248, 113, 113, 0.08);
+  color: #fca5a5; font-size: 12.5px;
+}
+.doc-preview-error-title { font-weight: 600; margin-bottom: 3px; }
+.reason-pick.unsupported { opacity: 0.55; cursor: default; }
+
 

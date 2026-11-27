@@ -16,9 +16,19 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
   // `launch` is the URL handed to <webview src> at mount and never changes afterwards.
   // `url` tracks the live location. Keeping src stable stops React from re-issuing a
   // navigation on every did-navigate (which aborted and duplicated in-flight loads).
-  const [tabs, setTabs] = useState([{ id: 'tab1', launch: 'https://www.google.com', url: 'https://www.google.com', title: 'New Tab', loading: false }]);
+  const initialHttp = previewUrl && previewUrl.url && /^https?:\/\//i.test(String(previewUrl.url).trim())
+    ? String(previewUrl.url).trim()
+    : '';
+  const [tabs, setTabs] = useState(() => [{
+    id: 'tab1',
+    launch: initialHttp || 'https://www.google.com',
+    url: initialHttp || 'https://www.google.com',
+    title: initialHttp ? 'Loading…' : 'New Tab',
+    loading: !!initialHttp,
+  }]);
   const [activeId, setActiveId] = useState('tab1');
-  const [omnibox, setOmnibox] = useState('');
+  const [omnibox, setOmnibox] = useState(initialHttp);
+  const handledPreviewAtRef = useRef(initialHttp && previewUrl && previewUrl.at ? previewUrl.at : 0);
   const [findOpen, setFindOpen] = useState(false);
   const [findText, setFindText] = useState('');
   const [findRes, setFindRes] = useState(null); // {active, total}
@@ -286,9 +296,31 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
   useEffect(() => {
     const target = previewUrl && previewUrl.url;
     if (!target) return undefined;
+    const reqAt = (previewUrl && previewUrl.at) || 0;
+    if (reqAt && handledPreviewAtRef.current === reqAt) return undefined;
+    handledPreviewAtRef.current = reqAt;
+    const wantNewTab = !!(previewUrl && previewUrl.newTab);
     let cancelled = false;
     const apply = (u) => {
       if (cancelled || !u) return;
+      if (wantNewTab) {
+        const reuseBlank = tabs.length === 1 && /google\.com/i.test(tabs[0].url || '');
+        if (reuseBlank) {
+          const oldId = tabs[0].id;
+          const oldWv = webviews.current[oldId];
+          if (oldWv) {
+            try { const wid = oldWv.getWebContentsId(); if (wid) window.autobot.browserUnregister(wid); } catch {}
+            delete webviews.current[oldId];
+          }
+          const nid = 'tab' + nextTabNum.current++;
+          setTabs([{ id: nid, launch: u, url: u, title: 'Loading…', loading: true }]);
+          setActiveId(nid);
+          setOmnibox(u);
+          return;
+        }
+        openTab(u);
+        return;
+      }
       const pid = previewTabRef.current;
       const wv = pid ? webviews.current[pid] : null;
       if (wv) {
@@ -301,6 +333,9 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
       const reuse = !pid && tabs.length === 1 && /google\.com/i.test(tabs[0].url || '');
       const id = pid || (reuse ? tabs[0].id : 'tab' + nextTabNum.current++);
       previewTabRef.current = id;
+      if (reuse && webviews.current[id]) {
+        try { webviews.current[id].loadURL(u); } catch (_) {}
+      }
       setTabs((ts) => (reuse
         ? ts.map((t) => ({ ...t, launch: u, url: u, title: 'Preview', loading: true }))
         : ts.some((t) => t.id === id)

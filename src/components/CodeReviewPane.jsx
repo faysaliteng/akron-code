@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useVoiceDictation } from '../voice';
 import { DuetReviewPanel } from './DuetReviewPanel.jsx';
+import { copyTextToClipboard } from '../utils/appHelpers.jsx';
+import { isMarkdownPath, isHtmlPath } from '../utils/linkAndFileHelpers.js';
 import {
   fallbackDiffsFromTools,
   mergeDiffFiles,
@@ -32,7 +34,7 @@ function highlightLine(text, matcher) {
   }
 }
 
-export function CodeReviewPane({ convId, cwd, target, allTools = [], provider = null, orchestrator = null, onSendComment, onRewindDone, onClose, voiceOpts = {}, Icon }) {
+export function CodeReviewPane({ convId, cwd, target, allTools = [], provider = null, orchestrator = null, onSendComment, onRewindDone, onOpenFile, onPreviewFile, onClose, voiceOpts = {}, Icon }) {
   const [scope, setScope] = useState(target && (target.scope === 'all' ? 'all' : (target.checkpointId || target.turnLabel || (target.tools && target.tools.length))) ? (target.scope || 'turn') : 'all');
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -55,6 +57,7 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], provider = 
   const [draftAt, setDraftAt] = useState(null); // { key, file, fullPath, lineNum, code }
   const [draftText, setDraftText] = useState('');
   const [comments, setComments] = useState([]); // { id, key, file, lineNum, code, text }
+  const [ctxMenu, setCtxMenu] = useState(null); // { x, y, file } | null
 
   const matchRefs = useRef(new Map());
   const fileRefs = useRef(new Map());
@@ -86,14 +89,20 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], provider = 
   }, [target]);
 
   useEffect(() => {
-    if (!menuOpen && !filesJumpOpen) return undefined;
+    if (!menuOpen && !filesJumpOpen && !ctxMenu) return undefined;
     const onDocClick = (e) => {
       if (menuOpen && menuWrapRef.current && !menuWrapRef.current.contains(e.target)) setMenuOpen(false);
       if (filesJumpOpen && jumpWrapRef.current && !jumpWrapRef.current.contains(e.target)) setFilesJumpOpen(false);
+      if (ctxMenu && (!e.target.closest || !e.target.closest('.rv-ctx-menu'))) setCtxMenu(null);
     };
+    const onKey = (e) => { if (e.key === 'Escape' && ctxMenu) setCtxMenu(null); };
     window.addEventListener('mousedown', onDocClick);
-    return () => window.removeEventListener('mousedown', onDocClick);
-  }, [menuOpen, filesJumpOpen]);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDocClick);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen, filesJumpOpen, ctxMenu]);
 
   const commentVoice = useVoiceDictation({
     engine: voiceOpts.engine || 'auto',
@@ -524,11 +533,40 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], provider = 
                 type="button"
                 className="rv-file-head"
                 onClick={() => setCollapsed((c) => ({ ...c, [file.path]: !c[file.path] }))}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setCtxMenu({ x: e.clientX, y: e.clientY, file });
+                }}
               >
                 <span className={'rv-ext ' + info.cls}>{info.label}</span>
                 <span className="rv-file-name">{base}</span>
                 {dirPart && <span className="rv-file-dir">{dirPart}</span>}
                 <span className="rv-file-right">
+                  {(isMarkdownPath(file.path) || isHtmlPath(file.path)) && onPreviewFile && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className="rv-file-act"
+                      title={`Preview ${base}`}
+                      onClick={(e) => { e.stopPropagation(); onPreviewFile(file.path); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onPreviewFile(file.path); } }}
+                    >
+                      <Icon name="Eye" size={11} /> Preview
+                    </span>
+                  )}
+                  {onOpenFile && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className="rv-file-act"
+                      title={`Open ${base} in IDE Editor`}
+                      onClick={(e) => { e.stopPropagation(); onOpenFile(file.path); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onOpenFile(file.path); } }}
+                    >
+                      <Icon name="Code" size={11} /> Open
+                    </span>
+                  )}
                   <span className="delta-add">+{file.added}</span>
                   <span className="delta-del">−{file.removed}</span>
                   <Icon name={isCollapsed ? 'CaretRight' : 'CaretDown'} size={12} />
@@ -592,6 +630,35 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], provider = 
           <span className="rv-foot-count">{comments.length} {comments.length === 1 ? 'comment' : 'comments'} ready</span>
           <button type="button" className="btn-mini primary" onClick={sendAllComments}>
             <Icon name="ArrowBendUpRight" size={12} /> Send Review Comments to Agent
+          </button>
+        </div>
+      )}
+
+      {ctxMenu && ctxMenu.file && (
+        <div
+          className="rv-popover rv-ctx-menu"
+          role="menu"
+          style={{ position: 'fixed', left: Math.min(ctxMenu.x, window.innerWidth - 220), top: Math.min(ctxMenu.y, window.innerHeight - 170), zIndex: 9999 }}
+        >
+          {onPreviewFile && (
+            <button type="button" className="rv-pop-item" role="menuitem" onClick={() => { const fp = ctxMenu.file.path; setCtxMenu(null); onPreviewFile(fp); }}>
+              <Icon name="Eye" size={13} />
+              <span>Preview Rendered File</span>
+            </button>
+          )}
+          {onOpenFile && (
+            <button type="button" className="rv-pop-item" role="menuitem" onClick={() => { const fp = ctxMenu.file.path; setCtxMenu(null); onOpenFile(fp); }}>
+              <Icon name="Code" size={13} />
+              <span>Open in IDE Editor</span>
+            </button>
+          )}
+          <button type="button" className="rv-pop-item" role="menuitem" onClick={() => { const fp = ctxMenu.file.path; setCollapsed((c) => ({ ...c, [fp]: !c[fp] })); setCtxMenu(null); }}>
+            <Icon name="CaretDown" size={13} />
+            <span>{collapsed[ctxMenu.file.path] ? 'Expand Diff' : 'Collapse Diff'}</span>
+          </button>
+          <button type="button" className="rv-pop-item" role="menuitem" onClick={async () => { const fp = ctxMenu.file.path; setCtxMenu(null); try { await copyTextToClipboard(fp); } catch (_) {} }}>
+            <Icon name="Copy" size={13} />
+            <span>Copy File Path</span>
           </button>
         </div>
       )}

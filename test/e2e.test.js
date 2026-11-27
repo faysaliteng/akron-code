@@ -363,7 +363,7 @@ async function main() {
         useMemory: false,
       });
       assert.match(msgs[msgs.length - 1].content, /recovered after the stall/);
-      assert.ok(events.some((e) => e.type === 'thinking' && /waiting/i.test(String(e.text))), 'the user is told it is retrying');
+      assert.ok(events.some((e) => (e.type === 'notice' || e.type === 'status') && /waiting/i.test(String(e.text))), 'the user is told it is retrying');
       assert.ok(!events.some((e) => e.type === 'error'), 'a stall is transient, not a red error');
     } finally {
       delete process.env.HELIO_STREAM_STALL_MS;
@@ -392,7 +392,7 @@ async function main() {
       assert.ok(mock.calls() >= 2, 'the gateway error was retried');
       assert.match(msgs[msgs.length - 1].content, /survived the gateway blip/);
       assert.ok(
-        events.some((e) => e.type === 'thinking' && /provider error 502/.test(String(e.text))),
+        events.some((e) => (e.type === 'notice' || e.type === 'status') && /provider error 502/.test(String(e.text))),
         'the wait is described by status, not as a rate limit',
       );
       assert.ok(!events.some((e) => e.type === 'error'), 'a 502 is transient, not a red error');

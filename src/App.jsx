@@ -59,8 +59,10 @@ import {
   ToolDetail, DeltaChips, DiffBlock, ContextLimitToast, ThinkBlock,
 } from './components/chat/WorkspaceViews.jsx';
 import { BrowserViewBody } from './components/browser/BrowserPaneView.jsx';
+import { DocPreviewPane } from './components/chat/DocPreviewPane.jsx';
 import { InputBarBody } from './components/chat/InputBarView.jsx';
 import { SettingsModalBody } from './components/settings/SettingsModalBody.jsx';
+import { resolveAgainstCwd, isHtmlPath, attachDocumentLinkRouter } from './utils/linkAndFileHelpers.js';
 import { sendDesktopNotification, convToMarkdown, convToHtml, escapeHtml, fmtSize, extractCodeBlocks, filesToAttachments, toggleDictation, useDismiss, priceFor, FREELLM_LOOPBACK_BASES, MODEL_WINDOW_CACHE, HARNESS_PROFILES, SOUND_PRESETS, playUiSound, extractLinks, fetchUnfurl, parseCodeInfo, copyTextToClipboard, extractMessageText } from './utils/appHelpers.jsx';
 
 // Compact record of what the assistant actually did with tools last turn.
@@ -319,7 +321,8 @@ export default function App() {
   }, []);
   const lastPaneRef = useRef('review');
   const [reviewTarget, setReviewTarget] = useState(null);
-  const [previewUrl, setPreviewUrl] = useState(null); // file the browser pane should show (generated site)
+  const [docPreviewTarget, setDocPreviewTarget] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState(null); // file or URL the browser pane should show
   const [voiceMode, setVoiceMode] = useState(false); // full-duplex conversational voice session
   const [permissions, setPermissions] = useState(() => {
     if (!loadJSON('autobot:perm_auto_default_v2', false)) {
@@ -778,28 +781,46 @@ export default function App() {
     return false;
   }, [convs]);
 
-  useEffect(() => {
-    const onLinkClick = (e) => {
-      const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
-      if (!a) return;
-      const href = a.getAttribute('href') || '';
-      if (href.startsWith('session://')) {
-        e.preventDefault();
-        openSessionDeepLink(href);
-      }
-    };
-    document.addEventListener('click', onLinkClick);
-    return () => document.removeEventListener('click', onLinkClick);
-  }, [openSessionDeepLink]);
-
   // subscribe to events
-  const openPreview = useCallback((url) => {
-    if (!url) return;
+  const openPreview = useCallback((url, opts = {}) => {
+    const targetUrl = String(url || '').trim();
+    if (!targetUrl) return;
     // Object identity (not the bare string) so previewing the same file again —
     // after an edit — still triggers a reload in the pane.
-    setPreviewUrl({ url, at: Date.now() });
-    setSessionPane((p) => (p.type === 'browser' ? p : { ...p, type: 'browser', width: p.width || 520 }));
-  }, []);
+    setPreviewUrl({ url: targetUrl, newTab: !!(opts && opts.newTab), at: Date.now() });
+    showSessionPane('browser');
+    setPanel('chats');
+  }, [showSessionPane]);
+
+  const openInIde = useCallback((fp, opts = {}) => {
+    const raw = (fp && typeof fp === 'object') ? fp.path : fp;
+    const resolved = resolveAgainstCwd(raw, cwd);
+    if (!resolved) return;
+    setIdeExternalOpenFile({
+      path: resolved,
+      line: (opts && opts.line) || (fp && typeof fp === 'object' ? fp.line : null) || null,
+      diff: !!(opts && opts.diff) || !!(fp && typeof fp === 'object' && fp.diff),
+      at: Date.now(),
+    });
+    setWorkbenchMode('ide');
+  }, [cwd]);
+
+  const openDocPreview = useCallback((fp, line = null) => {
+    const resolved = resolveAgainstCwd(fp, cwd);
+    if (!resolved) return;
+    if (isHtmlPath(resolved)) { openPreview(resolved); return; }
+    setDocPreviewTarget({ path: resolved, line: line || null, at: Date.now() });
+    showSessionPane('doc');
+    setPanel('chats');
+  }, [cwd, openPreview, showSessionPane]);
+
+  useEffect(() => attachDocumentLinkRouter({
+    openSessionDeepLink,
+    openDocPreview,
+    openInIde,
+    openPreview,
+    openExternal: (href) => { try { window.autobot?.openExternal?.(href); } catch (_) {} },
+  }), [openSessionDeepLink, openDocPreview, openInIde, openPreview]);
 
 
   useEffect(() => {
@@ -2637,7 +2658,7 @@ export default function App() {
                   subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode}
                   copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd}
                   onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }}
-                  onOpenInIde={(fp) => setIdeExternalOpenFile(fp)}
+                  onOpenInIde={(fp) => openInIde(fp)}
                   onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setWorkbenchMode('agent'); setPanel('media'); }}
                   copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage}
                   forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv}
@@ -2836,7 +2857,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} uiSettings={settings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} />}
+              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} uiSettings={settings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => openInIde(fp)} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} initialTab={searchTab} provider={provider} onOpenSessionLink={openSessionDeepLink} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'mission' && (
                 <MissionControlPane
@@ -2867,8 +2888,8 @@ export default function App() {
                   Icon={Icon}
                 />
               )}
-              {panel === 'artifacts' && <ArtifactsView blocks={artifacts} tools={allActiveTools} cwd={cwd} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } setPanel('chats'); }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} />}
-              {panel === 'media' && <MediaStudioView cwd={cwd} provider={provider} focusPath={mediaStudioFocusPath} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} setNotice={setNotice} setError={setError} />}
+              {panel === 'artifacts' && <ArtifactsView blocks={artifacts} tools={allActiveTools} cwd={cwd} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } setPanel('chats'); }} onOpenInIde={(fp) => openInIde(fp)} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} />}
+              {panel === 'media' && <MediaStudioView cwd={cwd} provider={provider} focusPath={mediaStudioFocusPath} onOpenInIde={(fp) => openInIde(fp)} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} setNotice={setNotice} setError={setError} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} convs={convs} provider={provider} onJumpToMessage={(cid, mid) => { if (cid) selectConv(cid); if (mid) setPendingScroll(mid); }} />}
               {panel === 'skills' && <SkillsView skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills} />}
               {panel === 'notebooks' && <NotebooksView notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells} openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook} />}
@@ -2961,9 +2982,22 @@ export default function App() {
                   orchestrator={orchestrator}
                   onSendComment={(txt) => send(txt)}
                   onRewindDone={(r) => setError(`✅ Rewound: restored ${(r && r.restored) || 0}, removed ${(r && r.removed) || 0}.`)}
+                  onOpenFile={(fp) => openInIde(fp)}
+                  onPreviewFile={(fp) => openDocPreview(fp)}
                   onClose={() => closeSessionTab('review')}
                   voiceOpts={{ engine: settings.voiceEngine || 'auto', lang: settings.voiceLang || 'en-US' }}
                   Icon={Icon}
+                />
+              </SessionPane>
+            )}
+            {sessionPane.type === 'doc' && (
+              <SessionPane {...paneProps} icon="Eye" title="Preview">
+                <DocPreviewPane
+                  target={docPreviewTarget}
+                  cwd={cwd}
+                  onOpenInIde={(fp, ln) => openInIde(fp, { line: ln })}
+                  onOpenBrowser={(fp) => openPreview(fp)}
+                  onNotice={setNotice}
                 />
               </SessionPane>
             )}

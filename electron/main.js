@@ -598,7 +598,27 @@ function createWindow() {
     win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
 
+  win.webContents.on('will-navigate', (ev, targetUrl) => {
+    try {
+      if (devUrl && targetUrl.startsWith(devUrl)) return;
+      if (targetUrl.startsWith('file://')) return;
+      ev.preventDefault();
+      if (/^https?:\/\//i.test(targetUrl)) {
+        win.webContents.send('autobot:event', { type: 'preview', url: targetUrl, newTab: true });
+      }
+    } catch (_) {}
+  });
+
   win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      if (/^https?:\/\//i.test(url)) {
+        const isOauth = /accounts\.google\.com|claude\.ai|anthropic\.com\/oauth|auth\.openai\.com|chatgpt\.com|x\.ai|accounts\.x\.ai/i.test(url);
+        if (!isOauth) {
+          win.webContents.send('autobot:event', { type: 'preview', url, newTab: true });
+          return { action: 'deny' };
+        }
+      }
+    } catch (_) {}
     shell.openExternal(url);
     return { action: 'deny' };
   });

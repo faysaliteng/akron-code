@@ -2315,6 +2315,7 @@ export function CodeView({ cwd, setCwd, permissions, setPermissions, T }) {
 // ---------- Built-in Browser ----------
 export const PANE_TAB_META = [
   { id: 'review', label: 'Review', icon: 'File' },
+  { id: 'doc', label: 'Preview', icon: 'Eye' },
   { id: 'subagents', label: 'Subagents', icon: 'GitBranch' },
   { id: 'files', label: 'Files', icon: 'Files' },
   { id: 'terminal', label: 'Terminal', icon: 'CommandLine' },

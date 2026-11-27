@@ -499,7 +499,7 @@ export function useAutobotEventStream({
           if (evt.path && /\.(html?|svg)$/i.test(evt.name || evt.path)) openPreview(evt.path);
           break;
         case 'preview':
-          if (evt.url) openPreview(evt.url);
+          if (evt.url) openPreview(evt.url, { newTab: !!evt.newTab });
           break;
         case 'cwd':
           // The backend resolved the conversation's real project folder. Show it,

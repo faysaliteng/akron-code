@@ -885,7 +885,7 @@ export function DependenciesAndUpdaterSection({ setNotice }) {
         <h3>App Auto-Update (GitHub Releases)</h3>
         <div className="env-prof-row">
           <div className="env-prof-meta">
-            <span className="env-prof-title">Akron Code v{(upd && upd.currentVersion) || curVer || '1.5.1'}</span>
+            <span className="env-prof-title">Akron Code v{(upd && upd.currentVersion) || curVer || '1.5.2'}</span>
             <span className="env-prof-sub">
               {upd
                 ? (upd.ok

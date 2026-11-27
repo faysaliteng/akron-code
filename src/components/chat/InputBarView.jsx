@@ -6,7 +6,7 @@ import { hydrateProvider, endpointKey } from '../../providerhydrate.mjs';
 import { useVoiceDictation } from '../../voice';
 import { ClaudeReconnectPanel, useClaudeReconnect } from '../settings/SettingsSections.jsx';
 import { SessionModelList, EnvironmentPicker, PERM_MODES, PERM_SHORT, BUILTIN_MENTION_AGENTS, ContextMeter, ProvModelList } from './WorkspaceViews.jsx';
-import { PRESETS, PRESET_KEYS, resolveLoopbackKey, STYLES, REASON_LEVELS, REASON_LABELS, contextWindowFor, loadJSON, saveJSON, useDismiss, toggleDictation, filesToAttachments, uid, ProvNotice, fmtInt, MODEL_WINDOW_CACHE, usedTokens } from '../../utils/appHelpers.jsx';
+import { PRESETS, PRESET_KEYS, resolveLoopbackKey, STYLES, REASON_LEVELS, REASON_LABELS, MODEL_CAPABILITY_CACHE, thinkingCapabilitiesForUi, contextWindowFor, loadJSON, saveJSON, useDismiss, toggleDictation, filesToAttachments, uid, ProvNotice, fmtInt, MODEL_WINDOW_CACHE, usedTokens } from '../../utils/appHelpers.jsx';
 
 export function InputBarBody({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, orchestrator, setOrchestrator, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, customStyles = [], customAgents = [], onOpenCustomizations, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, queuePaused, onToggleQueuePaused, onClearQueue, onToggleQueueItemPaused, onReorderQueue, onStepQueueItem, onUpdateQueueItemText, unqueue, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, activeSkillPill, onClearSkillPill, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);
@@ -328,15 +328,51 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
         // outside this component and cannot see this state.
         try {
           const cache = loadJSON(MODEL_WINDOW_CACHE, {}) || {};
+          const caps = loadJSON(MODEL_CAPABILITY_CACHE, {}) || {};
           for (const m of r.models || []) {
-            if (m.id && m.contextWindow > 0) cache[m.id] = m.contextWindow;
+            if (!m || !m.id) continue;
+            if (m.contextWindow > 0) cache[m.id] = m.contextWindow;
+            caps[m.id] = {
+              thinking: m.thinking !== undefined ? !!m.thinking : undefined,
+              thinkingLevels: Array.isArray(m.thinkingLevels) ? m.thinkingLevels : undefined,
+              thinkingVariants: m.thinkingVariants || undefined,
+            };
           }
           saveJSON(MODEL_WINDOW_CACHE, cache);
+          saveJSON(MODEL_CAPABILITY_CACHE, caps);
         } catch (_) {}
         return r;
       }
     } catch (_) {}
     return null;
+  }, []);
+
+  useEffect(() => {
+    if (!window.autobot || !window.autobot.onEvent) return undefined;
+    return window.autobot.onEvent((evt) => {
+      if (!evt || evt.type !== 'model-catalog-updated' || !evt.providerId || !Array.isArray(evt.models)) return;
+      const r = { ok: true, providerId: evt.providerId, live: true, count: evt.models.length, models: evt.models };
+      setProvModels((prev) => ({
+        ...prev,
+        [evt.providerId]: r,
+        ...(evt.accountId ? { [evt.accountId]: r } : {}),
+      }));
+      try {
+        const cache = loadJSON(MODEL_WINDOW_CACHE, {}) || {};
+        const caps = loadJSON(MODEL_CAPABILITY_CACHE, {}) || {};
+        for (const m of evt.models) {
+          if (!m || !m.id) continue;
+          if (m.contextWindow > 0) cache[m.id] = m.contextWindow;
+          caps[m.id] = {
+            thinking: m.thinking !== undefined ? !!m.thinking : undefined,
+            thinkingLevels: Array.isArray(m.thinkingLevels) ? m.thinkingLevels : undefined,
+            thinkingVariants: m.thinkingVariants || undefined,
+          };
+        }
+        saveJSON(MODEL_WINDOW_CACHE, cache);
+        saveJSON(MODEL_CAPABILITY_CACHE, caps);
+      } catch (_) {}
+    });
   }, []);
 
   useEffect(() => {
@@ -853,11 +889,15 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
     const list = (live && live.models) || prov.models || [];
     const ids = list.map((m) => m.id);
     const dflt = model || (ids.includes(provider.model) ? provider.model : '') || ids[0] || provider.model;
+    const nextModel = dflt || vModelFallback();
+    function vModelFallback() { return provider.model; }
+    const suffixMatch = /-(minimal|low|medium|high|xhigh)$/i.exec(String(dflt || ''));
     setProvider((v) => ({
       ...v,
       baseURL: '',
       apiKey: '',
       model: dflt || v.model,
+      reasoningLevel: suffixMatch ? suffixMatch[1].toLowerCase() : (model ? 'auto' : v.reasoningLevel),
       supportsTools: true,
       oauthProvider: prov.id + ':' + account,
       transport: prov.transport,
@@ -1019,43 +1059,68 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
           on top of it. Nothing can be squeezed past the border now. */}
       <div className="composer-topbar">
         <div className="topbar-left">
-            {/* Reasoning / thinking level — deliberately labelled so it is
-                discoverable: a bare icon select was impossible to find. */}
-            <div className="style-wrap f-think">
-              <button
-                type="button"
-                className={'reason-pick' + (reasoningLevel !== 'auto' ? ' active' : '')}
-                title={'Thinking level — ' + (reasoningLevel === 'auto' ? 'model decides' : reasoningLevel) + ' (applies to reasoning models)'}
-                onClick={() => setReasonOpen(!reasonOpen)}
-                aria-haspopup="listbox"
-                aria-expanded={reasonOpen}
-                aria-label="Thinking level"
-              >
-                <Icon name="ExtendedThinking" size={16} />
-                <span className="reason-label">Thinking</span>
-                <span className="reason-val">{REASON_LABELS[reasoningLevel] || 'Auto'}</span>
-                <span className="reason-caret" aria-hidden="true">▾</span>
-              </button>
-              {reasonOpen && (
-                <div className="style-menu reason-menu" role="listbox">
-                  <div className="model-menu-head">Thinking level</div>
-                  {REASON_LEVELS.map((lv) => (
-                    <button
-                      key={lv.id}
-                      type="button"
-                      role="option"
-                      aria-selected={reasoningLevel === lv.id}
-                      className={'model-opt' + (reasoningLevel === lv.id ? ' on' : '')}
-                      onClick={() => { setReasoningLevel(lv.id); setReasonOpen(false); }}
-                    >
-                      <span className="model-opt-name">{lv.name}</span>
-                      <span className="model-opt-prov">{lv.hint}</span>
-                      {reasoningLevel === lv.id && <Icon name="Check" size={13} className="model-check" />}
-                    </button>
-                  ))}
+            {/* Reasoning / thinking level — adapts dynamically to active model's capabilities & sibling tiers. */}
+            {(() => {
+              const effModel = effectiveRoutingMode === 'auto' ? 'auto' : (provider.model || 'auto');
+              const tCaps = thinkingCapabilitiesForUi(effModel);
+              const allowedSet = new Set(tCaps.levels && tCaps.levels.length ? tCaps.levels : ['auto', 'low', 'medium', 'high']);
+              const visibleLevels = REASON_LEVELS.filter((lv) => allowedSet.has(lv.id));
+              const discreteVariantMatch = /-(minimal|low|medium|high|xhigh)$/i.exec(effModel);
+              const displayedLevel = (discreteVariantMatch && reasoningLevel === 'auto')
+                ? discreteVariantMatch[1].toLowerCase()
+                : reasoningLevel;
+              const applyThinkingPick = (lvId) => {
+                if (tCaps.variants && tCaps.variants[lvId] && tCaps.variants[lvId] !== provider.model) {
+                  setProvider((p) => ({ ...p, model: tCaps.variants[lvId], reasoningLevel: lvId }));
+                } else {
+                  setReasoningLevel(lvId);
+                }
+                setReasonOpen(false);
+              };
+              return (
+                <div className="style-wrap f-think">
+                  <button
+                    type="button"
+                    className={'reason-pick' + (!tCaps.supported ? ' unsupported' : (displayedLevel !== 'auto' ? ' active' : ''))}
+                    title={!tCaps.supported
+                      ? `${effModel} does not expose adjustable thinking levels`
+                      : ('Thinking level — ' + (displayedLevel === 'auto' ? 'model decides' : displayedLevel) + (tCaps.variants ? ' (auto-switches discrete model variant)' : ''))}
+                    onClick={() => { if (tCaps.supported) setReasonOpen(!reasonOpen); }}
+                    disabled={!tCaps.supported}
+                    aria-haspopup={tCaps.supported ? 'listbox' : undefined}
+                    aria-expanded={tCaps.supported ? reasonOpen : undefined}
+                    aria-label="Thinking level"
+                  >
+                    <Icon name="ExtendedThinking" size={16} />
+                    <span className="reason-label">Thinking</span>
+                    <span className="reason-val">{!tCaps.supported ? 'N/A' : (REASON_LABELS[displayedLevel] || 'Auto')}</span>
+                    {tCaps.supported && <span className="reason-caret" aria-hidden="true">▾</span>}
+                  </button>
+                  {tCaps.supported && reasonOpen && (
+                    <div className="style-menu reason-menu" role="listbox">
+                      <div className="model-menu-head">Thinking level{tCaps.variants ? ' · Sibling Variants' : ''}</div>
+                      {visibleLevels.map((lv) => {
+                        const targetVariant = tCaps.variants && tCaps.variants[lv.id];
+                        return (
+                          <button
+                            key={lv.id}
+                            type="button"
+                            role="option"
+                            aria-selected={displayedLevel === lv.id}
+                            className={'model-opt' + (displayedLevel === lv.id ? ' on' : '')}
+                            onClick={() => applyThinkingPick(lv.id)}
+                          >
+                            <span className="model-opt-name">{lv.name}</span>
+                            <span className="model-opt-prov">{targetVariant ? targetVariant : lv.hint}</span>
+                            {displayedLevel === lv.id && <Icon name="Check" size={13} className="model-check" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
 
             {/* Swarm — user-opted escalation to a frontier-model team. Off by
                 default; multi-agent (Task/Agent) still happens automatically.
@@ -1491,7 +1556,22 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                   {provOauth && (
                     <>
                       <div className="model-menu-divider" />
-                      <div className="model-menu-head">Subscription accounts</div>
+                      <div className="model-menu-head" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span>Subscription accounts</span>
+                        <button
+                          type="button"
+                          className="prov-link"
+                          title="Refresh live model catalogs from signed-in accounts"
+                          onClick={async () => {
+                            try {
+                              if (window.autobot?.refreshModelCatalogs) await window.autobot.refreshModelCatalogs();
+                              await loadProvOauth();
+                            } catch (_) {}
+                          }}
+                        >
+                          <Icon name="Refresh" size={11} /> Refresh models
+                        </button>
+                      </div>
                       {/* An index that could not be parsed is not "no accounts":
                           say so here too, where the user picks a model. */}
                       {provOauth.storeError && (

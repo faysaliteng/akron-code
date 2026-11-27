@@ -9,6 +9,8 @@ import {
 import { InlineEditWidget } from './InlineEditWidget';
 import { shortcutLabels } from './shortcuts';
 import { normalizeTypography, resolveMonoFontStack } from '../typography.js';
+import { renderMarkdown } from '../utils/appHelpers.jsx';
+import { isMarkdownPath } from '../utils/linkAndFileHelpers.js';
 
 export function extractSymbolsFromText(text) {
   if (!text) return [];
@@ -97,6 +99,7 @@ export function MonacoPane({
   const baselineContentRef = useRef({});
 
   const [minimap, setMinimap] = useState(false);
+  const [mdPreviewOn, setMdPreviewOn] = useState(false);
   const [inlineEdit, setInlineEdit] = useState(null);
   const [nextEdit, setNextEdit] = useState(null);
   const [activeSymbol, setActiveSymbol] = useState('');
@@ -108,7 +111,8 @@ export function MonacoPane({
   const splitTab = splitTabPath ? tabs.find((t) => t.path === splitTabPath) : null;
   const hasActiveTab = Boolean(activeTab);
   const customBody = !diffMode && activeTab && renderCustomTabBody ? renderCustomTabBody(activeTab) : null;
-  const hasMonacoHost = Boolean(activeTab && !customBody);
+  const showMdPreview = Boolean(mdPreviewOn && activeTab && isMarkdownPath(activeTab.path) && !diffMode && !customBody);
+  const hasMonacoHost = Boolean(activeTab && !customBody && !showMdPreview);
 
   const applyNextEdit = useCallback(() => {
     const ed = editorRef.current;
@@ -711,6 +715,16 @@ export function MonacoPane({
           >
             <Icon name="ArrowSplitRight" size={13} />
           </button>
+          {activeTab && isMarkdownPath(activeTab.path) && !diffMode && (
+            <button
+              type="button"
+              className={'ide-mini-action' + (mdPreviewOn ? ' accent' : '')}
+              title="Toggle Rendered Markdown Preview"
+              onClick={() => setMdPreviewOn((v) => !v)}
+            >
+              {mdPreviewOn ? 'Editor' : 'Preview'}
+            </button>
+          )}
           {activeTab && !diffMode && (
             <button
               type="button"
@@ -799,6 +813,8 @@ export function MonacoPane({
           <div ref={diffContainerRef} className="ide-monaco-host" />
         ) : customBody ? (
           customBody
+        ) : showMdPreview ? (
+          <div className="md doc-preview-md" style={{ padding: '18px 24px', overflow: 'auto', flex: 1, height: '100%' }} dangerouslySetInnerHTML={{ __html: renderMarkdown(activeTab.content || '') }} />
         ) : (
           <div className={'ide-monaco-split' + (splitTab ? ' dual' : '')}>
             <div ref={editorContainerRef} className="ide-monaco-host" />

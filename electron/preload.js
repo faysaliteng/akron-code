@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld('autobot', {
   // non-secret status crosses the bridge; tokens stay in the main process.
   providerStatus: () => ipcRenderer.invoke('autobot:providerStatus'),
   providerModels: (id) => ipcRenderer.invoke('autobot:providerModels', id),
+  refreshModelCatalogs: () => ipcRenderer.invoke('autobot:refreshModelCatalogs'),
   providerSignIn: (id) => ipcRenderer.invoke('autobot:providerSignIn', id),
   providerSignInCancel: (id) => ipcRenderer.invoke('autobot:providerSignInCancel', id),
   providerSignInState: (id) => ipcRenderer.invoke('autobot:providerSignInState', id),

@@ -91,6 +91,14 @@ async function hydrateProvider(provider) {
     oauth: true,
     model: provider.model || (r.models && r.models[0] && r.models[0].id) || '',
   });
+  const provKey = String(targetId.split(':')[0] || '');
+  if (out.model && !modelCatalog.isModelAvailable(provKey, out.model)) {
+    const replacement = modelCatalog.resolveReplacementModel(provKey, out.model);
+    if (replacement && replacement.id && replacement.id !== out.model) {
+      out._replacedRetiredModel = { from: out.model, to: replacement.id, providerId: provKey };
+      out.model = replacement.id;
+    }
+  }
   // Providers with no bespoke wire adapter are plain OpenAI-compatible bearers
   // (xAI/Grok today). Hand the token over as the key so the ordinary
   // `{baseURL}/chat/completions` path uses it, and clear `transport` so
@@ -123,15 +131,31 @@ async function validateOrchestrator(orch, emit) {
     poolNoticeDeduper.shouldEmitPruned('');
     return orch;
   }
+  const remapped = [];
+  const nextRows = orch.providers.map((row) => {
+    if (!row || !row.oauthProvider || !row.model) return row;
+    const provKey = String(row.oauthProvider).split(':')[0];
+    if (modelCatalog.hasLiveCatalog(provKey) && !modelCatalog.isModelAvailable(provKey, row.model)) {
+      const repl = modelCatalog.resolveReplacementModel(provKey, row.model);
+      if (repl && repl.id) {
+        remapped.push(`${row.model} → ${repl.id}`);
+        return { ...row, model: repl.id };
+      }
+    }
+    return row;
+  });
+  if (remapped.length && typeof emit === 'function') {
+    try { emit({ type: 'notice', text: `Updated retired pool model(s): ${remapped.join(', ')}.` }); } catch (_) {}
+  }
   let res;
   try {
-    res = await orchPool.pruneUnserved(orch.providers, { timeoutMs: 2500 });
+    res = await orchPool.pruneUnserved(nextRows, { timeoutMs: 2500 });
   } catch (_) {
-    return orch; // validation must never cost a turn
+    return Object.assign({}, orch, { providers: nextRows }); // validation must never cost a turn
   }
   if (!res || !res.dropped.length) {
     poolNoticeDeduper.shouldEmitPruned('');
-    return orch;
+    return Object.assign({}, orch, { providers: (res && res.providers) || nextRows });
   }
   // Re-anchor the active row by identity so pruning an entry above it does not
   // silently switch the pool to a different model.
@@ -243,15 +267,23 @@ async function fetchProviderModels(id) {
     : (prov.models || []).map((m) => ({ id: m.id, label: m.label, contextWindow: 0, thinking: !!m.thinking }));
   const models = entries.map((m) => {
     const win = modelCatalog.contextWindowFor(m.id, provId, m.contextWindow);
+    const caps = modelCatalog.thinkingCapabilitiesFor(m.id, provId);
+    const levels = Array.isArray(m.thinkingLevels) && m.thinkingLevels.length ? m.thinkingLevels : caps.levels;
+    const variants = m.thinkingVariants || caps.variants || undefined;
     return {
       id: m.id,
       label: m.label || m.id,
       contextWindow: win,
       windowLabel: modelCatalog.fmtWindow(win),
-      thinking: !!m.thinking,
+      thinking: typeof m.thinking === 'boolean' ? m.thinking : caps.supported,
+      thinkingLevels: levels,
+      thinkingVariants: variants,
       group: m.group || '',
     };
   });
+  if (live.length) {
+    try { broadcast({ type: 'model-catalog-updated', providerId: provId, accountId: raw, models }); } catch (_) {}
+  }
   return {
     ok: true,
     providerId: provId,
@@ -287,6 +319,15 @@ async function warmModelCatalogs() {
 ipcMain.handle('autobot:providerModels', async (event, id) => {
   try {
     return await fetchProviderModels(id);
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
+ipcMain.handle('autobot:refreshModelCatalogs', async () => {
+  try {
+    await warmModelCatalogs();
+    return { ok: true, snapshot: modelCatalog.snapshot() };
   } catch (e) {
     return { ok: false, error: oneLine(e) };
   }
@@ -843,6 +884,8 @@ ipcMain.handle('autobot:providerAdoptClaude', async () => {
   if (startupHealTimer && typeof startupHealTimer.unref === 'function') startupHealTimer.unref();
   const keepAliveTimer = setInterval(runKeepAlivePass, 10 * 60 * 1000);
   if (keepAliveTimer && typeof keepAliveTimer.unref === 'function') keepAliveTimer.unref();
+  const catalogRefreshTimer = setInterval(() => { warmModelCatalogs().catch(() => {}); }, 30 * 60 * 1000);
+  if (catalogRefreshTimer && typeof catalogRefreshTimer.unref === 'function') catalogRefreshTimer.unref();
 
   return { freellmFallbackApiKey, hydrateLocalFreeLlmProvider, hydrateProvider, validateOrchestrator, oneLine, fetchProviderModels, warmModelCatalogs, replayClaudeRotation };
 };

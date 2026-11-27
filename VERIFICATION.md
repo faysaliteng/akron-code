@@ -1,3 +1,28 @@
+# Akron Code (`v1.5.2`) — Production Release Verification (2026-11-27)
+
+**Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.5.2`)
+
+## v1.5.2 Production Gate Summary
+
+| Gate | Command / Platform | Result |
+|---|---|---|
+| Static Syntax / JSX Check | `npm run typecheck` | ✅ `TYPECHECK_OK: verified 379 JS/JSX/MJS/CJS files with 0 syntax/transform errors.` |
+| Full Unit & Integration Suite | `npm test` (`test/*.test.js`, `--test-concurrency=4`) | ✅ Verified across **141 test suites** (`test/v152-timeout-links-md-catalog.test.js` + full suite, 0 failures) |
+| Timeouts, Retry Status, Model Catalog & Helpers | `node --test test/v152-timeout-links-md-catalog.test.js` | ✅ **4 / 4 passed** (`provider connection timed out` classification + zero `thinking` retry pollution, `n=1` timeout cap, discrete Antigravity `thinkingVariants`, retired-model auto-replacement + mid-turn `404` catalog recovery, `parseFileToken`, `linkifyBareDomains`, `../browser-bot-v2`, JXA guards) |
+| Live Electron UI E2E (`v1.5.2`) | `./node_modules/.bin/electron test/live/verify-v152-ui.cjs` | ✅ `UI_V152_E2E_OK` (`.md` inline chip -> `DocPreviewPane` rendered Markdown + clickable bare domains, web link -> built-in Browser pane navigation, `CodeReviewPane` Preview/Open + custom right-click menu, composer `Thinking` `High` -> `gemini-4-carbon-high` auto-switch, non-thinking `gpt-4o-mini` -> `Thinking N/A` disabled) |
+| Cryptographic Brand Seal | `npm run brand:seal && npm run brand:check` | ✅ `BRAND_SEAL_OK 12` |
+| Line Budget Check | `wc -l electron/main.js src/App.jsx` | ✅ `1559` (`< 1600`) and `3473` (`< 3500`) |
+| Packaged macOS ARM64 Build + Fuses + Codesign + Cold Boot | `npm run dist:mac`, `@electron/fuses`, `/Applications/Akron Code.app` | ✅ **6/6 Electron Fuses** (`RunAsNode=0, CookieEnc=1, NodeOpts=0, NodeInspect=0, OnlyAsar=1, AsarIntegrity=1`), `0` `.map` files in `dist/` and `app.asar`, `codesign --verify --deep --strict OK`, `COLD_BOOT_OK {"ok":true,"brandOk":true,"domOk":true,"ipcOk":true,"checkedFiles":15,"consoleErrorCount":0}` |
+
+### Verified Local macOS Build Checksums (`v1.5.2`)
+
+- `AkronCode-1.5.2-arm64.dmg`: `231fa2cc7763239c8517149b016318a8a6635fb7a99f708783940b2bdf12dcb7`
+- `AkronCode-1.5.2-arm64.zip`: `7a4da69f9c79853c914d766475b838e852c560c986634652f8d7758a59d283a3`
+- `AkronBrowserBot-1.6.7.crx`: `a9275e0f9449990115fbb8589da1062f0c8abf308f2a94cbac4d2782c2fa343c`
+- `AkronBrowserBot-1.6.7.zip`: `ba1e136b8cceb10ea8657f1a9d065d001e8006dbe1c7fe27929b18ec0c918f3e`
+
+---
+
 # Akron Code (`v1.5.1`) — Production Release Verification (2026-11-27)
 
 **Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.5.1`)

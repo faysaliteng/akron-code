@@ -82,15 +82,21 @@ function execP(cmd, opts = {}) {
 }
 
 async function osascript(script) {
-  const { err, stdout, stderr } = await execP('/usr/bin/osascript -e ' + JSON.stringify(script), { timeout: 20000 });
-  if (err) {
-    const msg = (stderr || err.message || '').trim();
-    if (/assistive access|not allowed/i.test(msg)) {
-      throw new Error('Accessibility permission missing: open System Settings › Privacy & Security › Accessibility and enable Akron Code.');
+  const file = path.join(os.tmpdir(), `autobot-osa-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.scpt`);
+  fs.writeFileSync(file, String(script || ''), 'utf8');
+  try {
+    const { err, stdout, stderr } = await execP(`/usr/bin/osascript "${file}"`, { timeout: 20000 });
+    if (err) {
+      const msg = (stderr || err.message || '').trim();
+      if (/assistive access|not allowed/i.test(msg)) {
+        throw new Error('Accessibility permission missing: open System Settings › Privacy & Security › Accessibility and enable Akron Code.');
+      }
+      throw new Error(msg || 'osascript failed');
     }
-    throw new Error(msg || 'osascript failed');
+    return stdout.trim();
+  } finally {
+    try { fs.unlinkSync(file); } catch (_) {}
   }
-  return stdout.trim();
 }
 
 async function jxa(src) {
@@ -110,7 +116,7 @@ ObjC.import('CoreGraphics');
 function post(t, x, y, btn, clicks) {
   const p = $.CGPointMake(x, y);
   const e = $.CGEventCreateMouseEvent(null, t, p, btn);
-  if (e && !e.isNil()) {
+  if (e && (typeof e.isNil !== 'function' || !e.isNil())) {
     if (clicks) $.CGEventSetIntegerValueField(e, $.kCGMouseEventClickState, clicks);
     $.CGEventPost($.kCGHIDEventTap, e);
   }
@@ -232,12 +238,87 @@ async function scroll(direction = 'down', amount = 3, opts = {}) {
 // ── Keyboard ──────────────────────────────────────────────────────────────────
 
 const KEYCODES = {
+  a: 0, s: 1, d: 2, f: 3, h: 4, g: 5, z: 6, x: 7, c: 8, v: 9, b: 11,
+  q: 12, w: 13, e: 14, r: 15, y: 16, t: 17, '1': 18, '2': 19, '3': 20, '4': 21,
+  '6': 22, '5': 23, '=': 24, '9': 25, '7': 26, '-': 27, '8': 28, '0': 29,
+  ']': 30, o: 31, u: 32, '[': 33, i: 34, p: 35, l: 37, j: 38, "'": 39, k: 40,
+  ';': 41, '\\': 42, ',': 43, '/': 44, n: 45, m: 46, '.': 47, '`': 50,
   return: 36, enter: 36, tab: 48, space: 49, delete: 51, backspace: 51,
-  escape: 53, esc: 53, left: 123, right: 124, down: 125, up: 126,
+  escape: 53, esc: 53, cmd: 55, command: 55, meta: 55, shift: 56, capslock: 57,
+  alt: 58, option: 58, ctrl: 59, control: 59,
+  left: 123, right: 124, down: 125, up: 126,
   home: 115, end: 119, pageup: 116, pagedown: 121, forwarddelete: 117,
   f1: 122, f2: 120, f3: 99, f4: 118, f5: 96, f6: 97, f7: 98, f8: 100,
   f9: 101, f10: 109, f11: 103, f12: 111, f13: 105, f14: 107, f15: 113,
 };
+
+async function macCgType(text) {
+  const s = String(text);
+  if (!s) return 'typed';
+  await jxa(`
+ObjC.import('CoreGraphics');
+const str = ${JSON.stringify(s)};
+for (let i = 0; i < str.length; i += 16) {
+  const chunk = str.slice(i, i + 16);
+  const down = $.CGEventCreateKeyboardEvent(null, 0, true);
+  $.CGEventKeyboardSetUnicodeString(down, chunk.length, chunk);
+  $.CGEventPost($.kCGHIDEventTap, down);
+  const up = $.CGEventCreateKeyboardEvent(null, 0, false);
+  $.CGEventKeyboardSetUnicodeString(up, chunk.length, chunk);
+  $.CGEventPost($.kCGHIDEventTap, up);
+}
+'typed';
+`);
+  return 'typed';
+}
+
+async function macCgKey(keys, holdMs = 0) {
+  const parts = String(keys || '').toLowerCase().split('+').map((s) => s.trim()).filter(Boolean);
+  let flags = 0;
+  let main = null;
+  for (const p of parts) {
+    if (['cmd', 'command', 'meta'].includes(p)) flags |= 0x100000; // kCGEventFlagMaskCommand
+    else if (['shift'].includes(p)) flags |= 0x020000;            // kCGEventFlagMaskShift
+    else if (['alt', 'option'].includes(p)) flags |= 0x080000;     // kCGEventFlagMaskAlternate
+    else if (['ctrl', 'control'].includes(p)) flags |= 0x040000;   // kCGEventFlagMaskControl
+    else main = p;
+  }
+  if (!main) main = parts[parts.length - 1] || 'return';
+  const kc = KEYCODES[main] != null ? KEYCODES[main] : null;
+  const delaySec = holdMs > 0 ? (holdMs / 1000).toFixed(3) : '0';
+  if (kc != null) {
+    await jxa(`
+ObjC.import('CoreGraphics');
+const down = $.CGEventCreateKeyboardEvent(null, ${kc}, true);
+if (${flags}) $.CGEventSetFlags(down, ${flags});
+$.CGEventPost($.kCGHIDEventTap, down);
+if (${Number(delaySec) > 0}) delay(${delaySec});
+const up = $.CGEventCreateKeyboardEvent(null, ${kc}, false);
+if (${flags}) $.CGEventSetFlags(up, ${flags});
+$.CGEventPost($.kCGHIDEventTap, up);
+'ok';
+`);
+    return 'ok';
+  }
+  if (main.length === 1 && !flags) {
+    await macCgType(main);
+    return 'ok';
+  }
+  await jxa(`
+ObjC.import('CoreGraphics');
+const ch = ${JSON.stringify(main)};
+const down = $.CGEventCreateKeyboardEvent(null, 0, true);
+if (${flags}) $.CGEventSetFlags(down, ${flags});
+$.CGEventKeyboardSetUnicodeString(down, ch.length, ch);
+$.CGEventPost($.kCGHIDEventTap, down);
+if (${Number(delaySec) > 0}) delay(${delaySec});
+const up = $.CGEventCreateKeyboardEvent(null, 0, false);
+if (${flags}) $.CGEventSetFlags(up, ${flags});
+$.CGEventPost($.kCGHIDEventTap, up);
+'ok';
+`);
+  return 'ok';
+}
 
 async function type(text, platform = process.platform) {
   gate();
@@ -261,14 +342,7 @@ async function type(text, platform = process.platform) {
     }
     throw new Error('xdotool or ydotool required for typing on Linux.');
   }
-  if (/[^\x00-\x7F]/.test(s)) {
-    const before = (await execP('/usr/bin/pbpaste', { timeout: 5000 })).stdout;
-    await execP('/usr/bin/pbcopy', { input: s, timeout: 5000 });
-    const r = await key('cmd+v');
-    await execP('/usr/bin/pbcopy', { input: before, timeout: 5000 });
-    return r;
-  }
-  return osascript(`tell application "System Events"\n  keystroke ${JSON.stringify(s)}\nend tell`);
+  return macCgType(s);
 }
 
 async function key(keys, platform = process.platform) {
@@ -285,23 +359,7 @@ async function key(keys, platform = process.platform) {
     }
     throw new Error('xdotool required for key chords on Linux.');
   }
-  const parts = String(keys).toLowerCase().split('+').map((s) => s.trim()).filter(Boolean);
-  const mods = [];
-  let main = null;
-  for (const p of parts) {
-    if (['cmd', 'command', 'meta'].includes(p)) mods.push('command down');
-    else if (['ctrl', 'control'].includes(p)) mods.push('control down');
-    else if (['alt', 'option'].includes(p)) mods.push('option down');
-    else if (['shift'].includes(p)) mods.push('shift down');
-    else main = p;
-  }
-  if (!main) main = parts[parts.length - 1] || 'return';
-  const using = mods.length ? ` using {${mods.join(', ')}}` : '';
-  if (KEYCODES[main] != null) {
-    return osascript(`tell application "System Events"\n  key code ${KEYCODES[main]}${using}\nend tell`);
-  }
-  const char = main.length === 1 ? main : String(keys);
-  return osascript(`tell application "System Events"\n  keystroke ${JSON.stringify(char)}${using}\nend tell`);
+  return macCgKey(keys, 0);
 }
 
 async function holdKey(keys, durationMs = 500) {
@@ -318,15 +376,7 @@ async function holdKey(keys, durationMs = 500) {
     winLinux.linuxExec('xdotool', ['keyup', combo]);
     return { ok: true, keys, durationMs: ms };
   }
-  const parts = String(keys).toLowerCase().split('+').map((s) => s.trim()).filter(Boolean);
-  const token = parts[parts.length - 1] || 'shift';
-  const kc = KEYCODES[token] != null ? KEYCODES[token] : null;
-  if (kc != null) {
-    await jxa(`ObjC.import('CoreGraphics');\nconst down = $.CGEventCreateKeyboardEvent(null, ${kc}, true); $.CGEventPost($.kCGHIDEventTap, down);\ndelay(${(ms / 1000).toFixed(3)});\nconst up = $.CGEventCreateKeyboardEvent(null, ${kc}, false); $.CGEventPost($.kCGHIDEventTap, up);\n'ok';`);
-    return { ok: true, keys, durationMs: ms };
-  }
-  await key(keys);
-  await wait(ms);
+  await macCgKey(keys, ms);
   return { ok: true, keys, durationMs: ms };
 }
 
@@ -396,16 +446,22 @@ async function listWindowsStructured() {
   if (process.platform === 'linux') return winLinux.linuxListWindows();
   const out = await jxa(`
 ObjC.import('CoreGraphics');
-const raw = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, $.kCGNullWindowID)) || [];
+const cf = $.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, $.kCGNullWindowID);
+const ns = ObjC.castRefToObject(cf);
+const count = ns ? Number(ns.count) || 0 : 0;
 const rows = [];
-for (const w of raw) {
-  if (!w || Number(w.kCGWindowLayer) !== 0 || Number(w.kCGWindowAlpha) === 0) continue;
-  const b = w.kCGWindowBounds || {};
+for (let i = 0; i < count; i++) {
+  const d = ns.objectAtIndex(i);
+  const layer = Number(ObjC.unwrap(d.objectForKey('kCGWindowLayer')) || 0);
+  const alphaRaw = ObjC.unwrap(d.objectForKey('kCGWindowAlpha'));
+  const alpha = alphaRaw == null ? 1 : Number(alphaRaw);
+  if (layer !== 0 || alpha === 0) continue;
+  const b = ObjC.deepUnwrap(d.objectForKey('kCGWindowBounds')) || {};
   if ((b.Width || 0) < 20 || (b.Height || 0) < 20) continue;
   rows.push({
-    windowId: Number(w.kCGWindowNumber) || 0,
-    app: String(w.kCGWindowOwnerName || ''),
-    title: String(w.kCGWindowName || ''),
+    windowId: Number(ObjC.unwrap(d.objectForKey('kCGWindowNumber')) || 0),
+    app: String(ObjC.unwrap(d.objectForKey('kCGWindowOwnerName')) || ''),
+    title: String(ObjC.unwrap(d.objectForKey('kCGWindowName')) || ''),
     x: Math.round(b.X || 0),
     y: Math.round(b.Y || 0),
     width: Math.round(b.Width || 0),

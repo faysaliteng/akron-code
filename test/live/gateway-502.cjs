@@ -148,7 +148,7 @@ async function evaluate(ws, expression) {
   server.close();
 
   const retried = attempts >= 3;
-  const saidWhy = state.blocks.some((b) => b.startsWith('think:') && /provider error 502/.test(b));
+  const saidWhy = /provider error 502/.test(state.whole) || state.blocks.some((b) => /provider error 502/.test(b));
   const answered = state.body.includes(ANSWER);
   const noMarkup = !/<html|<head|<title|<body|nginx/i.test(state.whole);
   const noBanner = !state.errorBar;

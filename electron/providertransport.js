@@ -101,8 +101,8 @@ function trimBase(u) { return String(u || '').replace(/\/+$/, ''); }
  *
  * @returns {{stream: ReadableStream|null, isSse: boolean, empty: boolean}}
  */
-async function fetchWithTimeout(url, options, label) {
-  const timeoutMs = Number(process.env.HELIO_CONNECT_TIMEOUT_MS) || 45000;
+async function fetchWithTimeout(url, options, label, customTimeoutMs = 0) {
+  const timeoutMs = Number(process.env.HELIO_CONNECT_TIMEOUT_MS) || (Number(customTimeoutMs) > 0 ? Number(customTimeoutMs) : 120000);
   const ctrl = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -123,6 +123,7 @@ async function fetchWithTimeout(url, options, label) {
     if (timedOut && !(parent && parent.aborted)) {
       const err = new Error(`LLM ${label || 'provider'} connection timed out after ${Math.round(timeoutMs / 1000)}s`);
       err.transient = true;
+      err.isTimeout = true;
       throw err;
     }
     throw e;
@@ -136,7 +137,7 @@ async function openStream(res, signal) {
   const body = res && res.body;
   if (!body || typeof body.getReader !== 'function') return { stream: null, isSse: false, empty: true };
   const reader = body.getReader();
-  const stallMs = Number(process.env.HELIO_STREAM_STALL_MS) || 90000;
+  const stallMs = Number(process.env.HELIO_STREAM_STALL_MS) || 150000;
   let stallTimer = null;
   let first;
   try {
@@ -621,9 +622,10 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   const shortBeta = headers['anthropic-beta'];
   if (longBeta) headers['anthropic-beta'] = shortBeta + ',' + catalog.LONG_CONTEXT_BETA;
 
+  const connectTimeoutMs = (body.thinking || /(opus|fable|sonnet|pro)/i.test(model)) ? 180000 : 120000;
   const post = (hdrs) => fetchWithTimeout(base + '/v1/messages', {
     method: 'POST', headers: hdrs, body: payload, signal,
-  }, 'anthropic');
+  }, 'anthropic', connectTimeoutMs);
 
   let res = await post(headers);
     if (!res.ok && body.thinking && res.status === 400) {
@@ -633,7 +635,7 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
       delete noThinkBody.thinking;
       res = await fetchWithTimeout(base + '/v1/messages', {
         method: 'POST', headers, body: JSON.stringify(noThinkBody), signal,
-      }, 'anthropic');
+      }, 'anthropic', connectTimeoutMs);
     } else {
       throw httpError('anthropic', res, rejectedThink);
     }
@@ -914,7 +916,7 @@ function toCodexTools(tools) {
 }
 
 function codexReasoning(level) {
-  if (level === 'low' || level === 'medium' || level === 'high') return { effort: level, summary: 'auto' };
+  if (level === 'low' || level === 'medium' || level === 'high' || level === 'xhigh') return { effort: level, summary: 'auto' };
   return { effort: 'medium', summary: 'auto' };
 }
 
@@ -927,9 +929,11 @@ async function responsesChat(o) {
   const label = o.label || 'codex';
   const onDelta = o.onDelta || (() => {});
   const onToolDelta = o.onToolDelta || null;
+  const mId = String((o.body && o.body.model) || '');
+  const connectTimeoutMs = ((o.body && o.body.reasoning) || /(gpt-[5-9]|o[1-9]|codex|grok-[3-9])/i.test(mId)) ? 180000 : 120000;
   const res = o.fetchImpl
     ? await o.fetchImpl(o.url, { method: 'POST', headers: o.headers, body: JSON.stringify(o.body), signal: o.signal })
-    : await fetchWithTimeout(o.url, { method: 'POST', headers: o.headers, body: JSON.stringify(o.body), signal: o.signal }, label);
+    : await fetchWithTimeout(o.url, { method: 'POST', headers: o.headers, body: JSON.stringify(o.body), signal: o.signal }, label, connectTimeoutMs);
   if (!res.ok) throw httpError(label, res, await res.text().catch(() => ''));
 
   const opened = await openStream(res, o.signal);
@@ -1236,9 +1240,18 @@ function isInternalAntigravityModel(id) {
 function googleModelList(json) {
   const models = (json && json.models) || {};
   const out = [];
+  const variantGroups = new Map(); // baseSlug -> { low?: id, medium?: id, high?: id, xhigh?: id, minimal?: id }
   for (const [id, m] of Object.entries(models)) {
     if (!m || typeof m !== 'object') continue;
     if (isInternalAntigravityModel(id)) continue;
+    const vMatch = /^(.*)-(minimal|low|medium|high|xhigh)$/i.exec(id);
+    if (vMatch) {
+      const baseSlug = vMatch[1].toLowerCase();
+      const tierKey = vMatch[2].toLowerCase();
+      const map = variantGroups.get(baseSlug) || {};
+      map[tierKey] = id;
+      variantGroups.set(baseSlug, map);
+    }
     const prov = String(m.apiProvider || '');
     const display = String(m.displayName || '').trim();
     // A displayName that is byte-identical to the id is not a friendly name —
@@ -1258,6 +1271,21 @@ function googleModelList(json) {
       group: prov.indexOf('ANTHROPIC') !== -1 ? 'Claude' : (prov.indexOf('GOOGLE') !== -1 ? 'Gemini' : prov),
       apiProvider: prov,
     });
+  }
+  const LEVEL_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+  for (const item of out) {
+    const vMatch = /^(.*)-(minimal|low|medium|high|xhigh)$/i.exec(item.id);
+    const baseSlug = vMatch ? vMatch[1].toLowerCase() : item.id.toLowerCase();
+    const sibs = variantGroups.get(baseSlug);
+    if (sibs && Object.keys(sibs).length > 1) {
+      item.thinkingVariants = { ...sibs };
+      item.thinkingLevels = ['auto', ...LEVEL_ORDER.filter((lv) => sibs[lv])];
+      item.thinking = true;
+    } else if (item.thinking) {
+      item.thinkingLevels = ['auto', 'low', 'medium', 'high'];
+    } else {
+      item.thinkingLevels = [];
+    }
   }
   // Antigravity ships several models with an identical displayName (four are
   // all "Gemini 3.5 Flash Lite"), so a raw catalog would render
@@ -1440,6 +1468,8 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
   // (sending one is what produced the old `403 The caller does not have
   // permission`), and `requestType`/`userAgent` mirror the desktop client.
   const body = { model: provider.model, request, userAgent: 'antigravity', requestType: 'agent' };
+  const isSlowThinkingModel = !!(generationConfig.thinkingConfig || /(carbon|neon|opus|fable|sonnet|pro|gemini-(?:2\.5|[3-9]))/i.test(modelStr));
+  const connectTimeoutMs = isSlowThinkingModel ? 180000 : 120000;
   const postGoogle = (payloadObj) => fetchWithTimeout(cloudcodeBase(provider) + ':streamGenerateContent?alt=sse', {
     method: 'POST',
     headers: {
@@ -1450,7 +1480,7 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
     },
     body: JSON.stringify(payloadObj),
     signal,
-  }, 'antigravity');
+  }, 'antigravity', connectTimeoutMs);
 
   let res = await postGoogle(body);
   if (!res.ok && generationConfig.thinkingConfig && res.status === 400) {
@@ -1748,12 +1778,25 @@ async function listModels(provider, signal) {
     // deliberately not used as a fallback. When the field is absent we return 0
     // and `model-catalog`'s documented rule fills the number in.
     const winOf = (m) => num(m.max_input_tokens || m.context_window || m.max_context_window || m.contextWindow);
-    return (json.data || []).map((m) => ({
-      id: String(m.id || ''),
-      label: String(m.display_name || m.id || ''),
-      contextWindow: winOf(m),
-      thinking: true,
-    })).filter((m) => m.id);
+    return (json.data || []).map((m) => {
+      const id = String(m.id || '');
+      const cap = m.capabilities && m.capabilities.thinking;
+      const supportsThink = typeof m.thinking === 'boolean'
+        ? m.thinking
+        : (typeof cap === 'boolean'
+          ? cap
+          : !/^claude-(?:3-(?:haiku|sonnet|opus)|2)/i.test(id));
+      const levels = supportsThink
+        ? (/^claude-(?:opus|fable)-5/i.test(id) ? ['auto', 'low', 'medium', 'high', 'xhigh'] : ['auto', 'low', 'medium', 'high'])
+        : [];
+      return {
+        id,
+        label: String(m.display_name || id || ''),
+        contextWindow: winOf(m),
+        thinking: supportsThink,
+        thinkingLevels: levels,
+      };
+    }).filter((m) => m.id);
   }
 
   if (transport === 'codex') {
@@ -1776,11 +1819,19 @@ async function listModels(provider, signal) {
     const list = json.data || json.models || (Array.isArray(json) ? json : []);
     return list.map((m) => {
       const id = String(m.id || m.model || m.slug || '');
+      const modesRaw = Array.isArray(m.supported_reasoning_levels)
+        ? m.supported_reasoning_levels.map((x) => (typeof x === 'string' ? x : (x && x.effort))).filter(Boolean)
+        : (Array.isArray(m.reasoning_efforts) ? m.reasoning_efforts : (Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : []));
+      const thinks = m.supports_reasoning !== false;
+      const levels = thinks
+        ? (modesRaw.length ? ['auto', ...modesRaw] : (/\b(gpt-5\.[1-9]|codex)\b/i.test(id) ? ['auto', 'low', 'medium', 'high', 'xhigh'] : ['auto', 'low', 'medium', 'high']))
+        : [];
       return {
         id,
         label: String(m.display_name || m.displayName || id),
         contextWindow: num(m.context_window || m.contextWindow || m.max_tokens),
-        thinking: m.supports_reasoning !== false,
+        thinking: thinks,
+        thinkingLevels: levels,
       };
     }).filter((m) => m.id);
   }
@@ -1798,11 +1849,13 @@ async function listModels(provider, signal) {
     return list.map((m) => {
       const id = String(m.id || m.model || '');
       const modes = Array.isArray(m.reasoning_efforts) ? m.reasoning_efforts : (Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : []);
+      const thinks = modes.length > 0 || /grok-[3-9]/.test(id);
       return {
         id,
         label: String(m.display_name || m.displayName || m.name || id),
         contextWindow: num(m.context_window || m.contextLength || m.max_context_window || m.max_tokens),
-        thinking: modes.length > 0 || /grok-[4-9]/.test(id),
+        thinking: thinks,
+        thinkingLevels: thinks ? (modes.length ? ['auto', ...modes] : ['auto', 'low', 'medium', 'high']) : [],
       };
     }).filter((m) => m.id);
   }

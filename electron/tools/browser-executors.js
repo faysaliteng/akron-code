@@ -7,22 +7,25 @@ const untrusted = require('../untrusted');
 module.exports = function buildBrowserAndCuExecutors({ truncate }) {
   return {
   // ---- Computer Use 2.0 (Multimodal vision + 3-OS + App-scoped + AX + Batch) ----
-  async computer_screenshot({ dir, displayIndex }) {
-    const r = await computer.screenshot({ dir, displayIndex });
+  async computer_screenshot({ dir, displayIndex, cwd }) {
+    const resolvedDir = dir && cwd && !require('path').isAbsolute(dir) ? require('path').resolve(cwd, dir) : dir;
+    const r = await computer.screenshot({ dir: resolvedDir, displayIndex });
     return {
       content: `Screenshot saved: ${r.path} (${r.width}x${r.height} logical pts, scale=1, nativeScale=${r.nativeScale || 1}, ${r.size} bytes). Use (x, y) coordinates directly in [0..${r.width}] x [0..${r.height}].`,
       imageDataUrl: `data:image/png;base64,${r.b64}`,
     };
   },
-  async computer_zoom({ x1, y1, x2, y2, dir }) {
-    const r = await computer.zoom({ x1, y1, x2, y2, dir });
+  async computer_zoom({ x1, y1, x2, y2, dir, cwd }) {
+    const resolvedDir = dir && cwd && !require('path').isAbsolute(dir) ? require('path').resolve(cwd, dir) : dir;
+    const r = await computer.zoom({ x1, y1, x2, y2, dir: resolvedDir });
     return {
       content: `Zoom crop saved: ${r.path} (region x=${r.region.x}, y=${r.region.y}, ${r.region.width}x${r.region.height}, ${r.size} bytes).`,
       imageDataUrl: `data:image/png;base64,${r.b64}`,
     };
   },
-  async computer_app_screenshot({ app, windowId, title, dir }) {
-    const r = await computer.appScreenshot({ app, windowId, title, dir });
+  async computer_app_screenshot({ app, windowId, title, dir, cwd }) {
+    const resolvedDir = dir && cwd && !require('path').isAbsolute(dir) ? require('path').resolve(cwd, dir) : dir;
+    const r = await computer.appScreenshot({ app, windowId, title, dir: resolvedDir });
     return {
       content: `App window screenshot (${r.window.app} | ${r.window.title}): ${r.path} (${r.window.width}x${r.window.height} at pos=${r.window.x},${r.window.y}, ${r.size} bytes).`,
       imageDataUrl: `data:image/png;base64,${r.b64}`,
@@ -106,8 +109,9 @@ module.exports = function buildBrowserAndCuExecutors({ truncate }) {
     await computer.clipboardWrite(text);
     return 'Clipboard updated.';
   },
-  async computer_batch({ actions, screenshotAfter, dir }) {
-    const r = await computer.batch({ actions, screenshotAfter: !!screenshotAfter, dir });
+  async computer_batch({ actions, screenshotAfter, dir, cwd }) {
+    const resolvedDir = dir && cwd && !require('path').isAbsolute(dir) ? require('path').resolve(cwd, dir) : dir;
+    const r = await computer.batch({ actions, screenshotAfter: !!screenshotAfter, dir: resolvedDir });
     const summary = `Executed ${r.executed.length} actions: ${r.executed.join(', ')}`;
     if (r.screenshot && r.screenshot.b64) {
       return {
@@ -173,7 +177,7 @@ module.exports = function buildBrowserAndCuExecutors({ truncate }) {
   async browser_read() {
     const r = await browser.read();
     if (!r.ok) return 'Browser error: ' + r.error;
-    const gate = require('./browser-bot-v2').detectHumanGate({ url: r.url, title: r.title, text: r.text });
+    const gate = require('../browser-bot-v2').detectHumanGate({ url: r.url, title: r.title, text: r.text });
     const notice = gate.gated ? `\n[HUMAN_HANDOFF_REQUIRED (${gate.gateType})]: ${gate.reason}\n` : '';
     return untrusted.wrapUntrusted(truncate(`PAGE: ${r.title}\nURL: ${r.url}${notice}\n\n${r.text || '(no visible text)'}`), { source: 'BrowserDOM', url: r.url || '' });
   },
@@ -196,7 +200,7 @@ module.exports = function buildBrowserAndCuExecutors({ truncate }) {
     return untrusted.wrapUntrusted(truncate(lines.join('\n')), { source: 'BrowserDOM', url: r.url || '' });
   },
   async browser_vault_autofill({ origin, selectors } = {}) {
-    const v2 = require('./browser-bot-v2');
+    const v2 = require('../browser-bot-v2');
     const pageUrl = browser.getURL();
     const res = await v2.vaultAutofill({
       pageUrl,

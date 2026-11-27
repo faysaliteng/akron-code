@@ -5,6 +5,7 @@ import DOMPurify from 'dompurify';
 import { stripToolProtocol } from '../textproto.mjs';
 import { normBase, LOCAL_BASE } from '../providerstatus-ui.mjs';
 import { Icon } from '../components/Icon.jsx';
+import { parseFileToken, linkifyBareDomains } from './linkAndFileHelpers.js';
 
 // Every banner in the account/picker surface is dismissible. The dismissed
 // value is the banner's own text, so hiding "Imported 2 accounts" can never
@@ -159,6 +160,15 @@ export const mdRenderer = {
     const fileTag = file ? `<span class="codeblock-file" title="Apply writes this file">${escapeHtml(file)}</span>` : '';
     return `<div class="codeblock"><div class="codeblock-head"><span class="codeblock-lang">${escapeHtml(lang || 'code')}</span>${fileTag}<span class="codeblock-actions"><button class="copy-btn" data-code="${encodeURIComponent(code)}">Copy</button>${applyBtn}</span></div><pre><code class="hljs">${out}</code></pre></div>`;
   },
+  codespan(text) {
+    const raw = typeof text === 'string' ? text : (text && text.text ? String(text.text) : '');
+    const decoded = raw.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    const parsed = parseFileToken(decoded);
+    if (parsed) {
+      return `<code class="md-file-chip" data-akron-file="${escapeHtml(parsed.path)}" data-akron-line="${parsed.line || ''}" title="Click to open ${escapeHtml(parsed.path)} (Alt+Click for IDE)" role="button" tabindex="0">${raw}</code>`;
+    }
+    return `<code>${raw}</code>`;
+  },
 };
 marked.use({ renderer: mdRenderer, gfm: true, breaks: true });
 
@@ -193,9 +203,11 @@ export function fmtSize(bytes) {
 // stripToolProtocol() (src/textproto.mjs) since the call already renders as a card.
 export function renderMarkdown(md) {
   let html;
-  try { html = marked.parse(stripToolProtocol(md)); } catch { html = escapeHtml(stripToolProtocol(md)); }
+  const normalized = linkifyBareDomains(stripToolProtocol(md));
+  try { html = marked.parse(normalized); } catch { html = escapeHtml(normalized); }
   return DOMPurify.sanitize(html, {
     ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|ftp|file|session):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
+    ADD_ATTR: ['data-akron-file', 'data-akron-line', 'data-file', 'data-code', 'tabindex', 'role'],
   });
 }
 
@@ -375,12 +387,42 @@ export const STYLES = [
 // Only meaningful for models that reason; harmless for the rest (the directive
 // is ignored and `reasoning_effort` is stripped on endpoints that reject it).
 export const REASON_LEVELS = [
-  { id: 'auto',   name: 'Auto',   hint: 'Model decides' },
-  { id: 'low',    name: 'Low',    hint: 'Fast, minimal thinking' },
-  { id: 'medium', name: 'Medium', hint: 'Balanced reasoning' },
-  { id: 'high',   name: 'High',   hint: 'Deep, thorough reasoning' },
+  { id: 'auto',    name: 'Auto',    hint: 'Model decides' },
+  { id: 'minimal', name: 'Minimal', hint: 'Quickest light pass' },
+  { id: 'low',     name: 'Low',     hint: 'Fast, minimal thinking' },
+  { id: 'medium',  name: 'Medium',  hint: 'Balanced reasoning' },
+  { id: 'high',    name: 'High',    hint: 'Deep, thorough reasoning' },
+  { id: 'xhigh',   name: 'XHigh',   hint: 'Maximum deep reasoning' },
 ];
 export const REASON_LABELS = REASON_LEVELS.reduce((acc, l) => { acc[l.id] = l.name; return acc; }, {});
+export const MODEL_CAPABILITY_CACHE = 'autobot:modelCaps';
+export const thinkingCapabilitiesForUi = (model) => {
+  const m = String(model || '').trim();
+  if (!m || /^(auto|fast|smart|fusion|default|free|akron-.*)$/i.test(m)) {
+    return { supported: true, levels: ['auto', 'low', 'medium', 'high'], variants: null };
+  }
+  try {
+    const cache = loadJSON(MODEL_CAPABILITY_CACHE, {}) || {};
+    const hit = cache[m];
+    if (hit && typeof hit === 'object') {
+      const variants = hit.thinkingVariants && Object.keys(hit.thinkingVariants).length ? hit.thinkingVariants : null;
+      const supported = hit.thinking !== undefined ? !!hit.thinking : true;
+      const levels = Array.isArray(hit.thinkingLevels) && hit.thinkingLevels.length
+        ? hit.thinkingLevels
+        : (supported ? ['auto', 'low', 'medium', 'high'] : []);
+      return { supported, levels: supported ? levels : [], variants };
+    }
+  } catch (_) {}
+  if (/\b(gpt-4o(?:-mini)?|gpt-4-turbo|gpt-3\.5|claude-3-(?:haiku|sonnet|opus)|claude-2|llama-?3\.[0-3]?|mistral-7b)\b/i.test(m)) {
+    return { supported: false, levels: [], variants: null };
+  }
+  const hasXHigh = /\b(gpt-5\.[1-9]|codex|claude-opus-5|gemini-4-neon|gemini-4-hydrogen)\b|-xhigh$/i.test(m);
+  return {
+    supported: true,
+    levels: hasXHigh ? ['auto', 'low', 'medium', 'high', 'xhigh'] : ['auto', 'low', 'medium', 'high'],
+    variants: null,
+  };
+};
 
 // ---------- token / cost helpers (slash commands: /usage /cost /context) ----------
 // Per-million-token list prices in USD. Matched by substring against the model

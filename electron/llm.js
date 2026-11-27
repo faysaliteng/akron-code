@@ -517,7 +517,11 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   const headers = { 'content-type': 'application/json' };
   if (provider.apiKey) headers['authorization'] = 'Bearer ' + provider.apiKey;
 
-  const CONNECT_TIMEOUT_MS = Number(process.env.HELIO_CONNECT_TIMEOUT_MS) || 45000;
+  const isThinkingOrFrontier = !provider._disableThinking && (
+    (provider.reasoningLevel && provider.reasoningLevel !== 'auto') ||
+    /(carbon|neon|opus|fable|sonnet|pro|reasoner|o[1-9]|gpt-5|gpt-6|gemini-(?:2\.5|[3-9]))/i.test(String(provider.model || ''))
+  );
+  const CONNECT_TIMEOUT_MS = Number(process.env.HELIO_CONNECT_TIMEOUT_MS) || (isThinkingOrFrontier ? 180000 : 120000);
   const doFetch = async (payload) => {
     const ctrl = new AbortController();
     let timedOut = false;
@@ -534,6 +538,7 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
       if (timedOut && !(signal && signal.aborted)) {
         const err = new Error(`LLM connect timed out after ${Math.round(CONNECT_TIMEOUT_MS / 1000)}s`);
         err.transient = true;
+        err.isTimeout = true;
         throw err;
       }
       throw e;
@@ -1010,7 +1015,14 @@ async function chatWithFailover(opts) {
   const MAX_ROUNDS = 5;
   const BACKOFF = [2000, 5000, 10000, 20000]; // minimum wait before round 2..5
   let lastErr = null;
-  let waits = 0;
+  const retriedMissing = new Set();
+  for (const cand of list) {
+    if (cand && cand._replacedRetiredModel) {
+      const r = cand._replacedRetiredModel;
+      emit({ type: 'notice', text: `${r.from} is no longer in the live ${r.providerId || 'provider'} catalog — switched automatically to ${r.to}.` });
+      delete cand._replacedRetiredModel;
+    }
+  }
   const homeOf = () => (typeof opts.getHome === 'function' ? opts.getHome() : opts.getIndex());
   const label = (p) => (p && (p.model || p.baseURL)) || 'model';
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -1116,6 +1128,11 @@ async function chatWithFailover(opts) {
             }
             throw e;
           }
+          const msgTxt = String(e && e.message || '');
+          const isTimeoutErr = !!(e && (e.isTimeout || /\btimed?\s*out\b/i.test(msgTxt)));
+          if (isTimeoutErr && n === 1 && round >= 1) {
+            throw e;
+          }
           if (isRateLimitError(e)) {
             // A spent subscription allowance carries its own reset time.
             if (e && e.retryHopeless) {
@@ -1129,6 +1146,7 @@ async function chatWithFailover(opts) {
             const noTools = tools && tools.length && /lacks tool[- ]calling|does not support (?:tools|tool calling|function calling)|tool(?:s| calling) (?:is |are )?not supported/i.test(String(e && e.message))
               && !/rate-limited or on cooldown/i.test(String(e && e.message));
             if (noTools) gate.markDead(p, 'model cannot call tools', 60 * 60000);
+            else if (isTimeoutErr) gate.rateLimited(p, 5000);
             else gate.rateLimited(p, e.retryAfterMs);
             rateLimited = true;
             if (nx) {
@@ -1141,18 +1159,39 @@ async function chatWithFailover(opts) {
           // or a 400 naming an unknown model). With healthy rows below, that
           // costs this row, not the turn.
           const st = Number(e && e.status) || Number((/^\s*LLM\s+(\d{3})\b/.exec(String(e && e.message)) || [])[1] || 0);
-          const msgTxt = String(e && e.message || '');
-          const modelMissing = st === 404 || ((st === 400 || st === 422) && /model[^.]{0,60}(not (found|exist|supported|available|in the catalog)|unknown|invalid|does not exist)|unknown model|no such model|plan|entitl|not included|upgrade|subscription/i.test(msgTxt));
-          if ((modelMissing || st === 401 || st === 403) && n > 1) {
-            gate.markDead(p, humanizeLLMError(e).slice(0, 160), modelMissing ? 30 * 60000 : 10 * 60000);
-            if (nx) {
-              emit({ type: 'orchestrator', from: label(p), to: label(nx), reason: humanizeLLMError(e).slice(0, 200) });
-              continue;
-            }
-            // Every other row is cooling: try the soonest one next round.
-            if (list.some((q) => !gate.isDead(q))) { rateLimited = true; break; }
+          const modelMissing = st === 404 || ((st === 400 || st === 422) && /model[^.]{0,60}(not (found|exist|supported|available|in the catalog)|unknown|invalid|does not exist|deprecat|retire)|unknown model|no such model|plan|entitl|not included|upgrade|subscription/i.test(msgTxt));
+          let handledMissing = false;
+          if (modelMissing && p && (p.oauthProvider || p.transport) && !retriedMissing.has(i)) {
+            retriedMissing.add(i);
+            const provKey = String(p.oauthProvider || '').split(':')[0] || p.transport;
+            try {
+              const live = await providertransport.listModels(p);
+              if (Array.isArray(live) && live.length) {
+                modelCatalog.register(provKey, live);
+                const repl = modelCatalog.resolveReplacementModel(provKey, p.model);
+                if (repl && repl.id && repl.id !== p.model) {
+                  const prevM = p.model;
+                  list[i] = { ...p, model: repl.id };
+                  emit({ type: 'notice', text: `Model ${prevM} was rejected as unavailable — auto-switched to live model ${repl.id}.` });
+                  emit({ type: 'orchestrator', from: prevM || label(p), to: repl.id, reason: humanizeLLMError(e).slice(0, 200) });
+                  retrySame = true;
+                  handledMissing = true;
+                }
+              }
+            } catch (_) {}
           }
-          throw e;
+          if (!handledMissing) {
+            if ((modelMissing || st === 401 || st === 403) && n > 1) {
+              gate.markDead(p, humanizeLLMError(e).slice(0, 160), modelMissing ? 30 * 60000 : 10 * 60000);
+              if (nx) {
+                emit({ type: 'orchestrator', from: label(p), to: label(nx), reason: humanizeLLMError(e).slice(0, 200) });
+                continue;
+              }
+              // Every other row is cooling: try the soonest one next round.
+              if (list.some((q) => !gate.isDead(q))) { rateLimited = true; break; }
+            }
+            throw e;
+          }
         }
       } finally {
         release();
@@ -1168,10 +1207,17 @@ async function chatWithFailover(opts) {
       const wait = Number.isFinite(envDelay) && process.env.HELIO_BACKOFF_MS !== ''
         ? envDelay
         : Math.min(Math.max(base, soon, (lastErr && lastErr.retryAfterMs) || 0), 45000);
-      const code = Number((lastErr && lastErr.status) || (/^\s*LLM\s+(\d{3})\b/.exec(String((lastErr && lastErr.message) || '')) || [])[1] || 0);
-      const why = code && code !== 429 ? `provider error ${code}` : 'rate limited';
+      const lastMsg = String((lastErr && lastErr.message) || '');
+      const code = Number((lastErr && lastErr.status) || (/^\s*LLM\s+(\d{3})\b/.exec(lastMsg) || [])[1] || 0);
+      const isTimeoutErr = !!(lastErr && (lastErr.isTimeout || /\btimed?\s*out\b/i.test(lastMsg)));
+      const why = isTimeoutErr
+        ? 'provider connection timed out'
+        : (code === 429 || /rate[- ]?limit|too many requests|quota/i.test(lastMsg))
+          ? 'rate limited'
+          : (code > 0 ? `provider error ${code}` : 'transient connection issue');
       const line = `${why} — waiting ${Math.round(wait / 1000)}s before retrying`;
-      emit({ type: 'thinking', text: (waits++ === 0 ? '' : '\n') + line });
+      emit({ type: 'status', phase: 'retry', text: line });
+      emit({ type: 'notice', text: line });
       await sleep(wait, signal);
     }
   }

@@ -102,6 +102,8 @@ const RULES = [
 
 // Live catalogs: providerId -> Map(modelId -> { contextWindow, label, ... }).
 const live = new Map();
+// Full live inventory (including zero-window entries from vendors that omit max input tokens)
+const inventory = new Map();
 
 // Session-scoped corrections: `provider::model` -> window. A provider that
 // advertises a window it will not actually serve (a beta the account is not
@@ -115,8 +117,9 @@ function norm(model) {
 
 /**
  * Install a provider's live model catalog (e.g. Antigravity's
- * `:fetchAvailableModels`). Entries without a positive window are ignored so a
- * provider can never shrink the budget to zero.
+ * `:fetchAvailableModels`). Entries without a positive window are ignored in
+ * `live` (returned count & snapshot) so a provider can never shrink the budget
+ * to zero, while `inventory` tracks the full capability/model roster.
  * @param {string} providerId
  * @param {Array<{id:string, label?:string, contextWindow?:number}>} models
  */
@@ -124,20 +127,152 @@ function register(providerId, models) {
   const id = String(providerId || '');
   if (!id || !Array.isArray(models)) return 0;
   const m = new Map();
+  const inv = new Map();
   for (const entry of models) {
     const mid = norm(entry && entry.id);
+    if (!mid) continue;
     const win = Number(entry && entry.contextWindow);
-    if (!mid || !Number.isFinite(win) || win <= 0) continue;
-    m.set(mid, Object.assign({}, entry, { id: mid, contextWindow: win }));
+    inv.set(mid, Object.assign({}, entry, { id: mid, contextWindow: Number.isFinite(win) && win > 0 ? win : 0 }));
+    if (Number.isFinite(win) && win > 0) {
+      m.set(mid, Object.assign({}, entry, { id: mid, contextWindow: win }));
+    }
   }
+  if (inv.size) inventory.set(id, inv);
   if (!m.size) return 0;
   live.set(id, m);
   return m.size;
 }
 
 function clear(providerId) {
-  if (providerId) live.delete(String(providerId));
-  else live.clear();
+  if (providerId) {
+    live.delete(String(providerId));
+    inventory.delete(String(providerId));
+  } else {
+    live.clear();
+    inventory.clear();
+  }
+}
+
+function hasLiveCatalog(providerId) {
+  const pid = String(providerId || '');
+  return !!(pid && ((inventory.has(pid) && inventory.get(pid).size > 0) || (live.has(pid) && live.get(pid).size > 0)));
+}
+
+function getLiveEntry(model, providerId) {
+  const id = norm(model);
+  const pid = String(providerId || '');
+  if (!id) return null;
+  if (pid) {
+    const table = inventory.get(pid) || live.get(pid);
+    if (!table) return null;
+    if (table.has(id)) return table.get(id);
+    for (const entry of table.values()) {
+      if (entry.label && String(entry.label).toLowerCase() === id.toLowerCase()) return entry;
+    }
+    return null;
+  }
+  for (const table of inventory.values()) {
+    if (table.has(id)) return table.get(id);
+  }
+  for (const table of live.values()) {
+    if (table.has(id)) return table.get(id);
+  }
+  return null;
+}
+
+function isModelAvailable(providerId, model) {
+  const pid = String(providerId || '');
+  const id = norm(model);
+  if (!pid || !id || /^(auto|fast|smart|fusion|default|free|akron-.*)$/i.test(id)) return true;
+  if (!hasLiveCatalog(pid)) return true;
+  return !!getLiveEntry(id, pid);
+}
+
+function resolveReplacementModel(providerId, missingModel) {
+  const pid = String(providerId || '');
+  const id = norm(missingModel);
+  if (!pid || !hasLiveCatalog(pid)) return null;
+  const table = inventory.get(pid) || live.get(pid);
+  const list = table ? Array.from(table.values()) : [];
+  if (!list.length) return null;
+  const exact = getLiveEntry(id, pid);
+  if (exact) return exact;
+
+  const base = id.toLowerCase().replace(/-(?:minimal|low|medium|high|xhigh)$/i, '');
+  const tierRank = (m) => {
+    const s = String(m || '').toLowerCase();
+    if (/-xhigh$/.test(s)) return 4;
+    if (/-high$/.test(s)) return 3;
+    if (/-medium$/.test(s)) return 2;
+    if (/-low$/.test(s)) return 1;
+    return 0;
+  };
+  // 1. Exact base family (e.g. gemini-4-carbon-medium removed -> gemini-4-carbon-high / gemini-4-carbon)
+  const sameBase = list.filter((e) => e.id.toLowerCase().replace(/-(?:minimal|low|medium|high|xhigh)$/i, '') === base);
+  if (sameBase.length) {
+    sameBase.sort((a, b) => tierRank(b.id) - tierRank(a.id));
+    return sameBase[0];
+  }
+  // 2. Same model line prefix (e.g. claude-sonnet-4-5 -> newest claude-sonnet-*, gemini-4-* -> newest gemini-4-*)
+  const famMatch = base.match(/^(claude-(?:opus|sonnet|haiku|fable)|gemini-[0-9.]+|gpt-[0-9.]+|grok-[0-9.]+|deepseek)/i);
+  if (famMatch) {
+    const fam = famMatch[1].toLowerCase();
+    const sameFam = list.filter((e) => e.id.toLowerCase().startsWith(fam));
+    if (sameFam.length) {
+      sameFam.sort((a, b) => b.id.localeCompare(a.id, undefined, { numeric: true, sensitivity: 'base' }));
+      return sameFam[0];
+    }
+  }
+  // 3. Same vendor family or recommended model
+  const wantGroup = /claude/i.test(base) ? 'Claude' : (/gemini/i.test(base) ? 'Gemini' : '');
+  const sameGroup = wantGroup ? list.filter((e) => String(e.group || '').toLowerCase() === wantGroup.toLowerCase()) : [];
+  const pool = sameGroup.length ? sameGroup : list;
+  return pool.find((e) => e.recommended) || pool[0];
+}
+
+function thinkingCapabilitiesFor(model, providerId) {
+  const id = norm(model);
+  if (!id || /^(auto|fast|smart|fusion|default|free|akron-.*)$/i.test(id)) {
+    return { supported: true, levels: ['auto', 'low', 'medium', 'high'], variants: null, discrete: false };
+  }
+  const liveEntry = getLiveEntry(id, providerId);
+  if (liveEntry) {
+    const variants = liveEntry.thinkingVariants && Object.keys(liveEntry.thinkingVariants).length
+      ? { ...liveEntry.thinkingVariants }
+      : null;
+    const discrete = !!variants;
+    let levels = Array.isArray(liveEntry.thinkingLevels) ? liveEntry.thinkingLevels.slice() : [];
+    const supported = liveEntry.thinking !== undefined ? !!liveEntry.thinking : (levels.length > 0 || discrete);
+    if (supported && !levels.length) {
+      if (variants) {
+        const order = ['minimal', 'low', 'medium', 'high', 'xhigh'].filter((k) => variants[k]);
+        levels = ['auto', ...order];
+      } else {
+        levels = ['auto', 'low', 'medium', 'high'];
+      }
+    }
+    return { supported, levels: supported ? levels : [], variants, discrete };
+  }
+  // Heuristic fallback before live catalog warms or for API-key endpoints
+  const nonThinking = /\b(gpt-4o(?:-mini)?|gpt-4-turbo|gpt-3\.5|claude-3-(?:haiku|sonnet|opus)|claude-2|llama-?3\.[0-3]?|mistral-7b)\b/i;
+  if (nonThinking.test(id)) return { supported: false, levels: [], variants: null, discrete: false };
+  const hasXHigh = /\b(gpt-5\.[1-9]|codex|claude-opus-5|gemini-4-neon|gemini-4-hydrogen)\b|-xhigh$/i.test(id);
+  const discreteSuffix = /-(minimal|low|medium|high|xhigh)$/i.exec(id);
+  if (discreteSuffix) {
+    return {
+      supported: true,
+      levels: hasXHigh ? ['auto', 'low', 'medium', 'high', 'xhigh'] : ['auto', 'low', 'medium', 'high'],
+      variants: null,
+      discrete: true,
+    };
+  }
+  const thinkingCapable = /^(?:gemini-(?:2\.5|[3-9])|claude-(?:opus|sonnet|fable)-(?:3-7|[4-9])|claude-haiku-(?:4-5|[5-9])|o[1-9]|gpt-[5-9]|codex|grok-[3-9]|deepseek-(?:r1|reasoner)|qwq|kimi-k2)/i.test(id);
+  return {
+    supported: thinkingCapable,
+    levels: thinkingCapable ? (hasXHigh ? ['auto', 'low', 'medium', 'high', 'xhigh'] : ['auto', 'low', 'medium', 'high']) : [],
+    variants: null,
+    discrete: false,
+  };
 }
 
 /**
@@ -273,6 +408,11 @@ module.exports = {
   supportsLongContext,
   register,
   clear,
+  hasLiveCatalog,
+  getLiveEntry,
+  isModelAvailable,
+  resolveReplacementModel,
+  thinkingCapabilitiesFor,
   snapshot,
   contextWindowFor,
   budgetFor,
