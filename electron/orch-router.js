@@ -100,6 +100,15 @@ function poolsConfig(orch) {
   return any ? p : null;
 }
 
+function isGatewayCredentialReady(baseURL, apiKey) {
+  const base = String(baseURL || '').trim();
+  const key = String(apiKey || '').trim();
+  if (!base) return false;
+  if (/(localhost|127\.0\.0\.1):(3001|31415)\b/i.test(base)) return Boolean(key);
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(base)) return true;
+  return Boolean(key);
+}
+
 // Pools apply when the session provider talks to the pool gateway.
 function poolsActive(orch, provider) {
   const p = poolsConfig(orch);
@@ -107,6 +116,8 @@ function poolsActive(orch, provider) {
   const gw = normBase(p.gateway && p.gateway.baseURL);
   if (!gw) return false;
   if (provider && provider.oauthProvider) return false;
+  const effKey = String((p.gateway && p.gateway.apiKey) || (provider && provider.apiKey) || '').trim();
+  if (!isGatewayCredentialReady(p.gateway && p.gateway.baseURL, effKey)) return false;
   const base = normBase(provider && provider.baseURL);
   // A gateway mounted at …/v1 and a provider at the bare host are the same server.
   return !!base && (base === gw || base.replace(/\/v1$/, '') === gw.replace(/\/v1$/, ''));
@@ -665,7 +676,7 @@ function summary(orch, provider) {
 
 module.exports = {
   ROLES, ROLE_LABEL, ROLE_TIER, normalizeRole, tierToRole, isModelAlias, aliasRole, aliasTier,
-  poolsConfig, poolsActive, resolve, roleLimit, orchestratorFor, chainFor, hasImages,
+  poolsConfig, poolsActive, isGatewayCredentialReady, resolve, roleLimit, orchestratorFor, chainFor, hasImages,
   freellmPreset, summary, modelEntry, normBase, rotate,
   resolveMediaChain, resolveMediaProvider, isTextOnlyModelId, listMediaStudioCatalog,
 };

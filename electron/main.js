@@ -687,13 +687,23 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     } else {
       provider = await hydrateProvider(provider);
     }
+    let delegationOrchestrator = null;
     if (orchActive && orchSource) {
       const hy = await hydrateOrchestrator(orchSource, hydrateProvider);
       orchestrator = hy.orch;
+      delegationOrchestrator = hy.orch;
       poolDead = hy.dead;
     } else {
       orchestrator = orchSource;
       poolNoticeDeduper.reset();
+      if (orchSource) {
+        try {
+          const hyDel = await hydrateOrchestrator(orchSource, hydrateProvider);
+          delegationOrchestrator = hyDel && hyDel.orch ? hyDel.orch : orchSource;
+        } catch (_) {
+          delegationOrchestrator = orchSource;
+        }
+      }
     }
   } catch (e) {
     // The run never started, so nothing else will ever clear the renderer's
@@ -939,9 +949,11 @@ ipcMain.handle('autobot:run', async (event, payload) => {
 
   try {
     send({ type: 'cwd', dir: runCwd });
+    const resolvedOrch = await orchReady;
     const finalMessages = await runAgent({
       provider,
-      orchestrator: await orchReady,
+      orchestrator: resolvedOrch,
+      delegationOrchestrator: delegationOrchestrator || resolvedOrch || orchSource,
       messages,
       cwd: runCwd,
       useMemory,
@@ -980,7 +992,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
           return require('./task-router').resolveAutoRouterConfig({
             settings: store.getSettings(),
             secretstore,
-            orchestrator: orchRaw,
+            orchestrator: delegationOrchestrator || resolvedOrch || orchSource,
             provider,
           });
         } catch (_) {

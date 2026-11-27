@@ -7,6 +7,7 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const { runAgent } = require(path.join(ROOT, 'electron/llm'));
 const taskRouter = require(path.join(ROOT, 'electron/task-router'));
+const gate = require(path.join(ROOT, 'electron/provider-gate'));
 const { isOrchestratorActiveForTurn } = require(path.join(ROOT, 'electron/orch-hydrate'));
 
 let passed = 0;
@@ -338,6 +339,212 @@ function writeSseToolCall(res, model, toolCallId, name, argsObj) {
     assert.ok(appSrc.includes("openSettingsAt((opts && opts.section) || 'providers')"));
     assert.ok(appSrc.includes('⚡ Auto (DeepSeek V4.1 Flash) → ★') && appSrc.includes('data-testid="auto-routed-badge"'));
     assert.ok(cssSrc.includes('.routing-mode-card') && cssSrc.includes('.orch-picker-box') && cssSrc.includes('.is-auto-routed'));
+  });
+
+  await test('Test A: Credential-aware routing rejects unauthenticated :3001 pool & keyless remote providers and prioritizes Paid Subscriptions small->big', async () => {
+    const orch = {
+      enabled: true,
+      pools: {
+        enabled: true,
+        gateway: { baseURL: 'http://127.0.0.1:3001/v1', apiKey: '' },
+        roles: {
+          fast: { models: ['qwen3.8-27b'] },
+          coder: { models: ['qwen3-coder-30b-a3b-instruct'] },
+          planner: { models: ['gpt-5.6-luna'] },
+        },
+      },
+      providers: [
+        { baseURL: 'https://api.openai.com/v1', apiKey: '', model: 'gpt-4o', role: 'coder' },
+        { baseURL: 'http://127.0.0.1:11434/v1', apiKey: '', model: 'gemma4:latest', role: 'fast' },
+      ],
+    };
+    const oauthAccounts = [
+      { id: 'claude:max', provider: 'claude', account: 'max' },
+      { id: 'antigravity:pro', provider: 'antigravity', account: 'pro' },
+    ];
+    const roster = taskRouter.buildAvailableRoster({
+      orchestrator: orch,
+      oauthAccounts,
+      ollamaModels: ['gemma4:latest'],
+      store: false,
+    });
+
+    assert.ok(!roster.all.some((m) => /:3001\b/.test(String(m.baseURL || ''))), 'Unauthenticated :3001 pool must be excluded');
+    assert.ok(!roster.all.some((m) => String(m.baseURL || '').includes('api.openai.com')), 'Keyless remote provider must be excluded');
+    assert.strictEqual(roster.fast[0].model, 'claude-haiku-5-5');
+    assert.strictEqual(roster.coder[0].model, 'claude-sonnet-5-5');
+    assert.strictEqual(roster.planner[0].model, 'claude-opus-5-5');
+
+    const rFast = await taskRouter.classifyAndSelect({
+      messages: [{ role: 'user', content: 'try again' }],
+      orchestrator: orch,
+      oauthAccounts,
+      ollamaModels: ['gemma4:latest'],
+      store: false,
+    });
+    assert.strictEqual(rFast.chosen.model, 'claude-haiku-5-5');
+    assert.strictEqual(rFast.chosen.oauthProvider, 'claude:max');
+
+    const rCoder = await taskRouter.classifyAndSelect({
+      messages: [{ role: 'user', content: 'Fix React state bug in src/App.jsx' }],
+      orchestrator: orch,
+      oauthAccounts,
+      store: false,
+    });
+    assert.strictEqual(rCoder.chosen.model, 'claude-sonnet-5-5');
+
+    const rPlanner = await taskRouter.classifyAndSelect({
+      messages: [{ role: 'user', content: 'Perform a full security audit and multi-file redesign of electron/main.js architecture' }],
+      orchestrator: orch,
+      oauthAccounts,
+      store: false,
+    });
+    assert.strictEqual(rPlanner.chosen.model, 'claude-opus-5-5');
+  });
+
+  await test('Test B: Parallel Task wave de-conflicts active parent/sibling models & resolves pinned OAuth model without touching :3001', async () => {
+    const gwCalls = [];
+    let waveSent = false;
+    const gw = await startMockGateway(async (_req, res, body) => {
+      gwCalls.push(body.model);
+      if (!waveSent && body.model === 'claude-haiku-5-5') {
+        waveSent = true;
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+        const tc = [
+          { index: 0, id: 'tc_pin', type: 'function', function: { name: 'Task', arguments: JSON.stringify({ model: 'claude-opus-4-6', description: 'Pinned probe', prompt: 'ok' }) } },
+          { index: 1, id: 'tc_small', type: 'function', function: { name: 'Task', arguments: JSON.stringify({ tier: 'small', description: 'Small probe', prompt: 'ok' }) } },
+          { index: 2, id: 'tc_crit', type: 'function', function: { name: 'Task', arguments: JSON.stringify({ tier: 'critical', description: 'Critical probe', prompt: 'ok' }) } },
+        ];
+        res.write(`data: ${JSON.stringify({ id: 'cmpl_wave', model: body.model, choices: [{ delta: { tool_calls: tc }, finish_reason: 'tool_calls' }] })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 40));
+      writeSseText(res, body.model, `MODEL=${body.model}`);
+    });
+
+    try {
+      const oauthAccounts = [
+        { id: 'claude:max', provider: 'claude', account: 'max', models: ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-4-6', 'claude-opus-5-5'] },
+        { id: 'antigravity:pro', provider: 'antigravity', account: 'pro', models: ['gemini-4-hydrogen-low'] },
+      ];
+      const hydrateStub = async (p) => {
+        if (!p) return p;
+        return {
+          ...p,
+          oauth: false,
+          oauthProvider: '',
+          transport: '',
+          baseURL: gw.baseURL,
+          apiKey: 'hydrated-token',
+          supportsTools: true,
+        };
+      };
+      const orch = {
+        enabled: true,
+        pools: {
+          enabled: true,
+          gateway: { baseURL: 'http://127.0.0.1:3001/v1', apiKey: '' },
+          roles: {
+            fast: { models: ['qwen3.8-27b'] },
+            coder: { models: ['qwen3-coder-30b-a3b-instruct'] },
+            planner: { models: ['gpt-5.6-luna'] },
+          },
+        },
+        providers: [],
+      };
+      const events = [];
+      const msgs = await runAgent({
+        provider: { model: 'auto', routingMode: 'auto' },
+        orchestrator: orch,
+        oauthAccounts,
+        hydrateProvider: hydrateStub,
+        store: false,
+        messages: [{ role: 'user', content: 'hi' }],
+        emit: (e) => events.push(e),
+        turnStart: true,
+        maxSteps: 4,
+      });
+
+      const subDone = events.filter((e) => e.type === 'subagent' && e.status === 'done');
+      assert.strictEqual(subDone.length, 3, `Expected 3 completed subagents, got: ${JSON.stringify(events.filter((e) => e.type === 'subagent'))}`);
+      const byDesc = Object.fromEntries(subDone.map((e) => [e.name, e.model]));
+      assert.strictEqual(byDesc['Pinned probe'], 'claude-opus-4-6');
+      assert.notStrictEqual(byDesc['Small probe'], 'claude-haiku-5-5', 'Small probe must avoid active parent model claude-haiku-5-5');
+      assert.notStrictEqual(byDesc['Small probe'], 'claude-opus-4-6');
+      assert.ok(['gemini-4-hydrogen-low', 'gemini-4-neon-low', 'claude-sonnet-5-5-low'].includes(byDesc['Small probe']),
+        `Small probe should pick an idle small subscription model, got: ${byDesc['Small probe']}`);
+      assert.notStrictEqual(byDesc['Critical probe'], 'claude-opus-4-6', 'Critical probe must avoid sibling active claude-opus-4-6');
+      assert.notStrictEqual(byDesc['Critical probe'], byDesc['Small probe'], 'Critical probe must avoid active sibling Small probe');
+      assert.ok(['claude-opus-5-5', 'claude-opus-5-5-high', 'claude-opus-5-5-medium', 'claude-fable-5-2', 'gemini-4-carbon-high', 'gemini-4-neon-high'].includes(byDesc['Critical probe']),
+        `Critical probe should pick an idle critical subscription model, got: ${byDesc['Critical probe']}`);
+      assert.ok(!gwCalls.includes('qwen3.8-27b') && !gwCalls.includes('gpt-5.6-luna'));
+      const finalText = String((msgs.slice().reverse().find((m) => m.role === 'assistant') || {}).content || '');
+      assert.ok(finalText.includes('claude-haiku-5-5'));
+    } finally {
+      gw.close();
+    }
+  });
+
+  await test('Test C: Failover dynamically updates <runtime_identity> active model & dead-gate surfaces real reason instead of unknown error', async () => {
+    gate.reset();
+    const seenSystems = [];
+    const gw = await startMockGateway(async (_req, res, body) => {
+      const sys = Array.isArray(body.messages) && body.messages[0] && body.messages[0].role === 'system'
+        ? body.messages[0].content
+        : '';
+      seenSystems.push({ model: body.model, sys });
+      if (body.model === 'fail-first-model') {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Invalid API key' } }));
+        return;
+      }
+      writeSseText(res, body.model, `OK from ${body.model}`);
+    });
+
+    try {
+      await runAgent({
+        provider: { baseURL: gw.baseURL, apiKey: 'bad', model: 'fail-first-model', routingMode: 'orchestrator' },
+        orchestrator: {
+          enabled: true,
+          providers: [{ baseURL: gw.baseURL, apiKey: 'good', model: 'healthy-backup-model', role: 'coder', tier: 'heavy' }],
+        },
+        store: false,
+        messages: [{ role: 'user', content: 'Say ok' }],
+        turnStart: true,
+        maxSteps: 3,
+      });
+      const backupSys = seenSystems.find((x) => x.model === 'healthy-backup-model');
+      assert.ok(backupSys && backupSys.sys.includes('Active model on this turn: healthy-backup-model'),
+        'Failover must dynamically update <runtime_identity> to healthy-backup-model');
+
+      // All-dead gate test: pre-mark rows dead and verify real reason is surfaced instead of "unknown error (gave up after 5 attempts)"
+      const deadList = [
+        { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'bad1', model: 'dead-a' },
+        { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'bad2', model: 'dead-b' },
+      ];
+      gate.markDead(deadList[0], 'The API key was rejected — Invalid API key', 60000);
+      gate.markDead(deadList[1], 'The API key was rejected — Invalid API key', 60000);
+      let caughtMsg = '';
+      try {
+        await runAgent({
+          provider: { ...deadList[0], routingMode: 'orchestrator' },
+          orchestrator: { enabled: true, providers: [deadList[1]] },
+          store: false,
+          messages: [{ role: 'user', content: 'Should fail cleanly' }],
+          turnStart: true,
+          maxSteps: 2,
+        });
+      } catch (e) {
+        caughtMsg = String(e && e.message || e);
+      }
+      assert.ok(caughtMsg.includes('Invalid API key'), `Expected real dead reason, got: ${caughtMsg}`);
+      assert.ok(!/unknown error/i.test(caughtMsg), `Must never throw unknown error: ${caughtMsg}`);
+    } finally {
+      gate.reset();
+      gw.close();
+    }
   });
 
   if (failed > 0) {

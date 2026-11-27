@@ -14,6 +14,7 @@
 
 const TIER_RANK = { small: 0, heavy: 1, critical: 2 };
 const router = require('./orch-router');
+const gate = require('./provider-gate');
 
 // The supervisor plans and reviews; it must not start building. Plan gets a
 // read-only surface; review may also run commands to verify the deliverable.
@@ -47,8 +48,8 @@ const FRONTIER_RE = /(kimi|moonshot|deepseek|glm|zhipu|chatgpt|gpt-?[3-9]|codex|
 function inferModelTier(model, fallback) {
   const m = String(model || '').toLowerCase();
   if (!m) return fallback || 'heavy';
-  if (/(haiku|hydrogen|grok-4-fast|gpt-5\.6-luna|flash|(?:^|[-_/.])mini(?=$|[-_/.])|nano|lite|small|\b[1-9]b\b)/i.test(m)) return 'small';
-  if (/(opus|ultra|carbon-high|neon-high|fable|grok-4\.5|\bo3\b|\bgpt-6\b|pro-max|reasoner)/i.test(m)) return 'critical';
+  if (/(haiku|hydrogen-low|neon-low|sonnet-[0-9.-]+-low|flash-worker|gemini-2\.5-flash|grok-4-fast|gpt-5\.6-luna|flash|(?:^|[-_/.])mini(?=$|[-_/.])|nano|lite|small|\b[1-9]b\b)/i.test(m)) return 'small';
+  if (/(opus(?!.*-low)|ultra|carbon-high|neon-high|neon-xhigh|hydrogen-xhigh|fable|grok-4\.5|\bo3\b|\bgpt-6\b|pro-max|reasoner|orchestrator)/i.test(m)) return 'critical';
   return fallback || 'heavy';
 }
 
@@ -69,24 +70,38 @@ function isFrontier(p) {
 // no baseURL because main mints the bearer token and picks the endpoint at
 // turn time, so the guard below must admit it or every signed-in model would
 // silently vanish from the roster.
+function rosterSourcePriority(p) {
+  if (!p) return 3;
+  if (p.oauthProvider || p.oauth || p.accessToken) return 0;
+  const base = String(p.baseURL || '').trim();
+  const key = String(p.apiKey || '').trim();
+  if (/(localhost|127\.0\.0\.1):(3001|31415)\b/i.test(base)) return 2;
+  if (/:11434\b/i.test(base)) return 3;
+  if (key) return 1;
+  return 3;
+}
+
 function buildRoster(opts = {}) {
   const { orchestrator, provider, frontierOnly } = opts;
   const roster = [];
   const seen = new Set();
   const add = (p, fallbackTier, role) => {
-    if (!p) return;
-    const isOauth = !!p.oauthProvider;
-    if (!p.baseURL && !isOauth) return;
+    if (!p || p.enabled === false) return;
+    const isOauth = !!p.oauthProvider || !!p.oauth || !!p.accessToken;
+    const base = String(p.baseURL || '').trim();
+    const apiKey = String(p.apiKey || '').trim();
+    if (!base && !isOauth) return;
+    if (!isOauth && !router.isGatewayCredentialReady(base, apiKey)) return;
     const key = isOauth
       ? 'oauth|' + p.oauthProvider + '|' + String(p.model || '')
-      : String(p.baseURL) + '|' + String(p.model || '');
+      : base + '|' + String(p.model || '');
     if (seen.has(key)) return;
     seen.add(key);
     const inferredTier = inferModelTier(p.model || p.name, fallbackTier);
     roster.push({
       id: p.id || key,
       name: p.name || p.model || 'model',
-      baseURL: p.baseURL || '',
+      baseURL: base,
       apiKey: p.apiKey || '',
       model: p.model || '',
       temperature: p.temperature,
@@ -110,6 +125,7 @@ function buildRoster(opts = {}) {
       contextWindow: Number(p.contextWindow) || 0,
       frontier: isFrontier(p),
       tier: normalizeTier(p.tier, inferredTier),
+      jobRole: router.normalizeRole(p.jobRole || p.role) || null,
       role,
     });
   };
@@ -119,6 +135,14 @@ function buildRoster(opts = {}) {
   // The active provider is last but tagged critical when it is the only model,
   // so a single-model setup still gets sensible routing.
   if (provider) add(provider, roster.length ? 'heavy' : 'critical', 'active');
+
+  // Keep Paid Subscriptions & Keyed Frontier ahead of FreeLLMAPI pools & Ollama
+  // while preserving relative order inside the same priority tier.
+  const ordered = roster.map((r, idx) => ({ r, idx, prio: rosterSourcePriority(r) }))
+    .sort((a, b) => (a.prio - b.prio) || (a.idx - b.idx))
+    .map((x) => x.r);
+  roster.length = 0;
+  roster.push(...ordered);
 
   // Swarm: keep only frontier models. Mutate in place so callers hold the same
   // array reference.
@@ -144,14 +168,40 @@ function buildRoster(opts = {}) {
 
 // Pick the model a subtask of `tier` should run on. Exact tier wins; otherwise
 // pick the nearest tier, preferring cheaper models for small work and stronger
-// models for heavy/critical work.
-function pickProvider(roster, tier, index) {
+// models for heavy/critical work. Supports idle-first de-confliction when opts
+// provides `busyModels` or `isBusy`.
+function pickProvider(roster, tier, index, opts = {}) {
   if (!roster || !roster.length) return null;
   const want = normalizeTier(tier);
+  const idx = Math.max(0, Number(index) || 0);
+  const busySet = opts && opts.busyModels instanceof Set
+    ? new Set([...opts.busyModels].map((x) => String(x || '').trim().toLowerCase()).filter(Boolean))
+    : null;
+  const isBusyFn = opts && typeof opts.isBusy === 'function' ? opts.isBusy : null;
+  const checkDeconflict = Boolean(busySet || isBusyFn);
+  const isBusy = (r) => {
+    if (!r) return false;
+    if (busySet && busySet.has(String(r.model || '').trim().toLowerCase())) return true;
+    if (isBusyFn && isBusyFn(r)) return true;
+    return false;
+  };
+
+  if (checkDeconflict) {
+    const tierOrder = want === 'small'
+      ? ['small', 'heavy', 'critical']
+      : (want === 'critical' ? ['critical', 'heavy', 'small'] : ['heavy', 'critical', 'small']);
+    for (const t of tierOrder) {
+      const idleExact = roster.filter((r) => r.tier === t && !isBusy(r));
+      if (idleExact.length) return idleExact[idx % idleExact.length];
+    }
+    const anyIdle = roster.filter((r) => !isBusy(r));
+    if (anyIdle.length) return anyIdle[idx % anyIdle.length];
+  }
+
   // Several rows of the same tier: spread parallel workers across them
   // (worker i gets row i mod n) instead of piling every worker onto the first.
   const exacts = roster.filter((r) => r.tier === want);
-  if (exacts.length) return exacts[(Math.max(0, Number(index) || 0)) % exacts.length];
+  if (exacts.length) return exacts[idx % exacts.length];
   const rank = TIER_RANK[want];
   const sorted = [...roster].sort((a, b) => {
     const da = Math.abs(TIER_RANK[a.tier] - rank);
@@ -605,14 +655,24 @@ async function swarm(goal, opts = {}) {
     roster = buildRoster({ orchestrator: opts.orchestrator, provider: opts.provider, frontierOnly: true });
   }
 
+  // Track active swarm worker models so concurrent workers avoid colliding on the same model when idle ones exist.
+  const activeSwarmModels = new Set();
+
   // A failover chain (an orchestrator object runAgent understands) for one job.
-  const chainFor = (tier, index, roleHint, model) => {
+  const chainFor = (tier, index, roleHint, model, deconflict = false) => {
     if (poolOrch) {
       const role = router.normalizeRole(roleHint) || router.tierToRole(tier) || 'coder';
       return router.orchestratorFor(poolOrch, role, poolBase, { index, preferModel: model || undefined });
     }
-    const base = (model && roster.find((r) => r.model === model)) || pickProvider(roster, tier, index);
+    const base = (model && roster.find((r) => r.model === model))
+      || (deconflict
+        ? pickProvider(roster, tier, index, {
+          busyModels: activeSwarmModels,
+          isBusy: (r) => activeSwarmModels.has(String(r.model || '').toLowerCase()) || gate.inflight(r) > 0,
+        })
+        : pickProvider(roster, tier, index));
     if (!base) return null;
+    if (deconflict && base.model) activeSwarmModels.add(String(base.model).toLowerCase());
     const rest = roster.filter((r) => r !== base);
     const providers = [base].concat(rest.filter((r) => r.tier === base.tier), rest.filter((r) => r.tier !== base.tier));
     return { enabled: true, providers, activeIndex: 0, role: 'pinned' };
@@ -673,7 +733,7 @@ async function swarm(goal, opts = {}) {
     const roleKey = poolOrch ? (router.normalizeRole(t.role) || router.tierToRole(t.tier) || 'coder') : normalizeTier(t.tier);
     const k = perRole.get(roleKey) || 0;
     perRole.set(roleKey, k + 1);
-    const chain = chainFor(t.tier, k, t.role, t.model);
+    const chain = chainFor(t.tier, k, t.role, t.model, true);
     const provider = chain ? chain.providers[0] : (opts.provider || null);
     return {
       ...t,
@@ -768,7 +828,7 @@ async function swarm(goal, opts = {}) {
     const roleKey = poolOrch ? (router.normalizeRole(a.role) || router.tierToRole(a.tier) || 'coder') : normalizeTier(a.tier);
     const k = perRole.get(roleKey) || 0;
     perRole.set(roleKey, k + 1);
-    const chain = chainFor(a.tier || 'heavy', k, a.role, a.model);
+    const chain = chainFor(a.tier || 'heavy', k, a.role, a.model, true);
     const provider = chain ? chain.providers[0] : (opts.provider || null);
     const title = String(a.title || a.name || `helper-${dynamicCount}`).slice(0, 120);
     const newTask = {
@@ -917,6 +977,7 @@ async function swarm(goal, opts = {}) {
       return { id: agentId, name: workerName, title: task.title, tier: task.tier, role: task.jobRole, model: servedBy,
         baseURL: p ? p.baseURL : null, status: st, ms, result: killed ? '(killed)' : ('Error: ' + (e && e.message)), round };
     } finally {
+      if (p && p.model) activeSwarmModels.delete(String(p.model).toLowerCase());
       workerControllers.delete(workerName);
       if (opts.signal) opts.signal.removeEventListener('abort', onParentAbort);
     }

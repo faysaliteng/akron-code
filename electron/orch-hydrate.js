@@ -30,16 +30,22 @@
  * @returns {Promise<{orch: object|null, dead: Array<{entry: object, error: Error}>}>}
  */
 async function hydrateOrchestrator(orch, hydrate) {
-  if (!orch || !Array.isArray(orch.providers) || !orch.providers.length) {
+  const hasPoolGw = Boolean(
+    orch && orch.pools && orch.pools.gateway
+    && /(localhost|127\.0\.0\.1):(3001|31415)\b/i.test(String(orch.pools.gateway.baseURL || ''))
+    && !String(orch.pools.gateway.apiKey || '').trim()
+  );
+  if ((!orch || !Array.isArray(orch.providers) || !orch.providers.length) && !hasPoolGw) {
     return { orch: orch || null, dead: [] };
   }
   if (typeof hydrate !== 'function') {
     throw new TypeError('hydrateOrchestrator needs a hydrate function');
   }
+  const srcProviders = Array.isArray(orch.providers) ? orch.providers : [];
   const providers = [];
   const kept = [];
   const dead = [];
-  for (const entry of orch.providers) {
+  for (const entry of srcProviders) {
     try {
       providers.push(await hydrate(entry));
       kept.push(entry);
@@ -47,14 +53,29 @@ async function hydrateOrchestrator(orch, hydrate) {
       dead.push({ entry, error });
     }
   }
-  if (!dead.length) return { orch: Object.assign({}, orch, { providers }), dead };
+  let hydratedPools = orch.pools;
+  if (hasPoolGw) {
+    try {
+      const gwHydrated = await hydrate({ ...orch.pools.gateway });
+      if (gwHydrated && gwHydrated.apiKey && String(gwHydrated.apiKey).trim()) {
+        hydratedPools = Object.assign({}, orch.pools, {
+          gateway: Object.assign({}, orch.pools.gateway, { apiKey: String(gwHydrated.apiKey).trim() }),
+        });
+      }
+    } catch (_) {}
+  }
+  const extraProps = hasPoolGw && hydratedPools !== orch.pools ? { pools: hydratedPools } : {};
+  if (!dead.length) {
+    if (!srcProviders.length) return { orch: Object.assign({}, orch, extraProps), dead };
+    return { orch: Object.assign({}, orch, { providers }, extraProps), dead };
+  }
   // Re-anchor the active row by identity: dropping an entry above it must not
   // silently switch the pool to a different model.
   const prevActive = Math.max(0, Number(orch.activeIndex) || 0);
-  const activeRow = orch.providers[prevActive];
+  const activeRow = srcProviders[prevActive];
   const moved = activeRow ? kept.indexOf(activeRow) : 0;
   return {
-    orch: Object.assign({}, orch, { providers, activeIndex: moved < 0 ? 0 : moved }),
+    orch: Object.assign({}, orch, { providers, activeIndex: moved < 0 ? 0 : moved }, extraProps),
     dead,
   };
 }

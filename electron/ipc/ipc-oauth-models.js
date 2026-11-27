@@ -33,7 +33,9 @@ function hydrateLocalFreeLlmProvider(provider) {
   if (fallback) return { ...provider, apiKey: fallback };
   try {
     const c = freellm.loadConfig ? freellm.loadConfig() : null;
-    if (c && c.token) return { ...provider, apiKey: c.token };
+    if (c && c.token && (/:31415\b/.test(base) || c.configured !== false)) {
+      return { ...provider, apiKey: c.token };
+    }
   } catch (_) {}
   return provider;
 }

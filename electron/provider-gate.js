@@ -40,8 +40,11 @@ function s(p) {
 const now = () => Date.now();
 
 function isDead(p) { return s(p).deadUntil > now(); }
+function deadReason(p) { return s(p).deadWhy || ''; }
 function coolingFor(p) { return Math.max(0, s(p).until - now()); }
 function usable(p) { return !isDead(p) && coolingFor(p) === 0; }
+function inflight(p) { return s(p).inflight || 0; }
+function keyFor(p) { return keyOf(p); }
 
 // Mark a row rate-limited. `retryAfterMs` (from Retry-After / the gateway's
 // own reset estimate) wins; otherwise back off exponentially per strike.
@@ -178,6 +181,6 @@ function snapshot() {
 function reset() { state.clear(); }
 
 module.exports = {
-  keyOf, usable, isDead, coolingFor, rateLimited, ok, markDead, capOf, hasCapacity,
+  keyOf, keyFor, usable, isDead, deadReason, coolingFor, inflight, rateLimited, ok, markDead, capOf, hasCapacity,
   tryAcquire, acquire, order, soonestReset, retryHintMs, snapshot, reset,
 };

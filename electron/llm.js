@@ -53,8 +53,22 @@ function traceLine(obj) {
   } catch (_) { /* tracing must never break a turn */ }
 }
 
-// Registry of live sub-agents (for TaskStop / ListAgents).
+// Registry of live sub-agents (for TaskStop / ListAgents) and synchronous
+// model reservations so parallel Tool/Task waves de-conflict immediately.
 const subagentControllers = new Map(); // name -> AbortController
+const reservedSubagentModels = new Map(); // lowerCaseModel -> activeCount
+const reserveSubagentModel = (modelId) => {
+  const k = String(modelId || '').trim().toLowerCase();
+  if (!k) return '';
+  reservedSubagentModels.set(k, (reservedSubagentModels.get(k) || 0) + 1);
+  return k;
+};
+const releaseSubagentModel = (key) => {
+  if (!key) return;
+  const n = (reservedSubagentModels.get(key) || 0) - 1;
+  if (n > 0) reservedSubagentModels.set(key, n);
+  else reservedSubagentModels.delete(key);
+};
 
 // Names of tools handled locally (built-in + virtual MCP namespaces). Anything
 // else that starts with mcp__ is an external MCP server tool.
@@ -1008,7 +1022,13 @@ async function chatWithFailover(opts) {
       const alive = seq.filter((i) => !gate.isDead(list[i]));
       candidates = alive.length ? [alive[0]] : (n === 1 ? [0] : []);
     }
-    if (!candidates.length) break; // every row is dead for this session
+    if (!candidates.length) {
+      if (!lastErr) {
+        const deadWhy = list.map((q) => (typeof gate.deadReason === 'function' ? gate.deadReason(q) : '')).find(Boolean);
+        lastErr = new Error(deadWhy || 'No configured provider with valid API key or sign-in is available for this model.');
+      }
+      throw lastErr;
+    }
     let rateLimited = false;
     for (let a = 0; a < candidates.length; a++) {
       const i = candidates[a];
@@ -1025,7 +1045,26 @@ async function chatWithFailover(opts) {
         // (Anthropic serves Sonnet 4.x at 1M only with an entitled beta).
         const winPid = String(p.oauthProvider || '').split(':')[0] || p.transport || '';
         const winBefore = modelCatalog.contextWindowFor(p.model, winPid, p.contextWindow);
-        const out = await chatCompletion(p, messages, tools, onDelta, signal, reqMax, opts.onToolDelta);
+        let reqMessages = messages;
+        if (Array.isArray(messages) && messages[0] && messages[0].role === 'system' && typeof messages[0].content === 'string' && p && p.model && messages[0].content.includes('<runtime_identity>') && !messages[0].content.includes(`Active model on this turn: ${p.model}\n`)) {
+          const vMap = {
+            claude: 'Anthropic Claude subscription',
+            anthropic: 'Anthropic Claude',
+            antigravity: 'Google Antigravity / Gemini',
+            google: 'Google Gemini',
+            chatgpt: 'OpenAI ChatGPT / Codex subscription',
+            codex: 'OpenAI Codex',
+            grok: 'xAI Grok',
+          };
+          const pidNext = String(p.oauthProvider || '').split(':')[0] || String(p.transport || '').toLowerCase();
+          const vLabel = vMap[pidNext] || (p.baseURL ? `OpenAI-compatible endpoint (${p.baseURL})` : 'Configured LLM provider');
+          const updatedSys = messages[0].content
+            .replace(/^(Active model on this turn: ).*$/m, `$1${p.model}`)
+            .replace(/^(Active provider \/ transport: ).*$/m, `$1${vLabel}`)
+            .replace(/powered on this turn by [^\n.]*(?: \([^)]*\))?/i, `powered on this turn by ${p.model} (${vLabel})`);
+          reqMessages = [{ ...messages[0], content: updatedSys }, ...messages.slice(1)];
+        }
+        const out = await chatCompletion(p, reqMessages, tools, onDelta, signal, reqMax, opts.onToolDelta);
         const winAfter = modelCatalog.contextWindowFor(p.model, winPid, p.contextWindow);
         if (winAfter && winBefore && winAfter < winBefore) {
           emit({ type: 'notice', text: `${p.model} advertises ${modelCatalog.fmtWindow(winBefore)} but this account is not entitled to it — this session budgets ${modelCatalog.fmtWindow(winAfter)} and compacts to fit.` });
@@ -2802,7 +2841,41 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         return out ? `\n\n<forked_parent_context>\n${out}\n</forked_parent_context>` : '';
       } catch (_) { return ''; }
     };
-    const agentRoster = swarm.buildRoster({ orchestrator: effectiveOrch, provider: providerList[getIndex()] });
+    const baseDelOrch = opts.delegationOrchestrator || effectiveOrch || orch || null;
+    const useOauthRoster = Array.isArray(opts.oauthAccounts) || typeof opts.hydrateProvider === 'function';
+    let delegationProviders = Array.isArray(baseDelOrch && baseDelOrch.providers)
+      ? baseDelOrch.providers.filter((p) => p && p.enabled !== false && (!p.oauthProvider || p.accessToken || useOauthRoster))
+      : [];
+    if (useOauthRoster) {
+      try {
+        const dynAll = taskRouter.buildAvailableRoster({
+          orchestrator: baseDelOrch,
+          provider: providerList[getIndex()],
+          oauthAccounts: Array.isArray(opts.oauthAccounts) ? opts.oauthAccounts : null,
+          ollamaModels: opts.ollamaModels,
+          store: opts.store,
+          gate,
+        }).all || [];
+        const seenDel = new Set(delegationProviders.map((r) => (
+          r.oauthProvider
+            ? 'oauth|' + r.oauthProvider + '|' + String(r.model || '')
+            : String(r.baseURL || '') + '|' + String(r.model || '')
+        )));
+        for (const r of dynAll) {
+          const dk = r.oauthProvider
+            ? 'oauth|' + r.oauthProvider + '|' + String(r.model || '')
+            : String(r.baseURL || '') + '|' + String(r.model || '');
+          if (!seenDel.has(dk)) {
+            seenDel.add(dk);
+            delegationProviders.push(r);
+          }
+        }
+      } catch (_) {}
+    }
+    const delegationOrch = (baseDelOrch || delegationProviders.length)
+      ? { ...(baseDelOrch || {}), enabled: true, providers: delegationProviders }
+      : null;
+    const agentRoster = swarm.buildRoster({ orchestrator: delegationOrch, provider: providerList[getIndex()] });
     const runSubagent = async (args) => {
       args = args || {};
       if (depth >= MAX_AGENT_DEPTH) {
@@ -2846,7 +2919,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       // Model selection. `haiku|sonnet|opus|inherit` are ALIASES (agent
       // definitions use them) and are never sent as wire ids — they map to a
       // role/tier. A real model id pins that model first, with the rest of the
-      // pool behind it for failover. Nothing pinned → inherit the parent chain.
+      // pool behind it for failover. Nothing pinned → pick idle-first, paid-subscription-first, small-to-big.
       const rawModel = args.model || args.model_id || null;
       const defModel = def && def.model ? def.model : null;
       const aliasR = rawModel && router.isModelAlias(rawModel) ? router.aliasRole(rawModel)
@@ -2859,13 +2932,48 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         || ((args.tier || args.complexity) ? router.tierToRole(args.tier || args.complexity) : null);
       const parentProvider = providerList[getIndex()];
       let subProvider = parentProvider;
+      // Dynamically evaluate poolMode against the CURRENT active parentProvider (post-failover).
+      const poolsOn = Boolean(poolMode && effectiveOrch && router.poolsConfig(effectiveOrch) && router.poolsActive(effectiveOrch, parentProvider));
       // Unpinned: inherit the parent's whole failover chain (pool or list).
-      let subOrch = poolMode && effectiveOrch && effectiveOrch.role ? effectiveOrch
-        : (poolMode ? { enabled: true, providers: providerList, activeIndex: getIndex(), pools: effectiveOrch && effectiveOrch.pools, role: 'inherit' } : effectiveOrch);
+      let subOrch = poolsOn && effectiveOrch && effectiveOrch.role ? effectiveOrch
+        : (poolsOn ? { enabled: true, providers: providerList, activeIndex: getIndex(), pools: effectiveOrch && effectiveOrch.pools, role: 'inherit' } : (delegationOrch || effectiveOrch));
       let tier = null;
       let role = null;
-      const poolsOn = poolMode && effectiveOrch && router.poolsConfig(effectiveOrch);
-      if (poolsOn && (wantRole || wantModel || !(effectiveOrch && effectiveOrch.role))) {
+      let reservedModelKey = '';
+
+      const busyModels = new Set();
+      if (parentProvider && parentProvider.model) busyModels.add(String(parentProvider.model).trim().toLowerCase());
+      for (const rec of subagentControllers.values()) {
+        if (rec && rec.model) busyModels.add(String(rec.model).trim().toLowerCase());
+      }
+      for (const [mKey, cnt] of reservedSubagentModels.entries()) {
+        if (cnt > 0) busyModels.add(mKey);
+      }
+
+      const vendorMatchesModel = (row, modelId) => {
+        if (!row) return false;
+        const ml = String(modelId || '').toLowerCase();
+        const op = String(row.oauthProvider || '').split(':')[0].toLowerCase();
+        if (/^claude-|^anthropic\//i.test(ml)) return op === 'claude' || (op === 'antigravity' && /5-5|sonnet|opus/i.test(ml));
+        if (/^(gpt-|o[134]\b|codex)/i.test(ml)) return op === 'chatgpt' || (op === 'antigravity' && /gpt-oss/i.test(ml));
+        if (/^gemini-/i.test(ml)) return op === 'antigravity';
+        if (/^grok-/i.test(ml)) return op === 'grok';
+        return !op && Boolean(row.baseURL && (row.apiKey || /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(row.baseURL) && !/:(3001|31415)\b/.test(row.baseURL)));
+      };
+
+      const rosterMatch = wantModel
+        ? agentRoster.find((r) => String(r.model || '').toLowerCase() === wantModel.toLowerCase())
+        : null;
+
+      if (rosterMatch) {
+        subProvider = { ...rosterMatch };
+        tier = rosterMatch.tier || ((args.tier || args.complexity) ? swarm.normalizeTier(args.tier || args.complexity) : 'heavy');
+        role = wantRole || rosterMatch.jobRole || null;
+        reservedModelKey = reserveSubagentModel(subProvider.model);
+        const rest = agentRoster.filter((r) => r !== rosterMatch);
+        const chain = [subProvider].concat(rest.filter((r) => r.tier === tier), rest.filter((r) => r.tier !== tier));
+        subOrch = chain.length > 1 ? { enabled: true, providers: chain, activeIndex: 0, role: 'pinned' } : null;
+      } else if (poolsOn && (wantRole || wantModel || !(effectiveOrch && effectiveOrch.role))) {
         role = wantRole || (effectiveOrch && effectiveOrch.role && effectiveOrch.role !== 'inherit' ? effectiveOrch.role : 'coder');
         const scoped = router.orchestratorFor(effectiveOrch, role, parentProvider, { index: subSpawnCount, preferModel: wantModel });
         if (scoped) {
@@ -2873,23 +2981,62 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           subProvider = scoped.providers[0];
           tier = router.ROLE_TIER[role] || 'heavy';
           if (wantModel && !scoped.providers.some((r) => r.model === wantModel)) {
-            // A gateway model outside the pool: the gateway serves it, so try it
-            // first and keep the pool behind it.
             subProvider = { ...scoped.providers[0], model: wantModel, id: 'pinned:' + wantModel, maxConcurrent: undefined };
             subOrch = { ...scoped, providers: [subProvider].concat(scoped.providers) };
           }
+          if (subProvider && subProvider.model) reservedModelKey = reserveSubagentModel(subProvider.model);
         }
-      } else if (!poolsOn && (wantModel || wantRole)) {
+      } else if (!poolsOn && (wantModel || wantRole || agentRoster.length)) {
         const wantTier = (args.tier || args.complexity) ? swarm.normalizeTier(args.tier || args.complexity)
           : (wantRole ? (router.ROLE_TIER[wantRole] || 'heavy') : 'heavy');
-        const byModel = wantModel ? agentRoster.find((r) => r.model === wantModel) : null;
-        const base = byModel || swarm.pickProvider(agentRoster, wantTier) || parentProvider;
-        subProvider = byModel ? { ...byModel } : (wantModel ? { ...base, model: wantModel } : { ...base });
-        tier = base.tier || wantTier;
-        // Keep failover: chosen row first, same-tier rows next, the rest last.
-        const rest = agentRoster.filter((r) => r !== base && r !== byModel);
-        const chain = [subProvider].concat(rest.filter((r) => r.tier === tier), rest.filter((r) => r.tier !== tier));
-        subOrch = chain.length > 1 ? { enabled: true, providers: chain, activeIndex: 0, role: 'pinned' } : null;
+        if (wantModel) {
+          const vendorBase = agentRoster.find((r) => vendorMatchesModel(r, wantModel))
+            || (vendorMatchesModel(parentProvider, wantModel) ? parentProvider : null);
+          if (!vendorBase) {
+            for (const sig of parents) sig.removeEventListener('abort', onAbort);
+            return `Error: sub-agent "${name}" could not start — model "${wantModel}" is not configured or its provider API key / sign-in is missing.`;
+          }
+          subProvider = { ...vendorBase, model: wantModel };
+          tier = vendorBase.tier || wantTier;
+          reservedModelKey = reserveSubagentModel(subProvider.model);
+          const rest = agentRoster.filter((r) => r !== vendorBase);
+          const chain = [subProvider].concat(rest.filter((r) => r.tier === tier), rest.filter((r) => r.tier !== tier));
+          subOrch = chain.length > 1 ? { enabled: true, providers: chain, activeIndex: 0, role: 'pinned' } : null;
+        } else {
+          const isBusyCand = (r) => busyModels.has(String((r && r.model) || '').trim().toLowerCase())
+            || gate.inflight(r) > 0
+            || !gate.usable(r);
+          let base = null;
+          if (wantRole) {
+            const idleRoleHits = agentRoster.filter((r) => r.jobRole === wantRole && !isBusyCand(r));
+            if (idleRoleHits.length) base = idleRoleHits[subSpawnCount % idleRoleHits.length];
+            if (!base) {
+              const roleHits = agentRoster.filter((r) => r.jobRole === wantRole && gate.usable(r));
+              if (roleHits.length) base = roleHits[subSpawnCount % roleHits.length];
+            }
+          }
+          if (!base) {
+            base = swarm.pickProvider(agentRoster, wantTier, subSpawnCount, {
+              busyModels,
+              isBusy: isBusyCand,
+            }) || parentProvider;
+          }
+          subProvider = base ? { ...base } : parentProvider;
+          tier = (base && base.tier) || wantTier;
+          role = wantRole || (base && base.jobRole) || null;
+          if (subProvider && subProvider.model) reservedModelKey = reserveSubagentModel(subProvider.model);
+          const rest = agentRoster.filter((r) => r !== base);
+          const chain = [subProvider].concat(rest.filter((r) => r.tier === tier), rest.filter((r) => r.tier !== tier));
+          subOrch = chain.length > 1 ? { enabled: true, providers: chain, activeIndex: 0, role: 'pinned' } : null;
+        }
+      }
+      if (subProvider && subProvider.oauthProvider && !subProvider.accessToken && typeof opts.hydrateProvider === 'function') {
+        try {
+          subProvider = await opts.hydrateProvider(subProvider);
+          if (subOrch && Array.isArray(subOrch.providers) && subOrch.providers.length) {
+            subOrch = { ...subOrch, providers: [subProvider].concat(subOrch.providers.slice(1)) };
+          }
+        } catch (_) {}
       }
       if (subProvider && (subProvider.routingMode === 'auto' || wantModel || wantRole)) {
         subProvider = { ...subProvider, routingMode: '' };
@@ -2987,6 +3134,10 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         const subResult = await runAgent({
           provider: subProvider,
           orchestrator: subOrch,
+          delegationOrchestrator: delegationOrch,
+          hydrateProvider: opts.hydrateProvider,
+          oauthAccounts: opts.oauthAccounts,
+          store: opts.store,
           messages: subMsgs,
           cwd: subCwd,
           // The child's own `done` must not end the parent's stream in the UI;
@@ -3084,6 +3235,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           try { require('./tasks').setMemberStatus(teamName, name, failed ? 'stopped' : 'idle'); } catch (_) {}
         }
         if (releaseRole) releaseRole();
+        releaseSubagentModel(reservedModelKey);
         subagentControllers.delete(name);
         emit({ type: 'subagent', id: name, agentId, name, status: failed || 'done', role: 'worker', jobRole: role, model: subProvider ? subProvider.model : null, tier, toolCount: subToolsRun.length, durationMs: Date.now() - startedAt });
         for (const sig of parents) sig.removeEventListener('abort', onAbort);
@@ -3173,7 +3325,11 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         provider: routingMode === 'auto' ? { ...providerList[getIndex()], routingMode: '' } : providerList[getIndex()],
         // A sub-run that pins its own provider must NOT re-expand into the
         // parent's orchestrator list, or the pin would be silently replaced.
-        orchestrator: subOpts && subOpts.provider ? null : effectiveOrch,
+        orchestrator: subOpts && subOpts.provider ? null : (delegationOrch || effectiveOrch),
+        delegationOrchestrator: delegationOrch,
+        hydrateProvider: opts.hydrateProvider,
+        oauthAccounts: opts.oauthAccounts,
+        store: opts.store,
         cwd: subOpts.cwd || currentCwd,
         useMemory: opts.useMemory,
         shell: opts.shell,
@@ -3192,9 +3348,13 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       }),
       mcpClient: opts.mcpClient || null,
       get provider() { return providerList[getIndex()]; },
-      orchestrator: effectiveOrch || null,
+      orchestrator: (poolMode && effectiveOrch && router.poolsActive(effectiveOrch, providerList[getIndex()]))
+        ? effectiveOrch
+        : (delegationOrch || effectiveOrch || null),
       // The un-scoped pool config (role pools) for Swarm/Workflow routing.
-      poolOrchestrator: poolMode && effectiveOrch ? effectiveOrch : null,
+      poolOrchestrator: (poolMode && effectiveOrch && router.poolsActive(effectiveOrch, providerList[getIndex()]))
+        ? effectiveOrch
+        : null,
       emit,
       agentRoster,
       askUser: opts.askUser,

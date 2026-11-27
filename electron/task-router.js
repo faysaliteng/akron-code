@@ -120,38 +120,49 @@ const TIER_PREFERENCES = {
   fast: [
     'claude-haiku-5-5',
     'gemini-4-hydrogen-low',
+    'claude-sonnet-5-5-low',
+    'gemini-4-neon-low',
+    'gemini-2.5-flash',
     'grok-4-fast',
-    'qwen3.8-27b',
     'gpt-5.6-luna',
-    'glm-4.7-flash',
     'claude-haiku-4-5-20251001',
+    'qwen3.8-27b',
+    'deepseek-v4-flash',
+    'glm-4.7-flash',
   ],
   coder: [
     'claude-sonnet-5-5',
+    'claude-sonnet-5-5-medium',
+    'claude-sonnet-5-5-high',
+    'claude-sonnet-4-6',
     'gpt-5.6-terra',
     'gemini-4-carbon-medium',
+    'gemini-4-neon-medium',
     'grok-code-fast-1',
+    'claude-opus-5-5-low',
     'qwen3-coder-30b-a3b-instruct',
-    'claude-sonnet-5-5-medium',
-    'claude-sonnet-4-6',
     'qwen3.8-flash',
+    'deepseek-chat',
   ],
   planner: [
     'claude-opus-5-5',
+    'claude-opus-5-5-high',
+    'claude-opus-5-5-medium',
+    'claude-opus-4-6',
     'gemini-4-carbon-high',
     'gemini-4-neon-high',
     'gpt-6-luna',
     'claude-fable-5-2',
     'grok-4.5',
-    'claude-opus-5-5-medium',
-    'claude-opus-4-6',
     'gpt-5.6-luna',
   ],
   vision: [
     'claude-sonnet-5-5',
+    'claude-sonnet-5-5-medium',
     'gemini-4-carbon-medium',
     'gemini-4-neon-high',
     'gpt-5.6-terra',
+    'claude-opus-5-5',
     'qwen3.8-flash',
     'glm-4.6v-flash',
   ],
@@ -185,11 +196,17 @@ const VENDOR_MODELS_BY_PROVIDER = {
   ],
   antigravity: [
     'gemini-4-hydrogen-low',
+    'gemini-4-neon-low',
     'gemini-4-carbon-medium',
+    'gemini-4-neon-medium',
     'gemini-4-carbon-high',
     'gemini-4-neon-high',
+    'claude-sonnet-5-5-low',
     'claude-sonnet-5-5-medium',
+    'claude-sonnet-5-5-high',
+    'claude-opus-5-5-low',
     'claude-opus-5-5-medium',
+    'claude-opus-5-5-high',
   ],
   grok: [
     'grok-4-fast',
@@ -255,13 +272,62 @@ function estimateConversationTokens(messages) {
   return Math.ceil(chars / 4);
 }
 
-function hasLoopbackOrKey(baseURL, apiKey, provider) {
-  const b = String(baseURL || '').trim();
-  const k = String(apiKey || '').trim();
-  if (k) return true;
-  if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(b)) return true;
-  if (provider && String(provider.baseURL || '').trim() && String(provider.apiKey || '').trim()) return true;
-  return false;
+function readLocalFreeLlmToken(baseURL, store) {
+  if (store === false) return '';
+  if (!/(localhost|127\.0\.0\.1):(3001|31415)\b/i.test(String(baseURL || ''))) return '';
+  try {
+    const cfg = require('./freellm').loadConfig();
+    if (cfg && cfg.token && (/:31415\b/.test(String(baseURL || '')) || cfg.configured !== false)) {
+      return String(cfg.token).trim();
+    }
+  } catch (_) {}
+  return '';
+}
+
+function isCandidateUsable(cand, { healthyOauthIds = null, store = null } = {}) {
+  if (!cand || typeof cand !== 'object' || cand.enabled === false) return false;
+  const modelId = String(cand.model || '').trim();
+  if (!modelId || modelId.toLowerCase() === 'auto') return false;
+
+  if (cand.oauthProvider || cand.oauth || cand.accessToken) {
+    if (String(cand.accessToken || '').trim()) return true;
+    if (healthyOauthIds instanceof Set) {
+      return Boolean(cand.oauthProvider && healthyOauthIds.has(String(cand.oauthProvider)));
+    }
+    return Boolean(cand.oauthProvider);
+  }
+
+  const base = String(cand.baseURL || '').trim();
+  let key = String(cand.apiKey || '').trim();
+  if (!base) return cand._syntheticConnected === true;
+
+  if (/(localhost|127\.0\.0\.1):(3001|31415)\b/i.test(base)) {
+    if (!key) {
+      const tok = readLocalFreeLlmToken(base, store);
+      if (tok) {
+        cand.apiKey = tok;
+        key = tok;
+      }
+    }
+    return Boolean(key);
+  }
+
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(base)) {
+    return true;
+  }
+  return Boolean(key);
+}
+
+function candidateSourcePriority(cand) {
+  if (!cand || typeof cand !== 'object') return 3;
+  if (cand.oauthProvider || cand.oauth || cand.accessToken) return 0;
+  const base = String(cand.baseURL || '').trim();
+  const key = String(cand.apiKey || '').trim();
+  if (/(localhost|127\.0\.0\.1):(3001|31415)\b/i.test(base)) return 2;
+  if (/:11434\b/i.test(base) || cand._source === 'ollama') return 3;
+  if (key || cand._syntheticConnected === true) return 1;
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(base)) return 3;
+  return 1;
 }
 
 function classifyHeuristic({ messages = [], attachments = [], estimatedTokens } = {}) {
@@ -387,29 +453,7 @@ function resolveClassifierProvider({
   ollamaModels = null,
   store = null,
 } = {}) {
-  // 1. Configured `fast` role pool head model
-  if (orchestrator) {
-    const gw = orchestrator.pools && orchestrator.pools.gateway;
-    const gwUrl = (gw && gw.baseURL) || (provider && provider.baseURL) || '';
-    const gwKey = (gw && gw.apiKey) || (provider && provider.apiKey) || '';
-    const fastRows = orchRouter.resolve(orchestrator, 'fast', provider);
-    for (const row of fastRows) {
-      if (!row || !row.model) continue;
-      if (row.oauthProvider || row.accessToken || hasLoopbackOrKey(row.baseURL || gwUrl, row.apiKey || gwKey, provider)) {
-        return {
-          ...row,
-          baseURL: row.baseURL || gwUrl,
-          apiKey: row.apiKey || gwKey,
-        };
-      }
-    }
-    if (Array.isArray(orchestrator.providers)) {
-      const fastOrch = orchestrator.providers.find((p) => p && p.enabled !== false && p.model && (p.role === 'fast' || p.tier === 'small' || /haiku|flash|(?:^|[-_/.])mini(?=$|[-_/.])|fast|27b|nano/i.test(p.model)));
-      if (fastOrch) return fastOrch;
-    }
-  }
-
-  // 2. Signed-in subscription fast model
+  // 1. Signed-in Paid Subscription fast model FIRST
   let accounts = Array.isArray(oauthAccounts) ? oauthAccounts : null;
   if (!accounts && store !== false) {
     try {
@@ -419,7 +463,8 @@ function resolveClassifierProvider({
       accounts = [];
     }
   }
-  accounts = (accounts || []).filter((a) => a && !a.needsSignIn && !a.expired && a.id && a.provider);
+  const healthyAccts = (accounts || []).filter((a) => a && !a.needsSignIn && !a.expired && a.id && a.provider);
+  const healthyOauthIds = accounts !== null ? new Set(healthyAccts.map((a) => String(a.id))) : null;
   const fastOauthSpec = [
     { prov: 'claude', transport: 'anthropic', model: 'claude-haiku-5-5' },
     { prov: 'antigravity', transport: 'google', model: 'gemini-4-hydrogen-low' },
@@ -427,7 +472,7 @@ function resolveClassifierProvider({
     { prov: 'chatgpt', transport: 'codex', model: 'gpt-5.6-luna' },
   ];
   for (const spec of fastOauthSpec) {
-    const acct = accounts.find((a) => String(a.provider).toLowerCase() === spec.prov);
+    const acct = healthyAccts.find((a) => String(a.provider).toLowerCase() === spec.prov);
     if (acct) {
       return {
         id: 'classifier:oauth:' + acct.id,
@@ -438,6 +483,27 @@ function resolveClassifierProvider({
         account: acct.account || '',
         supportsTools: false,
       };
+    }
+  }
+
+  // 2. Credential-valid configured `fast` role pool / orchestrator row
+  if (orchestrator) {
+    if (Array.isArray(orchestrator.providers)) {
+      const fastOrch = orchestrator.providers.find((p) => (
+        p && p.enabled !== false && p.model
+        && (p.role === 'fast' || p.tier === 'small' || /haiku|flash|(?:^|[-_/.])mini(?=$|[-_/.])|fast|27b|nano/i.test(p.model))
+        && isCandidateUsable({ ...p }, { healthyOauthIds, store })
+      ));
+      if (fastOrch) return fastOrch;
+    }
+    const gw = orchestrator.pools && orchestrator.pools.gateway;
+    const gwUrl = (gw && gw.baseURL) || (provider && provider.baseURL) || '';
+    const gwKey = (gw && gw.apiKey) || (provider && provider.apiKey) || '';
+    const fastRows = orchRouter.resolve(orchestrator, 'fast', provider);
+    for (const row of fastRows) {
+      if (!row || !row.model) continue;
+      const cand = { ...row, baseURL: row.baseURL || gwUrl, apiKey: row.apiKey || gwKey };
+      if (isCandidateUsable(cand, { healthyOauthIds, store })) return cand;
     }
   }
 
@@ -466,8 +532,7 @@ function resolveClassifierProvider({
   }
 
   // Last resort: if active provider is usable and not sentinel 'auto', use it
-  if (provider && provider.model && String(provider.model).toLowerCase() !== 'auto'
-    && (provider.accessToken || provider.oauthProvider || hasLoopbackOrKey(provider.baseURL, provider.apiKey, provider))) {
+  if (provider && isCandidateUsable({ ...provider }, { healthyOauthIds, store })) {
     return { ...provider, supportsTools: false };
   }
 
@@ -700,45 +765,38 @@ function collectCandidateModels({
 } = {}) {
   const candidates = [];
   const seen = new Set();
-  const pushCandidate = (row, meta = {}) => {
-    if (!row || !row.model) return;
-    const modelId = String(row.model).trim();
-    if (!modelId || modelId.toLowerCase() === 'auto') return;
-    const cand = { ...row, model: modelId, ...meta };
-    const sig = candidateSig(cand);
-    if (seen.has(sig)) return;
-    seen.add(sig);
-    candidates.push(cand);
-  };
 
-  // 1. Orchestrator role pools (across all 5 core routing tiers)
-  if (orchestrator && orchRouter.poolsConfig(orchestrator)) {
-    const gw = orchestrator.pools && orchestrator.pools.gateway;
-    const gwUrl = (gw && gw.baseURL) || (provider && provider.baseURL) || '';
-    const gwKey = (gw && gw.apiKey) || (provider && provider.apiKey) || '';
-    if (gwUrl && hasLoopbackOrKey(gwUrl, gwKey, provider)) {
-      for (const r of ['fast', 'coder', 'planner', 'vision', 'longctx']) {
-        const rows = orchRouter.resolve(orchestrator, r, { ...(provider || {}), baseURL: gwUrl, apiKey: gwKey });
-        for (const row of rows) pushCandidate(row, { _source: 'pool' });
-      }
-    }
-  }
-
-  // 2. Orchestrator manual providers list (FreeLLMAPI / custom endpoints)
-  if (orchestrator && Array.isArray(orchestrator.providers)) {
-    for (const row of orchestrator.providers) {
-      if (!row || row.enabled === false) continue;
-      pushCandidate(row, { _source: 'orch' });
-    }
-  }
-
-  // 3. Healthy signed-in OAuth accounts (Claude, ChatGPT, Antigravity, Grok)
+  // Resolve healthy signed-in OAuth accounts first so expired/unauthenticated rows are filtered reliably.
   const poMod = providerOauth || (store !== false ? (() => { try { return require('./provider-oauth'); } catch (_) { return null; } })() : null);
   let accounts = Array.isArray(oauthAccounts) ? oauthAccounts : null;
   if (!accounts && poMod && typeof poMod.listAccounts === 'function') {
     try { accounts = poMod.listAccounts() || []; } catch (_) { accounts = []; }
   }
   const healthyAccts = (accounts || []).filter((a) => a && !a.needsSignIn && !a.expired && a.id && a.provider);
+  const healthyOauthIds = accounts !== null ? new Set(healthyAccts.map((a) => String(a.id))) : null;
+
+  const pushCandidate = (row, meta = {}) => {
+    if (!row || !row.model) return;
+    const cand = { ...row, model: String(row.model).trim(), ...meta };
+    if (!isCandidateUsable(cand, { healthyOauthIds, store })) return;
+    const sig = candidateSig(cand);
+    if (seen.has(sig)) return;
+    seen.add(sig);
+    candidates.push(cand);
+  };
+
+  const orchRows = (orchestrator && Array.isArray(orchestrator.providers))
+    ? orchestrator.providers.filter((row) => row && row.enabled !== false)
+    : [];
+
+  // 1a. Paid Subscription OAuth rows from orchestrator.providers first (preserving user role/tier/transport)
+  for (const row of orchRows) {
+    if (row.oauthProvider || row.oauth || row.accessToken) {
+      pushCandidate(row, { _source: 'oauth' });
+    }
+  }
+
+  // 1b. Healthy signed-in OAuth accounts (Claude, ChatGPT, Antigravity, Grok)
   const providerRegistry = poMod && poMod.PROVIDERS ? poMod.PROVIDERS : null;
   for (const acct of healthyAccts) {
     const provKey = String(acct.provider).toLowerCase();
@@ -763,12 +821,38 @@ function collectCandidateModels({
     }
   }
 
-  // 4. Active session provider (when concrete and not 'auto')
+  // 2. Credential-valid Frontier / Keyed API orchestrator rows (excluding local Ollama :11434)
+  for (const row of orchRows) {
+    if (row.oauthProvider || row.oauth || row.accessToken) continue;
+    if (/:11434\b/i.test(String(row.baseURL || ''))) continue;
+    pushCandidate(row, { _source: 'orch' });
+  }
+
+  // 3. Authenticated FreeLLMAPI / Orchestrator role pools (ONLY when gateway credentials are ready)
+  if (orchestrator && orchRouter.poolsConfig(orchestrator)) {
+    const gw = orchestrator.pools && orchestrator.pools.gateway;
+    const gwUrl = (gw && gw.baseURL) || (provider && provider.baseURL) || '';
+    let gwKey = String((gw && gw.apiKey) || (provider && provider.apiKey) || '').trim();
+    if (!gwKey && gwUrl) gwKey = readLocalFreeLlmToken(gwUrl, store);
+    if (orchRouter.isGatewayCredentialReady(gwUrl, gwKey)) {
+      for (const r of ['fast', 'coder', 'planner', 'vision', 'longctx']) {
+        const rows = orchRouter.resolve(orchestrator, r, { ...(provider || {}), baseURL: gwUrl, apiKey: gwKey });
+        for (const row of rows) pushCandidate(row, { _source: 'pool' });
+      }
+    }
+  }
+
+  // 4. Active session provider (when concrete, not 'auto', and usable)
   if (provider && provider.model && String(provider.model).trim().toLowerCase() !== 'auto') {
     pushCandidate(provider, { _source: 'provider' });
   }
 
-  // 5. Local Ollama models fallback
+  // 5. Local Ollama models fallback (lowest priority)
+  for (const row of orchRows) {
+    if (!row.oauthProvider && /:11434\b/i.test(String(row.baseURL || ''))) {
+      pushCandidate(row, { _source: 'ollama' });
+    }
+  }
   if (Array.isArray(ollamaModels)) {
     for (const m of ollamaModels) {
       const mid = typeof m === 'string' ? m : (m && (m.name || m.model || m.id));
@@ -814,6 +898,8 @@ function buildAvailableRoster({
     const seenIds = new Set();
     const out = [];
     const sorted = list.slice().sort((a, b) => {
+      const sp = candidateSourcePriority(a) - candidateSourcePriority(b);
+      if (sp !== 0) return sp;
       const al = a.model.toLowerCase();
       const bl = b.model.toLowerCase();
       const ar = orchRouter.normalizeRole(a.role) === roleName ? 0 : 1;
@@ -1222,7 +1308,7 @@ async function dispatchWithDeepSeekFlash({
   const roster = buildAvailableRoster({
     store: false,
     orchestrator: {
-      providers: connectedIds.map((id) => ({ model: id })),
+      providers: connectedIds.map((id) => ({ model: id, _syntheticConnected: true })),
       ...(rolePools ? { pools: { enabled: true, roles: rolePools } } : {}),
     },
   });
@@ -1320,6 +1406,7 @@ async function selectModelForTier({
   gate = null,
   store = null,
   roster = null,
+  busyModels = null,
 } = {}) {
   const cls = classification || { role: 'coder', tier: 'heavy', complexity: 3, reason: 'Default coder route', via: 'fallback' };
   const rawRole = orchRouter.normalizeRole(cls.role) || 'coder';
@@ -1345,29 +1432,44 @@ async function selectModelForTier({
 
   const prefList = TIER_PREFERENCES[lookupRole] || TIER_PREFERENCES.coder;
   const preferredModel = String(cls.model || '').trim().toLowerCase();
+  const busySet = busyModels instanceof Set
+    ? new Set([...busyModels].map((x) => String(x || '').trim().toLowerCase()).filter(Boolean))
+    : null;
   const rankOf = (c) => {
+    const srcPrio = candidateSourcePriority(c);
     const ml = String(c.model || '').toLowerCase();
-    if (preferredModel && (ml === preferredModel || ml.endsWith('/' + preferredModel))) return -10;
+    const busyPenalty = (busySet && busySet.has(ml))
+      || (gate && typeof gate.inflight === 'function' && gate.inflight(c) > 0)
+      ? 50
+      : 0;
+    if (preferredModel && (ml === preferredModel || ml.endsWith('/' + preferredModel))) {
+      return srcPrio * 10 + busyPenalty - 100;
+    }
     const prefIdx = prefList.findIndex((p) => ml === p.toLowerCase() || ml.endsWith('/' + p.toLowerCase()));
     const roleIdx = c.role ? ladder.indexOf(orchRouter.normalizeRole(c.role) || '') : -1;
 
-    // Explicit role assignment in pool/orchestrator takes top precedence, ordered by TIER_PREFERENCES within that bucket
-    if (roleIdx === 0) return (prefIdx >= 0 ? prefIdx : 50);
-    if (prefIdx >= 0 && roleIdx < 0) return 100 + prefIdx;
-    if (prefIdx >= 0) return 200 + prefIdx + roleIdx * 30;
-    if (roleIdx > 0) return 300 + roleIdx * 30;
-
-    for (let li = 0; li < ladder.length; li++) {
-      const rPrefs = TIER_PREFERENCES[ladder[li]] || [];
-      const idx = rPrefs.findIndex((p) => ml === p.toLowerCase());
-      if (idx >= 0) return 400 + li * 100 + idx;
+    let tierScore = 800;
+    if (roleIdx === 0) tierScore = (prefIdx >= 0 ? prefIdx : 50);
+    else if (prefIdx >= 0 && roleIdx < 0) tierScore = 100 + prefIdx;
+    else if (prefIdx >= 0) tierScore = 200 + prefIdx + roleIdx * 30;
+    else if (roleIdx > 0) tierScore = 300 + roleIdx * 30;
+    else {
+      let foundInLadder = false;
+      for (let li = 0; li < ladder.length; li++) {
+        const rPrefs = TIER_PREFERENCES[ladder[li]] || [];
+        const idx = rPrefs.findIndex((p) => ml === p.toLowerCase());
+        if (idx >= 0) {
+          tierScore = 400 + li * 100 + idx;
+          foundInLadder = true;
+          break;
+        }
+      }
+      if (!foundInLadder && c.tier) {
+        const wantTier = orchRouter.ROLE_TIER[lookupRole] || 'heavy';
+        if (c.tier === wantTier) tierScore = 700;
+      }
     }
-
-    if (c.tier) {
-      const wantTier = orchRouter.ROLE_TIER[lookupRole] || 'heavy';
-      if (c.tier === wantTier) return 700;
-    }
-    return 800;
+    return srcPrio * 1000 + tierScore + busyPenalty;
   };
 
   const ranked = pool.slice().sort((a, b) => rankOf(a) - rankOf(b));
@@ -1406,7 +1508,7 @@ async function selectModelForTier({
     }
   }
 
-  if (!hydratedList.length && provider) {
+  if (!hydratedList.length && provider && isCandidateUsable({ ...provider }, { store })) {
     const fallback = { ...provider };
     if (!fallback.model || String(fallback.model).toLowerCase() === 'auto') fallback.model = cls.model || prefList[0] || 'llama3.1';
     const tag = inferTierAndRole(fallback);
@@ -1561,6 +1663,8 @@ module.exports = {
   CLASSIFIER_SYSTEM_PROMPT,
   extractLatestUserPrompt,
   estimateConversationTokens,
+  isCandidateUsable,
+  candidateSourcePriority,
   resolveAutoRouterConfig,
   resolveAutoSwitchConfig: resolveAutoRouterConfig,
   buildAvailableRoster,
