@@ -1,0 +1,285 @@
+'use strict';
+/**
+ * Live UI DOM & High-DPI Screenshot Verification Audit for Packaged Akron Code v1.6.1
+ * Tests against the built app.asar in release/mac-arm64/Akron Code.app:
+ *  - Mode presets (Auto -> Lead+Builder -> Full AI Team -> Single Model) sync bottom pill immediately
+ *  - Zero vertical clipping of WelcomeQuickStartBar over .cwdbar even with multi-line input
+ *  - Model Picker has zero horizontal overflow (scrollWidth <= clientWidth)
+ *  - Collapsed Left Sidebar (<---) shrinks cleanly to 52px and hides labels/timestamps/menu icons
+ *  - Captures crisp updated PNG screenshots to docs/screenshots/
+ */
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const http = require('http');
+const { spawn } = require('child_process');
+
+const REPO = path.resolve(__dirname, '..');
+const PACKAGED_RESOURCES = path.join(REPO, 'release/mac-arm64/Akron Code.app/Contents/Resources');
+const APP_ASAR = path.join(PACKAGED_RESOURCES, 'app.asar');
+
+if (process.argv.includes('--worker')) {
+  const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+  const tmpUserData = process.env.AKRON_AUDIT_WORKDIR || fs.mkdtempSync(path.join(os.tmpdir(), 'akron-ui-v161-'));
+  app.setPath('userData', path.join(tmpUserData, 'userData'));
+  if (dialog) dialog.showErrorBox = () => {};
+  app.on('window-all-closed', (e) => e.preventDefault());
+
+  const srvPort = Number(process.env.AKRON_AUDIT_PORT);
+  const asarReq = (rel) => require(path.join(APP_ASAR, rel));
+  const store = asarReq('electron/store.js');
+
+  function safe(ch, fn) {
+    try { ipcMain.removeHandler(ch); } catch (_) {}
+    ipcMain.handle(ch, fn);
+  }
+
+  function installHandlers() {
+    safe('autobot:getVersion', () => ({ version: '1.6.1', app: '1.6.1', platform: process.platform, arch: process.arch }));
+    safe('autobot:getSettings', () => store.getSettings());
+    safe('autobot:setSettings', (_e, patch) => store.setSettings(patch || {}));
+    safe('autobot:getOrchestrator', () => ({
+      enabled: false,
+      activeIndex: 0,
+      providers: [
+        { model: 'claude-fable-5-2', oauthProvider: 'claude:main', name: 'Claude · claude-fable-5-2', enabled: true, role: 'Planner' },
+        { model: 'gemini-4-carbon-high', oauthProvider: 'antigravity:saimon@example.com', name: 'Google Antigravity · long-account-email@gmail.com · Gemini 4 Carbon High', enabled: true, role: 'Google Antigravity · 6969loavbal-gmail-com · Reasoning' },
+        { model: 'claude-sonnet-5-5', oauthProvider: 'claude:main', name: 'Claude · claude-sonnet-5-5', enabled: true, role: 'Coder' },
+      ],
+    }));
+    safe('autobot:setOrchestrator', (_e, patch) => store.setOrchestrator(patch || {}));
+    safe('autobot:getFeatures', () => store.getFeatures());
+    safe('autobot:setFeatures', (_e, patch) => store.setFeatures(patch || {}));
+    safe('autobot:getMemory', () => ({ entries: [] }));
+    safe('autobot:getSkills', () => []);
+    safe('autobot:listNotebooks', () => []);
+    safe('autobot:mcpConfig', () => ({ status: [] }));
+    safe('autobot:listSlashActions', () => []);
+    safe('autobot:listAgentDefs', () => []);
+    safe('autobot:listOutputStyles', () => ({ styles: [], defaultStyleId: 'default' }));
+    safe('autobot:envGetState', () => ({ active: { kind: 'local', id: null, label: 'This Computer', cwd: REPO }, sshProfiles: [], remoteProfiles: [], sshConfigHosts: [], hostServer: { enabled: false, running: false } }));
+    safe('autobot:gdriveStatus', () => ({ connected: false, mode: null, detectedLocalFolders: [] }));
+    safe('autobot:providerStatus', () => ({ ok: true, status: { providers: [{ id: 'antigravity', label: 'Google Antigravity', transport: 'google', accounts: [{ id: 'antigravity:test', account: 'test', label: '6969loavbal@gmail.com', plan: 'Pro', hasToken: true }], models: [{ id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon High' }] }] } }));
+    safe('autobot:providerModels', () => ({ ok: true, models: [{ id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon High', windowLabel: '1M', contextWindow: 1048576 }] }));
+    safe('autobot:ollamaModels', () => ({ ok: false, models: [] }));
+    safe('autobot:probeProviders', () => ({}));
+    safe('autobot:orchPaidProvidersGet', () => ({ ok: true, providers: [] }));
+    safe('autobot:freellmCatalog', () => ({ ok: true, platforms: [], totals: { totalModels: 0, totalPlatforms: 0 } }));
+    safe('autobot:freellmDetect', () => ({ ok: false }));
+    safe('autobot:autoRouterGet', () => ({ ok: true, hasKey: false }));
+    safe('autobot:mediaStudioList', () => ({ ok: true, imageModels: [], videoModels: [], library: [] }));
+    safe('autobot:mediaKeysGet', () => ({ ok: true, providers: [] }));
+    safe('autobot:customToolList', () => []);
+    safe('autobot:reaStatus', () => ({ available: false, connected: false }));
+    safe('autobot:extBridgeStatus', () => ({ running: true, connected: false, tabs: [] }));
+    safe('autobot:dbMigrate', () => ({ ok: true }));
+    safe('autobot:dbUpsertConv', () => ({ ok: true }));
+    safe('autobot:complianceGet', () => null);
+    safe('autobot:scheduledTaskList', () => []);
+    safe('autobot:listScheduledTasks', () => []);
+    safe('autobot:customToolRun', () => ({ ok: true }));
+    safe('autobot:proactiveState', () => ({ quietHours: { enabled: false, start: '22:00', end: '08:00' } }));
+    safe('autobot:pushGetConfig', () => ({ enabled: false }));
+    safe('autobot:remoteRelayStatus', () => ({ connected: false, relayUrl: '' }));
+    safe('autobot:getDefaultCwd', () => REPO);
+    safe('autobot:getWorkspace', () => REPO);
+    safe('autobot:openExternal', () => ({ ok: true }));
+    safe('autobot:providerReconnectState', () => ({ waiting: false }));
+    safe('autobot:runtimes', () => ({}));
+    safe('autobot:debugLogGet', () => ({ ok: true, config: {}, entries: [], logPath: '' }));
+    safe('autobot:debugLogSetConfig', () => ({ ok: true, config: {} }));
+    safe('autobot:debugLogClear', () => ({ ok: true }));
+  }
+
+  app.whenReady().then(async () => {
+    const win = new BrowserWindow({
+      width: 1360,
+      height: 860,
+      show: false,
+      backgroundColor: '#070b0a',
+      webPreferences: {
+        preload: path.join(APP_ASAR, 'electron', 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+      },
+    });
+    installHandlers();
+    const results = { checks: [], consoleErrors: [], passed: 0, failed: 0 };
+    const rec = (name, ok, detail = '') => {
+      results.checks.push({ name, ok: !!ok, detail: String(detail || '').slice(0, 220) });
+      if (ok) results.passed++; else results.failed++;
+    };
+    win.webContents.on('console-message', (_e, level, msg) => {
+      if (level >= 3) results.consoleErrors.push(msg);
+    });
+
+    await win.loadFile(path.join(APP_ASAR, 'dist', 'index.html'));
+    // Seed sample conversations in two workspace groups and dismiss tutorial overlay
+    await win.webContents.executeJavaScript(`(() => {
+      const now = Date.now();
+      localStorage.setItem('autobot:tutorialSeenV1', 'true');
+      localStorage.setItem('autobot:sidebarCollapsed', 'false');
+      localStorage.setItem('autobot:convs', JSON.stringify([
+        { id: 'c1', title: 'Audit UI & Sidebar', cwd: '${REPO.replace(/'/g, "\\'")}', ts: now - 120000, updatedAt: now - 120000, messages: [{ id: 'm1', role: 'user', content: 'Review the UI layout' }] },
+        { id: 'c2', title: 'Fix Browser Bridge :8766', cwd: '${REPO.replace(/'/g, "\\'")}', ts: now - 3600000, updatedAt: now - 3600000, messages: [] }
+      ]));
+      localStorage.setItem('autobot:activeId', 'null');
+    })()`);
+    await win.reload();
+    await new Promise((r) => setTimeout(r, 900));
+
+    // Close auto-opened tutorial if open
+    await win.webContents.executeJavaScript(`(() => {
+      const x = document.querySelector('.tutorial-close');
+      if (x) x.click();
+    })()`);
+    await new Promise((r) => setTimeout(r, 250));
+
+    // 1. Test Preset Sync + No Welcome Overlap even with 6 lines in composer
+    const presetCheck = await win.webContents.executeJavaScript(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const ta = document.querySelector('.composer textarea');
+      if (ta) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(ta, 'Line 1\\nLine 2\\nLine 3\\nLine 4\\nLine 5\\nLine 6');
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      await sleep(120);
+      const pill = () => (document.querySelector('.model-pill')?.textContent || '').trim();
+      const swarmTxt = () => (document.querySelector('.swarm-pill')?.textContent || '').trim();
+
+      document.querySelector('[data-testid="wqs-preset-orchestrator"]')?.click();
+      await sleep(120);
+      const orchPill = pill();
+      const orchSwarm = swarmTxt();
+
+      document.querySelector('[data-testid="wqs-preset-swarm"]')?.click();
+      await sleep(120);
+      const swarmPill = pill();
+      const swarmBadge = swarmTxt();
+
+      document.querySelector('[data-testid="wqs-preset-direct"]')?.click();
+      await sleep(120);
+      const directPill = pill();
+
+      document.querySelector('[data-testid="wqs-preset-auto"]')?.click();
+      await sleep(150);
+      const autoPill = pill();
+
+      const wqs = document.querySelector('[data-testid="welcome-quickstart"]')?.getBoundingClientRect();
+      const cwdBar = document.querySelector('.cwdbar')?.getBoundingClientRect();
+      return {
+        orchPill, orchSwarm, swarmPill, swarmBadge, directPill, autoPill,
+        wqsBottom: wqs ? Math.round(wqs.bottom) : 0,
+        cwdTop: cwdBar ? Math.round(cwdBar.top) : 0,
+      };
+    })()`);
+    rec('Preset Orchestrator updates bottom pill', /^Orch\b/.test(presetCheck.orchPill), JSON.stringify(presetCheck));
+    rec('Preset Swarm turns Swarm ON', /ON/i.test(presetCheck.swarmBadge), presetCheck.swarmBadge);
+    rec('Preset Direct clears Orch/Auto prefix', !/^(Orch|Auto)\b/.test(presetCheck.directPill), presetCheck.directPill);
+    rec('Preset Auto updates bottom pill to Auto', /^Auto\b/.test(presetCheck.autoPill), presetCheck.autoPill);
+    rec('WelcomeQuickStartBar does not overlap .cwdbar', presetCheck.wqsBottom > 0 && presetCheck.wqsBottom <= presetCheck.cwdTop, `${presetCheck.wqsBottom} <= ${presetCheck.cwdTop}`);
+
+    // Capture crisp Welcome + Preset screenshot
+    const shotAgent = await win.webContents.capturePage();
+    fs.writeFileSync(path.join(REPO, 'docs/screenshots/agent-dark.png'), shotAgent.toPNG());
+
+    // 2. Open Model Picker and verify zero horizontal overflow + capture screenshot
+    const pickerMetrics = await win.webContents.executeJavaScript(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.querySelector('.model-pill')?.click();
+      await sleep(150);
+      document.querySelector('.orch-picker-toggle')?.click();
+      await sleep(150);
+      const menu = document.querySelector('.model-menu');
+      const body = document.querySelector('.orch-picker-body');
+      return {
+        menuOpen: !!menu,
+        menuScrollW: menu ? menu.scrollWidth : 0,
+        menuClientW: menu ? menu.clientWidth : 0,
+        bodyScrollW: body ? body.scrollWidth : 0,
+        bodyClientW: body ? body.clientWidth : 0,
+      };
+    })()`);
+    rec('Model Picker opens cleanly with zero horizontal overflow', pickerMetrics.menuOpen && pickerMetrics.menuScrollW <= pickerMetrics.menuClientW + 1 && pickerMetrics.bodyScrollW <= pickerMetrics.bodyClientW + 1, JSON.stringify(pickerMetrics));
+
+    const shotPicker = await win.webContents.capturePage();
+    fs.writeFileSync(path.join(REPO, 'docs/screenshots/model-picker-3modes.png'), shotPicker.toPNG());
+
+    // Close picker
+    await win.webContents.executeJavaScript(`(() => { document.querySelector('.model-pill')?.click(); })()`);
+    await new Promise((r) => setTimeout(r, 120));
+
+    // 3. Collapse Left Sidebar (<---) and verify 52px clean icon-only conversation list
+    const collapsedMetrics = await win.webContents.executeJavaScript(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const collapseBtn = document.querySelector('.sidebar-actions button[title*="Collapse"], .sidebar-actions button:last-child');
+      collapseBtn?.click();
+      await sleep(220);
+      const aside = document.querySelector('aside.sidebar');
+      const head = document.querySelector('.proj-group-head');
+      const rel = document.querySelector('.conv-rel-time');
+      const conv = document.querySelector('.proj-conv-row');
+      return {
+        hasCollapsedClass: !!aside && aside.classList.contains('collapsed'),
+        width: aside ? Math.round(aside.getBoundingClientRect().width) : 0,
+        groupHeadVisible: !!head && getComputedStyle(head).display !== 'none',
+        relTimeVisible: !!rel && getComputedStyle(rel).display !== 'none',
+        convCount: document.querySelectorAll('.proj-conv-row').length,
+        convWidth: conv ? Math.round(conv.getBoundingClientRect().width) : 0,
+      };
+    })()`);
+    rec('Collapsed sidebar is 52px with hidden group headers & timestamps', collapsedMetrics.hasCollapsedClass && collapsedMetrics.width <= 54 && !collapsedMetrics.groupHeadVisible && !collapsedMetrics.relTimeVisible && collapsedMetrics.convCount >= 2, JSON.stringify(collapsedMetrics));
+    rec('Zero uncaught console errors', results.consoleErrors.length === 0, results.consoleErrors.join('; '));
+
+    await fetch(`http://127.0.0.1:${srvPort}/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(results),
+    });
+    fs.rmSync(tmpUserData, { recursive: true, force: true });
+    app.exit(results.failed === 0 ? 0 : 1);
+  });
+} else {
+  (async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'akron-ui-v161-'));
+    let report = null;
+    const srv = http.createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/report') {
+        let body = '';
+        req.on('data', (c) => { body += c; });
+        req.on('end', () => {
+          report = JSON.parse(body);
+          res.writeHead(200);
+          res.end('ok');
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    const electronBin = path.join(REPO, 'node_modules/.bin/electron');
+    const child = spawn(electronBin, [__filename, '--worker'], {
+      env: { ...process.env, AKRON_NO_DIALOG: '1', AKRON_AUDIT_PORT: String(port), AKRON_AUDIT_WORKDIR: workDir },
+      stdio: 'inherit',
+    });
+    const code = await new Promise((resolve) => child.on('exit', resolve));
+    srv.close();
+    fs.rmSync(workDir, { recursive: true, force: true });
+    console.log('\n=== v1.6.1 UI DOM & SCREENSHOT AUDIT ===');
+    if (report) {
+      for (const c of report.checks) {
+        console.log(` ${c.ok ? '✓' : '✗'} ${c.name} — ${c.detail}`);
+      }
+      console.log(`Passed: ${report.passed}/${report.checks.length}, Failed: ${report.failed}`);
+    } else {
+      console.error('No audit report received! Exit code:', code);
+      process.exit(1);
+    }
+    process.exit(report.failed === 0 ? 0 : 1);
+  })();
+}

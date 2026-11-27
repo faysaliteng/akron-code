@@ -177,7 +177,7 @@ export default function App() {
   const [orchestrator, setOrchestrator] = useState(() => loadJSON('autobot:orchestrator', { enabled: false, providers: [], activeIndex: -1 }));
   const orchRef = useRef(orchestrator);
   orchRef.current = orchestrator;
-  const saveOrchestrator = useCallback((nextOrFn) => {
+  const saveOrchestrator = useCallback((nextOrFn, opts = {}) => {
     const prev = orchRef.current;
     const next = typeof nextOrFn === 'function' ? nextOrFn(prev) : nextOrFn;
     if (!next || typeof next !== 'object') return;
@@ -185,7 +185,7 @@ export default function App() {
     setOrchestrator(next);
     saveJSON('autobot:orchestrator', next);
     try { if (window.autobot && window.autobot.setOrchestrator) window.autobot.setOrchestrator(next); } catch (_) {}
-    if (Boolean(next.enabled) !== Boolean(prev && prev.enabled)) {
+    if (!(opts && opts.skipProviderSync) && Boolean(next.enabled) !== Boolean(prev && prev.enabled)) {
       setProvider((p) => syncProviderForOrchestratorToggle(p, next, prev));
     }
   }, []);
@@ -2493,12 +2493,23 @@ export default function App() {
     setPermissions, setPlanMode, setArtifactsExplicit, setNotice, setFeatures: saveFeat, setOrchestrator: saveOrchestrator,
     openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
   });
+  const handleApplyPreset = useCallback((pid) => {
+    const r = applyBeginnerPreset(pid, { provider, orchestrator, reasoningLevel, permissions });
+    setProvider(r.provider);
+    saveJSON('autobot:provider', { ...r.provider, _updatedAt: Date.now() });
+    try { window.autobot.setSettings?.({ provider: { ...r.provider, _updatedAt: Date.now() } }); } catch (_) {}
+    saveOrchestrator(r.orchestrator, { skipProviderSync: true });
+    setSwarmEnabled(r.swarmEnabled);
+    setReasoningLevel(r.reasoningLevel);
+    setPermissions(r.permissions);
+    if (r.notice) setNotice(r.notice);
+  }, [provider, orchestrator, reasoningLevel, permissions, saveOrchestrator]);
   const welcomeExtraEl = (
     <WelcomeQuickStartBar
       provider={provider}
       orchestrator={orchestrator}
       swarmEnabled={swarmEnabled}
-      onApplyPreset={(pid) => { const r = applyBeginnerPreset(pid, { provider, orchestrator, reasoningLevel, permissions }); setProvider(r.provider); saveOrchestrator(r.orchestrator); setSwarmEnabled(r.swarmEnabled); setReasoningLevel(r.reasoningLevel); setPermissions(r.permissions); if (r.notice) setNotice(r.notice); }}
+      onApplyPreset={handleApplyPreset}
       onOpenTutorial={openTutorial}
       onFillPrompt={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }}
     />
@@ -2769,6 +2780,7 @@ export default function App() {
               projects={projects}
               activeId={activeId}
               panel={panel}
+              collapsed={sidebarCollapsed}
               streaming={anyStreaming}
               streamingConvId={streamingConvId}
               streamingConvIds={streamingConvIds}
@@ -3075,7 +3087,7 @@ export default function App() {
           cwd={cwd}
           mcpServers={mcpServers}
           providerKeys={providerKeys}
-          onApplyPreset={(pid) => { const r = applyBeginnerPreset(pid, { provider, orchestrator, reasoningLevel, permissions }); setProvider(r.provider); saveOrchestrator(r.orchestrator); setSwarmEnabled(r.swarmEnabled); setReasoningLevel(r.reasoningLevel); setPermissions(r.permissions); if (r.notice) setNotice(r.notice); }}
+          onApplyPreset={handleApplyPreset}
           onClose={closeTutorial}
           onOpenSettings={(sec) => openSettingsAt(sec || 'providers')}
           onNewChat={newChat}

@@ -121,12 +121,13 @@ export const TOOL_DEFS = [
   {
     name: "open_tab",
     description:
-      "Open a URL in a new tab and make it the target of your next actions. The tab opens in the background when the user is looking at a different tab.",
+      "Open a URL in a new tab and make it the target of your next actions. Defaults to opening in the background when driven remotely unless active/foreground is true.",
     parameters: {
       type: "object",
       properties: {
         url: { type: "string" },
-        active: { type: "boolean", description: "Bring the new tab to the front (default true). Ignored while the user is on another tab." },
+        active: { type: "boolean", description: "Bring the new tab to the front." },
+        foreground: { type: "boolean", description: "Alias of active." },
       },
       required: ["url"],
     },
@@ -145,6 +146,15 @@ export const TOOL_DEFS = [
       type: "object",
       properties: { tabId: { type: "number" } },
       required: ["tabId"],
+    },
+  },
+  {
+    name: "close_tab",
+    description: "Close an open browser tab by tabId (or the current target tab if omitted).",
+    parameters: {
+      type: "object",
+      properties: { tabId: { type: "number" } },
+      required: [],
     },
   },
   {
@@ -657,6 +667,7 @@ const PAGE_TOOLS = new Set([
   "file_upload",
   "gif_creator",
   "execute_javascript",
+  "javascript_tool",
   "read_clipboard",
   "write_clipboard",
 ]);
@@ -750,6 +761,11 @@ async function taskView(tabId) {
 
 /** Captures a tab that is not on screen, where captureVisibleTab would show another tab. */
 async function captureBackgroundTab(tabId) {
+  const tab = await getTab(tabId);
+  if (!tab) throw new Error("Tab not found.");
+  if (RESTRICTED.test(tab.url || "")) {
+    throw new Error(`Cannot capture restricted browser page (tab ${tabId}: ${tab.url}).`);
+  }
   const wasAttached = cdp.isAttached(tabId);
   await cdp.attach(tabId);
   let timer = null;
@@ -970,16 +986,20 @@ async function runTool(name, args, ctx) {
       const tab = await getTab(tabId);
       return ok(`Navigated to ${tab?.url || url}\nTitle: ${tab?.title || ""}`);
     }
-    case "open_tab": {
+    case "open_tab":
+    case "tabs_create": {
       const url = String(args?.url || "").trim();
       if (!/^https?:\/\//i.test(url)) {
         throw new Error("Only http(s) URLs are allowed.");
       }
       assertUrlAllowed(url, ctx);
-      // A task the user is not watching must not pull the screen away from the
-      // tab they are on (or from another task's tab).
+      // Remote/background runs default to opening tabs in the background so they
+      // do not pull focus from the user's active tab unless active/foreground is true.
       const view = await taskView(tabId);
-      const createOptions = { url, active: view.visible && args?.active !== false };
+      const wantActive = ctx?.fromBridge
+        ? (args?.active === true || args?.foreground === true)
+        : (view.visible && args?.active !== false && args?.foreground !== false);
+      const createOptions = { url, active: wantActive };
       if (Number.isInteger(ctx?.windowId)) createOptions.windowId = ctx.windowId;
       const tab = await chrome.tabs.create(createOptions);
       if (ctx?.addToGroup) {
@@ -994,7 +1014,7 @@ async function runTool(name, args, ctx) {
       const tabs = isTask(ctx)
         ? (await taskTabs({ tabId, groupId: ctx.groupId, taskTabIds: ctx.taskTabIds })).tabs
         : await chrome.tabs.query(
-            Number.isInteger(ctx?.windowId) ? { windowId: ctx.windowId } : { currentWindow: true }
+            Number.isInteger(ctx?.windowId) ? { windowId: ctx.windowId } : {}
           );
       const lines = tabs
         .filter((t) => !RESTRICTED.test(t.url || ""))
@@ -1006,7 +1026,8 @@ async function runTool(name, args, ctx) {
         );
       return ok(lines.join("\n") || "(no tabs)");
     }
-    case "switch_tab": {
+    case "switch_tab":
+    case "tabs_select": {
       const id = Number(args?.tabId);
       if (!Number.isInteger(id)) throw new Error("tabId must be an integer.");
       if (isTask(ctx)) {
@@ -1020,7 +1041,7 @@ async function runTool(name, args, ctx) {
       // Only a task the user is watching brings the tab to the front; a
       // background task just retargets its own actions.
       const view = await taskView(tabId);
-      const tab = view.visible
+      const tab = (view.visible || args?.active === true)
         ? await chrome.tabs.update(id, { active: true })
         : await chrome.tabs.get(id);
       if (
@@ -1031,7 +1052,7 @@ async function runTool(name, args, ctx) {
           await ctx.addToGroup(id);
         } catch {}
       }
-      if (view.focused && tab?.windowId != null) {
+      if ((view.focused || args?.active === true) && tab?.windowId != null) {
         try {
           await chrome.windows.update(tab.windowId, { focused: true });
         } catch {}
@@ -1039,6 +1060,21 @@ async function runTool(name, args, ctx) {
       return ok(`Switched to tab ${id}: ${tab?.title || ""} — ${tab?.url || ""}`, {
         tabId: id,
       });
+    }
+    case "close_tab":
+    case "tabs_close": {
+      const rawId = args?.tabId != null ? Number(args.tabId) : tabId;
+      const id = Number.isInteger(rawId) ? rawId : Math.trunc(Number(rawId));
+      if (!Number.isInteger(id) || id <= 0) throw new Error("tabId must be a positive integer.");
+      if (isTask(ctx)) {
+        const mine = await taskTabs({ tabId, groupId: ctx.groupId, taskTabIds: ctx.taskTabIds });
+        if (mine.tabs.length && !mine.tabs.some((t) => t.id === id)) {
+          throw new Error(`Tab ${id} is not one of your task tabs.`);
+        }
+      }
+      await cdp.detach(id).catch(() => {});
+      await chrome.tabs.remove(id);
+      return ok(`Closed tab ${id}.`, { closedTabId: id });
     }
     case "go_back": {
       await chrome.tabs.goBack(tabId).catch(() => {});
@@ -1055,6 +1091,9 @@ async function runTool(name, args, ctx) {
     case "screenshot": {
       const tab = await getTab(tabId);
       if (!tab) throw new Error("Tab not found.");
+      if (RESTRICTED.test(tab.url || "")) {
+        throw new Error(`Cannot capture restricted browser page (tab ${tabId}: ${tab.url}). Target an http(s) tab with tabId.`);
+      }
       if (args?.ref || args?.fullPage) {
         await cdp.attach(tabId);
         try {
@@ -1066,18 +1105,25 @@ async function runTool(name, args, ctx) {
             args?.ref
               ? `Captured element ${args.ref}.`
               : "Captured the full page.",
-            { image }
+            { image, tabId }
           );
         } finally {
           await cdp.detach(tabId).catch(() => {});
         }
       }
-      // captureVisibleTab shows whatever tab is on screen. When this task's tab
-      // is in the background that would be someone else's page.
-      const dataUrl = tab.active === false
-        ? await captureBackgroundTab(tabId)
-        : await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
-      return ok("Screenshot captured and shown to the user.", { image: dataUrl });
+      // captureVisibleTab shows whatever tab is on screen or fails when another
+      // extension window/panel has focus; fall back to CDP background capture.
+      let dataUrl;
+      if (tab.active === false) {
+        dataUrl = await captureBackgroundTab(tabId);
+      } else {
+        try {
+          dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+        } catch {
+          dataUrl = await captureBackgroundTab(tabId);
+        }
+      }
+      return ok("Screenshot captured and shown to the user.", { image: dataUrl, tabId });
     }
     case "wait": {
       const ms = Math.max(0, Math.min(15000, Number(args?.ms) || 1000));
@@ -1461,12 +1507,34 @@ async function runTool(name, args, ctx) {
       }
       throw new Error(`Unknown gif_creator action: ${action}`);
     }
-    case "execute_javascript": {
-      const code = String(args?.code || "").trim();
-      if (!code) throw new Error("code must be a non-empty JavaScript string.");
-      const value = await cdp.evaluateJS(tabId, code, {
-        awaitPromise: args?.await_promise !== false,
-      });
+    case "execute_javascript":
+    case "javascript_tool": {
+      const code = String(args?.code ?? args?.expression ?? args?.script ?? "").trim();
+      if (!code) throw new Error("code or expression must be a non-empty JavaScript string.");
+      const tab = await getTab(tabId);
+      if (!tab) throw new Error("Tab not found.");
+      if (RESTRICTED.test(tab.url || "")) {
+        throw new Error(`Cannot run JavaScript on restricted page (tab ${tabId}: ${tab.url}). Target an http(s) tab with tabId.`);
+      }
+      let value;
+      try {
+        value = await cdp.evaluateJS(tabId, code, {
+          awaitPromise: args?.await_promise !== false,
+        });
+      } catch (cdpErr) {
+        // Fallback for background tabs or when another debugger holds the tab.
+        const injected = await chrome.scripting.executeScript({
+          target: { tabId, allFrames: false },
+          world: "MAIN",
+          func: async (src) => {
+            const res = (0, eval)(src);
+            return res && typeof res.then === "function" ? await res : res;
+          },
+          args: [code],
+        }).catch(() => null);
+        if (!injected || !injected.length) throw cdpErr;
+        value = injected[0].result;
+      }
       let text;
       try {
         text = value === undefined ? "undefined" : JSON.stringify(value);

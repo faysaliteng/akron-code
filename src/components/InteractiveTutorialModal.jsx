@@ -75,7 +75,7 @@ export function WelcomeQuickStartBar({ provider, orchestrator, swarmEnabled, onA
       <div className="welcome-quickstart-collapsed">
         <button type="button" className="wqs-reopen-btn" onClick={() => onOpenTutorial && onOpenTutorial('tour')}>
           <Icon name="GraduationCap" size={13} />
-          <span>Interactive Tutorial &amp; Mode Guide</span>
+          <span>Interactive Tutorial &amp; Guide</span>
         </button>
       </div>
     );
@@ -84,20 +84,17 @@ export function WelcomeQuickStartBar({ provider, orchestrator, swarmEnabled, onA
   return (
     <div className="welcome-quickstart" data-testid="welcome-quickstart">
       <div className="wqs-top">
-        <div className="wqs-status">
-          <span className="wqs-pill"><Icon name={active.icon} size={13} /> Current Mode: <strong>{active.shortName}</strong></span>
-          <span className="wqs-tip">{active.tip}</span>
-        </div>
+        <span className="wqs-tip">{active.tip}</span>
         <div className="wqs-top-actions">
-          <button type="button" className="wqs-btn primary" data-testid="open-tutorial-btn" onClick={() => onOpenTutorial && onOpenTutorial('tour')}>
-            <Icon name="GraduationCap" size={14} />
-            <span>Interactive Tutorial</span>
+          <button type="button" className="wqs-btn" data-testid="open-tutorial-btn" onClick={() => onOpenTutorial && onOpenTutorial('tour')}>
+            <Icon name="GraduationCap" size={13} />
+            <span>Tour</span>
           </button>
           <button type="button" className="wqs-btn" data-testid="open-guide-btn" onClick={() => onOpenTutorial && onOpenTutorial('guide')}>
-            <Icon name="Book" size={14} />
-            <span>How-To Guide</span>
+            <Icon name="Book" size={13} />
+            <span>Guide</span>
           </button>
-          <button type="button" className="icon-btn wqs-hide" title="Hide quick setup card" aria-label="Hide quick setup card" onClick={() => setDismissed(true)}>
+          <button type="button" className="icon-btn wqs-hide" title="Hide quick setup bar" aria-label="Hide quick setup bar" onClick={() => setDismissed(true)}>
             <Icon name="X" size={12} />
           </button>
         </div>
@@ -113,20 +110,17 @@ export function WelcomeQuickStartBar({ provider, orchestrator, swarmEnabled, onA
               data-testid={'wqs-preset-' + p.id}
               className={'wqs-card' + (isCurrent ? ' on' : '')}
               onClick={() => onApplyPreset && onApplyPreset(p.id)}
+              title={p.bestFor}
             >
-              <div className="wqs-card-head">
-                <span className="wqs-card-ico"><Icon name={p.icon} size={14} /></span>
-                <span className="wqs-card-title">{p.shortName}</span>
-                <span className="wqs-card-badge">{isCurrent ? 'Active' : p.badge}</span>
-              </div>
-              <div className="wqs-card-desc">{p.bestFor}</div>
+              <span className="wqs-card-ico"><Icon name={p.icon} size={13} /></span>
+              <span className="wqs-card-title">{p.shortName}</span>
             </button>
           );
         })}
       </div>
 
       <div className="wqs-starters">
-        <span className="wqs-starters-label">Try one click:</span>
+        <span className="wqs-starters-label">Try:</span>
         {STARTER_MISSIONS.map((m) => (
           <button
             key={m.id}
@@ -138,7 +132,7 @@ export function WelcomeQuickStartBar({ provider, orchestrator, swarmEnabled, onA
               onFillPrompt && onFillPrompt(m.prompt);
             }}
           >
-            <Icon name={m.icon} size={12} />
+            <Icon name={m.icon} size={11} />
             <span>{m.title}</span>
           </button>
         ))}

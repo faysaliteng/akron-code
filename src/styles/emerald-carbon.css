@@ -79,6 +79,13 @@
 
 /* Hierarchical Projects & Conversations Sidebar */
 .proj-tree { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.sidebar.collapsed .proj-tree { gap: 2px; margin-bottom: 4px; align-items: center; }
+.sidebar.collapsed .proj-group { border: none; background: transparent; padding: 0; border-radius: 0; }
+.sidebar.collapsed .proj-group-head,
+.sidebar.collapsed .conv-rel-time,
+.sidebar.collapsed .conv-menu-trigger,
+.sidebar.collapsed .conv-pin,
+.sidebar.collapsed .proj-conv-row .btn-mini { display: none; }
 .proj-group {
   border: 1px solid var(--border);
   border-radius: 10px;

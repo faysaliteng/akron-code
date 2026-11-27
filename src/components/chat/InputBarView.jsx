@@ -1507,17 +1507,19 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                         Configure…
                       </button>
                     </div>
-                    {(orchExpanded || effectiveRoutingMode === 'orchestrator') && (
+                    {(orchExpanded || effectiveRoutingMode === 'orchestrator') && (() => {
+                      const hasMatchingOrchRow = effectiveRoutingMode === 'orchestrator' && orchModelChoices.some((r) => provider.model === r.model && String(provider.oauthProvider || '') === String(r.oauthProvider || ''));
+                      return (
                       <div className="orch-picker-body">
                         <button
                           type="button"
                           data-testid="orch-use-supervisor"
-                          className={'model-opt orch-supervisor-btn' + (effectiveRoutingMode === 'orchestrator' ? ' on' : '')}
+                          className={'model-opt orch-supervisor-btn' + (effectiveRoutingMode === 'orchestrator' && !hasMatchingOrchRow ? ' on' : '')}
                           onClick={() => activateOrchestratorSupervisor(null)}
                         >
                           <ModelLogo model="orchestrator" size={14} />
                           <span className="model-opt-name">Activate Orchestrator (Use Selected Model as Supervisor)</span>
-                          {effectiveRoutingMode === 'orchestrator' && <Icon name="Check" size={13} className="model-check" />}
+                          {effectiveRoutingMode === 'orchestrator' && !hasMatchingOrchRow && <Icon name="Check" size={13} className="model-check" />}
                         </button>
                         {orchModelChoices.length > 0 ? orchModelChoices.map((row) => {
                           const rowActive = effectiveRoutingMode === 'orchestrator' && provider.model === row.model && String(provider.oauthProvider || '') === String(row.oauthProvider || '');
@@ -1531,7 +1533,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                               <span className="model-dot ok" />
                               <ModelLogo model={row.model} provider={row.oauthProvider || row.name} baseURL={row.baseURL} size={14} />
                               <span className="model-opt-name">{row.model.split('/').pop()}</span>
-                              <span className="model-opt-prov">{row.roleHint || row.name || 'Orchestrator'}</span>
+                              <span className="model-opt-prov" title={row.roleHint || row.name || 'Orchestrator'}>{row.roleHint || row.name || 'Orchestrator'}</span>
                               {rowActive && <Icon name="Check" size={13} className="model-check" />}
                             </button>
                           );
@@ -1555,7 +1557,8 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                           </div>
                         )}
                       </div>
-                    )}
+                      );
+                    })()}
                   </div>
                   <div className="model-menu-divider" />
                   <div className="model-menu-head">Model · this session{keyProbing ? ' · checking keys…' : ''}</div>

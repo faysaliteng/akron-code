@@ -1167,7 +1167,7 @@ function toGeminiContents(messages, model) {
   const callNamesById = new Map();
   const rawToCleanId = new Map();
   let callSeq = 0;
-  const isGeminiThoughtModel = /^gemini-[3-9]/i.test(String(model || ''));
+  const isGeminiThoughtModel = /^gemini-(?:2\.5|[3-9])/i.test(String(model || '')) || /thinking/i.test(String(model || ''));
 
   const pushPart = (role, part) => {
     const last = contents[contents.length - 1];

@@ -27,6 +27,7 @@ export function ProjectsSidebar({
   projects = [],
   activeId,
   panel,
+  collapsed = false,
   streaming,
   streamingConvId,
   streamingConvIds,
@@ -119,50 +120,53 @@ export function ProjectsSidebar({
     <div ref={treeRef} className="proj-tree" data-testid="projects-sidebar">
       {groups.map((grp) => {
         const isCollapsed = !!collapsedGroups[grp.key];
+        const showRows = collapsed ? true : !isCollapsed;
         return (
           <div key={grp.key} className="proj-group">
-            <div
-              className="proj-group-head"
-              onClick={() => setCollapsedGroups((m) => ({ ...m, [grp.key]: !m[grp.key] }))}
-            >
-              <Icon name={grp.pinned ? 'FolderFilled' : 'Folder'} size={13} />
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{grp.label}</span>
-              <div className="proj-group-actions" onClick={(e) => e.stopPropagation()}>
-                {onTogglePinProject && (
-                  <button
-                    type="button"
-                    className="proj-mini-btn"
-                    title={grp.pinned ? 'Unpin project' : 'Pin project'}
-                    onClick={() => onTogglePinProject(grp.key)}
-                  >
-                    <Icon name={grp.pinned ? 'PinFilled' : 'Pin'} size={11} />
-                  </button>
-                )}
-                {onOpenProjectSettings && (
-                  <button
-                    type="button"
-                    className="proj-mini-btn"
-                    title="Project Settings & 20k Token Budget"
-                    onClick={() => onOpenProjectSettings(grp)}
-                  >
-                    <Icon name="Settings" size={11} />
-                  </button>
-                )}
-                {onNewChatInProject && (
-                  <button
-                    type="button"
-                    className="proj-mini-btn"
-                    title={`New conversation in ${grp.label}`}
-                    data-testid="proj-new-chat-btn"
-                    onClick={() => onNewChatInProject(grp.cwd, grp.project)}
-                  >
-                    <Icon name="Add" size={12} />
-                  </button>
-                )}
+            {!collapsed && (
+              <div
+                className="proj-group-head"
+                onClick={() => setCollapsedGroups((m) => ({ ...m, [grp.key]: !m[grp.key] }))}
+              >
+                <Icon name={grp.pinned ? 'FolderFilled' : 'Folder'} size={13} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{grp.label}</span>
+                <div className="proj-group-actions" onClick={(e) => e.stopPropagation()}>
+                  {onTogglePinProject && (
+                    <button
+                      type="button"
+                      className="proj-mini-btn"
+                      title={grp.pinned ? 'Unpin project' : 'Pin project'}
+                      onClick={() => onTogglePinProject(grp.key)}
+                    >
+                      <Icon name={grp.pinned ? 'PinFilled' : 'Pin'} size={11} />
+                    </button>
+                  )}
+                  {onOpenProjectSettings && (
+                    <button
+                      type="button"
+                      className="proj-mini-btn"
+                      title="Project Settings & 20k Token Budget"
+                      onClick={() => onOpenProjectSettings(grp)}
+                    >
+                      <Icon name="Settings" size={11} />
+                    </button>
+                  )}
+                  {onNewChatInProject && (
+                    <button
+                      type="button"
+                      className="proj-mini-btn"
+                      title={`New conversation in ${grp.label}`}
+                      data-testid="proj-new-chat-btn"
+                      onClick={() => onNewChatInProject(grp.cwd, grp.project)}
+                    >
+                      <Icon name="Add" size={12} />
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
-            {!isCollapsed && grp.convs.map((c) => {
+            {showRows && grp.convs.map((c) => {
               const isWorking = !!(
                 (streamingConvIds && typeof streamingConvIds.has === 'function' && streamingConvIds.has(c.id))
                 || (streaming && (streamingConvId === c.id || (!streamingConvId && c.id === activeId)))
@@ -292,7 +296,7 @@ export function ProjectsSidebar({
       })}
 
       {hoverInfo && !menuConvId && !renamingConvId && (
-        <div className="proj-hover-card" style={{ top: hoverInfo.top }} data-testid="proj-hover-card">
+        <div className="proj-hover-card" style={{ top: hoverInfo.top, left: collapsed ? 60 : undefined }} data-testid="proj-hover-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, marginBottom: 4 }}>
             <strong style={{ fontSize: 12.5, color: 'var(--text-000)' }}>{hoverInfo.title}</strong>
             {hoverInfo.working && <span className="token-badge-scope global">Active</span>}

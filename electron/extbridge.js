@@ -504,12 +504,61 @@ function attachSocket(ws) {
   ws.on('error', () => {});
 }
 
+async function peerFetchJson(endpoint, opts = {}) {
+  const port = state.port || DEFAULT_PORT;
+  const timeoutMs = Number(opts.timeoutMs) || 8000;
+  const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+    method: opts.method || 'GET',
+    headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error((data && data.error) || `Bridge peer HTTP ${res.status}`);
+  }
+  return data;
+}
+
+async function ensureConnectedOrShared() {
+  if (state.activeSocket && state.activeSocket.readyState === 1) return 'direct';
+  if (state.shared) {
+    // Try reclaiming once if the peer is a yieldable standalone MCP daemon.
+    try {
+      const h = await peerFetchJson('/v1/health', { timeoutMs: 1200 });
+      if (h && (h.mode === 'mcp-standalone' || h.yieldable === true)) {
+        await fetch(`http://127.0.0.1:${state.port || DEFAULT_PORT}/v1/ext/yield`, { method: 'POST', signal: AbortSignal.timeout(1200) }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 220));
+        await start({ port: state.port || DEFAULT_PORT }).catch(() => {});
+        if (state.activeSocket && state.activeSocket.readyState === 1) return 'direct';
+      }
+    } catch (_) {}
+    return 'shared';
+  }
+  try {
+    const h = await peerFetchJson('/v1/health', { timeoutMs: 1000 });
+    if (h && h.ok) return 'shared';
+  } catch (_) {}
+  return 'none';
+}
+
 async function listTabs() {
-  if (!state.activeSocket || state.activeSocket.readyState !== 1) return [];
-  const res = await sendExtensionRequest({ type: 'ext_status' }, 6000);
-  if (Array.isArray(res.tabs)) state.lastTabs = res.tabs;
-  if (res.version) state.extensionVersion = res.version;
-  return state.lastTabs;
+  const mode = await ensureConnectedOrShared();
+  if (mode === 'direct') {
+    const res = await sendExtensionRequest({ type: 'ext_status' }, 6000);
+    if (Array.isArray(res.tabs)) state.lastTabs = res.tabs;
+    if (res.version) state.extensionVersion = res.version;
+    return state.lastTabs;
+  }
+  if (mode === 'shared') {
+    try {
+      const peer = await peerFetchJson('/v1/ext/tabs', { timeoutMs: 6000 });
+      if (Array.isArray(peer && peer.tabs)) state.lastTabs = peer.tabs;
+      if (peer && peer.extensionVersion) state.extensionVersion = peer.extensionVersion;
+      return state.lastTabs;
+    } catch (_) {}
+  }
+  return [];
 }
 
 async function callTool(tool, args = {}, tabId) {
@@ -532,6 +581,13 @@ async function callTool(tool, args = {}, tabId) {
       tabs,
     };
   }
+  const mode = await ensureConnectedOrShared();
+  if (mode === 'shared') {
+    const body = { action: tool, args: args && typeof args === 'object' ? args : {} };
+    if (Number.isInteger(tabId)) body.tabId = tabId;
+    const peer = await peerFetchJson('/v1/ext/tool', { method: 'POST', body, timeoutMs: 36000 });
+    return peer && peer.result !== undefined ? peer.result : peer;
+  }
   const payload = { type: 'ext_tool', tool, args };
   if (Number.isInteger(tabId)) payload.tabId = tabId;
   const res = await sendExtensionRequest(payload, 35000);
@@ -540,9 +596,18 @@ async function callTool(tool, args = {}, tabId) {
 
 async function status() {
   let tabs = state.lastTabs;
-  const connected = !!(state.activeSocket && state.activeSocket.readyState === 1);
+  let connected = !!(state.activeSocket && state.activeSocket.readyState === 1);
   if (connected) {
     try { tabs = await listTabs(); } catch (_) {}
+  } else if (state.shared) {
+    try {
+      const peer = await peerFetchJson('/v1/ext/tabs', { timeoutMs: 3000 });
+      if (peer) {
+        connected = Boolean(peer.extensionConnected);
+        if (Array.isArray(peer.tabs)) { tabs = peer.tabs; state.lastTabs = peer.tabs; }
+        if (peer.extensionVersion) state.extensionVersion = peer.extensionVersion;
+      }
+    } catch (_) {}
   }
   let extMeta = {};
   let browserMeta = {};

@@ -2114,6 +2114,153 @@ globalThis.__autobotExecuteTool = executeTool;
 
 const bridgeTaskTabIds = new Set();
 
+function coerceTabId(v) {
+  if (Number.isInteger(v) && v > 0) return v;
+  if (typeof v === "string" && /^\d+$/.test(v.trim())) {
+    const n = Number(v.trim());
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return null;
+}
+
+function isRestrictedUrl(url) {
+  const s = String(url || "");
+  if (!s) return true;
+  return /^(chrome|edge|about|devtools|view-source|brave|chrome-extension|moz-extension):/i.test(s)
+    || /^https?:\/\/chromewebstore\.google\.com/i.test(s);
+}
+
+async function pickDefaultWebTabId(preferredTabId = null) {
+  const allTabs = await chrome.tabs.query({}).catch(() => []);
+  const openWebIds = new Set(
+    allTabs.filter((t) => t && Number.isInteger(t.id) && !isRestrictedUrl(t.url)).map((t) => t.id)
+  );
+  for (const id of [...bridgeTaskTabIds]) {
+    if (!openWebIds.has(id)) bridgeTaskTabIds.delete(id);
+  }
+  if (Number.isInteger(preferredTabId) && openWebIds.has(preferredTabId)) return preferredTabId;
+  const activeFocused = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+  const activeWeb = activeFocused.find((t) => t && Number.isInteger(t.id) && openWebIds.has(t.id));
+  if (activeWeb) return activeWeb.id;
+  const tracked = [...bridgeTaskTabIds].reverse().find((id) => openWebIds.has(id));
+  if (Number.isInteger(tracked)) return tracked;
+  const firstActive = allTabs.find((t) => t && t.active && openWebIds.has(t.id));
+  if (firstActive) return firstActive.id;
+  const firstWeb = allTabs.find((t) => t && openWebIds.has(t.id));
+  return firstWeb ? firstWeb.id : (allTabs[0]?.id ?? null);
+}
+
+function createBridgePort(onEvent) {
+  return {
+    postMessage(payload) {
+      if (typeof onEvent === "function") {
+        try { onEvent(payload); } catch {}
+      }
+    },
+  };
+}
+
+async function runSidepanelBridgeAction(action, args = {}, rawTabId = null) {
+  if (action === "sidepanel_status") {
+    const contexts = await openPanelContexts();
+    const list = [...sessions.values()].map((s) => {
+      const last = Array.isArray(s.conversation) && s.conversation.length ? s.conversation[s.conversation.length - 1] : null;
+      return {
+        id: s.id,
+        tabId: s.tabId ?? null,
+        targetTabId: s.targetTabId ?? null,
+        groupId: s.groupId ?? null,
+        windowId: s.windowId ?? null,
+        title: s.title || null,
+        running: !!s.running,
+        needsInput: !!s.needsInput,
+        stepLabel: s.stepLabel || "",
+        messageCount: Array.isArray(s.conversation) ? s.conversation.length : 0,
+        lastRole: last?.role || null,
+        lastPreview: typeof last?.content === "string" ? last.content.slice(0, 240) : "",
+        hasPanel: sessionHasPanel(s),
+      };
+    });
+    return { openPanels: contexts.length, sessions: list };
+  }
+  if (action === "sidepanel_history") {
+    const wantedId = String(args?.sessionId || "").trim();
+    let session = wantedId ? sessions.get(wantedId) : null;
+    if (!session) {
+      const tid = coerceTabId(args?.tabId ?? rawTabId) ?? await pickDefaultWebTabId();
+      if (Number.isInteger(tid)) session = await sessionForTab(tid, null);
+    }
+    if (!session) return { sessions: await listChats(), messages: [] };
+    await ensureLoaded(session);
+    return {
+      sessionId: session.id,
+      tabId: session.tabId ?? null,
+      running: !!session.running,
+      messages: (session.conversation || []).slice(-(Number(args?.limit) || 20)).map((m) => ({
+        role: m.role,
+        content: typeof m.content === "string" ? m.content.slice(0, 2000) : m.content,
+      })),
+      results: session.results || [],
+    };
+  }
+  if (action === "sidepanel_stop") {
+    const wantedId = String(args?.sessionId || "").trim();
+    const stopped = [];
+    if (wantedId && sessions.has(wantedId)) {
+      const s = sessions.get(wantedId);
+      if (s?.running) { stopSession(s); stopped.push(s.id); }
+      return { stopped };
+    }
+    const tid = coerceTabId(args?.tabId ?? rawTabId);
+    for (const s of sessions.values()) {
+      if (s?.running && (!Number.isInteger(tid) || s.tabId === tid || s.targetTabId === tid)) {
+        stopSession(s);
+        stopped.push(s.id);
+      }
+    }
+    return { stopped };
+  }
+  if (action === "sidepanel_open") {
+    const tid = coerceTabId(args?.tabId ?? rawTabId) ?? await pickDefaultWebTabId();
+    if (!Number.isInteger(tid)) throw new Error("No open web tab available for side panel.");
+    openSidePanel(tid, { toggle: !!args?.toggle });
+    return { opened: true, tabId: tid };
+  }
+  if (action === "sidepanel_send") {
+    const prompt = String(args?.prompt ?? args?.text ?? args?.message ?? "").trim();
+    if (!prompt) throw new Error("sidepanel_send requires a non-empty prompt.");
+    const tid = coerceTabId(args?.tabId ?? rawTabId) ?? await pickDefaultWebTabId();
+    if (!Number.isInteger(tid)) throw new Error("No open http(s) web tab found.");
+    const tab = await chrome.tabs.get(tid).catch(() => null);
+    const session = await sessionForTab(tid, tab?.windowId ?? null);
+    await ensureLoaded(session);
+    if (session.running) throw new Error(`Side panel session ${session.id} is already running.`);
+    if (args?.openPanel === true) {
+      try { openSidePanel(tid); } catch {}
+    }
+    const bridgeEvents = [];
+    const syntheticPort = createBridgePort((evt) => {
+      if (evt) bridgeEvents.push(evt);
+    });
+    const runPromise = handleUserMessage({ text: prompt, tabId: tid, model: args?.model }, syntheticPort, session);
+    if (args?.wait === true) {
+      const waitMs = Math.max(1000, Math.min(Number(args?.timeoutMs) || 30000, 60000));
+      await Promise.race([runPromise, new Promise((r) => setTimeout(r, waitMs))]);
+      const last = [...(session.conversation || [])].reverse().find((m) => m.role === "assistant" && m.content);
+      return {
+        sessionId: session.id,
+        tabId: tid,
+        running: !!session.running,
+        reply: typeof last?.content === "string" ? last.content : "",
+        eventsCount: bridgeEvents.length,
+      };
+    }
+    runPromise.catch(() => {});
+    return { started: true, sessionId: session.id, tabId: tid };
+  }
+  throw new Error(`Unknown sidepanel action: ${action}`);
+}
+
 async function handleBridgeMessage(event, socket) {
   let message;
   try {
@@ -2135,21 +2282,31 @@ async function handleBridgeMessage(event, socket) {
     }
     return;
   }
+  if (message?.type === "ext_sidepanel") {
+    try {
+      const result = await runSidepanelBridgeAction(message.action || "sidepanel_status", message.args || {}, message.tabId);
+      socket.send(JSON.stringify({ type: "ext_sidepanel_result", request_id: message.request_id, ok: true, result }));
+    } catch (e) {
+      try { socket.send(JSON.stringify({ type: "ext_sidepanel_result", request_id: message.request_id, ok: false, error: String(e?.message || e) })); } catch {}
+    }
+    return;
+  }
   if (message?.type === "ext_tool") {
     try {
-      let tabId = Number.isInteger(message.tabId) ? message.tabId : null;
-      if (!Number.isInteger(tabId) && message.tool !== "list_tabs" && message.tool !== "open_tab") {
-        const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
-        if (activeTabs[0] && Number.isInteger(activeTabs[0].id)) tabId = activeTabs[0].id;
-        else {
-          const anyTabs = await chrome.tabs.query({}).catch(() => []);
-          if (anyTabs[0] && Number.isInteger(anyTabs[0].id)) tabId = anyTabs[0].id;
-        }
+      if (typeof message.tool === "string" && message.tool.startsWith("sidepanel_")) {
+        const result = await runSidepanelBridgeAction(message.tool, message.args || {}, message.tabId);
+        socket.send(JSON.stringify({ type: "ext_tool_result", request_id: message.request_id, ok: true, result }));
+        return;
+      }
+      let tabId = coerceTabId(message.tabId) ?? coerceTabId(message.args?.tabId);
+      if (!Number.isInteger(tabId) && message.tool !== "list_tabs" && message.tool !== "open_tab" && message.tool !== "tabs_create") {
+        tabId = await pickDefaultWebTabId(null);
       }
       if (Number.isInteger(tabId)) bridgeTaskTabIds.add(tabId);
       const settings = await getSettings().catch(() => ({}));
       const result = await executeTool(message.tool, message.args || {}, {
         tabId,
+        fromBridge: true,
         taskTabIds: bridgeTaskTabIds.size ? [...bridgeTaskTabIds] : undefined,
         allowedDomains: settings.allowedDomains || [],
         blockedDomains: settings.blockedDomains || [],
@@ -2161,6 +2318,7 @@ async function handleBridgeMessage(event, socket) {
         emit: () => {},
         confirm: async () => ({ approved: true }),
       });
+      if (Number.isInteger(result?.closedTabId)) bridgeTaskTabIds.delete(result.closedTabId);
       if (Number.isInteger(result?.tabId)) bridgeTaskTabIds.add(result.tabId);
       socket.send(JSON.stringify({ type: "ext_tool_result", request_id: message.request_id, ok: true, result }));
     } catch (e) {

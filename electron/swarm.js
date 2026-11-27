@@ -67,7 +67,8 @@ function normalizeTier(t, fallback) {
 // explicit `frontier: true` flag or by matching a known frontier model family.
 // Cheap/local models never enter a swarm roster (they remain fair game for the
 // automatic Task/Agent multi-agent path).
-const FRONTIER_RE = /(kimi|moonshot|deepseek|glm|zhipu|chatgpt|gpt-?[3-9]|codex|\bo[1-4]\b|anthropic|claude|fable|sonnet|opus|haiku|gemini[- ]?(pro|ultra|[2-9])|carbon|neon|hydrogen|argon|qwen.*(max|235b)|grok|command-r-plus|mistral-large|frontier|terra|luna|reserve)/i;
+const FRONTIER_RE = /(kimi|moonshot|deepseek|glm|zhipu|chatgpt|gpt-?[3-9]|codex|\bo[1-4]\b|anthropic|claude|fable|sonnet|opus|gemini[- ]?(pro|ultra|3|4|5|6|7|8|9|2\.5-pro)|carbon|neon|hydrogen|argon|qwen.*(max|235b)|grok|command-r-plus|mistral-large|frontier|terra|luna|reserve)/i;
+const SMALL_OR_FAST_RE = /(?:^|[-_/.:\s])(haiku|mini|nano|lite|small|spark|instant)(?=$|[-_/.:\s])|gemini[- ]?(?:1|2(?:\.[05])?)-flash|flash-worker|grok-[0-9.]+-fast/i;
 function inferModelTier(model, fallback) {
   const m = String(model || '').toLowerCase();
   if (!m) return fallback || 'heavy';
@@ -88,6 +89,7 @@ function isFrontier(p) {
   const modelStr = String(p.model || '').trim();
   const isFreeLlm = /:(3001|31415)\b/.test(base);
   if (isSmallParamModel(modelStr)) return false;
+  if (SMALL_OR_FAST_RE.test(modelStr)) return false;
   const s = isFreeLlm ? modelStr : [modelStr, p.name].filter(Boolean).join(' ');
   return FRONTIER_RE.test(s);
 }
@@ -314,8 +316,8 @@ function normalizePlan(raw, opts = {}) {
       tasks.push({ id: 't' + (i + 1), title: t.slice(0, 80), prompt: t, tier: 'heavy', model: null });
       return;
     }
-    const prompt = t.prompt || t.instructions || t.task || t.description || '';
-    const title = t.title || t.name || t.description || prompt;
+    const prompt = t.prompt || t.instructions || t.task || t.brief || t.goal || t.objective || t.description || '';
+    const title = t.title || t.name || t.label || t.id || t.description || prompt;
     if (!String(prompt || title).trim()) return;
     tasks.push({
       id: String(t.id || 't' + (i + 1)),
@@ -345,6 +347,7 @@ const SUPERVISOR_PLAN_PROMPT = `You are the SUPERVISOR (lead) of a multi-agent t
 Decompose the user's goal into independent subtasks that can run CONCURRENTLY on
 different models. Rules:
 - 2 to N subtasks (N = {MAX}). Prefer 3-5 for a substantial build.
+- If USER GOAL already specifies explicit numbered/named subtasks, questions, or deliverables, preserve those EXACT subtasks 1-for-1 (do NOT replace or drop them for generic tasks).
 - Each subtask must be self-contained: another agent will receive only that
   subtask's text plus the original goal, with no memory of this conversation.
 - Give each subtask a complexity tier:
@@ -716,10 +719,12 @@ async function swarm(goal, opts = {}) {
   const poolBase = opts.provider || null;
   let roster;
   if (poolOrch) {
-    roster = [];
+    const rawPoolRows = [];
     for (const r of router.ROLES) {
-      for (const row of router.resolve(poolOrch, r, poolBase)) if (row.role === r) roster.push({ ...row, jobRole: r });
+      for (const row of router.resolve(poolOrch, r, poolBase)) if (row.role === r) rawPoolRows.push({ ...row, jobRole: r });
     }
+    const frontierPoolRows = rawPoolRows.filter((row) => isFrontier(row));
+    roster = frontierPoolRows.length ? frontierPoolRows : rawPoolRows;
   } else {
     roster = buildRoster({ orchestrator: opts.orchestrator, provider: opts.provider, frontierOnly: true });
   }

@@ -1446,19 +1446,23 @@ const toolDefinitions = [
   // ---- External Browser Control (Akron Browser Bot Chrome Extension) ----
   {
     name: 'ext_browser',
-    description: 'Control the user\'s live external Chrome/Brave/Edge browser via the Akron Browser Bot extension (list_tabs, navigate, read_page, read_text, find, click, type, press_key, scroll, form_input, screenshot, read_console_messages, read_network_requests, execute_javascript).',
+    description: 'Control the user\'s live external Chrome/Brave/Edge browser and Akron Browser Bot side panel (list_tabs, open_tab, close_tab, switch_tab, navigate, read_page, read_text, find, click, type, press_key, scroll, form_input, screenshot, execute_javascript, sidepanel_status, sidepanel_send, sidepanel_stop, sidepanel_history, sidepanel_open).',
     parameters: {
       type: 'object',
       properties: {
-        action: { type: 'string', description: 'Extension tool name, e.g. list_tabs, navigate, read_page, read_text, find, click, type, press_key, scroll, form_input, screenshot, execute_javascript' },
+        action: { type: 'string', description: 'Extension action, e.g. list_tabs, open_tab, close_tab, switch_tab, navigate, read_page, read_text, find, click, type, press_key, scroll, form_input, screenshot, execute_javascript, sidepanel_status, sidepanel_send, sidepanel_stop, sidepanel_history, sidepanel_open' },
         tabId: { type: 'number', description: 'Optional Chrome tab id' },
         args: { type: 'object', description: 'Optional arguments object passed to the extension tool' },
         url: { type: 'string' },
+        active: { type: 'boolean', description: 'For open_tab: bring tab to front (default false when driven by agent)' },
+        fullPage: { type: 'boolean', description: 'For screenshot: capture entire scrollable page' },
         ref: { type: 'string' },
         selector: { type: 'string' },
         text: { type: 'string' },
+        prompt: { type: 'string', description: 'For sidepanel_send: task/question to start in the Browser Bot side panel' },
         key: { type: 'string' },
-        expression: { type: 'string' },
+        code: { type: 'string', description: 'JavaScript snippet/expression for execute_javascript' },
+        expression: { type: 'string', description: 'Alias for code in execute_javascript' },
         activeOnly: { type: 'boolean', description: 'For list_tabs: return only the active tab(s)' },
         currentWindowOnly: { type: 'boolean', description: 'For list_tabs: limit tabs to the active browser window' },
       },
@@ -1841,6 +1845,14 @@ async function runToolInner(name, args, ctx) {
     if (!ctx.runAgent) return 'Swarm unavailable (no agent runner wired).';
     const goal = args.goal || args.objective || args.task || '';
     if (!goal) return 'Error: goal required.';
+    let explicitTasks = Array.isArray(args.tasks) ? args.tasks
+      : (Array.isArray(args.subtasks) ? args.subtasks : undefined);
+    if (!explicitTasks && typeof (args.tasks || args.subtasks) === 'string') {
+      try {
+        const parsedTasks = JSON.parse(String(args.tasks || args.subtasks));
+        if (Array.isArray(parsedTasks)) explicitTasks = parsedTasks;
+      } catch (_) {}
+    }
     try {
       const out = await withTimeout(swarm.swarm(String(goal), {
         runAgent: ctx.runAgent,
@@ -1848,7 +1860,7 @@ async function runToolInner(name, args, ctx) {
         orchestrator: ctx.orchestrator,
         supervisor: ctx.swarmSupervisor || undefined,
         emit: ctx.emit || (() => {}),
-        tasks: Array.isArray(args.tasks) && args.tasks.length ? args.tasks : undefined,
+        tasks: explicitTasks && explicitTasks.length ? explicitTasks : undefined,
         concurrency: Math.min(Number(args.concurrency) || 4, 8),
         maxTasks: Number(args.maxTasks) || 6,
         signal: ctx.signal,
@@ -2145,10 +2157,19 @@ async function runToolInner(name, args, ctx) {
     try {
       const bridge = require('./extbridge');
       const action = String((args && (args.action || args.tool)) || '').trim();
-      if (!action) return { content: 'ext_browser requires `action` (e.g. list_tabs, navigate, read_page, read_text, click, type).', isError: true };
+      if (!action) return { content: 'ext_browser requires `action` (e.g. list_tabs, open_tab, close_tab, navigate, read_page, read_text, click, type, execute_javascript, screenshot, sidepanel_send).', isError: true };
       const { action: _a, tool: _t, tabId: rawTab, args: nested, cwd: _c, ...rest } = args || {};
       const mergedArgs = { ...(nested && typeof nested === 'object' ? nested : {}), ...rest };
-      const tabId = Number.isInteger(rawTab) ? rawTab : undefined;
+      const rawCandTab = rawTab !== undefined ? rawTab : mergedArgs.tabId;
+      const numTab = Number(rawCandTab);
+      const tabId = (rawCandTab !== undefined && rawCandTab !== null && rawCandTab !== '' && Number.isInteger(numTab) && numTab > 0)
+        ? numTab
+        : undefined;
+      if (action === 'execute_javascript' || action === 'javascript_tool') {
+        const jsSrc = mergedArgs.code ?? mergedArgs.expression ?? mergedArgs.script;
+        if (jsSrc != null && String(jsSrc).trim()) mergedArgs.code = String(jsSrc);
+      }
+      if (tabId !== undefined && mergedArgs.tabId === undefined) mergedArgs.tabId = tabId;
       const out = await bridge.callTool(action, mergedArgs, tabId);
       if (action === 'screenshot') {
         const rawDataUrl = (out && typeof out === 'object' && (out.dataUrl || out.imageDataUrl || out.data_url || out.screenshot || out.image))

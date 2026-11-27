@@ -2923,18 +2923,22 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     if (!calls.length) {
       // If a model ends immediately after tool results with completely blank content
       // (no text, no tool calls), recover cleanly inside the loop instead of pushing
-      // an empty assistant turn that collapses consecutive user turns.
+      // an empty assistant turn that loses Swarm/tool output.
       const prevTurn = messages[messages.length - 1];
       const afterToolMsg = prevTurn && (prevTurn.role === 'tool' || prevTurn._syntheticImageRead || (prevTurn.role === 'user' && /^TOOL RESULT\b/i.test(String(prevTurn.content || ''))));
-      if (depth === 0 && step >= 1 && !String(message.content || '').trim() && afterToolMsg && blankPostToolRetries < 2) {
+      const hasContinuePrompt = prevTurn && prevTurn.role === 'user' && /^\[continue\] Provide your complete/i.test(String(prevTurn.content || ''));
+      const recentToolTurn = afterToolMsg || hasContinuePrompt;
+      if (depth === 0 && step >= 1 && !String(message.content || '').trim() && recentToolTurn && blankPostToolRetries < 2) {
         blankPostToolRetries++;
         if (blankPostToolRetries === 2 && providerList.length > 1) {
           const prevIdx = getIndex();
           setIndex((prevIdx + 1) % providerList.length);
           emit({ type: 'orchestrator', from: providerList[prevIdx]?.model, to: providerList[getIndex()]?.model, reason: 'blank reply after tool results — trying alternate model' });
-          messages.push({ role: 'user', content: '[continue] Provide your completed response summarizing the tool results above.' });
         } else {
           emit({ type: 'thinking', text: ' (continuing after tool results…)' });
+        }
+        if (!hasContinuePrompt) {
+          messages.push({ role: 'user', content: '[continue] Provide your complete response summarizing the tool results above.' });
         }
         continue;
       }
@@ -2945,7 +2949,19 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         const created = autoCaptureArtifacts(message.content || '', currentCwd, emit);
         if (created.length) extraNote = `\n\n(Saved ${created.join(', ')} to your project so it renders live.)`;
       }
-      const assistantText = (message.content || '') + extraNote;
+      let assistantText = (message.content || '') + extraNote;
+      if (depth === 0 && !assistantText.trim() && (ranSwarmInTurn || recentToolTurn)) {
+        const lastTool = [...messages].reverse().find((m) => m && m.role === 'tool' && typeof m.content === 'string' && m.content.trim());
+        if (lastTool) {
+          const rawOut = String(lastTool.content || '').trim();
+          const finalMatch = /\bFINAL ANSWER\s*\n+([\s\S]+)$/.exec(rawOut);
+          const synth = (finalMatch ? finalMatch[1].trim() : rawOut.slice(0, 6000));
+          if (synth) {
+            assistantText = synth;
+            emit({ type: 'text', delta: synth });
+          }
+        }
+      }
       if (assistantText.trim()) {
         messages.push({
           role: 'assistant',
