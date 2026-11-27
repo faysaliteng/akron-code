@@ -78,7 +78,7 @@ async function testSecretIsolationAndRemoteServerE2E() {
     });
     remProfId = remSave.profile.id;
 
-    const envJsonPath = path.join(os.homedir(), '.autobot', 'environments.json');
+    const envJsonPath = process.env.AUTOBOT_ENVIRONMENTS_FILE || path.join(os.homedir(), '.autobot', 'environments.json');
     const rawJson = fs.readFileSync(envJsonPath, 'utf8');
     assert(!rawJson.includes('top-secret-passphrase-xyz'), 'SSH secret must NEVER exist in plaintext environments.json');
     assert(!rawJson.includes(secretToken), 'Remote token must NEVER exist in plaintext environments.json');
