@@ -2,6 +2,7 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { spawn } = require('child_process');
 
 module.exports = function registerFeaturesIpc(ctx) {
   const {
@@ -11,7 +12,9 @@ module.exports = function registerFeaturesIpc(ctx) {
     gdrive, runAgent, providertransport, permGate, pendingQuestions, windows,
     winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix,
     hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine,
+    humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError,
   } = ctx;
+  const authFlights = new Map();
 
 ipcMain.handle('autobot:chatOnce', async (event, payload) => {
   try {

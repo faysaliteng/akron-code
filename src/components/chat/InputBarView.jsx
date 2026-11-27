@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Icon } from '../Icon.jsx';
+import { Icon, GoogleDriveIcon } from '../Icon.jsx';
+import MessageQueueTray from '../MessageQueueTray.jsx';
 import { normBase, LOCAL_BASE, keySig, statusOf, presetStatus } from '../../providerstatus-ui.mjs';
 import { hydrateProvider, endpointKey } from '../../providerhydrate.mjs';
 import { useVoiceDictation } from '../../voice';
-import { SessionModelList, EnvironmentPicker, PERM_MODES, PERM_SHORT, BUILTIN_MENTION_AGENTS } from './WorkspaceViews.jsx';
-import { PRESETS, PRESET_KEYS, resolveLoopbackKey, STYLES, REASON_LEVELS, REASON_LABELS, contextWindowFor, loadJSON, saveJSON, useDismiss, toggleDictation, filesToAttachments, uid } from '../../utils/appHelpers.jsx';
+import { ClaudeReconnectPanel, useClaudeReconnect } from '../settings/SettingsSections.jsx';
+import { SessionModelList, EnvironmentPicker, PERM_MODES, PERM_SHORT, BUILTIN_MENTION_AGENTS, ContextMeter, ProvModelList } from './WorkspaceViews.jsx';
+import { PRESETS, PRESET_KEYS, resolveLoopbackKey, STYLES, REASON_LEVELS, REASON_LABELS, contextWindowFor, loadJSON, saveJSON, useDismiss, toggleDictation, filesToAttachments, uid, ProvNotice, fmtInt, MODEL_WINDOW_CACHE, usedTokens } from '../../utils/appHelpers.jsx';
 
 export function InputBarBody({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, queuePaused, onToggleQueuePaused, onClearQueue, onToggleQueueItemPaused, onReorderQueue, onStepQueueItem, onUpdateQueueItemText, unqueue, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);

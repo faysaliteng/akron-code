@@ -1,0 +1,465 @@
+{
+  "generatedAt": "2026-11-27T00:46:45.611Z",
+  "nodeVersion": "v24.22.3",
+  "platform": "darwin/arm64",
+  "totalTasks": 70,
+  "totalPassed": 70,
+  "totalFailed": 0,
+  "overallPassRatePct": 100,
+  "durationMs": 207,
+  "suites": {
+    "security": {
+      "suite": "security",
+      "total": 32,
+      "passed": 32,
+      "failed": 0,
+      "passRatePct": 100,
+      "unauthorizedToolCalls": 0,
+      "poisonedMemoriesAccepted": 0,
+      "durationMs": 23,
+      "results": [
+        {
+          "id": "sec-inj-1",
+          "category": "prompt-injection",
+          "passed": true,
+          "ms": 13
+        },
+        {
+          "id": "sec-inj-2",
+          "category": "prompt-injection",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-inj-3",
+          "category": "prompt-injection",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-inj-4",
+          "category": "prompt-injection",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-inj-5",
+          "category": "prompt-injection",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-inj-6",
+          "category": "prompt-injection",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-inj-7",
+          "category": "prompt-injection",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-inj-8",
+          "category": "prompt-injection",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-inj-9",
+          "category": "prompt-injection",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-inj-10",
+          "category": "prompt-injection",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-mem-1",
+          "category": "whisperbench-memory",
+          "passed": true,
+          "ms": 2
+        },
+        {
+          "id": "sec-mem-2",
+          "category": "whisperbench-memory",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-mem-3",
+          "category": "whisperbench-memory",
+          "passed": true,
+          "ms": 1
+        },
+        {
+          "id": "sec-mem-4",
+          "category": "whisperbench-memory",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-mem-5",
+          "category": "whisperbench-memory",
+          "passed": true,
+          "ms": 1
+        },
+        {
+          "id": "sec-mem-6",
+          "category": "whisperbench-memory",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-mem-7",
+          "category": "whisperbench-memory",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-mem-8",
+          "category": "whisperbench-memory",
+          "passed": true,
+          "ms": 1
+        },
+        {
+          "id": "sec-vault-origin-1",
+          "category": "vault-origin-guard",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-vault-origin-2",
+          "category": "vault-origin-guard",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-vault-origin-3",
+          "category": "vault-origin-guard",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-vault-origin-4",
+          "category": "vault-origin-guard",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-vault-origin-5",
+          "category": "vault-origin-guard",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-vault-no-leak-6",
+          "category": "vault-redaction",
+          "passed": true,
+          "ms": 2
+        },
+        {
+          "id": "sec-sandbox-1",
+          "category": "os-sandbox-deny",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-sandbox-2",
+          "category": "os-sandbox-deny",
+          "passed": true,
+          "ms": 1
+        },
+        {
+          "id": "sec-sandbox-3",
+          "category": "os-sandbox-deny",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-sandbox-4",
+          "category": "os-sandbox-deny",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-sandbox-5",
+          "category": "os-sandbox-deny",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-sandbox-6",
+          "category": "os-sandbox-deny",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "sec-ledger-verify-7",
+          "category": "audit-ledger",
+          "passed": true,
+          "ms": 2
+        },
+        {
+          "id": "sec-ledger-tamper-8",
+          "category": "audit-ledger-tamper",
+          "passed": true,
+          "ms": 0
+        }
+      ]
+    },
+    "coding": {
+      "suite": "coding",
+      "total": 22,
+      "passed": 22,
+      "failed": 0,
+      "passRatePct": 100,
+      "durationMs": 155,
+      "results": [
+        {
+          "id": "code-patch-1",
+          "category": "apply-patch",
+          "passed": true,
+          "ms": 1
+        },
+        {
+          "id": "code-patch-2",
+          "category": "apply-patch",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "code-patch-3",
+          "category": "apply-patch",
+          "passed": true,
+          "ms": 1
+        },
+        {
+          "id": "code-patch-4",
+          "category": "apply-patch",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "code-patch-5",
+          "category": "apply-patch",
+          "passed": true,
+          "ms": 1
+        },
+        {
+          "id": "code-patch-6",
+          "category": "apply-patch",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "code-editguard-1",
+          "category": "edit-guard",
+          "passed": true,
+          "ms": 1
+        },
+        {
+          "id": "code-editguard-2",
+          "category": "edit-guard",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "code-editguard-3",
+          "category": "edit-guard",
+          "passed": true,
+          "ms": 32
+        },
+        {
+          "id": "code-editguard-4",
+          "category": "edit-guard",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "code-search-1",
+          "category": "codebase-index",
+          "passed": true,
+          "ms": 36
+        },
+        {
+          "id": "code-search-2",
+          "category": "codebase-index",
+          "passed": true,
+          "ms": 6
+        },
+        {
+          "id": "code-search-3",
+          "category": "codebase-index",
+          "passed": true,
+          "ms": 9
+        },
+        {
+          "id": "code-search-4",
+          "category": "codebase-index",
+          "passed": true,
+          "ms": 4
+        },
+        {
+          "id": "code-codemode-1",
+          "category": "codemode",
+          "passed": true,
+          "ms": 19
+        },
+        {
+          "id": "code-codemode-2",
+          "category": "codemode",
+          "passed": true,
+          "ms": 16
+        },
+        {
+          "id": "code-codemode-3",
+          "category": "codemode",
+          "passed": true,
+          "ms": 14
+        },
+        {
+          "id": "code-codemode-4",
+          "category": "codemode",
+          "passed": true,
+          "ms": 13
+        },
+        {
+          "id": "code-spill-1",
+          "category": "spill-to-disk",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "code-ctx-mask-2",
+          "category": "progressive-masking",
+          "passed": true,
+          "ms": 1
+        },
+        {
+          "id": "code-shrink-budgets-3",
+          "category": "shrink-budgets",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "code-loop-guard-4",
+          "category": "loop-guard",
+          "passed": true,
+          "ms": 0
+        }
+      ]
+    },
+    "browser": {
+      "suite": "browser",
+      "total": 16,
+      "passed": 16,
+      "failed": 0,
+      "passRatePct": 100,
+      "avgAxCompressionRatioX": 25,
+      "durationMs": 29,
+      "results": [
+        {
+          "id": "brow-ax-1",
+          "category": "ax-snapshot",
+          "passed": true,
+          "ms": 18
+        },
+        {
+          "id": "brow-ax-2",
+          "category": "ax-snapshot",
+          "passed": true,
+          "ms": 1
+        },
+        {
+          "id": "brow-ax-3",
+          "category": "ax-snapshot",
+          "passed": true,
+          "ms": 1
+        },
+        {
+          "id": "brow-ax-4",
+          "category": "ax-snapshot",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "brow-heal-1",
+          "category": "self-healing-replay",
+          "passed": true,
+          "ms": 3
+        },
+        {
+          "id": "brow-heal-2",
+          "category": "self-healing-replay",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "brow-heal-3",
+          "category": "self-healing-replay",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "brow-heal-4",
+          "category": "self-healing-replay",
+          "passed": true,
+          "ms": 1
+        },
+        {
+          "id": "brow-vault-1",
+          "category": "vault-totp",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "brow-vault-2",
+          "category": "vault-totp",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "brow-vault-3",
+          "category": "vault-totp",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "brow-vault-4",
+          "category": "vault-totp",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "brow-som-1",
+          "category": "som-fallback",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "brow-gate-captcha-2",
+          "category": "human-gate",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "brow-gate-2fa-3",
+          "category": "human-gate",
+          "passed": true,
+          "ms": 0
+        },
+        {
+          "id": "brow-gate-checkout-4",
+          "category": "human-gate",
+          "passed": true,
+          "ms": 1
+        }
+      ]
+    }
+  }
+}

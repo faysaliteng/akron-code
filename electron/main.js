@@ -526,13 +526,13 @@ function applyFeatures(features) {
   registerQuickShortcuts(!!features.quickEntry);
 }
 
-oauthCtrl = registerOauthModelIpc({ ipcMain, store, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast });
+oauthCtrl = registerOauthModelIpc({ ipcMain, store, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast, poolNoticeDeduper, bundledRuntimeDir: () => (runtimesCtrl ? runtimesCtrl.bundledRuntimeDir() : ''), getRuntimes: () => (runtimesCtrl ? runtimesCtrl.getRuntimes() : null) });
 const { freellmFallbackApiKey, hydrateLocalFreeLlmProvider, hydrateProvider, validateOrchestrator, oneLine, fetchProviderModels, warmModelCatalogs, replayClaudeRotation } = oauthCtrl;
 
 runtimesCtrl = createRuntimesController({ app, ipcMain, store, workspace, shells, freellm, createRuntimes, providertransport, runAgent, hydrateProvider, hydrateOrchestrator, validateOrchestrator, freellmFallbackApiKey, oneLine, broadcast });
 const { runtimePathPrefix, startRuntimes, runScheduledPrompt, startFreeLLM } = runtimesCtrl;
 
-winExtCtrl = registerWindowsExtensionsIpc({ windows, artifactWindows, extensionWindows, windowIconProps, winFor, findMainWindow, focusMainWindow, createWindow, createTray, store, extensionhost, artifactcanvas, artifactstore, artifacttypes, extHost, unfurlMod, compliance, computeruse, brandGuard, broadcast, pendingComputerUseRef });
+winExtCtrl = registerWindowsExtensionsIpc({ windows, artifactWindows, extensionWindows, windowIconProps, winFor, findMainWindow, focusMainWindow, createWindow, createTray, store, extensionhost, artifactcanvas, artifactstore, artifacttypes, extHost, unfurlMod, compliance, computeruse, brandGuard, broadcast, pendingComputerUseRef, mcp, gdrive, computer, oneLine, describeConnectError });
 const { createAboutWindow, buildMenu, mainWindow } = winExtCtrl;
 
 ipcMain.handle('autobot:run', async (event, payload) => {
@@ -1043,7 +1043,7 @@ ipcMain.handle('autobot:openLegalDoc', (_e, which) => {
   return { ok: true, path: p };
 });
 
-registerFeaturesIpc({ app, ipcMain, shell, dialog, BrowserWindow, session, store, workspace, mcp, mcpStatus, shells, git, pluginsDir, scheduler, sandbox, secretstore, search, sessionDb, environments, depManager, updater, browser, gdrive, runAgent, providertransport, permGate, pendingQuestions, windows, winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix, hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine });
+registerFeaturesIpc({ app, ipcMain, shell, dialog, BrowserWindow, session, store, workspace, mcp, mcpStatus, shells, git, pluginsDir, scheduler, sandbox, secretstore, search, sessionDb, environments, depManager, updater, browser, gdrive, runAgent, providertransport, permGate, pendingQuestions, windows, winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix, hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine, humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError });
 
 app.whenReady().then(() => {
   if (process.platform === 'darwin' && !app.isPackaged && app.dock && typeof app.dock.setIcon === 'function') {

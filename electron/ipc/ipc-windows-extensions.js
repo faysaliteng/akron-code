@@ -1,7 +1,7 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const { BrowserWindow, Menu, shell, screen, app, ipcMain, session } = require('electron');
+const { BrowserWindow, Menu, shell, screen, app, ipcMain, session, dialog } = require('electron');
 
 module.exports = function registerWindowsExtensionsIpc(ctx) {
   const {
@@ -9,6 +9,7 @@ module.exports = function registerWindowsExtensionsIpc(ctx) {
     findMainWindow, focusMainWindow, createWindow, createTray,
     store, artifactcanvas, artifactstore, artifacttypes, extHost, extensionhost, unfurlMod,
     compliance, computeruse, brandGuard, broadcast, pendingComputerUseRef,
+    mcp, gdrive, computer, oneLine, describeConnectError,
   } = ctx;
   let quickWin = null;
 

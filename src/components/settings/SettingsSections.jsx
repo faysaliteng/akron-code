@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Icon } from '../Icon.jsx';
 import { normBase, LOCAL_BASE } from '../../providerstatus-ui.mjs';
 import { UI_FONT_PRESETS, MONO_FONT_PRESETS, DEFAULT_TYPOGRAPHY, normalizeTypography, resolveUiFontStack, resolveMonoFontStack, applyTypographyToDocument } from '../../typography.js';
-import { HARNESS_PROFILES, loadJSON, saveJSON, useDismiss } from '../../utils/appHelpers.jsx';
+import { HARNESS_PROFILES, loadJSON, saveJSON, useDismiss, ProvNotice, contextWindowFor } from '../../utils/appHelpers.jsx';
 
 export function humanText(v) {
   return String(v == null ? '' : v).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 220);

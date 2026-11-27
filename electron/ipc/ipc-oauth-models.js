@@ -1,11 +1,12 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
+const net = require('net');
 const { spawn, execFile } = require('child_process');
 const { dialog, shell } = require('electron');
 
 module.exports = function registerOauthModelIpc(ctx) {
-  const { ipcMain, store, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast } = ctx;
+  const { ipcMain, store, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast, poolNoticeDeduper, bundledRuntimeDir, getRuntimes } = ctx;
 
 function freellmFallbackApiKey() {
   try {

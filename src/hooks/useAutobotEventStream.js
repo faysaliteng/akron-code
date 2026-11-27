@@ -4,7 +4,7 @@ import { uid, cleanErr, sendDesktopNotification } from '../utils/appHelpers.jsx'
 
 export function useAutobotEventStream({
   runIdRef, liveRef, runStartedAtRef, runConvRef, activeIdRef, settingsRef,
-  setLiveSync, setSubAgents, setSwarmInfo, setSwarmBoard,
+  setLiveSync, setThinking, setSubAgents, setSwarmInfo, setSwarmBoard,
   setPaused, setPermError, setPermissionQueue, setLastUsage,
   commitLive, setError, setModelMenuOpen, setQuestion,
   setShowSettings, setPanel, setActiveId, setCuConsent,

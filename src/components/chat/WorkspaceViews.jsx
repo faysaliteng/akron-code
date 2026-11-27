@@ -1,16 +1,21 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import DOMPurify from 'dompurify';
+import hljs from 'highlight.js/lib/common';
 import { Icon } from '../Icon.jsx';
 import ConnectorLogo from '../../ConnectorLogo.jsx';
+import { ctxToastState } from '../../ctx-toast.mjs';
 import { LiveChecklistCard, LiveToolActivityCard, FilesChangedBar, summarizeChangedFiles } from '../LiveProgress.jsx';
 import { CodeReviewPane } from '../CodeReviewPane.jsx';
 import { MissionControlPane } from '../MissionControlPane.jsx';
+import { ProactiveDashboard } from '../ProactiveDashboard.jsx';
+import { ProjectsView, McpView } from '../../features/WorkspacePanels.jsx';
 import { IdeWorkbench } from '../../ide/IdeWorkbench.jsx';
 import { MindMapView } from '../../ide/MindMapView.jsx';
 import { shortcutLabels } from '../../ide/shortcuts';
 import {
   renderMarkdown, extractCodeBlocks, cleanErr, contextWindowFor, usedTokens,
   useTicker, fmtElapsed, shortPath, describeTool, Logo, LinkPreviews, useDismiss,
-  convToMarkdown, convToHtml, loadJSON,
+  convToMarkdown, convToHtml, loadJSON, fmtInt, timeGreeting,
 } from '../../utils/appHelpers.jsx';
 
 export function RunActivity({ live, thinking, startedAt }) {
@@ -617,8 +622,29 @@ export function RunLogPanel({ convId }) {
   );
 }
 
+export function SegmentView({ segments, tools, streaming }) {
+  const list = segments || [];
+  const lastIdx = list.length - 1;
+  return list.map((s, i) => {
+    if (s.type === 'thinking') {
+      const txt = s.text || '';
+      if (!txt.trim()) return null;
+      return <ThinkBlock key={'seg-th-' + i} text={txt} streaming={streaming && i === lastIdx} />;
+    }
+    if (s.type === 'tools') {
+      const rows = (s.ids || []).map((id) => (tools || []).find((t) => t.id === id)).filter(Boolean);
+      if (!rows.length) return null;
+      return <div className="tools" key={'seg-t-' + i}><ToolGroup rows={rows} streaming={streaming} /></div>;
+    }
+    const txt = s.text || '';
+    if (!txt.trim()) return null;
+    const caret = streaming && i === lastIdx ? '<span class="cursor">▍</span>' : '';
+    return <div className={'md' + (streaming ? ' streaming' : '')} key={'seg-m-' + i} dangerouslySetInnerHTML={{ __html: renderMarkdown(txt) + caret }} />;
+  });
+}
+
 // ---------- Chat view ----------
-function ChatViewInner({ messages, live, thinking, paused, onScrollAway, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onLearnSkill, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError }) {
+function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, thinking, paused, onScrollAway, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onLearnSkill, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [subExpanded, setSubExpanded] = useState(false);
@@ -884,7 +910,7 @@ function ChatViewInner({ messages, live, thinking, paused, onScrollAway, subAgen
           <p className="muted">{T('welcome.prompt')}</p>
         </div>
       )}
-      {messages.map((m, i) => <MessageComponent key={m.id} m={m} convId={convId} idx={i} turnLabel={turnPrompts[i]} subAgentCount={subCount} taskCount={bgTasksCount} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} />)}
+      {MessageComponent && messages.map((m, i) => <MessageComponent key={m.id} m={m} convId={convId} idx={i} turnLabel={turnPrompts[i]} subAgentCount={subCount} taskCount={bgTasksCount} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} />)}
       {Boolean((subAgents && subAgents.length > 0) || swarmInfo) && (
         <MissionControl subAgents={subAgents} swarmInfo={swarmInfo} swarmBoard={swarmBoard} inline onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} />
       )}

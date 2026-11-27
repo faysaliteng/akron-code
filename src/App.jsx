@@ -45,13 +45,14 @@ import { ApplicationSettingsSection, BrowserSettingsSection, ModelsAndLimitsSect
 import {
   ProvNotice, renderMarkdown, resolveLoopbackKey, timeGreeting, cleanErr, usedTokens, contextWindowFor,
   PRESETS, PRESET_KEYS, STYLES, REASON_LEVELS, DEFAULT_PROVIDER, loadJSON, saveJSON, uid, Logo,
+  LinkPreviews, fmtTokens, estimateCost, fmtCost, msgText, buildDirectives, fmtElapsed,
 } from './utils/appHelpers.jsx';
 import { useAutobotEventStream } from './hooks/useAutobotEventStream.js';
 import {
   EnvPanel, MissionControl, RunLogPanel, ChatView, ArtifactPreview, SearchView,
   ArtifactsView, SkillsViewBody, PluginsViewBody, ExtensionsView, ScheduledViewBody,
   TerminalView, CodeView, SubagentsPane, SessionPane, ExportMenu, TodoList, ToolGroup,
-  ToolDetail, DeltaChips, DiffBlock,
+  ToolDetail, DeltaChips, DiffBlock, ContextLimitToast, ThinkBlock,
 } from './components/chat/WorkspaceViews.jsx';
 import { BrowserViewBody } from './components/browser/BrowserPaneView.jsx';
 import { InputBarBody } from './components/chat/InputBarView.jsx';
@@ -1514,7 +1515,7 @@ export default function App() {
         setShowSettings(true);
         break;
       case 'review': {
-        const rawArg = String(arg || '').trim();
+        const rawArg = String(argText || '').trim();
         const adv = /--adversarial\b/i.test(rawArg);
         const withMatch = /--with\s+("([^"]+)"|'([^']+)'|(\S+))/i.exec(rawArg);
         const withSpec = withMatch ? (withMatch[2] || withMatch[3] || withMatch[4] || '') : '';
@@ -1921,7 +1922,7 @@ export default function App() {
         break;
       }
       case 'learn': {
-        const res = await learnCurrentSession(arg);
+        const res = await learnCurrentSession(argText);
         if (res && res.ok) {
           note(`✅ **Learned PII-scrubbed skill** (\`/${res.slug}\`)\nSaved cleanly to \`${res.filePath}\` with personal names, emails, keys, paths, and IDs redacted.`);
         } else {
@@ -2316,7 +2317,7 @@ export default function App() {
   const modelMenuOpenSetterRef = useRef(() => {});
   useAutobotEventStream({
     runIdRef, liveRef, runStartedAtRef, runConvRef, activeIdRef, settingsRef,
-    setLiveSync, setSubAgents, setSwarmInfo, setSwarmBoard,
+    setLiveSync, setThinking, setSubAgents, setSwarmInfo, setSwarmBoard,
     setPaused, setPermError, setPermissionQueue, setLastUsage,
     commitLive, setError, setModelMenuOpen, setQuestion,
     setShowSettings, setPanel, setActiveId, setCuConsent,
@@ -2577,7 +2578,15 @@ export default function App() {
               onOpenProjectSettings={(grp) => { if (grp && grp.cwd) setCwd(grp.cwd); openSettingsAt('project'); }}
               onUnstickConv={(cid, sh) => {
                 selectConv(cid);
-                if (sh && sh.unstickDraft) setDraft(sh.unstickDraft);
+                if (sh && sh.unstickDraft) {
+                  setTimeout(() => {
+                    if (inputRef.current) {
+                      inputRef.current.value = String(sh.unstickDraft);
+                      inputRef.current.dispatchEvent(new Event('input', { bubbles: true }));
+                      inputRef.current.focus();
+                    }
+                  }, 30);
+                }
                 setNotice(`Diagnosed session — unstick draft loaded in composer`);
               }}
             />
@@ -2612,7 +2621,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
+              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} initialTab={searchTab} provider={provider} onOpenSessionLink={openSessionDeepLink} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'mission' && (
                 <MissionControlPane
@@ -2629,7 +2638,14 @@ export default function App() {
                   }}
                   onDiagnoseUnstick={(cid, row) => {
                     selectConv(cid);
-                    setDraft((row && (row.unstickDraft || row.diagnosis)) || 'Stop retrying and inspect recent tool errors.');
+                    const draftText = (row && (row.unstickDraft || row.diagnosis)) || 'Stop retrying and inspect recent tool errors.';
+                    setTimeout(() => {
+                      if (inputRef.current) {
+                        inputRef.current.value = String(draftText);
+                        inputRef.current.dispatchEvent(new Event('input', { bubbles: true }));
+                        inputRef.current.focus();
+                      }
+                    }, 30);
                     setNotice('Diagnosed session — unstick reply drafted in composer');
                   }}
                   onHealthSnapshot={(map) => setSessionHealthMap(map)}
@@ -3091,6 +3107,7 @@ function SettingsModal(props) {
     <SettingsModalBody
       {...props}
       SETTINGS_SECTIONS={SETTINGS_SECTIONS}
+      AboutSectionComponent={AboutSection}
       renderAboutSection={(section) => (section === 'about' ? <AboutSection theme={props.settings.theme || 'dark'} setNotice={props.setNotice} /> : null)}
     />
   );

@@ -2,7 +2,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Icon } from '../Icon.jsx';
 import { LOCALES } from '../../i18n.js';
 import { normBase, LOCAL_BASE } from '../../providerstatus-ui.mjs';
-import { PRESETS, PRESET_KEYS, useDismiss } from '../../utils/appHelpers.jsx';
+import { shortcutLabels } from '../../ide/shortcuts.js';
+import { useVoiceDictation } from '../../voice';
+import { PRESETS, PRESET_KEYS, useDismiss, SOUND_PRESETS, playUiSound, sendDesktopNotification, HARNESS_PROFILES } from '../../utils/appHelpers.jsx';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel.jsx';
 import { MigrationWizard } from './MigrationWizard.jsx';
 import { ApplicationSettingsSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection } from './ExtendedSettingsPanels.jsx';
@@ -17,7 +19,7 @@ import {
 export function SettingsModalBody({
   provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator,
   features, setFeatures, testProvider, onClose, T, permissions, setPermissions, compliance, setCompliance,
-  pendingPreset, clearPendingPreset, initialSection = 'providers', SETTINGS_SECTIONS = [], AboutSectionComponent = null,
+  pendingPreset, clearPendingPreset, initialSection = 'providers', SETTINGS_SECTIONS = [], AboutSectionComponent = null, renderAboutSection = null,
   skills = [], toggleSkill, setAllSkills, refreshSkills,
   mcpServers = [], mcpForm, setMcpForm, connectMcp, disconnectMcp,
   memory = [], addMemory, clearMemory, convs = [], onJumpToMessage,
@@ -1005,7 +1007,7 @@ export function SettingsModalBody({
             )}
 
             {section === 'about' && (
-              AboutSectionComponent ? <AboutSectionComponent theme={settings.theme || 'dark'} setNotice={setNotice} /> : null
+              AboutSectionComponent ? <AboutSectionComponent theme={settings.theme || 'dark'} setNotice={setNotice} /> : (renderAboutSection ? renderAboutSection('about') : null)
             )}
 
             {section === 'feedback' && (
