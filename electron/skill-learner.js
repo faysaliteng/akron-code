@@ -178,8 +178,9 @@ function extractSkillToDisk({
   const filePath = path.join(baseDir, 'SKILL.md');
   fs.writeFileSync(filePath, fullDoc, 'utf8');
 
-  // Also ensure custom skill cache picks it up when scope is user
+  // Always refresh the in-process skill cache immediately so list_skills / Skill find it without restart
   try {
+    if (typeof store.invalidateSkillsCache === 'function') store.invalidateSkillsCache();
     if (scope !== 'project' && userSkillsDir === DEFAULT_USER_SKILLS_DIR && typeof store.setSkillEnabled === 'function') {
       store.setSkillEnabled(slug, true);
     }

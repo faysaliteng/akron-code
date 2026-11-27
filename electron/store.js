@@ -104,8 +104,14 @@ function setSettings(patch) {
 }
 
 // ---- Skills ----
-// The 7 Claude Desktop bundled skills (manifest from Claude.app v6.28899.6).
+// First-party Akron Code core skills + Automation + REA + Claude Desktop document/design skills.
 const BUNDLED_SKILLS = [
+  { name: 'akron-code-guide', description: 'Authoritative reference for Akron Code\'s built-in capabilities, routing modes (Smart Auto, Orchestrator, Swarm, Single Model), coding & verification tools (ShadowCheck, CodebaseSearch, RunToolScript, REPL), Creator Mode (CreateCustomTool, ExtractSkill), live Artifacts/charts, media/office generation, Paradev sandboxes, and parallel sessions.' },
+  { name: 'akron-browser-bot', description: 'Control the user\'s real Chrome, Brave, or Edge browser and Akron Browser Bot side panel via `ext_browser` over the local 127.0.0.1:8766 bridge (also aliased as `akron-web-bot`), or use built-in `browser_*` tools for the in-app WebView pane.' },
+  { name: 'akron-swarm-orchestration', description: 'Orchestrate parallel multi-agent work in Akron Code using frontier `Swarm` teams (with explicit tasks, Git worktrees, and live message boards), `Task`/`Agent` subagent personas, durable `TeamCreate`/`TaskCreate` boards, and repeatable `Workflow` pipelines.' },
+  { name: 'akron-desktop-computer', description: 'Control and inspect the native desktop GUI (`mcp__computer__screenshot`, `zoom`, `app_screenshot`, mouse/keyboard, `ax_find`), integrated terminal tabs (`mcp__terminal__*`), scheduled automations (`CronCreate`, `ScheduleWakeup`, `Monitor`), and built-in REA reverse engineering (`rea`).' },
+  { name: 'automation', description: 'Guide the user interactively through designing, scheduling, and testing an automated recurring or event-driven task.' },
+  { name: 'reverse-engineer-anything', description: 'Reverse engineer native, managed, Electron/JavaScript, packaged, firmware, and browser targets with built-in REA (263 MCP tools & CLI), audit release exposure, decompile code, and build AgentEnv bundles.' },
   { name: 'docx', description: 'Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx) or Word templates (.dotx). Triggers include: any mention of Microsoft Word Documents, such as "Word doc", ".docx", ".dotx", "microsoft doc". Also use when extracting or reorganizing content from .docx/.dotx files, inserting/replacing images, find-and-replace, tracked changes/comments, or converting content into a polished Word document. Do NOT use for PDFs, spreadsheets, Google Docs, or unrelated coding.' },
   { name: 'pdf', description: 'Use this skill whenever the user wants to do anything with PDF files: reading or extracting text/tables, combining/merging, splitting, rotating pages, adding watermarks, creating PDFs, filling forms, encrypting/decrypting, extracting images, and OCR on scanned PDFs.' },
   { name: 'pdf-reading', description: 'Use when you need to read, inspect, or extract content from PDF files — especially when content is NOT in context and must be read from disk. Covers content inventory, text extraction, page rasterization, embedded image/attachment/table/form-field extraction, and choosing the right reading strategy.' },
@@ -113,8 +119,19 @@ const BUNDLED_SKILLS = [
   { name: 'xlsx', description: 'Use any time a spreadsheet file is the primary input or output — open/read/edit/fix .xlsx/.xlsm/.xltx/.csv/.tsv, add columns, compute formulas, formatting, charting, cleaning messy data, or converting between tabular formats.' },
   { name: 'frontend-design', description: 'Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and choices that don\'t read as templated defaults.' },
   { name: 'draft-design-system', description: 'Draft a design system from a brand\'s own material (logos, fonts, colours, guidelines, codebase) as a folder of plain files — brand book, tokens, font files, components. Use when someone asks for a design system, brand kit, brand guidelines or style guide.' },
-  { name: 'reverse-engineer-anything', description: 'Reverse engineer native, managed, Electron/JavaScript, packaged, firmware, and browser targets with built-in REA (263 MCP tools & CLI), audit release exposure, decompile code, and build AgentEnv bundles.' },
 ];
+
+const SKILL_ALIASES = {
+  'akron-web-bot': 'akron-browser-bot',
+  'web-bot': 'akron-browser-bot',
+  'browser-bot': 'akron-browser-bot',
+  'akron-guide': 'akron-code-guide',
+  'akron-coder': 'akron-code-guide',
+  'akron': 'akron-code-guide',
+  'swarm-orchestration': 'akron-swarm-orchestration',
+  'desktop-computer': 'akron-desktop-computer',
+  'rea': 'reverse-engineer-anything',
+};
 
 // ---- YAML frontmatter parser (name + description + domain/metadata) ----
 function parseSkillFrontmatter(text) {
@@ -146,8 +163,25 @@ function parseSkillFrontmatter(text) {
   return out;
 }
 
-// ---- Skill discovery (bundled + Claude Code + custom) ----
-let _skillsCache = null;
+// ---- Skill discovery (bundled + project + Claude Code + custom) ----
+let _skillsCache = { key: '', list: null };
+
+function invalidateSkillsCache() {
+  _skillsCache = { key: '', list: null };
+}
+
+function skillsDirFingerprint(dirs) {
+  return dirs.map((d) => {
+    try {
+      if (!d || !fs.existsSync(d)) return `${d}:0`;
+      const st = fs.statSync(d);
+      const ents = fs.readdirSync(d).sort().join(',');
+      return `${d}:${Math.floor(st.mtimeMs)}:${ents}`;
+    } catch (_) {
+      return `${d}:err`;
+    }
+  }).join('|');
+}
 
 const FOREIGN_CLAUDE_SKILL_NAMES = new Set(['built-in-browser', 'chrome-browser', 'computer-use']);
 
@@ -178,17 +212,26 @@ function addDirSkills(list, seen, dir, source) {
       name,
       description: (fm && fm.description) || '',
       source,
+      ...(source === 'bundled' ? { bundled: true } : {}),
+      ...(source === 'custom' ? { custom: true } : {}),
       file: skillFile,
     });
   }
 }
 
-function discoverSkills() {
-  if (_skillsCache) return _skillsCache;
+function discoverSkills(cwd = null) {
+  const projRoot = cwd ? path.resolve(String(cwd)) : '';
+  const watchDirs = [
+    SKILLS_DIR,
+    ...(projRoot ? [path.join(projRoot, '.akron', 'skills'), path.join(projRoot, '.claude', 'skills')] : []),
+  ];
+  const cacheKey = `${projRoot}::${skillsDirFingerprint(watchDirs)}`;
+  if (_skillsCache.list && _skillsCache.key === cacheKey) return _skillsCache.list;
+
   const list = [];
   const seen = new Set();
 
-  // 1. Bundled Akron Bot / Desktop skills (always present).
+  // 1. Bundled Akron Code core skills & built-in skills (always present).
   for (const s of BUNDLED_SKILLS) {
     seen.add(s.name);
     list.push({
@@ -198,8 +241,15 @@ function discoverSkills() {
       file: path.join(BUNDLED_SKILLS_DIR, s.name, 'SKILL.md'),
     });
   }
+  addDirSkills(list, seen, BUNDLED_SKILLS_DIR, 'bundled');
 
-  // 2. Claude Code skills (~/.claude/skills/*/SKILL.md).
+  // 2. Project-local skills (<cwd>/.akron/skills & <cwd>/.claude/skills).
+  if (projRoot) {
+    addDirSkills(list, seen, path.join(projRoot, '.akron', 'skills'), 'project');
+    addDirSkills(list, seen, path.join(projRoot, '.claude', 'skills'), 'project');
+  }
+
+  // 3. Claude Code skills (~/.claude/skills/*/SKILL.md).
   addDirSkills(list, seen, CLAUDE_SKILLS_DIR, 'claude');
   // Claude Code "synced" skills (~/.claude/skills/synced/<uuid>/*/SKILL.md).
   const synced = path.join(CLAUDE_SKILLS_DIR, 'synced');
@@ -209,7 +259,7 @@ function discoverSkills() {
     for (const sub of subs) addDirSkills(list, seen, path.join(synced, sub), 'claude');
   }
 
-  // 3. Custom user skills (~/.autobot/skills/<slug>.md and ~/.autobot/skills/<slug>/SKILL.md).
+  // 4. Custom user skills (~/.autobot/skills/<slug>.md and ~/.autobot/skills/<slug>/SKILL.md).
   ensureDir(SKILLS_DIR);
   addDirSkills(list, seen, SKILLS_DIR, 'custom');
   try {
@@ -231,7 +281,7 @@ function discoverSkills() {
     }
   } catch (_) {}
 
-  _skillsCache = list;
+  _skillsCache = { key: cacheKey, list };
   return list;
 }
 
@@ -275,7 +325,7 @@ function addCustomSkill(name, content) {
   }
   const file = path.join(SKILLS_DIR, slug + '.md');
   fs.writeFileSync(file, body, 'utf8');
-  _skillsCache = null;
+  invalidateSkillsCache();
   return { ok: true, name: (fm && fm.name) || displayName, slug, file };
 }
 
@@ -293,7 +343,7 @@ function deleteCustomSkill(name) {
     const dir = path.dirname(entry.file);
     if (dir !== SKILLS_DIR && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
   } catch (_) {}
-  _skillsCache = null;
+  invalidateSkillsCache();
   const state = getSkillState();
   if (state.disabled && state.disabled.includes(name)) {
     writeJSON(SKILLS_STATE_FILE, { disabled: state.disabled.filter((n) => n !== name) });
@@ -305,10 +355,10 @@ function getSkillState() {
   return readJSON(SKILLS_STATE_FILE, { disabled: [] });
 }
 
-function getSkills() {
+function getSkills(cwd = null) {
   const state = getSkillState();
   const disabled = new Set(state.disabled || []);
-  return discoverSkills().map((s) => ({ ...s, enabled: !disabled.has(s.name) }));
+  return discoverSkills(cwd).map((s) => ({ ...s, enabled: !disabled.has(s.name) }));
 }
 
 function setSkillEnabled(name, enabled) {
@@ -317,28 +367,44 @@ function setSkillEnabled(name, enabled) {
   if (enabled) disabled.delete(name);
   else disabled.add(name);
   writeJSON(SKILLS_STATE_FILE, { disabled: [...disabled] });
+  invalidateSkillsCache();
   return getSkills();
 }
 
 function setAllSkillsEnabled(enabled) {
   if (enabled) writeJSON(SKILLS_STATE_FILE, { disabled: [] });
   else writeJSON(SKILLS_STATE_FILE, { disabled: discoverSkills().map((s) => s.name) });
+  invalidateSkillsCache();
   return getSkills();
 }
 
-function loadSkill(name) {
-  const skills = discoverSkills();
-  const entry = skills.find((s) => s.name === name);
+function loadSkill(name, cwd = null) {
+  const cleaned = String(name || '').trim().replace(/^skill:/i, '').replace(/^\/+/, '').trim();
+  if (!cleaned) return null;
+  const lower = cleaned.toLowerCase();
+  const resolvedAlias = SKILL_ALIASES[lower] || cleaned;
+  const skills = discoverSkills(cwd);
+  const entry = skills.find((s) => s.name === cleaned)
+    || skills.find((s) => String(s.name || '').toLowerCase() === lower)
+    || skills.find((s) => String(s.name || '').toLowerCase() === resolvedAlias.toLowerCase());
   if (entry && entry.file && fs.existsSync(entry.file)) {
     return fs.readFileSync(entry.file, 'utf8');
   }
-  // Fallbacks for backward compatibility.
-  if (BUNDLED_SKILLS.some((s) => s.name === name)) {
-    const file = path.join(BUNDLED_SKILLS_DIR, name, 'SKILL.md');
-    if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8');
+  // Direct path fallbacks (including user custom subdirs, project skills, and aliases).
+  const projRoot = cwd ? path.resolve(String(cwd)) : '';
+  const directCandidates = [
+    path.join(BUNDLED_SKILLS_DIR, cleaned, 'SKILL.md'),
+    path.join(BUNDLED_SKILLS_DIR, resolvedAlias, 'SKILL.md'),
+    path.join(SKILLS_DIR, cleaned, 'SKILL.md'),
+    path.join(SKILLS_DIR, cleaned + '.md'),
+    ...(projRoot ? [
+      path.join(projRoot, '.akron', 'skills', cleaned, 'SKILL.md'),
+      path.join(projRoot, '.claude', 'skills', cleaned, 'SKILL.md'),
+    ] : []),
+  ];
+  for (const fp of directCandidates) {
+    if (fs.existsSync(fp)) return fs.readFileSync(fp, 'utf8');
   }
-  const file = path.join(SKILLS_DIR, name + '.md');
-  if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8');
   return null;
 }
 
@@ -422,6 +488,8 @@ module.exports = {
   setSettings,
   getSkills,
   loadSkill,
+  invalidateSkillsCache,
+  SKILL_ALIASES,
   addCustomSkill,
   deleteCustomSkill,
   setSkillEnabled,

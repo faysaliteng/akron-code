@@ -18,7 +18,7 @@ const contextPipeline = require('./context-pipeline');
 const loopGuardMod = require('./loop-guard');
 const modeCollab = require('./mode-collab');
 
-const LEAN_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'Bash', 'LS', 'TodoWrite', 'WebFetch', 'WebSearch', 'ToolSearch']);
+const LEAN_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'Bash', 'LS', 'TodoWrite', 'WebFetch', 'WebSearch', 'ToolSearch', 'Skill', 'list_skills']);
 const STANDARD_TOOLS = new Set([
   'Bash', 'Read', 'Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'ShadowCheck', 'CodebaseSearch', 'RunToolScript',
   'Glob', 'Grep', 'LS', 'Search', 'TodoWrite', 'WebFetch', 'WebSearch',
@@ -256,10 +256,10 @@ const SYSTEM_PROMPT = `You are Akron Code, the Akron Agent by AkronLogic (akronl
   do in one or two tool calls. After delegating, use the workers' results; do not redo their work.
 
 ## Other capabilities
-- Browser tools (browser_open / browser_navigate / browser_snapshot / browser_click / browser_type / browser_screenshot / browser_tabs) for in-app web tasks, plus \`ext_browser\` when the user's Chrome/Brave/Edge browser is connected via Akron Browser Bot.
-- Reverse Engineering (built-in REA / \`morluto/rea\`): when asked to reverse engineer, inspect shipped binaries/ASAR/APK/IPA/firmware/captures, decompile, or audit release exposure, use \`rea\` (or \`find_mcp_tools\` for \`mcp__rea__*\`) and load \`Skill\` \`"reverse-engineer-anything"\`.
-- web_search / web_fetch for facts you are unsure about.
-- Shell, Read, Glob, Grep, memory and todo tools as needed.
+- **External Browser + Side Panel (\`ext_browser\` on \`127.0.0.1:8766\`):** Controls the user's real Chrome/Brave/Edge browser and Akron Browser Bot side panel (\`list_tabs\`, \`open_tab\`, \`close_tab\`, \`switch_tab\`, \`navigate\`, \`read_page\`, \`click\`, \`type\`, \`execute_javascript\`, \`screenshot\`, \`sidepanel_status\`, \`sidepanel_send\`, \`sidepanel_stop\`, \`sidepanel_history\`, \`sidepanel_open\`). Load \`Skill("akron-browser-bot")\` for full workflows.
+- **Built-in Browser Pane (\`browser_*\`):** \`browser_open\`, \`browser_navigate\`, \`browser_snapshot\`, \`browser_click\`, \`browser_type\`, \`browser_js\`, \`browser_screenshot\`, \`browser_tabs\` control the IDE WebView pane; \`mcp__chrome__*\` is only for external Chromium on CDP \`:9222\`.
+- **Desktop, Codebase, Verification & Creator Tools:** \`mcp__computer__*\` (\`screenshot\`, \`zoom\`, \`app_screenshot\`, \`click\`, \`type\`, \`ax_find\`), \`ShadowCheck\` (\`{ path, file_path, files, cwd }\` supports single-file verification), \`REPL\` (isolated child-process Node/Python/Bash), \`CodebaseSearch\` (SQLite/Merkle index), \`RunToolScript\`, \`CreateCustomTool\`, \`ExtractSkill\` (immediately live via \`Skill\`/\`list_skills\` without restart), \`ParadevWorkspaces\`, and \`rea\` (263 REA reverse-engineering tools; load \`Skill("reverse-engineer-anything")\`).
+- **Core Built-in Skills:** \`akron-code-guide\`, \`akron-browser-bot\`, \`akron-swarm-orchestration\`, \`akron-desktop-computer\`, \`automation\`, \`reverse-engineer-anything\`, plus office/design skills are listed in \`<available_skills>\`.
 
 ## Tone and style
 - Answer the question that was asked. Do not pad with restatements, apologies, or "Great question".
@@ -275,7 +275,7 @@ const SYSTEM_PROMPT = `You are Akron Code, the Akron Agent by AkronLogic (akronl
 - Only mark a TodoWrite item completed when the tool result proves it.
 
 ## Skills
-- A skill is a reusable instruction pack. Before answering a task that a skill covers, call \`Skill\` with the exact skill name (no leading slash).
+- A skill is a reusable instruction pack listed in \`<available_skills>\`. Before handling a task covered by one, call \`Skill\` {"name": "<skill-name>"} (no leading slash).
 - Namespaced skills use \`plugin:skill\`. Pass arguments via \`args\` when the skill expects them.
 - If you used a skill, follow its instructions over your own default approach.
 
@@ -2083,6 +2083,19 @@ async function runAgent(opts) {
     if (defs.length) {
       const roster = defs.map((d) => `- ${d.name}${d.model ? ` (model: ${d.model})` : ''}: ${d.description}`).join('\n');
       messages[0].content += `\n\n<subagent_types>\nWhen calling Task or Agent you may set subagent_type to one of these to run it with that definition (prompt + tool restrictions + model):\n${roster}\n</subagent_types>`;
+    }
+  } catch (_) {}
+
+  // 3b. Semi-static: enabled skills catalog so every model knows built-in & custom skills immediately.
+  try {
+    const skillStore = (opts.store && typeof opts.store.getSkills === 'function') ? opts.store : require('./store');
+    const enabledSkills = (skillStore.getSkills(currentCwd) || []).filter((s) => s && s.enabled !== false && s.name);
+    if (enabledSkills.length) {
+      const skillLines = enabledSkills
+        .slice(0, 40)
+        .map((s) => `- ${s.name}: ${String(s.description || '').replace(/\s+/g, ' ').trim().slice(0, 180)}`)
+        .join('\n');
+      messages[0].content += `\n\n<available_skills>\nCall \`Skill\` {"name": "<skill-name>"} before handling a domain covered below:\n${skillLines}\n</available_skills>`;
     }
   } catch (_) {}
 

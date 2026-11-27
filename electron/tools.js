@@ -890,19 +890,27 @@ const executors = {
   },
 
   // ---- Skills ----
-  async list_skills() {
-    const skills = store.getSkills().filter((s) => s.enabled !== false);
+  async list_skills({ cwd } = {}) {
+    const skills = store.getSkills(cwd).filter((s) => s.enabled !== false);
     if (!skills.length) return 'SKILLS:\n(no skills enabled)';
     return 'SKILLS:\n' + skills.map((s) => `- ${s.name}: ${s.description}`).join('\n');
   },
 
-  async load_skill({ name }) {
-    const text = store.loadSkill(name);
-    return text ? `SKILL "${name}":\n${text}` : `Skill "${name}" not found.`;
+  async load_skill({ name, skill, cwd } = {}) {
+    const wanted = String(name || skill || '').trim();
+    if (!wanted) return 'Error: skill name is required.';
+    const text = store.loadSkill(wanted, cwd);
+    if (text) return `SKILL "${wanted}":\n${text}`;
+    const available = store.getSkills(cwd).filter((s) => s.enabled !== false).map((s) => s.name).slice(0, 20).join(', ');
+    return `Skill "${wanted}" not found.${available ? ` Available skills: ${available}` : ''}`;
   },
 
-  async skill({ name }) {
-    return executors.load_skill({ name });
+  async skill({ name, skill, args: skillArgs, cwd } = {}) {
+    const out = await executors.load_skill({ name, skill, cwd });
+    if (skillArgs && typeof out === 'string' && out.startsWith('SKILL ')) {
+      return `${out}\n\n[Skill Arguments]: ${String(skillArgs)}`;
+    }
+    return out;
   },
 
   // ---- Custom skill authoring ----
@@ -1307,7 +1315,7 @@ const toolDefinitions = [
   { name: 'KillShell', description: 'Kill a running background shell or job by its id (shell_id/task_id).', parameters: { type: 'object', properties: { shell_id: { type: 'string', description: 'Background shell/job id' }, task_id: { type: 'string', description: 'Alias for shell_id' } }, required: ['shell_id'] } },
   { name: 'SlashCommand', description: 'Invoke a slash command by name (e.g. /help, /clear, /compact, /model, /review).', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
   { name: 'ExitPlanMode', description: 'Exit plan mode — present a plan for user approval before execution. Mark the tool call denied to stay in plan mode and refine the plan; approve it to leave plan mode and implement.', parameters: { type: 'object', properties: { plan: { type: 'string', description: 'The plan to execute, in markdown' }, allowedPrompts: { type: 'array', description: 'Prompt-based permissions the plan needs (e.g. run tests, install deps)', items: { type: 'object', properties: { tool: { type: 'string' }, prompt: { type: 'string' } } } } }, required: ['plan'] } },
-  { name: 'Skill', description: 'Load the full instructions for a skill by name.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+  { name: 'Skill', description: 'Load the full instructions for a skill by name (e.g. "akron-code-guide", "akron-browser-bot", "akron-swarm-orchestration", "akron-desktop-computer", "reverse-engineer-anything", "automation").', parameters: { type: 'object', properties: { name: { type: 'string', description: 'Exact skill name (no leading slash)' }, skill: { type: 'string', description: 'Alias for name' }, args: { type: 'string', description: 'Optional arguments for the skill' }, cwd: { type: 'string' } } } },
   { name: 'ListMcpResources', description: 'List resources exposed by a connected MCP server.', parameters: { type: 'object', properties: { server: { type: 'string' } } } },
   { name: 'ReadMcpResource', description: 'Read a resource from a connected MCP server by URI.', parameters: { type: 'object', properties: { server: { type: 'string' }, uri: { type: 'string' } }, required: ['uri'] } },
   { name: 'memory_add', description: 'Persist a categorized, deduplicated fact/note to long-term memory.', parameters: { type: 'object', properties: { content: { type: 'string' }, category: { type: 'string', enum: ['architecture', 'build-test', 'style', 'pitfalls', 'workflow', 'general'] }, scope: { type: 'string', enum: ['user', 'project'] }, cwd: { type: 'string' } }, required: ['content'] } },
