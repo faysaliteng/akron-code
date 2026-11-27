@@ -14,8 +14,22 @@ export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoad
   const [statusMsg, setStatusMsg] = useState('');
   const [errMsg, setErrMsg] = useState('');
   const [creatingCustom, setCreatingCustom] = useState(false);
+  const [oauthProviders, setOauthProviders] = useState([]);
+  const [oauthBusy, setOauthBusy] = useState('');
+  const [detectingAll, setDetectingAll] = useState(false);
+
+  const loadOauthStatus = useCallback(async () => {
+    if (!window.autobot || !window.autobot.providerStatus) return;
+    try {
+      const r = await window.autobot.providerStatus();
+      if (r && r.ok && r.status && Array.isArray(r.status.providers)) {
+        setOauthProviders(r.status.providers);
+      }
+    } catch (_) {}
+  }, []);
 
   const loadProviders = useCallback(async () => {
+    loadOauthStatus();
     if (!window.autobot || !window.autobot.orchPaidProvidersGet) return;
     try {
       const res = await window.autobot.orchPaidProvidersGet();
@@ -24,7 +38,54 @@ export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoad
         if (onProvidersLoaded) onProvidersLoaded(res.providers);
       }
     } catch (_) {}
-  }, [onProvidersLoaded]);
+  }, [onProvidersLoaded, loadOauthStatus]);
+
+  const handleOauthConnect = async (pv) => {
+    if (!pv || !window.autobot) return;
+    setOauthBusy(pv.id);
+    setErrMsg('');
+    setStatusMsg('');
+    try {
+      const res = (pv.canBrowserSignIn && pv.id !== 'claude' && window.autobot.providerSignIn)
+        ? await window.autobot.providerSignIn(pv.id)
+        : (window.autobot.providerSignInManual ? await window.autobot.providerSignInManual(pv.id) : null);
+      await loadOauthStatus();
+      if (onPoolMutated) onPoolMutated();
+      if (res && res.ok === false && res.error) setErrMsg(String(res.error));
+      else setStatusMsg(`${pv.label || pv.id} status refreshed — check models below.`);
+    } catch (e) {
+      setErrMsg(String((e && e.message) || e));
+    } finally {
+      setOauthBusy('');
+    }
+  };
+
+  const handleAutoDetectAll = async () => {
+    setDetectingAll(true);
+    setErrMsg('');
+    setStatusMsg('');
+    try {
+      await loadOauthStatus();
+      if (window.autobot && window.autobot.orchAutoDetectModels) {
+        const res = await window.autobot.orchAutoDetectModels();
+        if (res && res.ok && Array.isArray(res.providers)) {
+          setProviders(res.providers);
+          if (onProvidersLoaded) onProvidersLoaded(res.providers);
+          const hitNames = (res.probed || []).filter((x) => x && x.count > 0 && !x.error).map((x) => `${x.name} (${x.count})`);
+          setStatusMsg(hitNames.length ? `Auto-detected live models: ${hitNames.join(', ')}.` : 'Checked all configured endpoints & OAuth accounts.');
+        } else if (res && res.error) {
+          setErrMsg(res.error);
+        }
+      } else {
+        await loadProviders();
+      }
+      if (onPoolMutated) onPoolMutated();
+    } catch (e) {
+      setErrMsg(String((e && e.message) || e));
+    } finally {
+      setDetectingAll(false);
+    }
+  };
 
   useEffect(() => {
     loadProviders();
@@ -229,13 +290,46 @@ export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoad
     <div className="orch-paid-box" data-testid="orch-paid-providers">
       <div className="orch-paid-head">
         <div>
-          <div className="orch-paid-title">Paid &amp; Custom API Providers</div>
+          <div className="orch-paid-title">OAuth Accounts &amp; Paid / Custom API Providers</div>
           <div className="orch-paid-sub">
-            Add keys for OpenRouter, DeepSeek, GLM/Z.ai, GhostMetal, OpenAI, Anthropic, Gemini, xAI or any OpenAI-compatible API. Keyed models appear in the checklist below and work without FreeLLMAPI role pools.
+            Connect OAuth (Claude, ChatGPT, Google Antigravity, Grok) or add/auto-detect API keys for Grok/xAI, Z.ai/GLM, Kimi/Moonshot, DeepSeek, OpenAI, Anthropic, Gemini, OpenRouter, or any OpenAI-compatible endpoint.
           </div>
         </div>
-        <span className="orch-paid-badge">{configuredCount} keyed</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            data-testid="orch-autodetect-btn"
+            className="btn-mini primary"
+            disabled={detectingAll}
+            onClick={handleAutoDetectAll}
+          >
+            <Icon name="Refresh" size={11} /> {detectingAll ? 'Detecting…' : 'Auto-Detect All Models'}
+          </button>
+          <span className="orch-paid-badge">{configuredCount} keyed</span>
+        </div>
       </div>
+
+      {oauthProviders.length > 0 && (
+        <div className="orch-paid-pills" data-testid="orch-oauth-quickbar" style={{ paddingBottom: 4, borderBottom: '1px solid var(--border)' }}>
+          {oauthProviders.map((pv) => {
+            const accts = (pv.accounts || []).filter((a) => !a.needsSignIn && !a.expired);
+            const activeCount = accts.length;
+            return (
+              <button
+                key={'oauth:' + pv.id}
+                type="button"
+                className={'orch-paid-pill' + (activeCount ? ' ready' : '')}
+                disabled={oauthBusy === pv.id}
+                onClick={() => handleOauthConnect(pv)}
+                title={activeCount ? `${pv.label}: ${activeCount} connected account(s)` : `Connect ${pv.label} OAuth`}
+              >
+                <span className={'orch-paid-dot' + (activeCount ? ' ok' : '')} />
+                <span>{pv.label} {oauthBusy === pv.id ? '…' : (activeCount ? `(${activeCount} OAuth)` : '· Sign in')}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="orch-paid-pills">
         {providers.map((p) => {

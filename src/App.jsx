@@ -67,7 +67,7 @@ import { resolveAgainstCwd, isHtmlPath, attachDocumentLinkRouter } from './utils
 import { sendDesktopNotification, convToMarkdown, convToHtml, escapeHtml, fmtSize, extractCodeBlocks, filesToAttachments, toggleDictation, useDismiss, priceFor, FREELLM_LOOPBACK_BASES, MODEL_WINDOW_CACHE, HARNESS_PROFILES, SOUND_PRESETS, playUiSound, extractLinks, fetchUnfurl, parseCodeInfo, copyTextToClipboard, extractMessageText } from './utils/appHelpers.jsx';
 import { extractPersistedSettings, mergeBootSettings, reconcileBootProvider, syncProviderForOrchestratorToggle, mergeBootUiState } from './utils/settingsPersistence.js';
 import { InteractiveTutorialModal, WelcomeQuickStartBar } from './components/InteractiveTutorialModal.jsx';
-import { TUTORIAL_SEEN_KEY, applyBeginnerPreset, shouldAutoOpenTutorial } from './utils/tutorialPresets.js';
+import { TUTORIAL_SEEN_KEY, ORCH_SETUP_NOTICE, hasConfiguredOrchestratorModels, applyBeginnerPreset, shouldAutoOpenTutorial } from './utils/tutorialPresets.js';
 
 // Compact record of what the assistant actually did with tools last turn.
 // Model switches need this: the new model sees files + mindmap, but without the
@@ -181,11 +181,13 @@ export default function App() {
     const prev = orchRef.current;
     const next = typeof nextOrFn === 'function' ? nextOrFn(prev) : nextOrFn;
     if (!next || typeof next !== 'object') return;
+    if (!prev?.enabled && next.enabled && !(opts && opts.allowUnconfigured) && !hasConfiguredOrchestratorModels(next)) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
     if (JSON.stringify(prev) === JSON.stringify(next)) return;
     orchRef.current = next;
     setOrchestrator(next);
     saveJSON('autobot:orchestrator', next);
     try { if (window.autobot && window.autobot.setOrchestrator) window.autobot.setOrchestrator(next); } catch (_) {}
+    if (!prev?.enabled && next.enabled && !(opts && opts.keepSwarmState)) setSwarmEnabled(true);
     if (!(opts && opts.skipProviderSync) && Boolean(next.enabled) !== Boolean(prev && prev.enabled)) {
       setProvider((p) => syncProviderForOrchestratorToggle(p, next, prev));
     }
@@ -334,6 +336,7 @@ export default function App() {
     if (sec && typeof sec === 'object') {
       setSettingsInitialSection(sec.section || 'providers');
       setSettingsFocusMediaKey(sec.focusMediaKey || '');
+      if (sec.notice) setNotice(sec.notice);
     } else {
       setSettingsInitialSection(sec || 'providers');
       setSettingsFocusMediaKey((opts && opts.focusMediaKey) || '');
@@ -904,16 +907,19 @@ export default function App() {
     const targetConvId = (typeof convOverride === 'string' && convOverride) ? convOverride : activeIdRef.current;
     const targetRun = targetConvId ? (runsByConvRef.current[targetConvId] || null) : null;
     if (targetRun && targetRun.streaming && targetRun.paused && text && targetRun.runId && window.autobot && window.autobot.resume) {
-      if (override === undefined && inputRef.current) inputRef.current.value = '';
+      if ((provider.routingMode === 'orchestrator' || (orchestrator && orchestrator.enabled && provider.routingMode !== 'auto' && provider.routingMode !== 'direct')) && !hasConfiguredOrchestratorModels(orchestrator)) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
+    if (override === undefined && inputRef.current) inputRef.current.value = '';
       await window.autobot.resume(targetRun.runId, text);
       return;
     }
     if ((targetRun && targetRun.streaming) || (targetConvId && sendingLocksRef.current.has(targetConvId))) {
-      if (override === undefined && inputRef.current) inputRef.current.value = '';
+      if ((provider.routingMode === 'orchestrator' || (orchestrator && orchestrator.enabled && provider.routingMode !== 'auto' && provider.routingMode !== 'direct')) && !hasConfiguredOrchestratorModels(orchestrator)) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
+    if (override === undefined && inputRef.current) inputRef.current.value = '';
       if (!Array.isArray(attsOverride)) setAttachments([]);
       setQueued((q) => [...q, { id: uid(), text, atts, convId: targetConvId, paused: false }]);
       return;
     }
+    if ((provider.routingMode === 'orchestrator' || (orchestrator && orchestrator.enabled && provider.routingMode !== 'auto' && provider.routingMode !== 'direct')) && !hasConfiguredOrchestratorModels(orchestrator)) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
     if (override === undefined && inputRef.current) inputRef.current.value = '';
     setError('');
 
@@ -2510,6 +2516,7 @@ export default function App() {
     openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
   });
   const handleApplyPreset = useCallback((pid) => {
+    if ((pid === 'orchestrator' || pid === 'swarm') && !hasConfiguredOrchestratorModels(orchestrator)) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
     const r = applyBeginnerPreset(pid, { provider, orchestrator, reasoningLevel, permissions });
     setProvider(r.provider);
     saveJSON('autobot:provider', { ...r.provider, _updatedAt: Date.now() });
@@ -2703,7 +2710,7 @@ export default function App() {
                   onUpdateQueueItemText={updateQueuedText}
                   unqueue={unqueue} sendQueuedNow={sendQueuedNow}
                   settings={settings} onVoiceError={setError}
-                  provider={provider} setProvider={setProvider} orchestrator={orchestrator} setOrchestrator={saveOrchestrator} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt((opts && opts.section) || 'providers'); }}
+                  provider={provider} setProvider={setProvider} orchestrator={orchestrator} setOrchestrator={saveOrchestrator} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); if (opts && opts.notice) setNotice(opts.notice); openSettingsAt((opts && opts.section) || 'providers'); }}
                   providerKeys={providerKeys} setProviderKeys={setProviderKeys}
                   attachments={attachments} setAttachments={setAttachments}
                   reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
@@ -3064,7 +3071,7 @@ export default function App() {
               onUpdateQueueItemText={updateQueuedText}
               unqueue={unqueue} sendQueuedNow={sendQueuedNow}
               settings={settings} onVoiceError={setError}
-              provider={provider} setProvider={setProvider} orchestrator={orchestrator} setOrchestrator={saveOrchestrator} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt((opts && opts.section) || 'providers'); }}
+              provider={provider} setProvider={setProvider} orchestrator={orchestrator} setOrchestrator={saveOrchestrator} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); if (opts && opts.notice) setNotice(opts.notice); openSettingsAt((opts && opts.section) || 'providers'); }}
               providerKeys={providerKeys} setProviderKeys={setProviderKeys}
               attachments={attachments} setAttachments={setAttachments}
               reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}

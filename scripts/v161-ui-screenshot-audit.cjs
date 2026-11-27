@@ -89,6 +89,7 @@ if (process.argv.includes('--worker')) {
     safe('autobot:ollamaModels', () => ({ ok: false, models: [] }));
     safe('autobot:probeProviders', () => ({}));
     safe('autobot:orchPaidProvidersGet', () => ({ ok: true, providers: [] }));
+    safe('autobot:orchAutoDetectModels', () => ({ ok: true, providers: [], probed: [] }));
     safe('autobot:freellmCatalog', () => ({ ok: true, platforms: [], totals: { totalModels: 0, totalPlatforms: 0 } }));
     safe('autobot:freellmDetect', () => ({ ok: false }));
     safe('autobot:autoRouterGet', () => ({ ok: true, hasKey: false }));
@@ -299,6 +300,31 @@ if (process.argv.includes('--worker')) {
       };
     })()`);
     rec('Collapsed sidebar is 52px with hidden group headers & timestamps', collapsedMetrics.hasCollapsedClass && collapsedMetrics.width <= 54 && !collapsedMetrics.groupHeadVisible && !collapsedMetrics.relTimeVisible && collapsedMetrics.convCount >= 2, JSON.stringify(collapsedMetrics));
+
+    // 4. Unconfigured Orchestrator block: clearing models blocks Lead+Builder and opens Settings -> Orchestrator
+    await win.webContents.executeJavaScript(`(async () => {
+      const emptyOrch = { enabled: false, providers: [], activeIndex: -1 };
+      localStorage.setItem('autobot:orchestrator', JSON.stringify(emptyOrch));
+      if (window.autobot?.setOrchestrator) await window.autobot.setOrchestrator(emptyOrch);
+    })()`);
+    await win.reload();
+    await new Promise((r) => setTimeout(r, 800));
+    const emptyOrchGuard = await win.webContents.executeJavaScript(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.querySelector('.tutorial-close')?.click();
+      await sleep(100);
+      document.querySelector('[data-testid="wqs-preset-orchestrator"]')?.click();
+      await sleep(220);
+      return {
+        setupBanner: !!document.querySelector('[data-testid="orch-setup-banner"]'),
+        autoDetectBtn: !!document.querySelector('[data-testid="orch-autodetect-btn"]'),
+        oauthBar: !!document.querySelector('[data-testid="orch-oauth-quickbar"]'),
+        paidPanel: !!document.querySelector('[data-testid="orch-paid-providers"]'),
+        pillText: (document.querySelector('.model-pill')?.textContent || '').trim(),
+      };
+    })()`);
+    rec('Unconfigured Orchestrator blocks activation & opens Settings -> Orchestrator', emptyOrchGuard.setupBanner && emptyOrchGuard.autoDetectBtn && emptyOrchGuard.oauthBar && emptyOrchGuard.paidPanel && !/^Orch\b/.test(emptyOrchGuard.pillText), JSON.stringify(emptyOrchGuard));
+
     rec('Zero uncaught console errors', results.consoleErrors.length === 0, results.consoleErrors.join('; '));
 
     await fetch(`http://127.0.0.1:${srvPort}/report`, {

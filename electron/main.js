@@ -738,6 +738,12 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   const routingMode = (provider && provider.routingMode)
     || (provider && String(provider.model || '').trim().toLowerCase() === 'auto' ? 'auto' : '');
   const orchActive = isOrchestratorActiveForTurn(orchSource, swarm, provider);
+  if ((routingMode === 'orchestrator' || (orchSource && orchSource.enabled && routingMode !== 'auto' && routingMode !== 'direct')) && !require('./orch-router').hasConfiguredOrchestratorModels(orchSource)) {
+    const msg = 'No Orchestrator models selected. Open Settings → Orchestrator, connect OAuth or API keys, and check at least one model.';
+    const owner = winFor(event);
+    if (owner && !owner.isDestroyed()) owner.webContents.send('autobot:event', { runId, convId, type: 'error', message: msg, fatal: true, retryable: false });
+    return { ok: false, error: msg };
+  }
   let poolDead = [];
   let delegationOrchestrator = null;
   // Resolve subscription accounts into a live bearer token before the turn.

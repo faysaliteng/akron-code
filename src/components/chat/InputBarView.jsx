@@ -7,6 +7,7 @@ import { useVoiceDictation } from '../../voice';
 import { ClaudeReconnectPanel, useClaudeReconnect } from '../settings/SettingsSections.jsx';
 import { SessionModelList, EnvironmentPicker, PERM_MODES, PERM_SHORT, BUILTIN_MENTION_AGENTS, ContextMeter, ProvModelList } from './WorkspaceViews.jsx';
 import { PRESETS, PRESET_KEYS, resolveLoopbackKey, STYLES, REASON_LEVELS, REASON_LABELS, MODEL_CAPABILITY_CACHE, thinkingCapabilitiesForUi, contextWindowFor, loadJSON, saveJSON, useDismiss, toggleDictation, filesToAttachments, uid, ProvNotice, fmtInt, MODEL_WINDOW_CACHE, usedTokens } from '../../utils/appHelpers.jsx';
+import { guardOrchestratorAction } from '../../utils/tutorialPresets.js';
 
 export function InputBarBody({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, orchestrator, setOrchestrator, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, onOpenTutorial, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, customStyles = [], customAgents = [], onOpenCustomizations, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, queuePaused, onToggleQueuePaused, onClearQueue, onToggleQueueItemPaused, onReorderQueue, onStepQueueItem, onUpdateQueueItemText, unqueue, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, activeSkillPill, onClearSkillPill, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);
@@ -921,6 +922,10 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   };
 
   const activateOrchestratorSupervisor = (row = null) => {
+    if (!row && !guardOrchestratorAction(orchestrator, openSettings)) {
+      setModelMenuOpen(false);
+      return;
+    }
     const baseRows = (orchestrator && Array.isArray(orchestrator.providers)) ? orchestrator.providers : [];
     if (row && row.model) {
       const idx = baseRows.findIndex((p) => p && p.model === row.model && String(p.oauthProvider || '') === String(row.oauthProvider || ''));
@@ -939,11 +944,13 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
       if (setOrchestrator) {
         setOrchestrator({ ...(orchestrator || { providers: [] }), enabled: true, activeIndex: idx >= 0 ? idx : 0 });
       }
+      if (typeof setSwarmEnabled === 'function') setSwarmEnabled(true);
     } else {
       setProvider((v) => ({ ...v, routingMode: 'orchestrator' }));
       if (setOrchestrator) {
         setOrchestrator({ ...(orchestrator || { providers: [] }), enabled: true, activeIndex: 0 });
       }
+      if (typeof setSwarmEnabled === 'function') setSwarmEnabled(true);
     }
     setModelMenuOpen(false);
   };
@@ -1541,7 +1548,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                             </button>
                           );
                         }) : (
-                          <div className="prov-none">No Orchestrator pool models yet — click Configure…</div>
+                          <div className="prov-none">No Orchestrator models selected — click Configure… to connect OAuth or API keys</div>
                         )}
                         {orchModelChoices.length > 1 && setOrchestrator && (
                           <div className="orch-executor-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 8px 2px', borderTop: '1px solid rgba(255,255,255,0.06)', marginTop: 4 }}>

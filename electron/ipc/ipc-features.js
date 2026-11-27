@@ -2398,6 +2398,7 @@ function buildOrchPaidProvidersSnapshot() {
   }
   for (const saved of savedList) {
     if (!saved || !saved.id || seen.has(saved.id)) continue;
+    seen.add(saved.id);
     const baseURL = String(saved.baseURL || '').trim();
     const key = orchRouter.resolvePaidProviderApiKey({ orchProviderId: saved.id, baseURL }, { settings, secretstore });
     merged.push({
@@ -2416,6 +2417,40 @@ function buildOrchPaidProvidersSnapshot() {
       hasKey: Boolean(key),
       keyHint: key ? '••••' + String(key).slice(-4) : '',
     });
+  }
+  const coveredBases = new Set(merged.map((p) => orchRouter.normBase(p.baseURL || '')).filter(Boolean));
+  const addDetectedEndpoint = (rawBase, rawModel, rawName) => {
+    const nb = orchRouter.normBase(rawBase || '');
+    if (!nb || !/^https?:\/\//i.test(nb) || coveredBases.has(nb)) return;
+    const key = orchRouter.resolvePaidProviderApiKey({ baseURL: nb }, { settings, secretstore });
+    if (!key && !/^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(nb)) return;
+    coveredBases.add(nb);
+    let hostLabel = rawName || nb;
+    try { hostLabel = rawName || new URL(nb).host; } catch (_) {}
+    const slug = 'detected-' + nb.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').slice(0, 36);
+    merged.push({
+      id: slug,
+      name: String(hostLabel),
+      baseURL: nb,
+      docsUrl: '',
+      editableBaseUrl: true,
+      custom: true,
+      detectedFromSettings: true,
+      models: rawModel ? [{ id: String(rawModel).trim(), label: String(rawModel).trim(), tier: 'heavy', contextWindow: 0 }] : [],
+      hasKey: Boolean(key),
+      keyHint: key ? '••••' + String(key).slice(-4) : '',
+    });
+  };
+  if (settings.provider && settings.provider.baseURL && !settings.provider.oauthProvider) {
+    addDetectedEndpoint(settings.provider.baseURL, settings.provider.model, '');
+  }
+  if (settings.autoRouter && settings.autoRouter.baseURL) {
+    addDetectedEndpoint(settings.autoRouter.baseURL, settings.autoRouter.model, 'Auto Router API');
+  }
+  if (settings.providerKeys && typeof settings.providerKeys === 'object') {
+    for (const [rawBase, val] of Object.entries(settings.providerKeys)) {
+      if (val && String(val).trim()) addDetectedEndpoint(rawBase, '', '');
+    }
   }
   return { ok: true, providers: merged };
 }
@@ -2572,6 +2607,56 @@ ipcMain.handle('autobot:orchPaidProviderDelete', (e, payload = {}) => {
   }
 });
 
+async function probeProviderModelsEndpoint(baseURL, apiKey, timeoutMs = 8000) {
+  const headers = { Accept: 'application/json' };
+  if (apiKey) {
+    if (/anthropic\.com/i.test(baseURL)) {
+      headers['x-api-key'] = apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+    } else {
+      headers.Authorization = 'Bearer ' + apiKey;
+    }
+  }
+  if (/openrouter\.ai/i.test(baseURL)) {
+    headers['HTTP-Referer'] = 'https://akronlogic.com';
+    headers['X-Title'] = 'Akron Code';
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let data = null;
+  try {
+    const resp = await fetch(baseURL + '/models', { headers, signal: ctrl.signal });
+    const text = await resp.text();
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}: ${text.slice(0, 160)}`, models: [] };
+    data = JSON.parse(text);
+  } finally {
+    clearTimeout(timer);
+  }
+  const rawArr = Array.isArray(data && data.data) ? data.data : (Array.isArray(data && data.models) ? data.models : []);
+  const inferTier = (mid) => {
+    const s = String(mid || '').toLowerCase();
+    if (/(haiku|flash|mini|nano|8b|7b|air|instant|lite)/.test(s)) return 'small';
+    if (/(opus|reasoner|thinking|kimi-k2\.5|r1\b|o[134]\b|pro|ultra|480b|glm-5|gpt-5|grok-4|large)/.test(s)) return 'critical';
+    return 'heavy';
+  };
+  const seenM = new Set();
+  const models = [];
+  for (const item of rawArr) {
+    const mid = String((item && (item.id || item.name || item.model)) || item || '').trim();
+    if (!mid || seenM.has(mid)) continue;
+    if (/(embed|embedding|whisper|tts|moderation|rerank)/i.test(mid)) continue;
+    seenM.add(mid);
+    models.push({
+      id: mid,
+      label: String((item && (item.display_name || item.name)) || mid).trim(),
+      tier: inferTier(mid),
+      contextWindow: Number(item && (item.context_length || item.contextWindow || item.max_context_length)) || 0,
+    });
+    if (models.length >= 200) break;
+  }
+  return { ok: true, models };
+}
+
 ipcMain.handle('autobot:orchPaidProviderFetchModels', async (e, payload = {}) => {
   try {
     const orchRouter = require('../orch-router');
@@ -2589,54 +2674,9 @@ ipcMain.handle('autobot:orchPaidProviderFetchModels', async (e, payload = {}) =>
     if (!apiKey && !/^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(baseURL)) {
       return { ok: false, error: 'Enter or save an API key first to fetch models' };
     }
-    const headers = { Accept: 'application/json' };
-    if (apiKey) {
-      if (/anthropic\.com/i.test(baseURL)) {
-        headers['x-api-key'] = apiKey;
-        headers['anthropic-version'] = '2023-06-01';
-      } else {
-        headers.Authorization = 'Bearer ' + apiKey;
-      }
-    }
-    if (/openrouter\.ai/i.test(baseURL)) {
-      headers['HTTP-Referer'] = 'https://akronlogic.com';
-      headers['X-Title'] = 'Akron Code';
-    }
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
-    let data = null;
-    try {
-      const resp = await fetch(baseURL + '/models', { headers, signal: ctrl.signal });
-      const text = await resp.text();
-      if (!resp.ok) {
-        return { ok: false, error: `HTTP ${resp.status}: ${text.slice(0, 160)}` };
-      }
-      data = JSON.parse(text);
-    } finally {
-      clearTimeout(timer);
-    }
-    const rawArr = Array.isArray(data && data.data) ? data.data : (Array.isArray(data && data.models) ? data.models : []);
-    const inferTier = (mid) => {
-      const s = String(mid || '').toLowerCase();
-      if (/(haiku|flash|mini|nano|8b|7b|air|instant|lite)/.test(s)) return 'small';
-      if (/(opus|reasoner|r1\b|o[134]\b|pro|ultra|480b|glm-5|gpt-5|grok-4|large)/.test(s)) return 'critical';
-      return 'heavy';
-    };
-    const seenM = new Set();
-    const models = [];
-    for (const item of rawArr) {
-      const mid = String((item && (item.id || item.name || item.model)) || item || '').trim();
-      if (!mid || seenM.has(mid)) continue;
-      if (/(embed|embedding|whisper|tts|moderation|rerank)/i.test(mid)) continue;
-      seenM.add(mid);
-      models.push({
-        id: mid,
-        label: String((item && (item.display_name || item.name)) || mid).trim(),
-        tier: inferTier(mid),
-        contextWindow: Number(item && (item.context_length || item.contextWindow || item.max_context_length)) || 0,
-      });
-      if (models.length >= 200) break;
-    }
+    const res = await probeProviderModelsEndpoint(baseURL, apiKey, 8000);
+    if (!res.ok) return { ok: false, error: res.error };
+    const models = res.models;
     if (models.length && id) {
       const nextList = savedList.slice();
       const rec = {
@@ -2654,6 +2694,40 @@ ipcMain.handle('autobot:orchPaidProviderFetchModels', async (e, payload = {}) =>
     return { ...buildOrchPaidProvidersSnapshot(), models, fetchedCount: models.length };
   } catch (err) {
     return { ok: false, error: oneLine(err) };
+  }
+});
+
+ipcMain.handle('autobot:orchAutoDetectModels', async () => {
+  try {
+    const orchRouter = require('../orch-router');
+    const settings = store.getSettings ? (store.getSettings() || {}) : {};
+    const savedList = Array.isArray(settings.orchPaidProviders) ? settings.orchPaidProviders.slice() : [];
+    const snap = buildOrchPaidProvidersSnapshot();
+    const candidates = (snap.providers || []).filter((p) => p && p.baseURL && (p.hasKey || /^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(p.baseURL)));
+    const probed = [];
+    let dirty = false;
+    await Promise.all(candidates.map(async (p) => {
+      try {
+        const apiKey = orchRouter.resolvePaidProviderApiKey({ orchProviderId: p.id, baseURL: p.baseURL }, { settings, secretstore });
+        const res = await probeProviderModelsEndpoint(p.baseURL, apiKey, 5000);
+        if (res.ok && res.models.length) {
+          const rec = { id: p.id, name: p.name, baseURL: p.baseURL, custom: Boolean(p.custom), models: res.models };
+          const idx = savedList.findIndex((x) => x && x.id === p.id);
+          if (idx >= 0) savedList[idx] = rec;
+          else savedList.push(rec);
+          dirty = true;
+          probed.push({ id: p.id, name: p.name, count: res.models.length });
+        } else {
+          probed.push({ id: p.id, name: p.name, count: p.models.length, error: res.error || '' });
+        }
+      } catch (err) {
+        probed.push({ id: p.id, name: p.name, count: p.models.length, error: oneLine(err) });
+      }
+    }));
+    if (dirty) store.setSettings({ orchPaidProviders: savedList });
+    return { ...buildOrchPaidProvidersSnapshot(), probed };
+  } catch (err) {
+    return { ok: false, providers: [], probed: [], error: oneLine(err) };
   }
 });
 

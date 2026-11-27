@@ -9,6 +9,7 @@ import { ProjectSettingsPanel } from './ProjectSettingsPanel.jsx';
 import { MigrationWizard } from './MigrationWizard.jsx';
 import { ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection, MediaStudioApiKeysSection, AutoSwitchBrainSection, FreeLLMAPISection } from './ExtendedSettingsPanels.jsx';
 import { syncProviderForOrchestratorToggle } from '../../utils/settingsPersistence.js';
+import { hasConfiguredOrchestratorModels, ORCH_SETUP_NOTICE } from '../../utils/tutorialPresets.js';
 import { OrchPaidProvidersPanel } from './OrchPaidProvidersPanel.jsx';
 import { ParadevIntegrationCard } from './ParadevIntegrationCard.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from '../../features/WorkspacePanels.jsx';
@@ -34,6 +35,7 @@ export function SettingsModalBody({
   const [section, setSection] = useState(initialSection || 'providers');
   const [navFilter, setNavFilter] = useState('');
   const [orchPaidProviders, setOrchPaidProviders] = useState([]);
+  const [orchReloadTick, setOrchReloadTick] = useState(0);
   const [appVer, setAppVer] = useState('1.6.0');
   useEffect(() => {
     if (window.autobot && typeof window.autobot.getVersion === 'function') {
@@ -549,31 +551,50 @@ export function SettingsModalBody({
 
                 <div className="settings-card">
                   <h3><Icon name="Settings" size={14} /> {T('settings.orchestrator')}</h3>
-                  <label className="check"><input type="checkbox" data-testid="orch-enable-checkbox" checked={!!orchestrator.enabled} onChange={(e) => { const nextOrch = { ...orchestrator, enabled: e.target.checked }; saveOrch(nextOrch); setProvider((v) => syncProviderForOrchestratorToggle(v, nextOrch, orchestrator)); }} /> Enable — multi-model pool for failover AND swarm tier routing</label>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      data-testid="orch-enable-checkbox"
+                      checked={!!orchestrator.enabled}
+                      onChange={(e) => {
+                        const wantOn = e.target.checked;
+                        if (wantOn && !hasConfiguredOrchestratorModels(orchestrator)) {
+                          if (setNotice) setNotice(ORCH_SETUP_NOTICE);
+                          return;
+                        }
+                        const nextOrch = { ...orchestrator, enabled: wantOn };
+                        saveOrch(nextOrch);
+                        setProvider((v) => syncProviderForOrchestratorToggle(v, nextOrch, orchestrator));
+                      }}
+                    />
+                    {' '}Enable — multi-model pool + Swarm ON by default
+                  </label>
+                  {!hasConfiguredOrchestratorModels(orchestrator) && (
+                    <div className="orch-setup-banner" data-testid="orch-setup-banner" style={{ margin: '8px 0 10px', padding: '8px 10px', borderRadius: 8, border: '1px solid rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.08)', fontSize: 12 }}>
+                      <b>Setup Required Before Using Orchestrator:</b> Connect an OAuth account or add/auto-detect an API key below, then check at least 1 model in the checklist.
+                    </div>
+                  )}
                   <OrchPaidProvidersPanel
                     orchestrator={orchestrator}
                     saveOrch={saveOrch}
                     onProvidersLoaded={setOrchPaidProviders}
+                    onPoolMutated={() => setOrchReloadTick((n) => n + 1)}
                   />
-                  {orchestrator.enabled && (
-                    <>
-                      <p className="muted" style={{ marginTop: -4 }}>
-                        Tick the models this pool may use — the list is everything this machine has loaded
-                        (signed-in subscription accounts, Paid API providers, and local/API gateways). <b>Tier</b> decides which
-                        model a supervisor-assigned subtask runs on: <b>small</b> = cheap/mechanical work,
-                        <b> heavy</b> = real implementation, <b>critical</b> = architecture/security/review
-                        (also the supervisor's own model). <b>start</b> marks the first model failover tries.
-                      </p>
-                      <OrchModelChecklist
-                        orchestrator={orchestrator}
-                        provider={provider}
-                        localModels={ollama.ok ? ollama.models : []}
-                        localBase={ollama.base}
-                        paidProviders={orchPaidProviders}
-                        saveOrch={saveOrch}
-                      />
-                    </>
-                  )}
+                  <p className="muted" style={{ marginTop: 4 }}>
+                    Tick the models this pool may use — OAuth subscriptions (Claude, ChatGPT, Google Antigravity, Grok),
+                    API providers (Kimi, Z.ai/GLM, Grok, DeepSeek, OpenAI, Anthropic, Gemini, OpenRouter, Custom),
+                    and local endpoints. <b>Tier</b> assigns subtasks: <b>small</b> = quick work,
+                    <b> heavy</b> = implementation, <b>critical</b> = architecture/supervisor.
+                  </p>
+                  <OrchModelChecklist
+                    orchestrator={orchestrator}
+                    provider={provider}
+                    localModels={ollama.ok ? ollama.models : []}
+                    localBase={ollama.base}
+                    paidProviders={orchPaidProviders}
+                    reloadTick={orchReloadTick}
+                    saveOrch={saveOrch}
+                  />
                 </div>
 
                 <div className="settings-card">

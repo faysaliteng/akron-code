@@ -978,12 +978,22 @@ export function orchId(row) {
     : 'gw|' + normBase(row.baseURL) + '|' + row.model;
 }
 
-export function OrchModelChecklist({ orchestrator, provider, localModels, localBase, paidProviders = [], saveOrch }) {
+function inferOrchModelTier(mid) {
+  const s = String(mid || '').toLowerCase();
+  if (/(haiku|flash|mini|nano|8b|7b|air|instant|lite)/.test(s)) return 'small';
+  if (/(opus|reasoner|thinking|kimi-k2\.5|r1\b|o[134]\b|pro|ultra|480b|glm-5|gpt-5|grok-4|large)/.test(s)) return 'critical';
+  return 'heavy';
+}
+
+export function OrchModelChecklist({ orchestrator, provider, localModels, localBase, paidProviders = [], reloadTick = 0, saveOrch }) {
   const [cat, setCat] = useState({ status: null, models: {}, busy: false, error: '' });
   const [q, setQ] = useState('');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ probeApis = false } = {}) => {
     setCat((c) => ({ ...c, busy: true, error: '' }));
+    if (probeApis && window.autobot && window.autobot.orchAutoDetectModels) {
+      try { await window.autobot.orchAutoDetectModels(); } catch (_) {}
+    }
     let status = null;
     let error = '';
     try {
@@ -1015,7 +1025,7 @@ export function OrchModelChecklist({ orchestrator, provider, localModels, localB
     setCat({ status, models, busy: false, error });
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, reloadTick]);
 
   const groups = useMemo(() => {
     const out = [];
@@ -1119,34 +1129,51 @@ export function OrchModelChecklist({ orchestrator, provider, localModels, localB
   // visible and removable instead of vanishing behind the new checklist.
   const legacy = entries.filter((p) => !known.has(p.id));
 
+  const toEntry = (row) => ({
+    id: row.id,
+    name: row.name,
+    baseURL: row.baseURL || '',
+    apiKey: row.apiKey || '',
+    orchProviderId: row.orchProviderId || '',
+    model: row.model,
+    tier: row.defaultTier || inferOrchModelTier(row.model),
+    oauth: !!row.oauth,
+    oauthProvider: row.oauthProvider || '',
+    transport: row.transport || '',
+    contextWindow: row.contextWindow || 0,
+  });
   const toggle = (row, on) => {
     const cur = entries;
     if (on) {
       if (cur.some((p) => p.id === row.id)) return;
-      const entry = {
-        id: row.id,
-        name: row.name,
-        baseURL: row.baseURL || '',
-        apiKey: row.apiKey || '',
-        orchProviderId: row.orchProviderId || '',
-        model: row.model,
-        tier: row.defaultTier || 'heavy',
-        oauth: !!row.oauth,
-        oauthProvider: row.oauthProvider || '',
-        transport: row.transport || '',
-        contextWindow: row.contextWindow || 0,
-      };
       const ai = orchestrator.activeIndex;
-      saveOrch({ ...orchestrator, providers: [...cur, entry], activeIndex: cur.length && ai >= 0 && ai < cur.length ? ai : 0 });
+      saveOrch({ ...orchestrator, providers: [...cur, toEntry(row)], activeIndex: cur.length && ai >= 0 && ai < cur.length ? ai : 0 });
     } else {
       const next = cur.filter((p) => p.id !== row.id);
-      // Re-anchor 'start' on the same model: removing a row above it used to
-      // shift the index and silently move the start marker to another model.
       const startId = cur[orchestrator.activeIndex] ? cur[orchestrator.activeIndex].id : null;
       let ai = startId ? next.findIndex((p) => p.id === startId) : -1;
       if (ai < 0) ai = next.length ? 0 : -1;
-      saveOrch({ ...orchestrator, providers: next, activeIndex: ai });
+      const hasPools = Boolean(orchestrator.pools && orchestrator.pools.enabled !== false && orchestrator.pools.gateway && orchestrator.pools.gateway.baseURL);
+      saveOrch({ ...orchestrator, enabled: next.length > 0 || hasPools ? orchestrator.enabled : false, providers: next, activeIndex: ai });
     }
+  };
+  const selectRecommended = () => {
+    const allRows = groups.flatMap((g) => g.rows);
+    if (!allRows.length) return;
+    const picks = [];
+    for (const wantTier of ['critical', 'heavy', 'small']) {
+      const matchRow = allRows.find((r) => (r.defaultTier || inferOrchModelTier(r.model)) === wantTier && !picks.some((p) => p.id === r.id));
+      if (matchRow) picks.push(matchRow);
+    }
+    if (!picks.length) picks.push(allRows[0]);
+    const next = entries.slice();
+    for (const r of picks) {
+      if (!next.some((p) => p.id === r.id)) next.push(toEntry(r));
+    }
+    saveOrch({ ...orchestrator, enabled: next.length > 0, providers: next, activeIndex: next.length ? Math.max(0, orchestrator.activeIndex >= 0 ? orchestrator.activeIndex : 0) : -1 });
+  };
+  const clearAll = () => {
+    saveOrch({ ...orchestrator, enabled: false, providers: [], activeIndex: -1 });
   };
   const setTier = (id, tier) => saveOrch({ ...orchestrator, providers: entries.map((p) => (p.id === id ? { ...p, tier } : p)) });
   const setActive = (id) => saveOrch({ ...orchestrator, activeIndex: entries.findIndex((p) => p.id === id) });
@@ -1161,13 +1188,23 @@ export function OrchModelChecklist({ orchestrator, provider, localModels, localB
       <div className="orch-pool-head">
         <span className="orch-count">{picked} of {total} selected</span>
         <input className="orch-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter models…" />
-        <button type="button" className="btn-mini" disabled={cat.busy} onClick={load}>
+        {total > 0 && (
+          <button type="button" className="btn-mini" onClick={selectRecommended}>
+            Select Recommended
+          </button>
+        )}
+        {picked > 0 && (
+          <button type="button" className="btn-mini" onClick={clearAll}>
+            Clear All
+          </button>
+        )}
+        <button type="button" className="btn-mini" disabled={cat.busy} onClick={() => load({ probeApis: true })}>
           <Icon name="Refresh" size={12} /> {cat.busy ? 'Loading…' : 'Reload'}
         </button>
       </div>
       {cat.error && <p className="muted orch-err">{cat.error}</p>}
       {!cat.busy && total === 0 && (
-        <p className="muted">Nothing loadable yet. Sign in to a provider under Accounts, or point the composer at a gateway, then press Reload.</p>
+        <p className="muted">No models detected yet. Connect Claude / ChatGPT / Antigravity / Grok OAuth or add/auto-detect an API key above, then press Reload.</p>
       )}
       {groups.map((g) => {
         const rows = g.rows.filter(match);

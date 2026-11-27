@@ -503,6 +503,7 @@ contextBridge.exposeInMainWorld('autobot', {
   orchPaidProviderSave: (payload) => ipcRenderer.invoke('autobot:orchPaidProviderSave', payload),
   orchPaidProviderDelete: (payload) => ipcRenderer.invoke('autobot:orchPaidProviderDelete', payload),
   orchPaidProviderFetchModels: (payload) => ipcRenderer.invoke('autobot:orchPaidProviderFetchModels', payload),
+  orchAutoDetectModels: (payload) => ipcRenderer.invoke('autobot:orchAutoDetectModels', payload),
   onEnvChanged: (cb) => {
     const h = (e, state) => cb(state);
     ipcRenderer.on('autobot:envChanged', h);

@@ -32,7 +32,8 @@ test('Beginner 1-Click Presets (Auto, Orchestrator, Swarm, Direct) configure mod
   assert.strictEqual(orchRes.provider.routingMode, 'orchestrator');
   assert.strictEqual(orchRes.provider.model, 'gemini-2.5-flash');
   assert.strictEqual(orchRes.orchestrator.enabled, true);
-  assert.strictEqual(orchRes.swarmEnabled, false);
+  assert.strictEqual(orchRes.swarmEnabled, true);
+  assert.strictEqual(mod.detectActivePreset(orchRes).id, 'orchestrator');
 
   const swarmRes = mod.applyBeginnerPreset('swarm', { provider: orchRes.provider, orchestrator: orchRes.orchestrator });
   assert.strictEqual(swarmRes.provider.routingMode, 'orchestrator');

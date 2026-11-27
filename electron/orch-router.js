@@ -795,10 +795,25 @@ const ORCH_PAID_API_PRESETS = [
     editableBaseUrl: true,
     models: [
       { id: 'glm-5', label: 'GLM-5', tier: 'critical', contextWindow: 200000 },
-      { id: 'glm-4-plus', label: 'GLM-4 Plus', tier: 'heavy', contextWindow: 128000 },
       { id: 'glm-4.7', label: 'GLM-4.7', tier: 'heavy', contextWindow: 200000 },
+      { id: 'glm-4-plus', label: 'GLM-4 Plus', tier: 'heavy', contextWindow: 128000 },
+      { id: 'glm-4.5', label: 'GLM-4.5', tier: 'heavy', contextWindow: 128000 },
       { id: 'glm-4-air', label: 'GLM-4 Air', tier: 'small', contextWindow: 128000 },
+      { id: 'glm-4.7-flash', label: 'GLM-4.7 Flash', tier: 'small', contextWindow: 128000 },
       { id: 'glm-4.6v', label: 'GLM-4.6V Vision', tier: 'heavy', contextWindow: 128000 },
+    ],
+  },
+  {
+    id: 'kimi',
+    name: 'Kimi / Moonshot AI',
+    baseURL: 'https://api.moonshot.ai/v1',
+    docsUrl: 'https://platform.moonshot.ai/console/api-keys',
+    editableBaseUrl: true,
+    models: [
+      { id: 'kimi-k2.5', label: 'Kimi K2.5', tier: 'critical', contextWindow: 256000 },
+      { id: 'kimi-k2-thinking', label: 'Kimi K2 Thinking', tier: 'critical', contextWindow: 256000 },
+      { id: 'kimi-k2-0905-preview', label: 'Kimi K2 Preview', tier: 'heavy', contextWindow: 256000 },
+      { id: 'moonshot-v1-128k', label: 'Moonshot v1 128K', tier: 'small', contextWindow: 128000 },
     ],
   },
   {
@@ -859,8 +874,11 @@ const ORCH_PAID_API_PRESETS = [
     editableBaseUrl: true,
     models: [
       { id: 'grok-4', label: 'Grok 4', tier: 'critical', contextWindow: 256000 },
+      { id: 'grok-4-fast-reasoning', label: 'Grok 4 Fast Reasoning', tier: 'critical', contextWindow: 2000000 },
+      { id: 'grok-4-fast-non-reasoning', label: 'Grok 4 Fast', tier: 'heavy', contextWindow: 2000000 },
       { id: 'grok-3', label: 'Grok 3', tier: 'heavy', contextWindow: 131072 },
       { id: 'grok-code-fast-1', label: 'Grok Code Fast 1', tier: 'heavy', contextWindow: 131072 },
+      { id: 'grok-2-vision-1212', label: 'Grok 2 Vision', tier: 'heavy', contextWindow: 32768 },
       { id: 'grok-3-mini', label: 'Grok 3 Mini', tier: 'small', contextWindow: 131072 },
     ],
   },
@@ -925,14 +943,42 @@ const ORCH_PAID_API_PRESETS = [
   },
 ];
 
-function resolvePaidProviderApiKey(providerOrRow, { settings = null, secretstore = null } = {}) {
+const ORCH_ENV_KEY_RULES = [
+  { id: 'xai_api', hostRe: /api\.x\.ai/i, vars: ['XAI_API_KEY', 'GROK_API_KEY'] },
+  { id: 'glm', hostRe: /(api\.z\.ai|open\.bigmodel\.cn)/i, vars: ['ZAI_API_KEY', 'ZHIPUAI_API_KEY', 'GLM_API_KEY'] },
+  { id: 'kimi', hostRe: /api\.moonshot\.(ai|cn)/i, vars: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'] },
+  { id: 'openai', hostRe: /api\.openai\.com/i, vars: ['OPENAI_API_KEY'] },
+  { id: 'anthropic_api', hostRe: /api\.anthropic\.com/i, vars: ['ANTHROPIC_API_KEY'] },
+  { id: 'gemini_api', hostRe: /generativelanguage\.googleapis\.com/i, vars: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'] },
+  { id: 'deepseek', hostRe: /api\.deepseek\.com/i, vars: ['DEEPSEEK_API_KEY'] },
+  { id: 'openrouter', hostRe: /openrouter\.ai/i, vars: ['OPENROUTER_API_KEY'] },
+  { id: 'groq', hostRe: /api\.groq\.com/i, vars: ['GROQ_API_KEY'] },
+  { id: 'mistral', hostRe: /api\.mistral\.ai/i, vars: ['MISTRAL_API_KEY'] },
+  { id: 'nvidia', hostRe: /integrate\.api\.nvidia\.com/i, vars: ['NVIDIA_API_KEY'] },
+  { id: 'together', hostRe: /api\.together\.xyz/i, vars: ['TOGETHER_API_KEY'] },
+  { id: 'tokenrouter', hostRe: /api\.tokenrouter\.com/i, vars: ['TOKENROUTER_API_KEY'] },
+  { id: 'ghostmetal', hostRe: /api\.ghostmetal\.ai/i, vars: ['GHOSTMETAL_API_KEY'] },
+];
+
+function hasConfiguredOrchestratorModels(orch) {
+  if (!orch || typeof orch !== 'object') return false;
+  const rows = Array.isArray(orch.providers) ? orch.providers : [];
+  const hasRow = rows.some((r) => (
+    r && r.enabled !== false && String(r.model || '').trim() && (r.oauthProvider || String(r.baseURL || '').trim())
+  ));
+  if (hasRow) return true;
+  const p = poolsConfig(orch);
+  return Boolean(p && p.gateway && String(p.gateway.baseURL || '').trim());
+}
+
+function resolvePaidProviderApiKey(providerOrRow, { settings = null, secretstore = null, env } = {}) {
   if (!providerOrRow || typeof providerOrRow !== 'object') return '';
   const direct = String(providerOrRow.apiKey || '').trim();
   if (direct) return direct;
   if (providerOrRow.oauthProvider) return '';
   const base = normBase(providerOrRow.baseURL || '');
   const isLoopback = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(base);
-  const provId = String(providerOrRow.orchProviderId || '').trim();
+  const provId = String(providerOrRow.orchProviderId || providerOrRow.id || '').trim();
   if (secretstore && typeof secretstore.get === 'function') {
     if (provId) {
       try {
@@ -947,10 +993,28 @@ function resolvePaidProviderApiKey(providerOrRow, { settings = null, secretstore
       } catch (_) {}
     }
   }
-  if (base && !isLoopback && settings && settings.providerKeys && typeof settings.providerKeys === 'object') {
-    for (const [rawKey, val] of Object.entries(settings.providerKeys)) {
-      if (normBase(rawKey) === base && val && String(val).trim()) {
-        return String(val).trim();
+  if (base && !isLoopback && settings && typeof settings === 'object') {
+    if (settings.providerKeys && typeof settings.providerKeys === 'object') {
+      for (const [rawKey, val] of Object.entries(settings.providerKeys)) {
+        if (normBase(rawKey) === base && val && String(val).trim()) {
+          return String(val).trim();
+        }
+      }
+    }
+    for (const src of [settings.provider, settings.autoRouter]) {
+      if (src && typeof src === 'object' && normBase(src.baseURL || '') === base && String(src.apiKey || '').trim()) {
+        return String(src.apiKey).trim();
+      }
+    }
+  }
+  const effectiveEnv = env !== undefined ? env : ((settings || secretstore) && !process.env.NODE_TEST_CONTEXT ? process.env : null);
+  if (effectiveEnv && typeof effectiveEnv === 'object' && providerOrRow.skipEnv !== true) {
+    for (const rule of ORCH_ENV_KEY_RULES) {
+      if ((provId && rule.id === provId) || (base && rule.hostRe.test(base))) {
+        for (const v of rule.vars) {
+          const val = String(effectiveEnv[v] || '').trim();
+          if (val) return val;
+        }
       }
     }
   }
@@ -967,7 +1031,7 @@ function summary(orch, provider) {
 
 module.exports = {
   ROLES, ROLE_LABEL, ROLE_TIER, normalizeRole, tierToRole, isModelAlias, aliasRole, aliasTier,
-  poolsConfig, poolsActive, isGatewayCredentialReady, resolve, roleLimit, orchestratorFor, chainFor, hasImages,
+  poolsConfig, poolsActive, hasConfiguredOrchestratorModels, isGatewayCredentialReady, resolve, roleLimit, orchestratorFor, chainFor, hasImages,
   freellmPreset, summary, modelEntry, normBase, rotate,
   resolveMediaChain, resolveMediaProvider, isTextOnlyModelId, listMediaStudioCatalog, MEDIA_PROVIDER_KEYS,
   ORCH_PAID_API_PRESETS, resolvePaidProviderApiKey,

@@ -1,5 +1,28 @@
 export const TUTORIAL_SEEN_KEY = 'autobot:tutorialSeenV1';
 
+export const ORCH_SETUP_NOTICE = 'Select at least 1 model in Settings → Orchestrator first (connect OAuth or add an API key & click Auto-Detect).';
+
+export function hasConfiguredOrchestratorModels(orchestrator) {
+  if (!orchestrator || typeof orchestrator !== 'object') return false;
+  const rows = Array.isArray(orchestrator.providers) ? orchestrator.providers : [];
+  if (rows.some((r) => r && r.enabled !== false && String(r.model || '').trim() && (r.oauthProvider || String(r.baseURL || '').trim()))) {
+    return true;
+  }
+  const p = orchestrator.pools;
+  if (!p || typeof p !== 'object' || p.enabled === false) return false;
+  const roles = p.roles && typeof p.roles === 'object' ? p.roles : null;
+  const anyRole = roles && Object.values(roles).some((def) => def && Array.isArray(def.models) && def.models.length);
+  return Boolean(anyRole && p.gateway && String(p.gateway.baseURL || '').trim());
+}
+
+export function guardOrchestratorAction(orchestrator, openSettings, opts = {}) {
+  if (hasConfiguredOrchestratorModels(orchestrator)) return true;
+  if (typeof openSettings === 'function') {
+    openSettings({ section: 'orchestrator', notice: ORCH_SETUP_NOTICE, ...(opts && opts.preset ? { preset: opts.preset } : {}) });
+  }
+  return false;
+}
+
 export const BEGINNER_PRESETS = [
   {
     id: 'auto',
@@ -22,7 +45,7 @@ export const BEGINNER_PRESETS = [
     bestFor: 'Multi-file features, refactors, and avoiding rate-limit stops.',
     plainSummary: 'Your best Supervisor model plans and verifies while fast worker models read/edit in parallel — and auto-fails over if any key hits a limit.',
     costSpeed: 'High Quality + Failover',
-    teamStyle: '1 Supervisor + Role Pool Workers (Swarm OFF)',
+    teamStyle: '1 Supervisor + Role Pool Workers (Swarm ON by default)',
     flow: ['Your Prompt', 'Supervisor Plans', 'Coder / Explorer Pool', 'Auto-Failover Safety'],
   },
   {
@@ -119,6 +142,7 @@ export function applyBeginnerPreset(presetId, state = {}) {
         lastDirectModel: rememberedDirectModel,
         routingMode: 'auto',
         reasoningLevel: 'auto',
+        activePresetId: 'auto',
       },
       orchestrator: { ...prevOrch, enabled: false },
       swarmEnabled: false,
@@ -137,16 +161,17 @@ export function applyBeginnerPreset(presetId, state = {}) {
         lastDirectModel: rememberedDirectModel,
         routingMode: 'orchestrator',
         reasoningLevel: 'auto',
+        activePresetId: 'orchestrator',
       },
       orchestrator: {
         ...prevOrch,
         enabled: true,
         executorModel: prevOrch.executorModel || '',
       },
-      swarmEnabled: false,
+      swarmEnabled: true,
       reasoningLevel: 'auto',
       permissions: 'auto',
-      notice: 'Applied Lead + Builder (Orchestrator) — Supervisor plans with automatic backup failover (Swarm OFF).',
+      notice: 'Applied Lead + Builder (Orchestrator + Swarm ON) — Supervisor plans with automatic backup failover.',
     };
   }
 
@@ -159,6 +184,7 @@ export function applyBeginnerPreset(presetId, state = {}) {
         lastDirectModel: rememberedDirectModel,
         routingMode: 'orchestrator',
         reasoningLevel: 'auto',
+        activePresetId: 'swarm',
       },
       orchestrator: {
         ...prevOrch,
@@ -179,6 +205,7 @@ export function applyBeginnerPreset(presetId, state = {}) {
       model: rememberedDirectModel,
       lastDirectModel: rememberedDirectModel,
       routingMode: 'direct',
+      activePresetId: 'direct',
     },
     orchestrator: { ...prevOrch, enabled: false },
     swarmEnabled: false,
@@ -191,7 +218,9 @@ export function applyBeginnerPreset(presetId, state = {}) {
 export function detectActivePreset({ provider, orchestrator, swarmEnabled } = {}) {
   const p = provider || {};
   let id = 'direct';
-  if (swarmEnabled) {
+  if (p.activePresetId === 'orchestrator' && swarmEnabled && (p.routingMode === 'orchestrator' || (orchestrator && orchestrator.enabled))) {
+    id = 'orchestrator';
+  } else if (swarmEnabled) {
     id = 'swarm';
   } else if (p.routingMode === 'auto' || (!p.routingMode && String(p.model || '').trim().toLowerCase() === 'auto')) {
     id = 'auto';
