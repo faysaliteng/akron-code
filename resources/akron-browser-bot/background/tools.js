@@ -515,6 +515,19 @@ export const TOOL_DEFS = [
     parameters: { type: "object", properties: {}, required: [] },
   },
   {
+    name: "vault_autofill",
+    description:
+      "Autofill origin-bound username, password, and RFC 6238 TOTP from Akron Desktop Secret Vault into the current tab without exposing secret values to model context.",
+    parameters: {
+      type: "object",
+      properties: {
+        origin: { type: "string", description: "Expected credential origin URL (optional, defaults to current tab origin)." },
+        selectors: { type: "object", description: "Optional custom selectors for username/password/totp." },
+      },
+      required: [],
+    },
+  },
+  {
     name: "write_clipboard",
     description: "Write text to the system clipboard.",
     parameters: {
@@ -1466,6 +1479,22 @@ async function runTool(name, args, ctx) {
       const res = await sendToTab(tabId, "read_clipboard");
       if (!res.ok) throw new Error(res.error || "read_clipboard failed");
       return ok(res.result);
+    }
+    case "vault_autofill": {
+      const tab = await assertTabAllowed(tabId, ctx);
+      const r = await fetch("http://127.0.0.1:8766/v1/vault/autofill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tabId,
+          pageUrl: tab?.url || "",
+          expectedOrigin: args?.origin || "",
+          selectors: args?.selectors || {},
+        }),
+      });
+      const j = await r.json().catch(() => ({ ok: false, error: "Invalid bridge response" }));
+      if (!j.ok) throw new Error(j.error || "vault_autofill failed");
+      return ok(`Vault autofill applied (masked) for ${j.origin}: ${(j.filledFields || []).join(", ")}.`);
     }
     case "write_clipboard": {
       const res = await sendToTab(tabId, "write_clipboard", { text: String(args?.text ?? "") });

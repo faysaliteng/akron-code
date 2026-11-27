@@ -1225,9 +1225,20 @@ const executors = {
   async browser_read() {
     const r = await browser.read();
     if (!r.ok) return 'Browser error: ' + r.error;
-    return untrusted.wrapUntrusted(truncate(`PAGE: ${r.title}\nURL: ${r.url}\n\n${r.text || '(no visible text)'}`), { source: 'BrowserDOM', url: r.url || '' });
+    const gate = require('./browser-bot-v2').detectHumanGate({ url: r.url, title: r.title, text: r.text });
+    const notice = gate.gated ? `\n[HUMAN_HANDOFF_REQUIRED (${gate.gateType})]: ${gate.reason}\n` : '';
+    return untrusted.wrapUntrusted(truncate(`PAGE: ${r.title}\nURL: ${r.url}${notice}\n\n${r.text || '(no visible text)'}`), { source: 'BrowserDOM', url: r.url || '' });
   },
-  async browser_snapshot() {
+  async browser_snapshot(args = {}) {
+    if (args.compactAx !== false && typeof browser.snapshotAx === 'function') {
+      const ax = await browser.snapshotAx({ som: !!args.som, somFallback: args.somFallback !== false, maxItems: args.maxItems });
+      if (ax && ax.ok && ax.snapshotText) {
+        const notice = ax.gate && ax.gate.gated ? `\n[HUMAN_HANDOFF_REQUIRED (${ax.gate.gateType})]: ${ax.gate.reason}\n` : '';
+        const somNote = ax.som && ax.som.count ? `\n[Set-of-Marks visual badges active: ${ax.som.count} targets]` : '';
+        return untrusted.wrapUntrusted(truncate(`${ax.snapshotText}${somNote}${notice}`), { source: 'BrowserAX', url: ax.url || '' });
+      }
+      if (ax && !ax.ok) return 'Browser error: ' + ax.error;
+    }
     const r = await browser.read();
     if (!r.ok) return 'Browser error: ' + r.error;
     const lines = [`PAGE: ${r.title}`, `URL: ${r.url}`];
@@ -1235,6 +1246,39 @@ const executors = {
     if (r.buttons && r.buttons.length) { lines.push('\nBUTTONS:'); r.buttons.forEach((b) => lines.push('- ' + b)); }
     if (r.inputs && r.inputs.length) { lines.push('\nINPUTS:'); r.inputs.forEach((i) => lines.push(`- <${i.tag}> name="${i.name}" type="${i.type}" placeholder="${i.placeholder}"`)); }
     return untrusted.wrapUntrusted(truncate(lines.join('\n')), { source: 'BrowserDOM', url: r.url || '' });
+  },
+  async browser_vault_autofill({ origin, selectors } = {}) {
+    const v2 = require('./browser-bot-v2');
+    const pageUrl = browser.getURL();
+    const res = await v2.vaultAutofill({
+      pageUrl,
+      expectedOrigin: origin || pageUrl,
+      selectors: selectors || {},
+      injectFn: async (assignments) => {
+        const applied = [];
+        for (const item of assignments) {
+          const r = await browser.type(item.selector, item.value);
+          if (r && r.ok && r.found) applied.push(item.field);
+        }
+        return { applied };
+      },
+    });
+    return JSON.stringify(res);
+  },
+  async browser_replay_skill({ name, skipStartUrl } = {}) {
+    const skills = require('./browser-skills');
+    const sk = skills.loadSkill(name);
+    if (!sk) return `Browser skill "${name}" not found.`;
+    const res = await skills.replaySkill(sk, {
+      navigate: (u) => browser.loadURL(u),
+      click: (t) => browser.click(t),
+      type: (t, v) => browser.type(t, v),
+      select: (t, v) => browser.select(t, v),
+      press: (k) => browser.press(k),
+      hover: (t) => browser.hover(t),
+      snapshot: () => browser.snapshotAx(),
+    }, { skipStartUrl: !!skipStartUrl });
+    return JSON.stringify(res);
   },
   async browser_click({ selector, index }) {
     const r = await browser.click(selector, index);
@@ -1510,9 +1554,11 @@ const toolDefinitions = [
   { name: 'browser_reload', description: 'Reload the current page in the built-in browser.', parameters: { type: 'object', properties: {} } },
   { name: 'browser_stop', description: 'Stop loading the current page in the built-in browser.', parameters: { type: 'object', properties: {} } },
   { name: 'browser_read', description: 'Read the visible text of the current page in the built-in browser.', parameters: { type: 'object', properties: {} } },
-  { name: 'browser_snapshot', description: 'Snapshot the current page: title, URL, links, buttons, and inputs (an accessibility-style view for the agent).', parameters: { type: 'object', properties: {} } },
-  { name: 'browser_click', description: 'Click an element in the built-in browser by CSS selector.', parameters: { type: 'object', properties: { selector: { type: 'string' }, index: { type: 'number' } }, required: ['selector'] } },
-  { name: 'browser_type', description: 'Type text into an element (input/textarea) in the built-in browser by CSS selector.', parameters: { type: 'object', properties: { selector: { type: 'string' }, text: { type: 'string' } }, required: ['selector', 'text'] } },
+  { name: 'browser_snapshot', description: 'Snapshot the current page as a compact Accessibility Tree (@e1, @e2 refs) with automatic Set-of-Marks fallback for canvas/SVG widgets.', parameters: { type: 'object', properties: { compactAx: { type: 'boolean' }, som: { type: 'boolean' }, maxItems: { type: 'number' } } } },
+  { name: 'browser_vault_autofill', description: 'Autofill origin-bound credentials and TOTP into the active browser page from the OS vault without exposing secrets in model context.', parameters: { type: 'object', properties: { origin: { type: 'string' }, selectors: { type: 'object' } } } },
+  { name: 'browser_replay_skill', description: 'Deterministically replay a saved self-healing browser skill with zero LLM tokens.', parameters: { type: 'object', properties: { name: { type: 'string' }, skipStartUrl: { type: 'boolean' } }, required: ['name'] } },
+  { name: 'browser_click', description: 'Click an element in the built-in browser by @e12 ref or CSS selector.', parameters: { type: 'object', properties: { selector: { type: 'string' }, index: { type: 'number' } }, required: ['selector'] } },
+  { name: 'browser_type', description: 'Type text into an element (input/textarea) in the built-in browser by @e12 ref or CSS selector.', parameters: { type: 'object', properties: { selector: { type: 'string' }, text: { type: 'string' } }, required: ['selector', 'text'] } },
   { name: 'browser_press', description: 'Press a key (e.g. "Enter", "Escape") in the built-in browser.', parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] } },
   { name: 'browser_js', description: 'Execute a JavaScript expression in the built-in browser page and return its value.', parameters: { type: 'object', properties: { code: { type: 'string' } }, required: ['code'] } },
   { name: 'browser_hover', description: 'Hover an element in the built-in browser by CSS selector (opens CSS/JS menus and tooltips).', parameters: { type: 'object', properties: { selector: { type: 'string' }, index: { type: 'number' } }, required: ['selector'] } },
@@ -1667,6 +1713,8 @@ const executorsByTool = {
   browser_stop: 'browser_stop',
   browser_read: 'browser_read',
   browser_snapshot: 'browser_snapshot',
+  browser_vault_autofill: 'browser_vault_autofill',
+  browser_replay_skill: 'browser_replay_skill',
   browser_click: 'browser_click',
   browser_type: 'browser_type',
   browser_press: 'browser_press',

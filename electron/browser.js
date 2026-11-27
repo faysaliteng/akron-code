@@ -246,13 +246,50 @@ async function read() {
   }
 }
 
+function resolveRefSelector(selectorOrRef) {
+  const s = String(selectorOrRef || '').trim();
+  if (/^@?e\d+$/i.test(s)) {
+    const tag = s.startsWith('@') ? s : '@' + s;
+    return `[data-akron-ref="${tag}"]`;
+  }
+  return s;
+}
+
+async function snapshotAx(options = {}) {
+  const g = await ensureGuest();
+  if (!g) return { ok: false, error: 'Browser pane is not open' };
+  const v2 = require('./browser-bot-v2');
+  try {
+    const raw = await jsWithTimeout(g, v2.buildAxCollectScript(options), false);
+    const snap = v2.buildCompactAxSnapshot(raw && raw.nodes, { title: raw && raw.title, url: (raw && raw.url) || getURL() });
+    let som = null;
+    if (options.som || (options.somFallback !== false && snap.sparseAx)) {
+      try {
+        som = await jsWithTimeout(g, v2.buildSomOverlayScript('show'), false);
+      } catch (_) {}
+    }
+    const gate = v2.detectHumanGate({ url: snap.url, title: snap.title, text: raw && raw.textSummary });
+    return { ...snap, som, gate };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+async function clearSomOverlay() {
+  const g = getGuest();
+  if (!g) return { ok: false };
+  const v2 = require('./browser-bot-v2');
+  try { return await jsWithTimeout(g, v2.buildSomOverlayScript('clear'), false); } catch (_) { return { ok: false }; }
+}
+
 async function click(selector, index) {
   const g = await ensureGuest();
   if (!g) return { ok: false, error: 'Browser pane is not open' };
+  const resolved = resolveRefSelector(selector);
   const i = Number(index) || 0;
   try {
     const r = await jsWithTimeout(g, `(function () {
-      const els = document.querySelectorAll(${JSON.stringify(selector)});
+      const els = document.querySelectorAll(${JSON.stringify(resolved)});
       const el = els[${i}];
       if (!el) return { found: false };
       el.scrollIntoView({ block: 'center' });
@@ -268,9 +305,10 @@ async function click(selector, index) {
 async function type(selector, text) {
   const g = await ensureGuest();
   if (!g) return { ok: false, error: 'Browser pane is not open' };
+  const resolved = resolveRefSelector(selector);
   try {
     const r = await jsWithTimeout(g, `(function () {
-      const el = document.querySelector(${JSON.stringify(selector)});
+      const el = document.querySelector(${JSON.stringify(resolved)});
       if (!el) return { found: false };
       el.focus();
       el.value = ${JSON.stringify(text)};
@@ -304,10 +342,11 @@ async function press(key) {
 async function hover(selector, index) {
   const g = await ensureGuest();
   if (!g) return { ok: false, error: 'Browser pane is not open' };
+  const resolved = resolveRefSelector(selector);
   const i = Number(index) || 0;
   try {
     const r = await jsWithTimeout(g, `(function () {
-      const el = document.querySelectorAll(${JSON.stringify(selector)})[${i}];
+      const el = document.querySelectorAll(${JSON.stringify(resolved)})[${i}];
       if (!el) return { found: false };
       el.scrollIntoView({ block: 'center' });
       const rect = el.getBoundingClientRect();
@@ -325,9 +364,10 @@ async function hover(selector, index) {
 async function select(selector, value) {
   const g = await ensureGuest();
   if (!g) return { ok: false, error: 'Browser pane is not open' };
+  const resolved = resolveRefSelector(selector);
   try {
     const r = await jsWithTimeout(g, `(function () {
-      const el = document.querySelector(${JSON.stringify(selector)});
+      const el = document.querySelector(${JSON.stringify(resolved)});
       if (!el) return { found: false };
       const want = ${JSON.stringify(String(value == null ? '' : value))};
       let matched = false;
@@ -676,7 +716,7 @@ module.exports = {
   setEnsurePane, setTabCommand,
   register, unregister, getGuest, hasGuest, ensureGuest,
   loadURL, goBack, goForward, reload, stop,
-  getURL, getTitle, executeJS, read, click, type, press,
+  getURL, getTitle, executeJS, read, snapshotAx, clearSomOverlay, resolveRefSelector, click, type, press,
   hover, select, scroll, waitFor, screenshot,
   syncTabs, listTabs, sendTabCommand,
   normalizeUrl, localFileUrl,

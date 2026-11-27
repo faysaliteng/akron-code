@@ -168,10 +168,12 @@
 
   function resolveRef(ref) {
     if (!ref) return null;
-    let el = refMap.get(ref);
+    const norm = String(ref).trim().replace(/^@/, '');
+    let el = refMap.get(norm) || refMap.get(ref);
     if (!el || !el.isConnected) {
       try {
-        el = document.querySelector(`[data-autobot-ref="${CSS.escape(ref)}"]`);
+        el = document.querySelector(`[data-autobot-ref="${CSS.escape(norm)}"]`)
+          || document.querySelector(`[data-akron-ref="@${CSS.escape(norm)}"]`);
       } catch {
         el = null;
       }

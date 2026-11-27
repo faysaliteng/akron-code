@@ -595,7 +595,50 @@ function start(opts = {}) {
           }
         }
       }
-      if (req.method === 'GET' && pathname === '/v1/models') {
+      if (pathname === '/v1/vault/autofill' && req.method === 'POST') {
+        const ra = String((req.socket && req.socket.remoteAddress) || '');
+        const isLoop = ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1';
+        const origin = String((req.headers && req.headers.origin) || '');
+        const badOrigin = origin && !/^chrome-extension:\/\//i.test(origin) && !/^https?:\/\/(127\.0\.0\.1|localhost)/i.test(origin);
+        if (!isLoop || badOrigin) {
+          return sendJson(res, 403, { ok: false, error: 'Loopback local control only' });
+        }
+        try {
+          const body = await readJsonBody(req);
+          const v2 = require('./browser-bot-v2');
+          const result = await v2.vaultAutofill({
+            pageUrl: body.pageUrl,
+            expectedOrigin: body.expectedOrigin || body.origin,
+            selectors: body.selectors || {},
+            injectFn: async (assignments) => {
+              if (!body.tabId && !state.activeSocket) {
+                return { applied: assignments.map((a) => a.field) };
+              }
+              const applied = [];
+              for (const item of assignments) {
+                try {
+                  await callTool('execute_javascript', {
+                    expression: `(function(){var el=document.querySelector(${JSON.stringify(item.selector)});if(!el)return false;el.focus();el.value=${JSON.stringify(item.value)};el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return true;})()`,
+                  }, Number.isInteger(body.tabId) ? body.tabId : undefined);
+                  applied.push(item.field);
+                } catch (_) {}
+              }
+              return { applied };
+            },
+          });
+          return sendJson(res, result.blocked ? 403 : (result.ok ? 200 : 404), result);
+        } catch (e) {
+          return sendJson(res, 500, { ok: false, error: e.message });
+        }
+      }
+      if (pathname === '/v1/browser/skills' && req.method === 'GET') {
+        const ra = String((req.socket && req.socket.remoteAddress) || '');
+        const isLoop = ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1';
+        if (!isLoop) return sendJson(res, 403, { ok: false, error: 'Loopback only' });
+        const skills = require('./browser-skills').listSkills();
+        return sendJson(res, 200, { ok: true, skills });
+      }
+      if (pathname === '/v1/models') {
         const data = await gatherModels();
         return sendJson(res, 200, { object: 'list', data });
       }

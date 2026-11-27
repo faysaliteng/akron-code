@@ -87,6 +87,95 @@ function pickSecondOpinionProvider({ primary, orchestrator, withSpec = '' } = {}
   return { provider: primary || {}, differentFamily: false, sameModelFallback: true, requestedWith: '' };
 }
 
+function loadProjectGuidelines(cwd) {
+  if (!cwd) return '';
+  const fs = require('fs');
+  const path = require('path');
+  const candidates = [
+    path.join(cwd, 'CLAUDE.md'),
+    path.join(cwd, 'AKRON.md'),
+    path.join(cwd, '.claude', 'CLAUDE.md'),
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p) && fs.statSync(p).isFile()) {
+        const txt = fs.readFileSync(p, 'utf8').trim();
+        if (txt) return `Project guidelines (${path.basename(p)}):\n` + txt.slice(0, 3500);
+      }
+    } catch (_) {}
+  }
+  return '';
+}
+
+function collectCallerAndFileContext(cwd, files = [], maxChars = 8000) {
+  if (!cwd || !Array.isArray(files) || !files.length) {
+    return { callerText: '', fileContextText: '', callersCount: 0, fileContextsCount: 0 };
+  }
+  const fs = require('fs');
+  const path = require('path');
+  const symbolSet = new Set();
+  const fileContextParts = [];
+  let ctxChars = 0;
+
+  for (const f of files.slice(0, 8)) {
+    const rel = f.relPath || f.path || '';
+    const abs = path.isAbsolute(rel) ? rel : path.join(cwd, rel);
+    for (const ln of (Array.isArray(f.lines) ? f.lines : [])) {
+      if (!ln || ln.type === 'context' || typeof ln.text !== 'string') continue;
+      const m = /(?:function|class|async\s+function|def|export\s+(?:async\s+)?function|const)\s+([A-Za-z_][A-Za-z0-9_]{2,})/.exec(ln.text);
+      if (m && m[1]) symbolSet.add(m[1]);
+    }
+    try {
+      if (fs.existsSync(abs) && fs.statSync(abs).isFile() && fs.statSync(abs).size <= 6000 && ctxChars < Math.floor(maxChars * 0.6)) {
+        const full = fs.readFileSync(abs, 'utf8');
+        const snippet = `--- Full context: ${rel} ---\n${full.slice(0, 2200)}\n`;
+        fileContextParts.push(snippet);
+        ctxChars += snippet.length;
+      }
+    } catch (_) {}
+  }
+
+  const callerHits = [];
+  const symbols = [...symbolSet].slice(0, 6);
+  if (symbols.length) {
+    const walk = (dir, depth = 0) => {
+      if (depth > 3 || callerHits.length >= 24) return;
+      let entries = [];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+      for (const ent of entries) {
+        if (callerHits.length >= 24) break;
+        if (ent.name === 'node_modules' || ent.name === '.git' || ent.name === 'dist' || ent.name === 'release') continue;
+        const full = path.join(dir, ent.name);
+        if (ent.isDirectory()) walk(full, depth + 1);
+        else if (/\.(js|jsx|ts|tsx|mjs|cjs|py|go)$/i.test(ent.name)) {
+          try {
+            const st = fs.statSync(full);
+            if (st.size > 80000) continue;
+            const raw = fs.readFileSync(full, 'utf8');
+            for (const sym of symbols) {
+              if (!raw.includes(sym)) continue;
+              const lines = raw.split('\n');
+              for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes(sym) && callerHits.length < 24) {
+                  callerHits.push(`${path.relative(cwd, full)}:${i + 1}: ${lines[i].trim().slice(0, 120)}`);
+                }
+              }
+            }
+          } catch (_) {}
+        }
+      }
+    };
+    walk(cwd, 0);
+  }
+
+  return {
+    callerText: callerHits.length ? `Referenced symbol callers (${callerHits.length}):\n` + callerHits.join('\n') : '',
+    fileContextText: fileContextParts.join('\n').slice(0, maxChars),
+    callersCount: callerHits.length,
+    fileContextsCount: fileContextParts.length,
+  };
+}
+
 function buildDuetBundle({ cwd, convId, target = null, diffFiles = null, maxFiles = 24, maxChars = 55000 } = {}) {
   let files = Array.isArray(diffFiles) ? diffFiles : null;
   if (!files) {
@@ -112,6 +201,8 @@ function buildDuetBundle({ cwd, convId, target = null, diffFiles = null, maxFile
   const parts = [];
   let chars = 0;
   let truncated = (Array.isArray(files) ? files.length : 0) > list.length;
+  const guidelinesText = loadProjectGuidelines(cwd);
+  const extraCtx = collectCallerAndFileContext(cwd, list);
 
   for (const f of list) {
     const rel = f.relPath || f.path || 'file';
@@ -149,6 +240,12 @@ function buildDuetBundle({ cwd, convId, target = null, diffFiles = null, maxFile
   return {
     files: list,
     diffText: parts.join('\n'),
+    guidelinesText,
+    callerText: extraCtx.callerText,
+    fileContextText: extraCtx.fileContextText,
+    guidelinesIncluded: !!guidelinesText,
+    callersCount: extraCtx.callersCount,
+    fileContextsCount: extraCtx.fileContextsCount,
     fileCount: list.length,
     added: totalAdded,
     removed: totalRemoved,
@@ -257,6 +354,12 @@ async function runDuetReview({
   const invokeChat = chatFn || require('./llm').chatOnce;
   let passesRun = 0;
 
+  const contextBlocks = [
+    bundle.guidelinesText,
+    bundle.callerText,
+    bundle.fileContextText,
+  ].filter(Boolean).join('\n\n');
+
   // Pass 1: Precision + GAP code review on second opinion model
   const pass1Prompt = [
     'You are the independent second-opinion code reviewer in a Duet Review.',
@@ -264,10 +367,11 @@ async function runDuetReview({
     'Cite exact file paths, line numbers, and evidence from the diff. Do NOT invent code not in the diff.',
     'Return strict JSON ONLY:',
     '{"summary":"concise 1-2 sentence overview","findings":[{"id":"f1","severity":"critical|high|medium|low","category":"bug|security|gap|performance","file":"path","line":12,"title":"short title","detail":"why it breaks","fix":"concrete fix","evidence":"diff line quote","confidence":0-100}]}',
+    contextBlocks ? '\nPROJECT CONTEXT & CALLERS:\n' + contextBlocks : '',
     '',
     'DIFF BUNDLE:',
     bundle.diffText,
-  ].join('\n');
+  ].filter((x) => x !== '').join('\n');
 
   const p1Res = await invokeChat({
     provider: pick.provider,
@@ -382,6 +486,9 @@ async function runDuetReview({
       added: bundle.added,
       removed: bundle.removed,
       truncated: bundle.truncated,
+      guidelinesIncluded: !!bundle.guidelinesIncluded,
+      callersCount: Number(bundle.callersCount) || 0,
+      fileContextsCount: Number(bundle.fileContextsCount) || 0,
     },
     durationMs: Date.now() - startedAt,
   };
