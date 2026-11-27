@@ -35,7 +35,7 @@ function registerMocks() {
     provider: { model: 'claude-sonnet-5-5', baseURL: 'https://api.anthropic.com/v1', routingMode: 'auto' },
   };
   const emptyList = [];
-  safe('autobot:getVersion', () => ({ app: '1.2.0', electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node, platform: process.platform, arch: process.arch }));
+  safe('autobot:getVersion', () => ({ app: '1.4.0', electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node, platform: process.platform, arch: process.arch }));
   safe('autobot:getSettings', () => mockSettings);
   safe('autobot:setSettings', (_e, patch) => Object.assign(mockSettings, patch || {}));
   safe('autobot:getFeatures', () => ({ computerUse: true, chrome: true }));
@@ -101,7 +101,7 @@ function registerMocks() {
   safe('autobot:gitInfo', () => ({ isRepo: false }));
   safe('autobot:depsStatus', () => ({ ok: true, coreHealthy: 7, coreTotal: 7, deps: [], lsps: [] }));
   safe('autobot:runtimes', () => ({ autoUpdate: true, items: [] }));
-  safe('autobot:updateCheck', () => ({ ok: true, currentVersion: '1.2.0', upToDate: true }));
+  safe('autobot:updateCheck', () => ({ ok: true, currentVersion: '1.4.0', upToDate: true }));
   safe('autobot:notificationsGet', () => ({ enabled: true, categories: {} }));
   safe('autobot:listPlugins', () => []);
   safe('autobot:pluginCategories', () => []);

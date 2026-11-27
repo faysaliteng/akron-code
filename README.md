@@ -10,6 +10,9 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/faysaliteng/akron-code/actions/workflows/build-desktop.yml">
+    <img src="https://github.com/faysaliteng/akron-code/actions/workflows/build-desktop.yml/badge.svg" alt="CI Build Status" />
+  </a>
   <a href="https://github.com/faysaliteng/akron-code/releases/latest">
     <img src="https://img.shields.io/badge/Release-v1.4.0-10b981?style=for-the-badge" alt="Release v1.4.0" />
   </a>
@@ -189,6 +192,8 @@ Crisp Dark & Light Agent Mode featuring **per-message timestamps** (`Today · HH
 
 ![Akron Code Agent Workspace Dark](docs/screenshots/agent-dark.png)
 
+![Sidebar Conversation Context Menu Icons](docs/screenshots/sidebar-context-menu-dark.png)
+
 ![Akron Code Agent Workspace Light](docs/screenshots/agent-light.png)
 
 ---
@@ -212,6 +217,8 @@ Crisp Dark & Light Agent Mode featuring **per-message timestamps** (`Today · HH
 
 ### 3. Full IDE Workbench + Offline Interactive Mind Map (Dark & Light)
 Integrated **Monaco Editor** (`⌘K` inline diff, Ghost Text, LSP hover/definition, split editor, per-hunk accept/reject), persistent **`@xterm/xterm`** PTY terminal (`Send to Agent`), File Explorer + Git panel, live **Agent Dock**, and **100% offline Markmap Mind Maps** (`MINDMAP.md + Files` / `Workspace Overview`) with click-to-open navigation and SVG export.
+
+![Akron Code IDE Workbench & Swarm Agent Dock](docs/screenshots/ide-agent-dock-swarm.png)
 
 ![Akron Code IDE Workbench & Mind Map Dark](docs/screenshots/ide-mindmap-dark.png)
 
@@ -244,15 +251,13 @@ Manage all integrations, slash skills, `@`-mentionable Custom Sub-Agents (`~/.au
 - **Standalone User-Accessible Extension Folder:** Automatically synced outside `.app` (`~/Applications/Akron Browser Bot` on macOS, `%LOCALAPPDATA%\AkronLogic\Akron Browser Bot` on Windows, `~/Akron Browser Bot` on Linux) AND shipped top-level alongside `Akron Code.app` inside macOS DMG & ZIP releases.
 - **Deterministic RSA-2048 CRX3 & 1-Click Browser Auto-Setup:** Generates `akron-browser-bot.crx` (`Cr24` v3 signed header), detects the OS default browser, registers Chromium External Extensions JSON / Windows `HKCU\Software\Microsoft\Edge\Extensions` keys automatically, and offers 1-click **Launch Browser with Extension Pre-Loaded**.
 
+![Built-In Browser 1-Click Screenshot & Region Crop](docs/screenshots/browser-screenshot-narrow-chat.png)
+
 ![Built-In Browser Inspect Element Showcase](docs/screenshots/browser-inspect.png)
 
 ![Akron Browser Bot Standalone & 1-Click Auto-Setup](docs/screenshots/browser-ext-autosetup-dark.png)
 
 ![Browser Permissions & Site Access Rules Settings](docs/screenshots/settings-browser-rules-dark.png)
-
-<p align="center">
-  <img src="docs/screenshots/browser-bot-inline-plan.png" width="420" alt="Akron Browser Bot Inline Checklist" />
-</p>
 
 ---
 

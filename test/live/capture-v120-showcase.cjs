@@ -25,7 +25,7 @@ async function buildTempWorkspace() {
   fs.writeFileSync(
     path.join(wsDir, 'src', 'app.js'),
     [
-      '// Akron Code v1.2.0 — Core Orchestrator Entrypoint',
+      '// Akron Code v1.4.0 — Core Orchestrator Entrypoint',
       'export async function dispatchTurn({ prompt, role = "coder", budgetTokens = 20000 }) {',
       '  const startedAt = Date.now();',
       '  return { ok: true, role, budgetTokens, startedAt, promptLen: String(prompt || "").length };',
@@ -47,7 +47,7 @@ async function buildTempWorkspace() {
   fs.writeFileSync(
     path.join(wsDir, 'MINDMAP.md'),
     [
-      '# Akron Code v1.2 Architecture',
+      '# Akron Code v1.4 Architecture',
       '## Harness & Context Engine 2.0',
       '- `electron/context-pipeline.js` · Progressive output masking',
       '- `electron/spill.js` · 0o600 disk spill & pruning',
@@ -102,14 +102,14 @@ async function buildTempWorkspace() {
     {
       format: 'pdf',
       output_path: path.join(wsDir, 'reports', 'q4-roadmap.pdf'),
-      title: 'Akron Code v1.2.0 — Architecture & Security Sign-Off',
+      title: 'Akron Code v1.4.0 — Architecture & Security Sign-Off',
       content: [
         '# Executive Summary',
         'Akron Code unifies multi-vendor frontier coding models, offline Office/PDF document generation, and Chromium live browser inspection in one Electron workspace.',
         '',
         '## Verified Gates',
-        '- Context Engine 2.0 progressive output masking & 0o600 spills',
-        '- 165 Built-In Agent Tools + 263 Built-In REA MCP Tools (428 total)',
+        '- Context Engine 2.0 adaptive working memory & 0o600 spills',
+        '- 182 Built-In Agent Tools + 263 Built-In REA MCP Tools (445 total)',
         '- 6/6 Electron Fuses + SHA-256 Brand Seal integrity verified',
       ].join('\n'),
     },
@@ -177,7 +177,7 @@ function startShowcasePreviewServer() {
     <p>Inspect mode captures computed box geometry, CSS tokens, DOM selector paths, and visual PNG snapshots in one click.</p>
     <button class="cta-emerald" type="button">Deploy Production Release</button>
     <div class="metrics">
-      <div class="m"><b>428</b><span>Tools</span></div>
+      <div class="m"><b>445</b><span>Tools</span></div>
       <div class="m"><b>6 / 6</b><span>Fuses</span></div>
       <div class="m"><b>70/70</b><span>Evals</span></div>
     </div>
@@ -216,7 +216,7 @@ function registerIpcMocks(wsDir, webviewMockUrl) {
   });
 
   safe('autobot:getVersion', () => ({
-    version: '1.2.0', app: '1.2.0',
+    version: '1.4.0', app: '1.4.0',
     electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node,
     platform: process.platform, arch: process.arch,
   }));
@@ -239,7 +239,7 @@ function registerIpcMocks(wsDir, webviewMockUrl) {
     ],
   }));
   safe('autobot:getSkills', () => [
-    { name: 'release-gate', description: 'Verify typecheck, brand seal, 81 unit suites & 3-OS installers', source: 'custom', enabled: true, body: '# Release Gate\nVerify typecheck, unit tests, evals, and Brand Seal.' },
+    { name: 'release-gate', description: 'Verify typecheck, brand seal, 136 test suites & 3-OS installers', source: 'custom', enabled: true, body: '# Release Gate\nVerify typecheck, unit tests, evals, and Brand Seal.' },
     { name: 'reverse-engineer-anything', description: 'REA 263-tool native/Electron/APK binary inspection', source: 'builtin', enabled: true, body: '# REA Playbook\nInspect shipped artifacts cleanly.' },
   ]);
   safe('autobot:getOrchestrator', () => ({
@@ -416,7 +416,7 @@ function registerIpcMocks(wsDir, webviewMockUrl) {
       { id: 'gemini', name: 'Gemini CLI', version: '0.18.4', latest: '0.18.4', status: 'up-to-date' },
     ],
   }));
-  safe('autobot:updateCheck', () => ({ ok: true, currentVersion: '1.2.0', latestVersion: '1.2.0', upToDate: true, channel: 'stable' }));
+  safe('autobot:updateCheck', () => ({ ok: true, currentVersion: '1.4.0', latestVersion: '1.4.0', upToDate: true, channel: 'stable' }));
   safe('autobot:notificationsGet', () => ({
     enabled: true, notifyWhenFocused: false, categories: { agent: true, permissions: true, questions: true, errors: true },
   }));
@@ -455,7 +455,20 @@ function registerIpcMocks(wsDir, webviewMockUrl) {
   safe('autobot:browserRulesCheck', () => ({ allowed: true, mode: 'ask-on-mutate' }));
   safe('autobot:browserGetURL', () => webviewMockUrl);
   safe('autobot:browserGetTitle', () => 'AkronLogic Studio Preview');
-  safe('autobot:diagnosticsSummary', () => ({ appVersion: '1.2.0', crashFreeRate: '99.94%', dbSizeKb: 412, toolCount: 428 }));
+  safe('autobot:browserScreenshot', () => ({
+    ok: true,
+    path: path.join(wsDir, 'assets', 'akron-emblem.png'),
+    dataUrl: `data:image/png;base64,${fs.readFileSync(path.join(wsDir, 'assets', 'akron-emblem.png')).toString('base64')}`,
+    width: 1280,
+    height: 800,
+  }));
+  safe('autobot:browserCaptureElement', () => ({
+    ok: true,
+    dataUrl: `data:image/png;base64,${fs.readFileSync(path.join(wsDir, 'assets', 'akron-emblem.png')).toString('base64')}`,
+    width: 480,
+    height: 320,
+  }));
+  safe('autobot:diagnosticsSummary', () => ({ appVersion: '1.4.0', crashFreeRate: '99.94%', dbSizeKb: 412, toolCount: 445 }));
 }
 
 async function run() {
@@ -481,9 +494,15 @@ async function run() {
   const seedConvs = [
     {
       id: 'conv_v120_agent',
-      title: 'Context Engine 2.0 & Release Gate',
+      title: 'Long-Horizon Engine & Release Gate',
       project: 'akron-code',
       ts: now - 180000,
+      swarmInfo: { phase: 'reviewing', supervisor: 'claude-opus-5-5', board: [{ id: 1 }, { id: 2 }] },
+      subAgents: [
+        { id: 'sup1', name: 'Supervisor · @supervisor', role: 'supervisor', jobRole: 'planner', model: 'claude-opus-5-5', status: 'running' },
+        { id: 'w1', name: 'Build backend server & APIs', role: 'worker', jobRole: 'coder', model: 'claude-sonnet-5-5', status: 'done' },
+        { id: 'w2', name: 'Build admin panel & smoke tests', role: 'worker', jobRole: 'coder', model: 'gpt-5.4', status: 'done' },
+      ],
       messages: [
         {
           id: 'u_a1', role: 'user', ts: now - 165000,
@@ -498,11 +517,11 @@ async function run() {
             { id: 't3', name: 'Bash', args: { command: 'npm run typecheck && npm run brand:check' }, status: 'done', result: 'TYPECHECK_OK · BRAND_SEAL_OK (12/12)' },
           ],
           content: [
-            '### Release Gate Summary (`v1.2.0`)',
+            '### Release Gate Summary (`v1.4.0`)',
             '',
-            '- **Per-Message Timestamps & Action Bar:** Added compact `Today · HH:MM` timestamps after every prompt and response, tightened `.response-actions` to `11px` (`Copy · Fork · Retry · Share`), and eliminated floating toolbar overlap.',
-            '- **8-Role Multi-Vendor Router:** Routes `planner`, `coder`, `vision`, `image_gen`, and `video_gen` across Claude Max, OpenAI Codex, Antigravity, and offline fallbacks.',
-            '- **Security & Brand Seal:** `6 / 6` Electron Fuses verified and zero `.map` files in `dist/`.',
+            '- **Long-Horizon Complex Project Engine:** Smart `Auto` routing floor, adaptive 28-step working memory + structured compaction digests, autonomous `TodoWrite` continuation gate, and Swarm failed-worker backup retries.',
+            '- **3-OS Computer Use 2.0 & Built-In Browser Screenshot:** 24 `mcp__computer__*` tools across macOS/Win11/Linux plus 1-click Camera Screenshot & Region Crop in `.browser-toolbar`.',
+            '- **Security & Brand Seal:** `6 / 6` Electron Fuses verified (`136/136` tests, `70/70` evals) and zero `.map` files in `dist/`.',
           ].join('\n'),
         },
       ],
@@ -617,16 +636,26 @@ async function run() {
 
   const setActiveConv = async (id) => {
     await win.webContents.executeJavaScript(`(() => {
-      const el = [...document.querySelectorAll('.ws-tab')].find((t) => (t.textContent || '').includes(${JSON.stringify(id === 'conv_v120_studio' ? 'Universal Media' : id === 'conv_v120_browser' ? 'Inspect Checkout' : 'Context Engine')}));
+      const el = [...document.querySelectorAll('.ws-tab')].find((t) => (t.textContent || '').includes(${JSON.stringify(id === 'conv_v120_studio' ? 'Universal Media' : id === 'conv_v120_browser' ? 'Inspect Checkout' : 'Long-Horizon Engine')}));
       if (el) el.click();
     })()`);
     await new Promise((r) => setTimeout(r, 450));
   };
 
-  // 1 & 2: Agent Dark & Light + 3-Mode Model Picker Popup
+  // 1 & 2: Agent Dark & Light + 3-Mode Model Picker Popup + Sidebar Context Menu Icons
   await setTheme('dark');
   await setActiveConv('conv_v120_agent');
   await snap('agent-dark.png');
+  await win.webContents.executeJavaScript(`(() => {
+    const trig = document.querySelector('.conv-menu-trigger');
+    if (trig) trig.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 250));
+  await snap('sidebar-context-menu-dark.png');
+  await win.webContents.executeJavaScript(`(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  })()`);
+  await new Promise((r) => setTimeout(r, 200));
   await win.webContents.executeJavaScript(`(() => {
     const pill = document.querySelector('[data-testid="model-picker-pill"]');
     if (pill) pill.click();
@@ -646,6 +675,17 @@ async function run() {
   await setTheme('light');
   await snap('agent-light.png');
   await setTheme('dark');
+
+  // 2B: Editable Message Queue Tray Dark
+  await win.webContents.executeJavaScript(`
+    window.__akronTestHarness && window.__akronTestHarness.setQueue && window.__akronTestHarness.setQueue([
+      { id: 'q1', convId: 'conv_v120_agent', text: 'Run npm run build && ./verify-release.sh and verify 6/6 Electron Fuses' },
+      { id: 'q2', convId: 'conv_v120_agent', text: 'Capture built-in Browser screenshot and inspect responsive layout' }
+    ]);
+  `);
+  await new Promise((r) => setTimeout(r, 300));
+  await snap('message-queue-dark.png');
+  await win.webContents.executeJavaScript(`window.__akronTestHarness && window.__akronTestHarness.setQueue && window.__akronTestHarness.setQueue([]);`);
 
   // 3 & 4: Emerald Dark & Light Sidebar + Mission Control
   await win.webContents.executeJavaScript(`window.__akronTestHarness && window.__akronTestHarness.setPanel('mission');`);
@@ -718,24 +758,28 @@ async function run() {
   await win.webContents.executeJavaScript(`window.__akronTestHarness && window.__akronTestHarness.setPanel('chats');`);
   await setActiveConv('conv_v120_agent');
 
-  // 9: Duet Adversarial Review
+  // 9: Duet Adversarial Review (Dark & Light)
   await win.webContents.executeJavaScript(`
     window.__akronTestHarness && window.__akronTestHarness.openDuetReview({
-      reviewer: 'Claude Opus 4.6 × GPT-5.4 Adversarial Review',
+      reviewer: 'Claude Opus 5.5 × GPT-5.4 Adversarial Review',
       score: 96,
       summary: 'No security or data-loss issues found across 4 changed files. Cross-OS OAuth single-flight lock verified.',
       findings: [
-        { severity: 'info', file: 'src/App.jsx', line: 3130, title: 'Compact 11px action bar + per-message timestamps verified', detail: 'Both user inputs and assistant outputs render formatted timestamps cleanly.' },
+        { severity: 'info', file: 'src/App.jsx', line: 3290, title: 'Compact 11px action bar + responsive wrapped model badge verified', detail: 'Both user inputs and assistant outputs render formatted timestamps cleanly even with narrow panes.' },
         { severity: 'low', file: 'electron/doc-studio.js', line: 1004, title: 'Zip-Slip path guard confirmed', detail: 'assertSafeArchiveEntryPath blocks archive traversal.' }
       ]
     });
   `);
   await new Promise((r) => setTimeout(r, 450));
   await snap('duet-review-dark.png');
+  await setTheme('light');
+  await new Promise((r) => setTimeout(r, 350));
+  await snap('duet-review-light.png');
+  await setTheme('dark');
   await win.webContents.executeJavaScript(`window.__akronTestHarness && window.__akronTestHarness.closePane();`);
   await new Promise((r) => setTimeout(r, 300));
 
-  // 10: Browser Inspect Showcase (clean single reply + live preview target)
+  // 10: Browser Inspect Showcase + v1.4.0 Built-in Browser 1-Click Screenshot & Narrow Model Badge
   await setActiveConv('conv_v120_browser');
   await win.webContents.executeJavaScript(`
     const brBtn = [...document.querySelectorAll('button')].find((b) => /Browser|Preview/i.test(b.getAttribute('title') || b.textContent || '') && !/Settings/i.test(b.getAttribute('title') || ''));
@@ -754,15 +798,31 @@ async function run() {
   })()`);
   await new Promise((r) => setTimeout(r, 950));
   await snap('browser-inspect.png');
+  await win.webContents.executeJavaScript(`(() => {
+    const sb = document.querySelector('[data-testid="browser-screenshot-btn"]');
+    if (sb) sb.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 450));
+  await snap('browser-screenshot-narrow-chat.png');
   await win.webContents.executeJavaScript(`window.__akronTestHarness && window.__akronTestHarness.closePane();`);
   await new Promise((r) => setTimeout(r, 250));
+  await win.webContents.executeJavaScript(`(() => {
+    document.querySelectorAll('.composer-att button, .att-remove, .attachment-chip button').forEach((b) => b.click());
+  })()`);
 
-  // 11 & 12: IDE Workbench + Offline Interactive Mind Map (Dark & Light)
+  // 11 & 12: IDE Workbench + Swarm Agent Dock + Offline Interactive Mind Map (Dark & Light)
+  await setActiveConv('conv_v120_agent');
   await win.webContents.executeJavaScript(`
     const ideBtn = [...document.querySelectorAll('.ws-mode-btn')].find((b) => /IDE/i.test(b.textContent || ''));
     if (ideBtn) ideBtn.click();
   `);
   await new Promise((r) => setTimeout(r, 850));
+  await win.webContents.executeJavaScript(`(() => {
+    const sc = document.querySelector('.ide-dock-body .chat');
+    if (sc) sc.scrollTop = sc.scrollHeight;
+  })()`);
+  await new Promise((r) => setTimeout(r, 300));
+  await snap('ide-agent-dock-swarm.png');
   await win.webContents.executeJavaScript(`
     const mmBtn = document.querySelector('[data-testid="ide-mindmap-btn"]');
     if (mmBtn) mmBtn.click();

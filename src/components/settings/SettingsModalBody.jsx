@@ -32,6 +32,14 @@ export function SettingsModalBody({
   const [section, setSection] = useState(initialSection || 'providers');
   const [navFilter, setNavFilter] = useState('');
   const [orchPaidProviders, setOrchPaidProviders] = useState([]);
+  const [appVer, setAppVer] = useState('1.4.0');
+  useEffect(() => {
+    if (window.autobot && typeof window.autobot.getVersion === 'function') {
+      window.autobot.getVersion().then((v) => {
+        if (v && (v.app || v.version)) setAppVer(String(v.app || v.version));
+      }).catch(() => {});
+    }
+  }, []);
   useEffect(() => {
     if (initialSection) setSection(initialSection);
   }, [initialSection]);
@@ -254,7 +262,7 @@ export function SettingsModalBody({
     if (id === 'voice') return settings.voiceEngine === 'local' ? 'Whisper' : 'Auto';
     if (id === 'security') return permissions;
     if (id === 'system') return settings.theme || 'dark';
-    if (id === 'about') return 'v1.2';
+    if (id === 'about') return `v${appVer}`;
     return '';
   };
 
@@ -300,7 +308,7 @@ export function SettingsModalBody({
             onClick={() => setSection('about')}
             title="Open About & License"
           >
-            <span>Akron Code v1.2</span>
+            <span>Akron Code v{appVer}</span>
             <span>{settings.theme === 'light' ? 'Light' : 'Dark'}</span>
           </button>
         </aside>
