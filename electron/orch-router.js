@@ -26,7 +26,7 @@
 //   pools: { enabled, gateway: { baseURL, apiKey }, roles: { <role>: {
 //            label, maxConcurrent, spread, models: [{ model, max }] } } }
 
-const ROLES = ['planner', 'coder', 'vision', 'fast', 'longctx'];
+const ROLES = ['planner', 'coder', 'vision', 'fast', 'longctx', 'image_gen', 'video_gen', 'audio_speech'];
 
 const ROLE_LABEL = {
   planner: 'Planner / Reasoner',
@@ -34,13 +34,28 @@ const ROLE_LABEL = {
   vision: 'Vision / Screen & UI',
   fast: 'Fast chat / Classifier / Router',
   longctx: 'Long context',
+  image_gen: 'Image Generation & Editing',
+  video_gen: 'Video Generation & Motion',
+  audio_speech: 'Speech & Audio Synthesis',
 };
 
-const ROLE_TIER = { planner: 'critical', coder: 'heavy', vision: 'heavy', fast: 'small', longctx: 'heavy' };
+const ROLE_TIER = {
+  planner: 'critical',
+  coder: 'heavy',
+  vision: 'heavy',
+  fast: 'small',
+  longctx: 'heavy',
+  image_gen: 'heavy',
+  video_gen: 'heavy',
+  audio_speech: 'small',
+};
 
 function normalizeRole(x) {
   const v = String(x == null ? '' : x).toLowerCase().trim().replace(/[\s_]+/g, '-');
   if (!v) return null;
+  if (/^(image-gen|imagegen|imagen|dalle|flux|create-image|draw|img-gen)$/.test(v)) return 'image_gen';
+  if (/^(video-gen|videogen|veo|sora|video|animate|vid-gen)$/.test(v)) return 'video_gen';
+  if (/^(audio-speech|audiospeech|tts|speech|audio|voice)$/.test(v)) return 'audio_speech';
   if (/^(planner|planning|plan|reasoner|reasoning|architect|architecture|supervisor|lead|critical|review|reviewer|opus)$/.test(v)) return 'planner';
   if (/^(coder|code|coding|implementer|implement|implementation|worker|heavy|builder|engineer|sonnet|general-purpose)$/.test(v)) return 'coder';
   if (/^(vision|visual|screen|ui|image|images|screenshot|multimodal)$/.test(v)) return 'vision';
@@ -109,7 +124,16 @@ function modelEntry(m) {
 
 // Ordered provider rows for one role. Falls back to a neighbouring pool when a
 // role has no models (vision → coder, longctx → planner, …).
-const FALLBACK = { planner: ['coder'], coder: ['planner'], vision: ['coder'], fast: ['coder'], longctx: ['planner', 'coder'] };
+const FALLBACK = {
+  planner: ['coder'],
+  coder: ['planner'],
+  vision: ['coder'],
+  fast: ['coder'],
+  longctx: ['planner', 'coder'],
+  image_gen: ['vision'],
+  video_gen: ['vision'],
+  audio_speech: ['fast'],
+};
 function resolve(orch, role, provider) {
   const p = poolsConfig(orch);
   if (!p) return [];
@@ -257,6 +281,251 @@ function freellmPreset(baseURL) {
   };
 }
 
+function isTextOnlyModelId(model) {
+  const m = String(model || '').toLowerCase();
+  if (!m) return false;
+  return /^(claude-|deepseek|qwen.*coder|codestral|devstral|o1|o3|o4|gpt-5|gpt-4\.|llama)/.test(m)
+    && !/(imagen|dall-e|gpt-image|flash-image|grok-2-image|flux|veo|sora|tts|speech)/i.test(m);
+}
+
+function findKeyInProviderKeys(providerKeys, urlMatchers = []) {
+  if (!providerKeys || typeof providerKeys !== 'object') return null;
+  for (const [rawUrl, rawKey] of Object.entries(providerKeys)) {
+    const key = String(rawKey || '').trim();
+    if (!key) continue;
+    const base = String(rawUrl || '').trim();
+    for (const matcher of urlMatchers) {
+      if (matcher.test(base)) return { baseURL: base, apiKey: key };
+    }
+  }
+  return null;
+}
+
+function probeLocalHttp(url, timeoutMs = 300) {
+  return new Promise((resolveProbe) => {
+    try {
+      const httpMod = require('http');
+      const u = new URL(url);
+      const req = httpMod.request({
+        hostname: u.hostname,
+        port: u.port || 80,
+        path: u.pathname || '/',
+        method: 'GET',
+        timeout: timeoutMs,
+      }, (res) => {
+        res.resume();
+        resolveProbe(res.statusCode < 500);
+      });
+      req.on('error', () => resolveProbe(false));
+      req.on('timeout', () => { try { req.destroy(); } catch (_) {} resolveProbe(false); });
+      req.end();
+    } catch (_) {
+      resolveProbe(false);
+    }
+  });
+}
+
+function resolveMediaChain({
+  kind = 'image',
+  provider = null,
+  orchestrator = null,
+  store: storeArg = null,
+  env = process.env,
+  localEndpoints = null,
+  oauthAccounts = null,
+} = {}) {
+  const k = ['image', 'video', 'audio'].includes(String(kind || '').toLowerCase())
+    ? String(kind).toLowerCase()
+    : 'image';
+  const roleName = k === 'image' ? 'image_gen' : (k === 'video' ? 'video_gen' : 'audio_speech');
+
+  let settings = {};
+  let orch = orchestrator || null;
+  try {
+    const st = storeArg === false ? null : (storeArg || require('./store'));
+    if (st && typeof st.getSettings === 'function') settings = st.getSettings() || {};
+    if (!orch && storeArg !== false && st && typeof st.getOrchestrator === 'function') orch = st.getOrchestrator() || null;
+  } catch (_) {}
+
+  const pKeys = { ...((settings && settings.providerKeys) || {}) };
+  if (provider && provider.baseURL && provider.apiKey && !pKeys[provider.baseURL]) {
+    pKeys[provider.baseURL] = provider.apiKey;
+  }
+
+  let oauthAccts = [];
+  if (Array.isArray(oauthAccounts)) {
+    oauthAccts = oauthAccounts;
+  } else if (storeArg !== false) {
+    try {
+      const po = require('./provider-oauth');
+      if (po && typeof po.listAccounts === 'function') oauthAccts = po.listAccounts() || [];
+    } catch (_) {}
+  }
+
+  const candidates = [];
+  const seen = new Set();
+  const push = (row) => {
+    if (!row || !row.backend || !row.model) return;
+    const sig = `${row.backend}|${row.model}|${row.baseURL || ''}|${row.oauthProvider || ''}`;
+    if (seen.has(sig)) return;
+    seen.add(sig);
+    candidates.push(row);
+  };
+
+  // 1. Explicit pool role (image_gen / video_gen / audio_speech) or configured setting model
+  const poolRole = orch && orch.pools && orch.pools.roles && orch.pools.roles[roleName];
+  if (poolRole && Array.isArray(poolRole.models)) {
+    const gw = (orch.pools && orch.pools.gateway) || {};
+    for (const raw of poolRole.models) {
+      const ent = modelEntry(raw);
+      if (!ent || !ent.model) continue;
+      push({
+        source: 'role_pool',
+        role: roleName,
+        backend: /gemini|imagen|veo/i.test(ent.model) ? 'gemini' : (/comfy/i.test(ent.model) ? 'comfyui' : 'openai-compat'),
+        model: ent.model,
+        baseURL: ent.baseURL || gw.baseURL || (provider && provider.baseURL) || '',
+        apiKey: ent.apiKey || gw.apiKey || (provider && provider.apiKey) || '',
+        offline: false,
+      });
+    }
+  }
+  const settingModel = k === 'image' ? settings.imageModel : (k === 'video' ? settings.videoModel : settings.audioModel);
+  if (settingModel && typeof settingModel === 'string' && settingModel.trim()) {
+    push({
+      source: 'settings',
+      role: roleName,
+      backend: /gemini|imagen|veo/i.test(settingModel) ? 'gemini' : 'openai-compat',
+      model: settingModel.trim(),
+      baseURL: (provider && provider.baseURL) || '',
+      apiKey: (provider && provider.apiKey) || '',
+      offline: false,
+    });
+  }
+
+  // Orchestrator list explicit media rows
+  if (orch && Array.isArray(orch.providers)) {
+    for (const row of orch.providers) {
+      if (!row || !row.model) continue;
+      const m = String(row.model);
+      if (k === 'image' && /(imagen|dall-e|gpt-image|flash-image|grok-2-image|flux|sdxl)/i.test(m)) {
+        push({ source: 'orchestrator', role: roleName, backend: /imagen|gemini/i.test(m) ? 'gemini' : 'openai-compat', model: m, baseURL: row.baseURL || '', apiKey: row.apiKey || '', oauthProvider: row.oauthProvider || '', offline: false });
+      } else if (k === 'video' && /(veo|sora|runway|luma|kling|wan|hunyuan|cogvideo)/i.test(m)) {
+        push({ source: 'orchestrator', role: roleName, backend: /veo/i.test(m) ? 'gemini' : 'openai-compat', model: m, baseURL: row.baseURL || '', apiKey: row.apiKey || '', oauthProvider: row.oauthProvider || '', offline: false });
+      } else if (k === 'audio' && /(tts|eleven|speech|audio)/i.test(m)) {
+        push({ source: 'orchestrator', role: roleName, backend: 'openai-compat', model: m, baseURL: row.baseURL || '', apiKey: row.apiKey || '', offline: false });
+      }
+    }
+  }
+
+  const geminiEnvKey = env.GEMINI_API_KEY || env.GOOGLE_API_KEY || '';
+  const geminiKeyHit = findKeyInProviderKeys(pKeys, [/generativelanguage\.googleapis\.com/i, /ai\.google/i]);
+  const geminiKey = geminiEnvKey || (geminiKeyHit && geminiKeyHit.apiKey) || '';
+  const geminiOauth = oauthAccts.find((a) => a && !a.needsSignIn && !a.expired && /^(gemini|antigravity|google)$/i.test(String(a.provider || '')));
+
+  const openaiEnvKey = env.OPENAI_API_KEY || '';
+  const openaiKeyHit = findKeyInProviderKeys(pKeys, [/api\.openai\.com/i]);
+  const openaiKey = openaiEnvKey || (openaiKeyHit && openaiKeyHit.apiKey) || '';
+  const chatgptOauth = oauthAccts.find((a) => a && !a.needsSignIn && !a.expired && /^(chatgpt|openai)$/i.test(String(a.provider || '')));
+
+  const xaiKey = env.XAI_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.x\.ai/i]) || {}).apiKey || '';
+  const togetherKey = env.TOGETHER_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.together\.xyz/i]) || {}).apiKey || '';
+  const openrouterKey = env.OPENROUTER_API_KEY || (findKeyInProviderKeys(pKeys, [/openrouter\.ai/i]) || {}).apiKey || '';
+  const fireworksKey = env.FIREWORKS_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.fireworks\.ai/i]) || {}).apiKey || '';
+  const replicateKey = env.REPLICATE_API_TOKEN || env.REPLICATE_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.replicate\.com/i]) || {}).apiKey || '';
+  const falKey = env.FAL_KEY || env.FAL_API_KEY || (findKeyInProviderKeys(pKeys, [/fal\.run|fal\.ai/i]) || {}).apiKey || '';
+  const runwayKey = env.RUNWAYML_API_SECRET || env.RUNWAY_API_KEY || (findKeyInProviderKeys(pKeys, [/runwayml\.com/i]) || {}).apiKey || '';
+  const lumaKey = env.LUMA_API_KEY || (findKeyInProviderKeys(pKeys, [/lumalabs\.ai/i]) || {}).apiKey || '';
+  const klingKey = env.KLING_API_KEY || (findKeyInProviderKeys(pKeys, [/klingai\.com/i]) || {}).apiKey || '';
+  const elevenKey = env.ELEVENLABS_API_KEY || (findKeyInProviderKeys(pKeys, [/elevenlabs\.io/i]) || {}).apiKey || '';
+
+  if (k === 'image') {
+    // 2. Google Gemini / Antigravity
+    if (geminiKey || geminiOauth) {
+      push({ source: geminiKey ? 'api_key' : 'oauth', role: roleName, backend: 'gemini', model: 'imagen-3.0-generate-002', baseURL: 'https://generativelanguage.googleapis.com/v1beta', apiKey: geminiKey, oauthProvider: geminiOauth ? geminiOauth.id : '', offline: false });
+      push({ source: geminiKey ? 'api_key' : 'oauth', role: roleName, backend: 'gemini-flash-image', model: 'gemini-2.5-flash-image', baseURL: 'https://generativelanguage.googleapis.com/v1beta', apiKey: geminiKey, oauthProvider: geminiOauth ? geminiOauth.id : '', responseModalities: ['TEXT', 'IMAGE'], offline: false });
+    }
+    // 3. OpenAI
+    if (openaiKey || chatgptOauth) {
+      push({ source: openaiKey ? 'api_key' : 'oauth', role: roleName, backend: 'openai-images', model: 'gpt-image-1', baseURL: 'https://api.openai.com/v1', apiKey: openaiKey, oauthProvider: chatgptOauth ? chatgptOauth.id : '', offline: false });
+      push({ source: openaiKey ? 'api_key' : 'oauth', role: roleName, backend: 'openai-images', model: 'dall-e-3', baseURL: 'https://api.openai.com/v1', apiKey: openaiKey, oauthProvider: chatgptOauth ? chatgptOauth.id : '', offline: false });
+    }
+    // 4. xAI / Together / OpenRouter / Fireworks / Replicate / fal.ai
+    if (xaiKey) push({ source: 'api_key', role: roleName, backend: 'xai-images', model: 'grok-2-image', baseURL: 'https://api.x.ai/v1', apiKey: xaiKey, offline: false });
+    if (togetherKey) push({ source: 'api_key', role: roleName, backend: 'together-images', model: 'black-forest-labs/FLUX.1.1-pro', baseURL: 'https://api.together.xyz/v1', apiKey: togetherKey, offline: false });
+    if (openrouterKey) push({ source: 'api_key', role: roleName, backend: 'openrouter-images', model: 'black-forest-labs/FLUX.1-schnell', baseURL: 'https://openrouter.ai/api/v1', apiKey: openrouterKey, offline: false });
+    if (fireworksKey) push({ source: 'api_key', role: roleName, backend: 'fireworks-images', model: 'black-forest-labs/FLUX.1-schnell', baseURL: 'https://api.fireworks.ai/inference/v1', apiKey: fireworksKey, offline: false });
+    if (replicateKey) push({ source: 'api_key', role: roleName, backend: 'replicate', model: 'black-forest-labs/flux-1.1-pro', baseURL: 'https://api.replicate.com/v1', apiKey: replicateKey, offline: false });
+    if (falKey) push({ source: 'api_key', role: roleName, backend: 'fal', model: 'fal-ai/flux/schnell', baseURL: 'https://fal.run', apiKey: falKey, offline: false });
+    // 5. Local runtimes (ComfyUI / Automatic1111 / DrawThings)
+    if (localEndpoints && localEndpoints.comfyui) push({ source: 'local', role: roleName, backend: 'comfyui', model: 'comfyui-flux-sdxl', baseURL: typeof localEndpoints.comfyui === 'string' ? localEndpoints.comfyui : 'http://127.0.0.1:8188', apiKey: '', offline: true });
+    if (localEndpoints && localEndpoints.a1111) push({ source: 'local', role: roleName, backend: 'a1111', model: 'automatic1111-sd', baseURL: typeof localEndpoints.a1111 === 'string' ? localEndpoints.a1111 : 'http://127.0.0.1:7860', apiKey: '', offline: true });
+    if (localEndpoints && localEndpoints.drawthings) push({ source: 'local', role: roleName, backend: 'drawthings', model: 'drawthings-local', baseURL: typeof localEndpoints.drawthings === 'string' ? localEndpoints.drawthings : 'http://127.0.0.1:7888', apiKey: '', offline: true });
+    // 6. Guaranteed Offline Fallback
+    push({ source: 'offline_fallback', role: roleName, backend: 'offline-image-studio', model: 'akron-svg-canvas-studio', baseURL: '', apiKey: '', offline: true });
+  } else if (k === 'video') {
+    // 2. Google Veo
+    if (geminiKey || geminiOauth) {
+      push({ source: geminiKey ? 'api_key' : 'oauth', role: roleName, backend: 'google-veo', model: 'veo-2.0-generate-001', baseURL: 'https://generativelanguage.googleapis.com/v1beta', apiKey: geminiKey, oauthProvider: geminiOauth ? geminiOauth.id : '', offline: false });
+    }
+    // 3. OpenAI Sora
+    if (openaiKey || chatgptOauth) {
+      push({ source: openaiKey ? 'api_key' : 'oauth', role: roleName, backend: 'openai-sora', model: 'sora', baseURL: 'https://api.openai.com/v1/videos/generations', apiKey: openaiKey, oauthProvider: chatgptOauth ? chatgptOauth.id : '', offline: false });
+    }
+    // 4. Replicate / fal.ai / Runway / Luma / Kling
+    if (falKey) push({ source: 'api_key', role: roleName, backend: 'fal-video', model: 'fal-ai/wan/v2.1', baseURL: 'https://fal.run', apiKey: falKey, offline: false });
+    if (replicateKey) push({ source: 'api_key', role: roleName, backend: 'replicate-video', model: 'wan-video/wan-2.1', baseURL: 'https://api.replicate.com/v1', apiKey: replicateKey, offline: false });
+    if (runwayKey) push({ source: 'api_key', role: roleName, backend: 'runway', model: 'gen4_turbo', baseURL: 'https://api.dev.runwayml.com/v1', apiKey: runwayKey, offline: false });
+    if (lumaKey) push({ source: 'api_key', role: roleName, backend: 'luma', model: 'ray-2', baseURL: 'https://api.lumalabs.ai/dream-machine/v1', apiKey: lumaKey, offline: false });
+    if (klingKey) push({ source: 'api_key', role: roleName, backend: 'kling', model: 'kling-v1.6', baseURL: 'https://api.klingai.com/v1', apiKey: klingKey, offline: false });
+    // 5. Local ComfyUI video
+    if (localEndpoints && localEndpoints.comfyui) push({ source: 'local', role: roleName, backend: 'comfyui-video', model: 'wan2.1-comfyui', baseURL: typeof localEndpoints.comfyui === 'string' ? localEndpoints.comfyui : 'http://127.0.0.1:8188', apiKey: '', offline: true });
+    // 6. Guaranteed Offline Fallback
+    push({ source: 'offline_fallback', role: roleName, backend: 'offline-video-studio', model: 'akron-motion-canvas-30fps', baseURL: '', apiKey: '', offline: true });
+  } else {
+    if (openaiKey || chatgptOauth) push({ source: openaiKey ? 'api_key' : 'oauth', role: roleName, backend: 'openai-tts', model: 'gpt-4o-mini-tts', baseURL: 'https://api.openai.com/v1/audio/speech', apiKey: openaiKey, oauthProvider: chatgptOauth ? chatgptOauth.id : '', offline: false });
+    if (elevenKey) push({ source: 'api_key', role: roleName, backend: 'elevenlabs', model: 'eleven_multilingual_v2', baseURL: 'https://api.elevenlabs.io/v1', apiKey: elevenKey, offline: false });
+    if (geminiKey || geminiOauth) push({ source: geminiKey ? 'api_key' : 'oauth', role: roleName, backend: 'gemini-audio', model: 'gemini-2.5-flash', baseURL: 'https://generativelanguage.googleapis.com/v1beta', apiKey: geminiKey, oauthProvider: geminiOauth ? geminiOauth.id : '', offline: false });
+    push({ source: 'offline_fallback', role: roleName, backend: 'offline-audio-studio', model: 'akron-offline-speech', baseURL: '', apiKey: '', offline: true });
+  }
+
+  const chosen = candidates[0];
+  const activeChatModel = (provider && provider.model) || '';
+  return {
+    ok: true,
+    kind: k,
+    role: roleName,
+    chosen,
+    candidates,
+    activeChatModel,
+    autoRouted: isTextOnlyModelId(activeChatModel) || (chosen && chosen.model !== activeChatModel),
+    fallbackUsed: !!(chosen && chosen.source === 'offline_fallback'),
+    backend: chosen ? chosen.backend : '',
+    model: chosen ? chosen.model : '',
+    baseURL: chosen ? chosen.baseURL : '',
+    apiKey: chosen ? chosen.apiKey : '',
+    oauthProvider: chosen ? chosen.oauthProvider : '',
+    offline: chosen ? !!chosen.offline : true,
+  };
+}
+
+async function resolveMediaProvider(opts = {}) {
+  let local = opts.localEndpoints || null;
+  if (!local && opts.probeLocal === true) {
+    const [comfy, a1111, draw] = await Promise.all([
+      probeLocalHttp('http://127.0.0.1:8188/system_stats', 250),
+      probeLocalHttp('http://127.0.0.1:7860/sdapi/v1/sd-models', 250),
+      probeLocalHttp('http://127.0.0.1:7888/', 250),
+    ]);
+    local = {
+      comfyui: comfy ? 'http://127.0.0.1:8188' : false,
+      a1111: a1111 ? 'http://127.0.0.1:7860' : false,
+      drawthings: draw ? 'http://127.0.0.1:7888' : false,
+    };
+  }
+  return resolveMediaChain({ ...opts, localEndpoints: local });
+}
+
 function summary(orch, provider) {
   if (!poolsActive(orch, provider)) return '';
   return ROLES.map((r) => {
@@ -269,4 +538,5 @@ module.exports = {
   ROLES, ROLE_LABEL, ROLE_TIER, normalizeRole, tierToRole, isModelAlias, aliasRole, aliasTier,
   poolsConfig, poolsActive, resolve, roleLimit, orchestratorFor, chainFor, hasImages,
   freellmPreset, summary, modelEntry, normBase, rotate,
+  resolveMediaChain, resolveMediaProvider, isTextOnlyModelId,
 };

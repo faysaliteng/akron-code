@@ -6,7 +6,7 @@ export function useAutobotEventStream({
   runIdRef, liveRef, runStartedAtRef, runConvRef, activeIdRef, settingsRef,
   setLiveSync, setThinking, setSubAgents, setSwarmInfo, setSwarmBoard,
   setPaused, setPermError, setPermissionQueue, setLastUsage,
-  commitLive, setError, setModelMenuOpen, setQuestion,
+  commitLive, setError, setModelMenuOpen, setQuestionQueue,
   setShowSettings, setPanel, setActiveId, setCuConsent,
   setPermissions, setPlanMode, setArtifactsExplicit, setNotice,
   openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
@@ -202,6 +202,7 @@ export function useAutobotEventStream({
           setPaused(false);
           setPermError('');
           setPermissionQueue((q) => q.filter((p) => evt.runId && p.runId && p.runId !== evt.runId));
+          setQuestionQueue((q) => q.filter((x) => evt.runId && x.runId && x.runId !== evt.runId));
           if (evt && evt.usage) setLastUsage({ ...evt.usage, model: evt.usage.model || (evt.usage && evt.usage.model) || null, at: Date.now() });
           const snapTools = (liveRef.current && liveRef.current.tools) || [];
           const snapCps = (liveRef.current && liveRef.current.checkpoints) || [];
@@ -219,6 +220,7 @@ export function useAutobotEventStream({
           setPaused(false);
           setPermError('');
           setPermissionQueue((q) => q.filter((p) => evt.runId && p.runId && p.runId !== evt.runId));
+          setQuestionQueue((q) => q.filter((x) => evt.runId && x.runId && x.runId !== evt.runId));
           // Stopping keeps whatever the model had already produced.
           commitLive();
           break;
@@ -226,6 +228,7 @@ export function useAutobotEventStream({
           setPaused(false);
           setPermError('');
           setPermissionQueue((q) => q.filter((p) => evt.runId && p.runId && p.runId !== evt.runId));
+          setQuestionQueue((q) => q.filter((x) => evt.runId && x.runId && x.runId !== evt.runId));
           // Preserve anything already streamed, then show the failure.
           commitLive();
           setError(cleanErr(evt.message));
@@ -234,13 +237,42 @@ export function useAutobotEventStream({
           // model menu so the button that resolves it is one click away.
           if (evt.needsSignIn) setModelMenuOpen(true);
           break;
-        case 'question':
-          setQuestion({ id: evt.id, type: 'question', text: evt.question, options: evt.options || [] });
-          sendDesktopNotification('questions', 'Akron Code needs input', evt.question, settingsRef.current, { convId: evt.convId || runConvRef.current || activeIdRef.current || null });
+        case 'question': {
+          const convTarget = evt.convId || runConvRef.current || activeIdRef.current || null;
+          const item = {
+            id: evt.id,
+            runId: evt.runId || runIdRef.current || null,
+            convId: convTarget,
+            type: 'question',
+            text: evt.question,
+            questions: Array.isArray(evt.questions) && evt.questions.length ? evt.questions : null,
+            options: evt.options || [],
+          };
+          setQuestionQueue((q) => (q.some((x) => x.id === item.id) ? q : [...q, item]));
+          sendDesktopNotification('questions', 'Akron Code needs input', evt.question, settingsRef.current, { convId: convTarget });
           break;
-        case 'plan':
-          setQuestion({ id: evt.id, type: 'plan', text: evt.plan, options: [] });
-          sendDesktopNotification('questions', 'Akron Code · Plan approval', 'Review proposed execution plan.', settingsRef.current, { convId: evt.convId || runConvRef.current || activeIdRef.current || null });
+        }
+        case 'plan': {
+          const convTarget = evt.convId || runConvRef.current || activeIdRef.current || null;
+          const item = {
+            id: evt.id,
+            runId: evt.runId || runIdRef.current || null,
+            convId: convTarget,
+            type: 'plan',
+            text: evt.plan,
+            allowedPrompts: evt.allowedPrompts || [],
+            options: [],
+          };
+          setQuestionQueue((q) => (q.some((x) => x.id === item.id) ? q : [...q, item]));
+          sendDesktopNotification('questions', 'Akron Code · Plan approval', 'Review proposed execution plan.', settingsRef.current, { convId: convTarget });
+          break;
+        }
+        case 'questionCleared':
+          setQuestionQueue((q) => q.filter((x) => {
+            if (evt.id) return x.id !== evt.id;
+            if (evt.runId) return x.runId !== evt.runId;
+            return false;
+          }));
           break;
         case 'permission': {
           const item = {

@@ -466,6 +466,7 @@ header button{padding:4px 9px;font-size:12px}
     <button data-act="up" title="Move earlier">↑</button>
     <button data-act="down" title="Move later">↓</button>
     <button data-act="drive">Save to Drive</button>
+    <button data-act="pptx">Export .pptx</button>
     <button data-act="html">Export HTML</button>
     <button data-act="md">Export MD</button>
   </header>

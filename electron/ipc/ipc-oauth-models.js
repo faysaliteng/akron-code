@@ -41,19 +41,29 @@ function hydrateLocalFreeLlmProvider(provider) {
 async function hydrateProvider(provider) {
   provider = hydrateLocalFreeLlmProvider(provider);
   if (!provider || typeof provider !== 'object' || !provider.oauthProvider) return provider;
+  const targetId = String(provider.oauthProvider);
   let r;
   try {
-    r = await providerOauth.resolve(String(provider.oauthProvider));
+    r = await providerOauth.resolve(targetId);
+    if (!r || !r.accessToken) {
+      if (providerOauth.autoHealAll) await providerOauth.autoHealAll().catch(() => {});
+      r = await providerOauth.resolve(targetId, { force: true });
+    }
   } catch (e) {
-    // A dead refresh token is a sign-in problem, not an LLM failure. Surface one
-    // human line instead of an OAuth error code the composer can't act on.
-    const prov = providerOauth.provider(String(provider.oauthProvider).split(':')[0]);
-    const label = (prov && prov.label) || 'This provider';
-    const err = new Error(`${label} needs to be signed in again — open the model menu and choose Sign in.`);
-    err.code = 'provider_needs_signin';
-    err.human = true;
-    err.cause = e;
-    throw err;
+    try {
+      if (providerOauth.autoHealAll) await providerOauth.autoHealAll({ importMissing: true }).catch(() => {});
+      r = await providerOauth.resolve(targetId, { force: true });
+    } catch (e2) {
+      // A dead refresh token is a sign-in problem, not an LLM failure. Surface one
+      // human line instead of an OAuth error code the composer can't act on.
+      const prov = providerOauth.provider(targetId.split(':')[0]);
+      const label = (prov && prov.label) || 'This provider';
+      const err = new Error(`${label} needs to be signed in again — open the model menu and choose Sign in.`);
+      err.code = 'provider_needs_signin';
+      err.human = true;
+      err.cause = e2 || e;
+      throw err;
+    }
   }
   const out = Object.assign({}, provider, {
     // Native transport wins over any OpenAI-compatible baseURL the renderer had.
@@ -142,7 +152,17 @@ function oneLine(e) {
 
 ipcMain.handle('autobot:providerStatus', async () => {
   try {
-    const st = providerOauth.status();
+    let st = providerOauth.status();
+    const broken = [];
+    for (const p of (st.providers || [])) {
+      for (const a of (p.accounts || [])) {
+        if (a && (!a.hasToken || a.needsSignIn || a.expired)) broken.push(a);
+      }
+    }
+    if (broken.length && providerOauth.autoHealAll) {
+      await providerOauth.autoHealAll().catch(() => {});
+      st = providerOauth.status();
+    }
     // A dead refresh token does not mean a dead access token. Before reporting
     // an account as expired (which pushes the user back through sign-in), probe
     // it once — a success stamps `verifiedAt` and clears the badge.
@@ -775,6 +795,41 @@ ipcMain.handle('autobot:providerAdoptClaude', async () => {
     return { ok: false, error: oneLine(e), needsSignIn: e.code === 'provider_needs_signin' };
   }
 });
+
+  ipcMain.handle('autobot:providerAutoHeal', async (_e, opts) => {
+    try {
+      const res = providerOauth.autoHealAll
+        ? await providerOauth.autoHealAll({ importMissing: !(opts && opts.importMissing === false) })
+        : { ok: false, healed: [], imported: [] };
+      if ((res.healed && res.healed.length) || (res.imported && res.imported.length)) {
+        poolNoticeDeduper.reset();
+        try { await warmModelCatalogs(); } catch (_) {}
+      }
+      return { ...res, status: providerOauth.status() };
+    } catch (e) {
+      return { ok: false, error: oneLine(e) };
+    }
+  });
+
+  // Boot + 10-minute background OAuth auto-heal & keep-alive across macOS, Windows, and Linux.
+  const runKeepAlivePass = async () => {
+    try {
+      if (providerOauth.autoHealAll) {
+        await providerOauth.autoHealAll({ importMissing: true }).catch(() => {});
+      }
+      const accounts = providerOauth.listAccounts ? providerOauth.listAccounts() : [];
+      for (const a of accounts) {
+        if (!a || a.needsSignIn || !a.hasToken) continue;
+        try {
+          await providerOauth.ensureToken(a.provider, a.account);
+        } catch (_) {}
+      }
+    } catch (_) {}
+  };
+  const startupHealTimer = setTimeout(runKeepAlivePass, 2000);
+  if (startupHealTimer && typeof startupHealTimer.unref === 'function') startupHealTimer.unref();
+  const keepAliveTimer = setInterval(runKeepAlivePass, 10 * 60 * 1000);
+  if (keepAliveTimer && typeof keepAliveTimer.unref === 'function') keepAliveTimer.unref();
 
   return { freellmFallbackApiKey, hydrateLocalFreeLlmProvider, hydrateProvider, validateOrchestrator, oneLine, fetchProviderModels, warmModelCatalogs, replayClaudeRotation };
 };

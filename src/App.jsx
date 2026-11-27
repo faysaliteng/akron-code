@@ -19,6 +19,8 @@ import { CodeReviewPane } from './components/CodeReviewPane.jsx';
 import { AboutSection } from './components/AboutSection.jsx';
 import { NotificationCenter, useNotificationCenter } from './components/NotificationCenter.jsx';
 import PermissionDock from './components/PermissionDock.jsx';
+import QuestionDock from './components/QuestionDock.jsx';
+import { MediaDocCardList } from './components/MediaDocCard.jsx';
 import MessageQueueTray, { filterQueueForConv, pickNextRunnableQueued, moveQueueItem, stepQueueItemWithinConv } from './components/MessageQueueTray.jsx';
 import { UI_FONT_PRESETS, MONO_FONT_PRESETS, DEFAULT_TYPOGRAPHY, normalizeTypography, resolveUiFontStack, resolveMonoFontStack, applyTypographyToDocument } from './typography.js';
 import { deriveSubAgents } from './review-helpers.mjs';
@@ -26,7 +28,7 @@ import { IdeWorkbench } from './ide/IdeWorkbench.jsx';
 import { MindMapView } from './ide/MindMapView.jsx';
 import { shortcutLabels } from './ide/shortcuts';
 import { Icon, iconChar, GoogleDriveIcon, AgentIcon } from './components/Icon.jsx';
-import { QuestionModal, ComputerUseModal, CommandPalette, FindBar, GoogleDriveModal } from './features/AppModals.jsx';
+import { ComputerUseModal, CommandPalette, FindBar, GoogleDriveModal } from './features/AppModals.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from './features/WorkspacePanels.jsx';
 import { MissionControlPane } from './components/MissionControlPane.jsx';
 import { ProactiveDashboard } from './components/ProactiveDashboard.jsx';
@@ -199,7 +201,7 @@ export default function App() {
   }, []);
   const [cwd, setCwd] = useState('');
   const [error, setErrorRaw] = useState('');
-  const [question, setQuestion] = useState(null); // { id, type, text, options }
+  const [questionQueue, setQuestionQueue] = useState([]); // FIFO pending QuestionDock & Plan prompts
 
   // Organization compliance profile (`taint:*` capability namespace). The main
   // process owns the file; the renderer keeps the evaluated snapshot so every
@@ -270,7 +272,14 @@ export default function App() {
   const [reviewTarget, setReviewTarget] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null); // file the browser pane should show (generated site)
   const [voiceMode, setVoiceMode] = useState(false); // full-duplex conversational voice session
-  const [permissions, setPermissions] = useState(() => loadJSON('autobot:permissions', 'auto')); // 'auto' | 'ask' (B8 Claude Code mode)
+  const [permissions, setPermissions] = useState(() => {
+    if (!loadJSON('autobot:perm_auto_default_v2', false)) {
+      saveJSON('autobot:perm_auto_default_v2', true);
+      saveJSON('autobot:permissions', 'auto');
+      return 'auto';
+    }
+    return loadJSON('autobot:permissions', 'auto');
+  }); // 'auto' | 'ask' (B8 Claude Code mode)
   const [permissionQueue, setPermissionQueue] = useState([]); // FIFO pending permission prompts
   const [permError, setPermError] = useState('');
   const [permSubmitting, setPermSubmitting] = useState(false);
@@ -279,6 +288,10 @@ export default function App() {
   const waitingPermissionConvIds = useMemo(
     () => new Set(permissionQueue.map((p) => p.convId).filter(Boolean)),
     [permissionQueue]
+  );
+  const waitingQuestionConvIds = useMemo(
+    () => new Set(questionQueue.map((q) => q.convId).filter(Boolean)),
+    [questionQueue]
   );
   const [cuConsent, setCuConsent] = useState(null); // pending Computer Use consent { id, tier, tool, sensitive }
   const [planMode, setPlanMode] = useState(null); // active plan-mode banner { active, file }
@@ -1020,12 +1033,21 @@ export default function App() {
     }
   }, [messages, streaming, voiceMode]);
 
-  const answerQuestion = useCallback(async (ans) => {
-    if (!question) return;
-    const id = question.id;
-    setQuestion(null);
-    await window.autobot.answerQuestion(id, ans);
-  }, [question]);
+  const answerQuestion = useCallback(async (idOrAns, maybeAns) => {
+    let targetId = idOrAns;
+    let payload = maybeAns;
+    if (maybeAns === undefined) {
+      const first = questionQueue.find((q) => !q.convId || q.convId === activeId) || questionQueue[0];
+      if (!first) return;
+      targetId = first.id;
+      payload = idOrAns;
+    }
+    if (!targetId) return;
+    setQuestionQueue((q) => q.filter((x) => x.id !== targetId));
+    try {
+      await window.autobot.answerQuestion(targetId, payload);
+    } catch (_) {}
+  }, [questionQueue, activeId]);
 
   const answerPermission = useCallback(async (id, payload) => {
     if (!id) return;
@@ -2315,11 +2337,17 @@ export default function App() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const modelMenuOpenSetterRef = useRef(() => {});
+  const renderTabAlerts = (cid) => (
+    <>
+      {waitingPermissionConvIds.has(cid) && <span className="conv-perm-bell" title="Waiting for permission"><Icon name="Notification" size={11} /></span>}
+      {waitingQuestionConvIds.has(cid) && <span className="conv-perm-bell" title="Waiting for answer"><Icon name="Help" size={11} /></span>}
+    </>
+  );
   useAutobotEventStream({
     runIdRef, liveRef, runStartedAtRef, runConvRef, activeIdRef, settingsRef,
     setLiveSync, setThinking, setSubAgents, setSwarmInfo, setSwarmBoard,
     setPaused, setPermError, setPermissionQueue, setLastUsage,
-    commitLive, setError, setModelMenuOpen, setQuestion,
+    commitLive, setError, setModelMenuOpen, setQuestionQueue,
     setShowSettings, setPanel, setActiveId, setCuConsent,
     setPermissions, setPlanMode, setArtifactsExplicit, setNotice,
     openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
@@ -2361,11 +2389,7 @@ export default function App() {
               title={tab.title || 'Untitled session'}
             >
               {streaming && runConvRef.current === tab.id && <span className="ws-tab-dot" />}
-              {waitingPermissionConvIds.has(tab.id) && (
-                <span className="conv-perm-bell" title="Waiting for permission">
-                  <Icon name="Notification" size={11} />
-                </span>
-              )}
+              {renderTabAlerts(tab.id)}
               <span className="ws-tab-label">{tab.title || 'Untitled session'}</span>
               <button type="button" className="ws-tab-x" aria-label="Close tab" onClick={(e) => closeWorkspaceTab(tab.id, e)}>
                 <Icon name="X" size={10} />
@@ -2420,6 +2444,8 @@ export default function App() {
                   messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway}
                   subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode}
                   copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd}
+                  onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }}
+                  onOpenInIde={(fp) => setIdeExternalOpenFile(fp)}
                   copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage}
                   forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv}
                   T={T} runStartedAt={runStartedAt}
@@ -2462,6 +2488,10 @@ export default function App() {
                   onRespond={answerPermission}
                   errorMsg={permError}
                   submitting={permSubmitting}
+                />
+                <QuestionDock
+                  queue={questionQueue.filter((q) => !q.convId || q.convId === activeId)}
+                  onAnswer={answerQuestion}
                 />
                 <InputBar
                   streaming={streaming} paused={paused} onPause={pauseRun} onResume={resumeRun} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
@@ -2621,7 +2651,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} />}
+              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} initialTab={searchTab} provider={provider} onOpenSessionLink={openSessionDeepLink} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'mission' && (
                 <MissionControlPane
@@ -2652,7 +2682,7 @@ export default function App() {
                   Icon={Icon}
                 />
               )}
-              {panel === 'artifacts' && <ArtifactsView blocks={artifacts} />}
+              {panel === 'artifacts' && <ArtifactsView blocks={artifacts} tools={allActiveTools} cwd={cwd} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } setPanel('chats'); }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} convs={convs} provider={provider} onJumpToMessage={(cid, mid) => { if (cid) selectConv(cid); if (mid) setPendingScroll(mid); }} />}
               {panel === 'skills' && <SkillsView skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills} />}
               {panel === 'notebooks' && <NotebooksView notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells} openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook} />}
@@ -2770,6 +2800,10 @@ export default function App() {
             errorMsg={permError}
             submitting={permSubmitting}
           />
+          <QuestionDock
+            queue={questionQueue.filter((q) => !q.convId || q.convId === activeId)}
+            onAnswer={answerQuestion}
+          />
 
           <InputBar
             streaming={streaming} paused={paused} onPause={pauseRun} onResume={resumeRun} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
@@ -2842,10 +2876,6 @@ export default function App() {
         />
       )}
 
-      {question && (
-        <QuestionModal question={question} answer={answerQuestion} />
-      )}
-
       {cuConsent && (
         <ComputerUseModal consent={cuConsent} answer={answerCuConsent} />
       )}
@@ -2901,7 +2931,7 @@ function SegmentView({ segments, tools, streaming }) {
   });
 }
 
-function Message({ m, convId, idx, turnLabel = '', subAgentCount = 0, taskCount = 0, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, onOpenReview, onOpenSubagents, onOpenRunLog }) {
+function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, taskCount = 0, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, onOpenReview, onOpenSubagents, onOpenRunLog, onPromptAction, onOpenInIde }) {
   const [copied, setCopied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const shareRef = useRef(null);
@@ -2949,6 +2979,9 @@ function Message({ m, convId, idx, turnLabel = '', subAgentCount = 0, taskCount 
         )}
         {m.role === 'assistant' && m.tools && m.tools.some((t) => t && t.name === 'TodoWrite') && (
           <LiveChecklistCard tools={m.tools} durationMs={m.durationMs} streaming={false} Icon={Icon} />
+        )}
+        {m.role === 'assistant' && (
+          <MediaDocCardList tools={m.tools} content={m.content} cwd={cwd} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} />
         )}
         {m.role === 'assistant' && (
           <FilesChangedBar tools={m.tools} checkpoints={m.checkpoints} checkpointId={m.checkpointId} turnLabel={turnLabel} convId={convId} subAgentCount={subAgentCount} taskCount={taskCount} onOpenReview={onOpenReview} onOpenSubagents={onOpenSubagents} onOpenRunLog={onOpenRunLog} streaming={false} Icon={Icon} />

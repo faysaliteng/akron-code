@@ -484,6 +484,29 @@ async function slidesUpload(payload) {
   }
 }
 ipcMain.handle('autobot:slidesUpload', (e, payload) => slidesUpload(payload || {}));
+ipcMain.handle('autobot:slidesExportPptx', async (e, payload) => {
+  try {
+    const { title, aspect, slides } = payload || {};
+    const slug = String(title || 'presentation').replace(/[^\w.-]+/g, '_').slice(0, 60) || 'presentation';
+    const res = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender) || undefined, {
+      title: 'Export PowerPoint Deck (.pptx)',
+      defaultPath: `${slug}.pptx`,
+      filters: [{ name: 'PowerPoint Presentation', extensions: ['pptx'] }],
+    });
+    if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+    const docStudio = require('../doc-studio');
+    const out = await docStudio.generateDocument({
+      format: 'pptx',
+      output_path: res.filePath,
+      title: title || 'Presentation',
+      aspect: aspect || '16:9',
+      slides: Array.isArray(slides) ? slides : [],
+    });
+    return { ok: true, path: out.path };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
 
 // ---- Link unfurl (Desktop `og` / `twitter` / `xlink` parity) ----
 // The renderer never fetches a link itself: the model or the user can put an

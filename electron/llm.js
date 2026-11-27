@@ -23,6 +23,7 @@ const STANDARD_TOOLS = new Set([
   'Task', 'Agent', 'TaskOutput', 'TaskStop', 'ListAgents', 'Swarm', 'Workflow', 'ToolSearch', 'find_mcp_tools', 'Skill', 'list_skills',
   'TeamCreate', 'TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate', 'SendMessage',
   'CreateCustomTool', 'ListCustomTools', 'DeleteCustomTool', 'ExtractSkill', 'ext_browser', 'rea',
+  'GenerateImage', 'EditImage', 'GenerateVideo', 'EditVideo', 'ReadDocument', 'GenerateDocument',
   'EnterWorktree', 'ExitWorktree', 'EnterPlanMode',
   'AskUserQuestion', 'ExitPlanMode', 'KillShell', 'Artifact', 'Cd',
   'memory_add', 'memory_list', 'mcp__visualize__visualize',
@@ -2104,7 +2105,7 @@ async function runAgent(opts) {
   let permissionMode = String(opts.permissionMode || opts.permissions || 'auto');
   let planPrevMode = 'auto';
   const PLAN_SAFE = new Set([
-    'Read', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles',
+    'Read', 'ReadDocument', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles',
     'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion', 'ExitPlanMode',
     'EnterPlanMode', 'Artifact', 'StructuredOutput', 'Monitor', 'TaskOutput',
     'TaskList', 'TaskGet', 'TeamCreate', 'SendMessage', 'ListAgents', 'Skill',

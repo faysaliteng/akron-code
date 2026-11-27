@@ -502,6 +502,24 @@ function slidesRuntime(p) {
     if (act === 'down') { moveSlide(i, 1); return; }
     if (act === 'md') { download(String(TITLE || 'deck').replace(/[^\w.-]+/g, '_') + '.md', toMarkdown(), 'text/markdown'); return; }
     if (act === 'html') { download(String(TITLE || 'deck').replace(/[^\w.-]+/g, '_') + '.html', deckHtml(), 'text/html'); return; }
+    if (act === 'pptx') {
+      if (editing) collect();
+      if (!BRIDGE || !BRIDGE.invoke) { say('Export .pptx works from the desktop artifact window (Open button).'); return; }
+      say('Exporting PowerPoint (.pptx)…');
+      var cleanSlides = SLIDES.map(function (s) {
+        var tmp = document.createElement('div');
+        tmp.innerHTML = String(s.html || '');
+        var items = Array.prototype.map.call(tmp.querySelectorAll('li'), function (li) { return String(li.textContent || '').trim(); }).filter(Boolean);
+        var bodyTxt = items.length ? '' : String(tmp.textContent || '').trim();
+        return { title: s.title || '', bullets: items, body: bodyTxt, notes: s.notes || '' };
+      });
+      BRIDGE.invoke('autobot:slidesExportPptx', { title: TITLE, aspect: ASPECT, slides: cleanSlides }).then(function (r) {
+        if (r && r.ok && r.path) say('Exported: ' + r.path);
+        else if (r && r.canceled) say('Export canceled.');
+        else say((r && r.error) || 'PowerPoint export failed.');
+      }).catch(function () { say('PowerPoint export failed.'); });
+      return;
+    }
     if (act === 'drive') {
       if (editing) collect();
       if (!BRIDGE || !BRIDGE.invoke) { say('Save to Drive works from the artifact window (Open button).'); return; }

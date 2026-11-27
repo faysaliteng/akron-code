@@ -9,7 +9,7 @@ module.exports = function registerFeaturesIpc(ctx) {
     app, ipcMain, shell, dialog, BrowserWindow, session,
     store, workspace, mcp, mcpStatus, shells, git, pluginsDir, scheduler, sandbox,
     secretstore, search, sessionDb, environments, depManager, updater, browser,
-    gdrive, runAgent, providertransport, permGate, pendingQuestions, windows,
+    gdrive, runAgent, providertransport, permGate, questionGate, pendingQuestions, windows,
     winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix,
     hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine,
     humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError,
@@ -1183,7 +1183,8 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB image cap (data-URL inline for 
 ipcMain.handle('autobot:pickFiles', async (event) => {
   const r = await dialog.showOpenDialog(winFor(event), { properties: ['openFile', 'multiSelections'] });
   if (r.canceled || !r.filePaths.length) return [];
-  return r.filePaths.map((fp) => {
+  const docStudio = require('../doc-studio');
+  return Promise.all(r.filePaths.map(async (fp) => {
     const name = path.basename(fp);
     let stat = null;
     try { stat = fs.statSync(fp); } catch (_) {}
@@ -1192,6 +1193,7 @@ ipcMain.handle('autobot:pickFiles', async (event) => {
     let isText = false;
     let isImage = false;
     let dataUrl = null;
+    let extractedFormat = '';
     const ext = (name.split('.').pop() || '').toLowerCase();
     if (IMAGE_EXT.test(name)) {
       isImage = true;
@@ -1202,14 +1204,113 @@ ipcMain.handle('autobot:pickFiles', async (event) => {
           dataUrl = 'data:' + mime + ';base64,' + buf.toString('base64');
         } catch (_) {}
       }
+    } else if (docStudio.isExtractableAttachment(name) && size <= 25 * 1024 * 1024) {
+      try {
+        const extRes = await docStudio.extractAttachmentFile({ path: fp, name });
+        if (extRes && extRes.content) {
+          content = extRes.content;
+          isText = true;
+          extractedFormat = extRes.format || ext;
+        }
+      } catch (_) {}
     } else if (TEXT_EXT.test(name) && size <= MAX_INLINE_BYTES) {
       try {
         const buf = fs.readFileSync(fp);
         if (!buf.includes(0)) { content = buf.toString('utf8'); isText = true; }
       } catch (_) {}
     }
-    return { name, path: fp, size, isText, isImage, dataUrl, content };
-  });
+    return { name, path: fp, size, isText, isImage, dataUrl, content, extractedFormat };
+  }));
+});
+
+ipcMain.handle('autobot:extractAttachment', async (_event, payload) => {
+  try {
+    const docStudio = require('../doc-studio');
+    const p = payload || {};
+    const buf = Array.isArray(p.buffer) ? Buffer.from(p.buffer) : (Buffer.isBuffer(p.buffer) ? p.buffer : null);
+    const res = await docStudio.extractAttachmentFile({ path: p.path || '', name: p.name || '', buffer: buf });
+    return res || { ok: false };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+});
+
+ipcMain.handle('autobot:studioInspect', async (_event, payload) => {
+  try {
+    const p = payload || {};
+    const targetRaw = String(p.path || '').trim();
+    if (!targetRaw) return { ok: false, error: 'path required' };
+    const absPath = path.isAbsolute(targetRaw) ? path.normalize(targetRaw) : path.resolve(p.cwd || workspace.scratch(), targetRaw);
+    if (!fs.existsSync(absPath)) return { ok: false, error: `File not found: ${absPath}` };
+    const stat = fs.statSync(absPath);
+    const ext = path.extname(absPath).toLowerCase().slice(1);
+    const mediaGen = require('../media-gen');
+    const docStudio = require('../doc-studio');
+    if (/\.(png|jpe?g|webp|gif|svg|ico|bmp)$/i.test(absPath)) {
+      const dataUrl = stat.size <= 8 * 1024 * 1024
+        ? `data:${ext === 'svg' ? 'image/svg+xml' : (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/' + ext)};base64,${fs.readFileSync(absPath).toString('base64')}`
+        : '';
+      return { ok: true, kind: 'image', path: absPath, name: path.basename(absPath), size: stat.size, ext, dataUrl, fileUrl: 'file://' + encodeURI(absPath) };
+    }
+    if (/\.(mp4|webm|mov)$/i.test(absPath)) {
+      const meta = await mediaGen.probeVideo(absPath).catch(() => ({}));
+      return { ok: true, kind: 'video', path: absPath, name: path.basename(absPath), size: stat.size, ext, fileUrl: 'file://' + encodeURI(absPath), ...meta };
+    }
+    if (/\.(mp3|wav|ogg|m4a|flac)$/i.test(absPath)) {
+      return { ok: true, kind: 'audio', path: absPath, name: path.basename(absPath), size: stat.size, ext, fileUrl: 'file://' + encodeURI(absPath) };
+    }
+    if (docStudio.isDocumentPath(absPath) || /\.(csv|tsv)$/i.test(absPath)) {
+      const doc = await docStudio.readDocument(absPath, { cwd: p.cwd || path.dirname(absPath) });
+      return { ok: true, kind: 'document', path: absPath, name: path.basename(absPath), size: stat.size, ext, fileUrl: 'file://' + encodeURI(absPath), ...doc };
+    }
+    return { ok: true, kind: 'file', path: absPath, name: path.basename(absPath), size: stat.size, ext };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+});
+
+ipcMain.handle('autobot:studioAction', async (event, payload) => {
+  try {
+    const p = payload || {};
+    const action = String(p.action || '');
+    const srcPath = String(p.path || '').trim();
+    const cwd = p.cwd || (srcPath ? path.dirname(srcPath) : workspace.scratch());
+    const mediaGen = require('../media-gen');
+    const docStudio = require('../doc-studio');
+    if (action === 'reveal') {
+      shell.showItemInFolder(srcPath);
+      return { ok: true };
+    }
+    if (action === 'saveAs') {
+      const ext = path.extname(srcPath).slice(1) || '*';
+      const r = await dialog.showSaveDialog(winFor(event), {
+        title: 'Save As…',
+        defaultPath: path.basename(srcPath),
+        filters: [{ name: ext.toUpperCase(), extensions: [ext] }, { name: 'All Files', extensions: ['*'] }],
+      });
+      if (r.canceled || !r.filePath) return { ok: true, canceled: true };
+      fs.copyFileSync(srcPath, r.filePath);
+      return { ok: true, path: r.filePath };
+    }
+    if (action === 'remove_background' || action === 'upscale' || action === 'ai_edit') {
+      return await mediaGen.editImage({ input_path: srcPath, operation: action, instruction: p.instruction || '', cwd });
+    }
+    if (action === 'to_gif' || action === 'extract_frames') {
+      return await mediaGen.editVideo({ input_path: srcPath, operation: action, cwd });
+    }
+    if (action === 'extract_archive') {
+      const destDir = p.destDir || path.join(path.dirname(srcPath), path.basename(srcPath, path.extname(srcPath)));
+      return docStudio.extractArchive(srcPath, destDir);
+    }
+    if (action === 'export_pdf') {
+      const doc = await docStudio.readDocument(srcPath, { cwd });
+      const outPdf = srcPath.replace(/\.[^.]+$/, '') + '.pdf';
+      return await docStudio.generateDocument({ format: 'pdf', output_path: outPdf, title: path.basename(srcPath), markdown: doc.markdown || doc.text || '', cwd });
+    }
+    return { ok: false, error: `Unknown studioAction: ${action}` };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
 });
 
 // Generic save-to-file (conversation export/share writes land here; all content
@@ -1307,6 +1408,10 @@ ipcMain.handle('autobot:mcpReadResource', async (e, serverId, uri) => {
 
 // Interactive question / plan-mode answers
 ipcMain.handle('autobot:answerQuestion', async (e, id, answer) => {
+  if (questionGate && typeof questionGate.answer === 'function') {
+    const r = questionGate.answer(id, answer);
+    if (r && r.ok) return r;
+  }
   const resolve = pendingQuestions.get(id);
   if (resolve) {
     pendingQuestions.delete(id);

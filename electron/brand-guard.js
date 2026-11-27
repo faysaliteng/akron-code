@@ -141,7 +141,7 @@ function verifyRendererDomScript() {
   return `(() => {
     try {
       const title = document.title || '';
-      const header = document.body ? document.body.innerText : '';
+      const header = document.body ? ((document.body.innerText || '') + ' ' + (document.body.textContent || '')) : '';
       const hasBrandText = /Akron Code/i.test(title) || /Akron Code/i.test(header);
       const hasAttr = /Akronlogic\\.com/i.test(header);
       const svgs = Array.from(document.querySelectorAll('svg'));

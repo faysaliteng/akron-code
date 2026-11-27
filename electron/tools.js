@@ -27,6 +27,17 @@ const osSandbox = require('./os-sandbox');
 const untrusted = require('./untrusted');
 const auditLedger = require('./audit-ledger');
 const sideEffectsGuard = auditLedger.createIdempotencyGuard();
+const docStudio = require('./doc-studio');
+const { mediaDocToolDefinitions, mediaDocExecutors, mediaDocExecutorsByTool } = require('./tools/media-doc-executors');
+
+function bundledNodePathEnv(extraEnv = {}) {
+  const appMods = path.join(__dirname, '..', 'node_modules');
+  const existing = String((extraEnv && extraEnv.NODE_PATH) || process.env.NODE_PATH || '').trim();
+  const nextNodePath = existing
+    ? (existing.split(path.delimiter).includes(appMods) ? existing : existing + path.delimiter + appMods)
+    : appMods;
+  return { ...process.env, ...extraEnv, NODE_PATH: nextNodePath };
+}
 
 const MAX_OUTPUT = 120000; // chars
 
@@ -315,6 +326,7 @@ const executors = {
         // kill the whole tree. On Windows use windowsHide + taskkill /T /F.
         child = spawn(wrapped.file, wrapped.args, {
           cwd: dir,
+          env: bundledNodePathEnv(),
           detached: process.platform !== 'win32',
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -405,24 +417,18 @@ const executors = {
     const fp = resolvePath(target, cwd);
     const rd = sandbox.isReadAllowed(fp);
     if (rd !== true) return 'Error: ' + rd.reason;
-    // PDFs: extract text (optionally a page window) instead of mojibake.
-    if (/\.pdf$/i.test(fp)) {
-      let range = '';
-      if (pages) {
-        const a = String(pages).split('-');
-        const first = Math.max(1, parseInt(a[0], 10) || 1);
-        const last = Math.max(first, parseInt(a[1], 10) || first);
-        range = `-f ${first} -l ${last} `;
-      }
-      const out = await new Promise((resolve) => {
-        exec(`pdftotext ${range}-layout ${JSON.stringify(fp)} -`, { maxBuffer: 16 * 1024 * 1024 }, (e, so, se) => resolve(e ? null : so));
-      });
-      if (out != null) {
+    // Documents / Office / PDF / Archives: delegate cleanly to zero-install ReadDocument engine.
+    if (docStudio.isDocumentPath(fp)) {
+      if (!fs.existsSync(fp)) return `Error reading file: ${fp} does not exist.`;
+      try {
+        const docRes = await docStudio.readDocument(fp, { pages, cwd });
+        const out = docRes.markdown || docRes.text || '';
         if (_readMtimes instanceof Map) { try { _readMtimes.set(fp, Math.floor(fs.statSync(fp).mtimeMs)); } catch (_) {} }
-        return formatNumbered(out, fp, offset, limit, pages ? '(empty PDF page range)' : '(PDF has no extractable text)');
+        return formatNumbered(out, fp, offset, limit, pages ? '(empty PDF page range)' : '(document has no extractable text)');
+      } catch (e) {
+        if (/\.pdf$/i.test(fp) && pages) return `Error reading PDF: could not extract pages ${pages} (${e.message})`;
+        return `Error reading document ${path.basename(fp)}: ${e.message}`;
       }
-      if (pages) return `Error reading PDF: could not extract pages ${pages} (is pdftotext installed?)`;
-      // fall through: report as a binary file below
     }
     try {
       let st;
@@ -1079,6 +1085,8 @@ const executors = {
     if (!res.ok) return { content: res.error, isError: true };
     return truncate(res.output);
   },
+
+  ...mediaDocExecutors,
 };
 
 // Run a snippet of code in a language via a local runtime and return output.
@@ -1098,7 +1106,7 @@ function runCode(lang, code, cwd, timeoutMs) {
       resolve(`Unsupported REPL language "${lang}". Supported: javascript/node, python, bash/shell.`);
       return;
     }
-    exec(cmd, { cwd: resolveDir(cwd), timeout: t, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+    exec(cmd, { cwd: resolveDir(cwd), env: bundledNodePathEnv(), timeout: t, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
       let out = '';
       if (stdout) out += stdout;
       if (stderr) out += (out ? '\n[stderr]\n' : '') + stderr;
@@ -1298,6 +1306,8 @@ const toolDefinitions = [
     },
   },
 
+  ...mediaDocToolDefinitions,
+
   // ---- Example-parity surface (see parity.js / parity-defs.js) ----
   ...require('./parity-defs'),
 ];
@@ -1400,6 +1410,7 @@ const executorsByTool = {
   'scheduled-tasks__run_scheduled_task': 'scheduled_tasks_run_scheduled_task',
   create_skill: 'create_skill',
   delete_skill: 'delete_skill',
+  ...mediaDocExecutorsByTool,
 };
 
 function fileHead(fp, raw, lines) {
@@ -1523,6 +1534,7 @@ async function runToolInner(name, args, ctx) {
   // B8 Claude Code mode: require user approval before mutating tools.
   const MUTATING = new Set([
     'Bash', 'Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'ExtractSkill', 'RunToolScript', 'NotebookEdit', 'JavaScript', 'REPL',
+    'GenerateImage', 'create_image', 'EditImage', 'edit_image', 'GenerateVideo', 'generate_video', 'EditVideo', 'edit_video', 'GenerateDocument',
     'KillShell', 'Jira', 'Linear', 'POST', 'CreateCustomTool', 'DeleteCustomTool',
     'mcp__workspace__write_file', 'mcp__workspace__edit_file',
     'mcp__terminal__run_in_terminal', 'mcp__terminal__open_terminal_tab',
@@ -1981,7 +1993,7 @@ async function runToolInner(name, args, ctx) {
         return { content: 'Remote environment error: ' + (remErr && remErr.message ? remErr.message : String(remErr)), isError: true };
       }
     }
-    const content = await withTimeout(fn(finalArgs, { signal: ctx.signal, cwd: finalArgs.cwd, emit: ctx.emit, currentToolId: ctx.currentToolId }), toolTimeoutMs(name, finalArgs), name);
+    const content = await withTimeout(fn(finalArgs, { signal: ctx.signal, cwd: finalArgs.cwd, emit: ctx.emit, currentToolId: ctx.currentToolId, provider: ctx.provider, orchestrator: ctx.orchestrator }), toolTimeoutMs(name, finalArgs), name);
     if (content && typeof content === 'object' && (content.isError || typeof content.content === 'string')) return content;
     return { content: String(content) };
   } catch (e) {

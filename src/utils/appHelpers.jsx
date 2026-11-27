@@ -565,14 +565,32 @@ export function toggleDictation(inputRef, setDictating) {
 // base64 data-URLs for vision; text files are inlined up to a cap.
 export const TEXT_EXT = /\.(txt|md|markdown|json|js|mjs|cjs|ts|tsx|jsx|py|rb|go|rs|java|c|cpp|h|hpp|cs|php|html|css|scss|less|xml|yaml|yml|toml|ini|sh|bash|zsh|fish|sql|log|csv|tsv|vue|svelte|graphql|gql|prisma|env|conf|gitignore|dockerfile)$/i;
 export const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|ico|tiff?)$/i;
+export const EXTRACT_DOC_EXT = /\.(pdf|docx|xlsx|xls|xlsm|ods|pptx|zip|tar\.gz|tgz|epub|odt|rtf|csv|tsv)$/i;
 export function readBlobAsDataUrl(blob) { return new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(null); fr.readAsDataURL(blob); }); }
 export async function filesToAttachments(files) {
   const out = [];
   for (const f of Array.from(files || [])) {
-    const att = { name: f.name, path: '', size: f.size, isText: false, isImage: false, content: null, dataUrl: null };
+    const att = { name: f.name, path: f.path || '', size: f.size, isText: false, isImage: false, content: null, dataUrl: null };
     if (IMAGE_EXT.test(f.name)) {
       att.isImage = true;
       if (f.size <= 8 * 1024 * 1024) att.dataUrl = await readBlobAsDataUrl(f);
+    } else if (EXTRACT_DOC_EXT.test(f.name) && f.size <= 25 * 1024 * 1024 && typeof window !== 'undefined' && window.autobot && typeof window.autobot.extractAttachment === 'function') {
+      try {
+        const ab = typeof f.arrayBuffer === 'function' ? await f.arrayBuffer() : null;
+        const extRes = await window.autobot.extractAttachment({
+          name: f.name,
+          path: f.path || '',
+          buffer: ab ? Array.from(new Uint8Array(ab)) : null,
+        });
+        if (extRes && extRes.content) {
+          att.content = extRes.content;
+          att.isText = true;
+          att.extractedFormat = extRes.format || '';
+        }
+      } catch (_) {}
+      if (!att.content && TEXT_EXT.test(f.name) && f.size <= 200 * 1024) {
+        try { const txt = await f.text(); if (!txt.includes('\u0000')) { att.content = txt; att.isText = true; } } catch (_) {}
+      }
     } else if (TEXT_EXT.test(f.name) && f.size <= 200 * 1024) {
       try { const txt = await f.text(); if (!txt.includes('\u0000')) { att.content = txt; att.isText = true; } } catch (_) {}
     }
@@ -631,6 +649,12 @@ export function describeTool(name, args) {
     case 'Artifact': return { verb: 'Creating', target: a.name || a.language || 'artifact', icon: 'Sparkles' };
     case 'Task': case 'Agent': return { verb: 'Delegating', target: String(a.description || a.prompt || '').slice(0, 60), icon: 'Sparkles' };
     case 'Swarm': return { verb: 'Orchestrating swarm', target: String(a.goal || a.objective || '').slice(0, 70), icon: 'AgentsSimple' };
+    case 'GenerateImage': case 'create_image': return { verb: 'Generating image', target: String(a.prompt || a.output_path || '').slice(0, 60), icon: 'Palette' };
+    case 'EditImage': case 'edit_image': return { verb: 'Editing image', target: shortPath(a.input_path || a.path), icon: 'Palette' };
+    case 'GenerateVideo': case 'generate_video': return { verb: 'Generating video', target: String(a.prompt || a.output_path || '').slice(0, 60), icon: 'Play' };
+    case 'EditVideo': case 'edit_video': return { verb: 'Editing video', target: shortPath(a.input_path || a.path), icon: 'Play' };
+    case 'ReadDocument': return { verb: 'Reading document', target: shortPath(a.path || a.file_path), icon: 'File' };
+    case 'GenerateDocument': return { verb: 'Creating document', target: String(a.format || a.output_path || '').slice(0, 50), icon: 'FileAdd' };
     case 'rea': return { verb: 'Reverse engineering', target: String(a.tool || a.query || a.action || '').slice(0, 70), icon: 'Orbit' };
     case 'AskUser': case 'exitPlanMode': return { verb: 'Waiting on you', target: '', icon: 'Clock' };
     default: {

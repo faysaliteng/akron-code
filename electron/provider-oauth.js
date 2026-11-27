@@ -44,9 +44,9 @@ const DIR = process.env.AUTOBOT_HOME
 const FILE = path.join(DIR, 'provider-oauth.json');
 const VERSION = 1;
 const KEY_PREFIX = 'provider-oauth:';
-// Refresh this long before the token actually dies. A run can take many
-// minutes; a token that expires mid-turn fails the whole agent loop.
-const REFRESH_SKEW_MS = 120 * 1000;
+// Refresh 10 minutes before the token expires so long idle sessions or
+// multi-step turns never race a near-expiry token.
+const REFRESH_SKEW_MS = 10 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Provider registry
@@ -415,16 +415,83 @@ function keychainWrite(service, value, account) {
   return back === value;
 }
 
-function readClaudeCodeCredentials() {
-  if (process.platform !== 'darwin') return null;
-  const raw = keychainRead('Claude Code-credentials');
-  if (!raw) return null;
+function configRoots() {
+  const home = os.homedir();
+  const appData = process.env.APPDATA || '';
+  const localAppData = process.env.LOCALAPPDATA || '';
+  const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+  return { home, appData, localAppData, xdgConfig };
+}
+
+function mirrorDir() {
+  return path.join(DIR, 'oauth-mirror');
+}
+
+function mirrorFile(prov, account) {
+  return path.join(mirrorDir(), `${slug(prov)}__${slug(account)}.json`);
+}
+
+function writeTokenMirror(prov, account, tokens) {
+  if (!tokens || (!tokens.accessToken && !tokens.refreshToken)) return;
   try {
-    const d = JSON.parse(raw);
-    return { raw: d, oauth: (d && d.claudeAiOauth) || null };
-  } catch (_) {
-    return null;
+    fs.mkdirSync(mirrorDir(), { recursive: true });
+    const file = mirrorFile(prov, account);
+    const tmp = file + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ provider: prov, account: slug(account), tokens, updatedAt: Date.now() }, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, file);
+    try { fs.chmodSync(file, 0o600); } catch (_) {}
+  } catch (_) {}
+}
+
+function readTokenMirror(prov, account) {
+  try {
+    if (account) {
+      const p = mirrorFile(prov, account);
+      if (fs.existsSync(p)) {
+        const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (d && d.tokens && (d.tokens.accessToken || d.tokens.refreshToken)) return d.tokens;
+      }
+    }
+    const dir = mirrorDir();
+    if (!fs.existsSync(dir)) return null;
+    const prefix = slug(prov) + '__';
+    const files = fs.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith('.json'));
+    if (files.length === 1) {
+      const d = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
+      if (d && d.tokens && (d.tokens.accessToken || d.tokens.refreshToken)) return d.tokens;
+    }
+  } catch (_) {}
+  return null;
+}
+
+function readClaudeCodeCredentials() {
+  if (process.platform === 'darwin') {
+    const raw = keychainRead('Claude Code-credentials');
+    if (raw) {
+      try {
+        const d = JSON.parse(raw);
+        if (d && d.claudeAiOauth) return { raw: d, oauth: d.claudeAiOauth };
+      } catch (_) {}
+    }
   }
+  // Cross-platform Claude Code credentials files (Windows, Linux, macOS fallback)
+  const { home, appData, localAppData, xdgConfig } = configRoots();
+  const candidates = [
+    process.env.CLAUDE_CONFIG_DIR ? path.join(process.env.CLAUDE_CONFIG_DIR, '.credentials.json') : '',
+    path.join(home, '.claude', '.credentials.json'),
+    path.join(home, '.claude', 'credentials.json'),
+    path.join(xdgConfig, 'claude', '.credentials.json'),
+    appData ? path.join(appData, 'Claude', '.credentials.json') : '',
+    localAppData ? path.join(localAppData, 'Claude', '.credentials.json') : '',
+  ].filter(Boolean);
+  for (const p of candidates) {
+    try {
+      const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+      const oauth = (d && (d.claudeAiOauth || (d.accessToken ? d : null))) || null;
+      if (oauth && (oauth.accessToken || oauth.refreshToken)) return { path: p, raw: d, oauth };
+    } catch (_) {}
+  }
+  return null;
 }
 
 /**
@@ -740,20 +807,33 @@ async function refreshClaudeAccount(provId, acc, t, opts) {
 }
 
 function readCodexAuth() {
-  const p = path.join(os.homedir(), '.codex', 'auth.json');
-  try {
-    const d = JSON.parse(fs.readFileSync(p, 'utf8'));
-    const t = (d && d.tokens) || null;
-    if (!t || !t.access_token) return null;
-    return { raw: d, tokens: t };
-  } catch (_) { return null; }
+  const { home, appData, localAppData, xdgConfig } = configRoots();
+  const candidates = [
+    process.env.CODEX_HOME ? path.join(process.env.CODEX_HOME, 'auth.json') : '',
+    path.join(home, '.codex', 'auth.json'),
+    path.join(xdgConfig, 'codex', 'auth.json'),
+    appData ? path.join(appData, 'codex', 'auth.json') : '',
+    localAppData ? path.join(localAppData, 'codex', 'auth.json') : '',
+  ].filter(Boolean);
+  for (const p of candidates) {
+    try {
+      const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+      const t = (d && (d.tokens || (d.access_token ? d : null))) || null;
+      if (t && (t.access_token || t.refresh_token)) return { path: p, raw: d, tokens: t };
+    } catch (_) {}
+  }
+  return null;
 }
 
 function readGeminiCreds() {
+  const { home, appData, localAppData, xdgConfig } = configRoots();
   const candidates = [
-    path.join(os.homedir(), '.gemini', 'oauth_creds.json'),
-    path.join(os.homedir(), '.config', 'gemini', 'oauth_creds.json'),
-  ];
+    path.join(home, '.gemini', 'oauth_creds.json'),
+    path.join(home, '.gemini', 'antigravity', 'oauth_creds.json'),
+    path.join(xdgConfig, 'gemini', 'oauth_creds.json'),
+    appData ? path.join(appData, 'gemini', 'oauth_creds.json') : '',
+    localAppData ? path.join(localAppData, 'gemini', 'oauth_creds.json') : '',
+  ].filter(Boolean);
   for (const p of candidates) {
     try {
       const d = JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -795,12 +875,42 @@ function readGeminiCreds() {
 }
 
 function readGrokConfig() {
-  const p = path.join(os.homedir(), '.grok', 'config.toml');
-  try {
-    const txt = fs.readFileSync(p, 'utf8');
-    const m = /^\s*(?:api_key|apiKey)\s*=\s*"([^"]+)"/m.exec(txt);
-    if (m) return { path: p, apiKey: m[1] };
-  } catch (_) {}
+  const { home, appData, localAppData, xdgConfig } = configRoots();
+  const jsonCandidates = [
+    path.join(home, '.grok', 'auth.json'),
+    path.join(home, '.grok', 'credentials.json'),
+    path.join(xdgConfig, 'grok', 'auth.json'),
+    appData ? path.join(appData, 'grok', 'auth.json') : '',
+    localAppData ? path.join(localAppData, 'grok', 'auth.json') : '',
+  ].filter(Boolean);
+  for (const p of jsonCandidates) {
+    try {
+      const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+      const tok = d && (d.tokens || d);
+      if (tok && (tok.access_token || tok.accessToken || tok.refresh_token || tok.refreshToken)) {
+        return {
+          path: p,
+          oauth: {
+            accessToken: tok.access_token || tok.accessToken || '',
+            refreshToken: tok.refresh_token || tok.refreshToken || '',
+            expiresAt: epochToMs(tok.expires_at || tok.expiresAt),
+          },
+        };
+      }
+    } catch (_) {}
+  }
+  const tomlCandidates = [
+    path.join(home, '.grok', 'config.toml'),
+    path.join(xdgConfig, 'grok', 'config.toml'),
+    appData ? path.join(appData, 'grok', 'config.toml') : '',
+  ].filter(Boolean);
+  for (const p of tomlCandidates) {
+    try {
+      const txt = fs.readFileSync(p, 'utf8');
+      const m = /^\s*(?:api_key|apiKey)\s*=\s*"([^"]+)"/m.exec(txt);
+      if (m) return { path: p, apiKey: m[1] };
+    } catch (_) {}
+  }
   return null;
 }
 
@@ -809,12 +919,15 @@ function readGrokConfig() {
 // ---------------------------------------------------------------------------
 function loadTokens(prov, account) {
   const raw = secretstore.get(slotKey(prov, account));
-  if (!raw) return null;
-  try { return JSON.parse(raw); } catch (_) { return null; }
+  if (raw) {
+    try { return JSON.parse(raw); } catch (_) {}
+  }
+  return readTokenMirror(prov, account);
 }
 
 function saveTokens(prov, account, tokens) {
   secretstore.set(slotKey(prov, account), JSON.stringify(tokens));
+  writeTokenMirror(prov, account, tokens);
 }
 
 /**
@@ -911,7 +1024,8 @@ function listAccounts(provId) {
   const rows = db.accounts
     .filter((a) => !provId || a.provider === provId)
     .map((a) => {
-      const t = loadTokens(a.provider, a.account);
+      let t = loadTokens(a.provider, a.account);
+      if (!t) t = autoHealAccount(a.provider, a.account);
       const row = publicRecord(a);
       row.hasToken = !!(t && (t.accessToken || t.refreshToken));
       return row;
@@ -1220,72 +1334,115 @@ async function postToken(prov, params, opts) {
   throw err;
 }
 
+const refreshFlights = new Map();
+
 /**
  * Refresh one account's access token. Rotates and persists the new refresh
  * token, updates the index, and mirrors the rotation back to the credential
  * store the account was imported from.
+ *
+ * Single-flight per `provider:account` so concurrent calls (e.g. orchestrator
+ * hydrating multiple pool rows or Swarm workers) share one token request and
+ * never burn a single-use refresh token.
  */
 async function refreshAccount(provId, account, opts) {
   const prov = provider(provId);
   if (!prov) throw new Error('unknown provider: ' + provId);
   const acc = slug(account);
-  const t = loadTokens(provId, acc);
-  if (!t) throw new Error('no stored tokens for ' + provId + ':' + acc);
-  if (!t.refreshToken) {
-    const err = new Error('this account has no refresh token — sign in again');
-    err.code = 'no_refresh_token';
-    throw err;
+  const flightKey = provId + ':' + acc;
+  if (refreshFlights.has(flightKey)) {
+    return refreshFlights.get(flightKey);
   }
-  // Claude's grant is owned by the Claude Code CLI; that path has its own
-  // adopt/journal/write-back rules and must not share the generic flow.
-  if (provId === 'claude') return refreshClaudeAccount(provId, acc, t, opts);
-  const params = {
-    grant_type: 'refresh_token',
-    refresh_token: t.refreshToken,
-    client_id: prov.clientId,
-    client_secret: prov.clientSecret,
-  };
-  // Verified live: the working Claude grant sends exactly these three fields
-  // and no `scope`. Echoing the scope list back invites invalid_scope.
-  const json = await postToken(prov, params, opts);
-  const next = normalizeTokens(prov, json);
-  const merged = {
-    accessToken: next.accessToken || t.accessToken,
-    // Providers may omit the refresh token when it did not rotate.
-    refreshToken: next.refreshToken || t.refreshToken,
-    tokenType: next.tokenType || t.tokenType || 'Bearer',
-    expiresAt: next.expiresAt || t.expiresAt,
-    scopes: next.scopes || t.scopes || [],
-    organizationUuid: t.organizationUuid || '',
-    accountId: t.accountId || '',
-  };
-  saveTokens(provId, acc, merged);
-
-  // Mirror the rotation immediately: the old refresh token is single-use, so a
-  // lost write-back would sign the other app out at its next refresh.
-  let mirrored = null;
-  if (provId === 'claude') {
-    const db = readDb();
-    const row = db.accounts.find((a) => a.provider === provId && a.account === acc);
-    if (row && row.source === 'claude-code') {
-      mirrored = writeBackClaudeCode({
-        accessToken: merged.accessToken,
-        refreshToken: merged.refreshToken,
-        expiresAt: merged.expiresAt,
-      });
+  const run = (async () => {
+    const t = loadTokens(provId, acc);
+    if (!t) throw new Error('no stored tokens for ' + provId + ':' + acc);
+    if (!t.refreshToken) {
+      const err = new Error('this account has no refresh token — sign in again');
+      err.code = 'no_refresh_token';
+      throw err;
     }
-  }
+    // Claude's grant is owned by the Claude Code CLI; that path has its own
+    // adopt/journal/write-back rules and must not share the generic flow.
+    if (provId === 'claude') return refreshClaudeAccount(provId, acc, t, opts);
+    const params = {
+      grant_type: 'refresh_token',
+      refresh_token: t.refreshToken,
+      client_id: prov.clientId,
+      client_secret: prov.clientSecret,
+    };
+    // Verified live: the working Claude grant sends exactly these three fields
+    // and no `scope`. Echoing the scope list back invites invalid_scope.
+    let json;
+    try {
+      json = await postToken(prov, params, opts);
+    } catch (e) {
+      const isInvalidGrant = e && e.status === 400 && /invalid_grant/i.test(String(e.message || ''));
+      if (isInvalidGrant && (provId === 'antigravity' || provId === 'chatgpt')) {
+        // Check if the first-party desktop app / CLI already rotated the token on disk or keychain.
+        const adopted = adoptLocalCredentials(provId, acc);
+        if (adopted && adopted.refreshToken && adopted.refreshToken !== t.refreshToken) {
+          if (adopted.accessToken && (!adopted.expiresAt || adopted.expiresAt - Date.now() > REFRESH_SKEW_MS)) {
+            return { accessToken: adopted.accessToken, expiresAt: adopted.expiresAt, refreshed: false, adopted: true };
+          }
+          json = await postToken(prov, {
+            grant_type: 'refresh_token',
+            refresh_token: adopted.refreshToken,
+            client_id: prov.clientId,
+            client_secret: prov.clientSecret,
+          }, opts);
+        } else {
+          throw e;
+        }
+      } else {
+        throw e;
+      }
+    }
+    const next = normalizeTokens(prov, json);
+    const merged = {
+      accessToken: next.accessToken || t.accessToken,
+      // Providers may omit the refresh token when it did not rotate.
+      refreshToken: next.refreshToken || t.refreshToken,
+      tokenType: next.tokenType || t.tokenType || 'Bearer',
+      expiresAt: next.expiresAt || t.expiresAt,
+      scopes: next.scopes || t.scopes || [],
+      organizationUuid: t.organizationUuid || '',
+      accountId: t.accountId || '',
+    };
+    saveTokens(provId, acc, merged);
 
-  const db2 = readDb();
-  const row = db2.accounts.find((a) => a.provider === provId && a.account === acc);
-  if (row) {
-    row.expiresAt = merged.expiresAt;
-    row.updatedAt = Date.now();
-    if (merged.scopes && merged.scopes.length) row.scopes = merged.scopes;
-    writeDb(db2);
+    // Mirror the rotation immediately: the old refresh token is single-use, so a
+    // lost write-back would sign the other app out at its next refresh.
+    let mirrored = null;
+    if (provId === 'claude') {
+      const db = readDb();
+      const row = db.accounts.find((a) => a.provider === provId && a.account === acc);
+      if (row && row.source === 'claude-code') {
+        mirrored = writeBackClaudeCode({
+          accessToken: merged.accessToken,
+          refreshToken: merged.refreshToken,
+          expiresAt: merged.expiresAt,
+        });
+      }
+    }
+
+    const db2 = readDb();
+    const row = db2.accounts.find((a) => a.provider === provId && a.account === acc);
+    if (row) {
+      row.expiresAt = merged.expiresAt;
+      row.updatedAt = Date.now();
+      delete row.needsSignIn;
+      if (merged.scopes && merged.scopes.length) row.scopes = merged.scopes;
+      writeDb(db2);
+    }
+    // An id_token refresh can reveal a changed plan; keep the label current.
+    return { accessToken: merged.accessToken, expiresAt: merged.expiresAt, refreshed: true, mirrored };
+  })();
+  refreshFlights.set(flightKey, run);
+  try {
+    return await run;
+  } finally {
+    if (refreshFlights.get(flightKey) === run) refreshFlights.delete(flightKey);
   }
-  // An id_token refresh can reveal a changed plan; keep the label current.
-  return { accessToken: merged.accessToken, expiresAt: merged.expiresAt, refreshed: true, mirrored };
 }
 
 /**
@@ -2096,35 +2253,257 @@ function status() {
  * from that CLI, so it can never swap in somebody else's login.
  */
 function adoptLocalCredentials(provId, acc, opts) {
-  if (provId !== 'claude') return null;
   const o = opts || {};
   const db = o.db || readDb();
   const row = db.accounts.find((a) => a.provider === provId && a.account === acc);
-  if (!row || row.source !== 'claude-code') return null;
-  const peers = db.accounts.filter((a) => a.provider === provId && a.source === 'claude-code');
-  if (peers.length > 1) return null;
-  const read = o.readCreds || readClaudeCodeCredentials;
+  if (!row) return null;
   const save = o.saveTokens || saveTokens;
   const persist = o.writeDb || writeDb;
-  const cc = read();
-  const oauth = cc && cc.oauth;
-  if (!oauth || !oauth.accessToken) return null;
-  const tokens = {
-    accessToken: oauth.accessToken,
-    refreshToken: oauth.refreshToken || '',
-    tokenType: 'Bearer',
-    expiresAt: epochToMs(oauth.expiresAt),
-    scopes: oauth.scopes || row.scopes || [],
-    organizationUuid: cc.organizationUuid || row.organizationUuid || '',
-    accountId: '',
-  };
-  save(provId, acc, tokens);
-  row.expiresAt = tokens.expiresAt;
+
+  if (provId === 'claude') {
+    if (row.source !== 'claude-code') return null;
+    const peers = db.accounts.filter((a) => a.provider === provId && a.source === 'claude-code');
+    if (peers.length > 1) return null;
+    const read = o.readCreds || readClaudeCodeCredentials;
+    const cc = read();
+    const oauth = cc && cc.oauth;
+    if (!oauth || !oauth.accessToken) return null;
+    const tokens = {
+      accessToken: oauth.accessToken,
+      refreshToken: oauth.refreshToken || '',
+      tokenType: 'Bearer',
+      expiresAt: epochToMs(oauth.expiresAt),
+      scopes: oauth.scopes || row.scopes || [],
+      organizationUuid: cc.organizationUuid || row.organizationUuid || '',
+      accountId: '',
+    };
+    save(provId, acc, tokens);
+    row.expiresAt = tokens.expiresAt;
+    row.updatedAt = Date.now();
+    if (tokens.scopes.length) row.scopes = tokens.scopes;
+    if (!row.plan && oauth.subscriptionType) row.plan = oauth.subscriptionType;
+    persist(db);
+    return tokens;
+  }
+
+  if (provId === 'antigravity') {
+    if (row.source !== 'antigravity-app' && row.source !== 'gemini-cli') return null;
+    const peers = db.accounts.filter((a) => a.provider === provId && (a.source === 'antigravity-app' || a.source === 'gemini-cli'));
+    if (peers.length > 1) return null;
+    const g = (o.readGemini || readGeminiCreds)();
+    const d = g && g.raw;
+    if (!d || (!d.access_token && !d.refresh_token)) return null;
+    const tokens = {
+      accessToken: d.access_token || '',
+      refreshToken: d.refresh_token || '',
+      tokenType: d.token_type || 'Bearer',
+      expiresAt: epochToMs(d.expiry_date || d.expiry),
+      scopes: d.scope ? String(d.scope).split(/\s+/).filter(Boolean) : (row.scopes || []),
+      organizationUuid: '',
+      accountId: '',
+    };
+    save(provId, acc, tokens);
+    row.expiresAt = tokens.expiresAt;
+    row.updatedAt = Date.now();
+    delete row.needsSignIn;
+    persist(db);
+    return tokens;
+  }
+
+  if (provId === 'chatgpt') {
+    if (row.source !== 'codex-cli') return null;
+    const peers = db.accounts.filter((a) => a.provider === provId && a.source === 'codex-cli');
+    if (peers.length > 1) return null;
+    const cx = (o.readCodex || readCodexAuth)();
+    const t = cx && cx.tokens;
+    if (!t || (!t.access_token && !t.refresh_token)) return null;
+    const tokens = {
+      accessToken: t.access_token || '',
+      refreshToken: t.refresh_token || '',
+      tokenType: 'Bearer',
+      expiresAt: 0,
+      scopes: row.scopes || [],
+      organizationUuid: '',
+      accountId: t.account_id || row.accountId || '',
+    };
+    save(provId, acc, tokens);
+    row.updatedAt = Date.now();
+    delete row.needsSignIn;
+    persist(db);
+    return tokens;
+  }
+
+  if (provId === 'grok') {
+    if (row.source !== 'grok-config') return null;
+    const peers = db.accounts.filter((a) => a.provider === provId && a.source === 'grok-config');
+    if (peers.length > 1) return null;
+    const gr = (o.readGrok || readGrokConfig)();
+    if (!gr) return null;
+    const tokens = gr.oauth
+      ? {
+          accessToken: gr.oauth.accessToken || '',
+          refreshToken: gr.oauth.refreshToken || '',
+          tokenType: 'Bearer',
+          expiresAt: gr.oauth.expiresAt || 0,
+          scopes: row.scopes || [],
+          organizationUuid: '',
+          accountId: '',
+        }
+      : (gr.apiKey ? {
+          accessToken: gr.apiKey,
+          refreshToken: '',
+          tokenType: 'Bearer',
+          expiresAt: 0,
+          scopes: [],
+          organizationUuid: '',
+          accountId: '',
+        } : null);
+    if (!tokens) return null;
+    save(provId, acc, tokens);
+    row.updatedAt = Date.now();
+    delete row.needsSignIn;
+    persist(db);
+    return tokens;
+  }
+
+  return null;
+}
+
+/**
+ * Cross-platform self-healing for any existing account on macOS, Windows, or Linux.
+ * Checks our encrypted mirror first, then first-party CLI/app stores on this PC
+ * regardless of `row.source` (only when unambiguous for that provider).
+ */
+function autoHealAccount(provId, acc, opts) {
+  const strict = adoptLocalCredentials(provId, acc, opts);
+  if (strict) return strict;
+
+  const o = opts || {};
+  const db = o.db || readDb();
+  const row = db.accounts.find((a) => a.provider === provId && a.account === acc);
+  if (!row) return null;
+  const save = o.saveTokens || saveTokens;
+  const persist = o.writeDb || writeDb;
+
+  const mirrored = readTokenMirror(provId, acc);
+  if (mirrored && (mirrored.accessToken || mirrored.refreshToken)) {
+    save(provId, acc, mirrored);
+    row.updatedAt = Date.now();
+    delete row.needsSignIn;
+    persist(db);
+    return mirrored;
+  }
+
+  // Only adopt shared PC credentials for a row when this provider has 1 account on disk.
+  const sameProv = db.accounts.filter((a) => a.provider === provId);
+  if (sameProv.length > 1) return null;
+
+  let healed = null;
+  if (provId === 'claude') {
+    const cc = readClaudeCodeCredentials();
+    const oauth = cc && cc.oauth;
+    if (oauth && (oauth.accessToken || oauth.refreshToken)) {
+      healed = {
+        accessToken: oauth.accessToken || '',
+        refreshToken: oauth.refreshToken || '',
+        tokenType: 'Bearer',
+        expiresAt: epochToMs(oauth.expiresAt),
+        scopes: oauth.scopes || row.scopes || [],
+        organizationUuid: cc.organizationUuid || row.organizationUuid || '',
+        accountId: '',
+      };
+    }
+  } else if (provId === 'antigravity') {
+    const g = readGeminiCreds();
+    const d = g && g.raw;
+    if (d && (d.access_token || d.refresh_token)) {
+      healed = {
+        accessToken: d.access_token || '',
+        refreshToken: d.refresh_token || '',
+        tokenType: d.token_type || 'Bearer',
+        expiresAt: epochToMs(d.expiry_date || d.expiry),
+        scopes: d.scope ? String(d.scope).split(/\s+/).filter(Boolean) : (row.scopes || []),
+        organizationUuid: '',
+        accountId: '',
+      };
+    }
+  } else if (provId === 'chatgpt') {
+    const cx = readCodexAuth();
+    const t = cx && cx.tokens;
+    if (t && (t.access_token || t.refresh_token)) {
+      healed = {
+        accessToken: t.access_token || '',
+        refreshToken: t.refresh_token || '',
+        tokenType: 'Bearer',
+        expiresAt: 0,
+        scopes: row.scopes || [],
+        organizationUuid: '',
+        accountId: t.account_id || row.accountId || '',
+      };
+    }
+  } else if (provId === 'grok') {
+    const gr = readGrokConfig();
+    if (gr && gr.oauth) {
+      healed = {
+        accessToken: gr.oauth.accessToken || '',
+        refreshToken: gr.oauth.refreshToken || '',
+        tokenType: 'Bearer',
+        expiresAt: gr.oauth.expiresAt || 0,
+        scopes: row.scopes || [],
+        organizationUuid: '',
+        accountId: '',
+      };
+    } else if (gr && gr.apiKey) {
+      healed = {
+        accessToken: gr.apiKey,
+        refreshToken: '',
+        tokenType: 'Bearer',
+        expiresAt: 0,
+        scopes: [],
+        organizationUuid: '',
+        accountId: '',
+      };
+    }
+  }
+
+  if (!healed) return null;
+  save(provId, acc, healed);
+  if (healed.expiresAt) row.expiresAt = healed.expiresAt;
+  if (healed.accountId) row.accountId = healed.accountId;
   row.updatedAt = Date.now();
-  if (tokens.scopes.length) row.scopes = tokens.scopes;
-  if (!row.plan && oauth.subscriptionType) row.plan = oauth.subscriptionType;
+  delete row.needsSignIn;
   persist(db);
-  return tokens;
+  return healed;
+}
+
+/**
+ * Scan all configured accounts + PC credentials across macOS, Windows, and Linux.
+ * Heals broken/missing tokens for existing rows and optionally imports newly
+ * discovered first-party CLI/desktop accounts when `importMissing: true`.
+ */
+async function autoHealAll(opts) {
+  const o = opts || {};
+  const db = readDb();
+  const healed = [];
+  for (const a of db.accounts || []) {
+    const cur = loadTokens(a.provider, a.account);
+    const broken = !cur || (!cur.accessToken && !cur.refreshToken) || !!a.needsSignIn || isExpired(a);
+    if (!broken) continue;
+    const tok = autoHealAccount(a.provider, a.account, o);
+    if (tok) healed.push(a.provider + ':' + a.account);
+  }
+  let imported = [];
+  if (o.importMissing) {
+    const haveProv = new Set((db.accounts || []).map((a) => a.provider));
+    const missingAny = providerIds().some((id) => !haveProv.has(id));
+    if (missingAny) {
+      try {
+        const res = await importLocal({ fetchImpl: o.fetchImpl });
+        imported = (res && res.imported) || [];
+      } catch (_) {}
+    }
+  }
+  return { ok: true, healed, imported };
 }
 
 /**
@@ -2271,6 +2650,8 @@ module.exports = {
   refreshAccount,
   authorize,
   resolve,
+  autoHealAccount,
+  autoHealAll,
   /** Finish a Claude rotation whose keychain write-back was interrupted. */
   replayRotationJournal,
   /** The credential the Claude Code CLI owns (keychain), or null. */

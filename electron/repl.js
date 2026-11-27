@@ -23,6 +23,24 @@ const MAX_OUTPUT = 60000;
 
 function freshSandbox(cwd) {
   const root = cwd || process.cwd();
+  const localReq = createRequire(path.join(root, 'noop.js'));
+  const appReq = createRequire(path.join(__dirname, '..', 'package.json'));
+  const hybridRequire = (id) => {
+    try { return localReq(id); } catch (e) {
+      if (id && !id.startsWith('.') && !path.isAbsolute(id)) {
+        try { return appReq(id); } catch (_) {}
+      }
+      throw e;
+    }
+  };
+  hybridRequire.resolve = (id, opts) => {
+    try { return localReq.resolve(id, opts); } catch (e) {
+      if (id && !id.startsWith('.') && !path.isAbsolute(id)) {
+        try { return appReq.resolve(id, opts); } catch (_) {}
+      }
+      throw e;
+    }
+  };
   const sandbox = {
     console: null, // replaced per-run so output is captured
     process,
@@ -42,7 +60,7 @@ function freshSandbox(cwd) {
     AbortSignal,
     fetch,
     structuredClone,
-    require: createRequire(path.join(root, 'noop.js')),
+    require: hybridRequire,
     module: { exports: {} },
     exports: {},
     __dirname: root,

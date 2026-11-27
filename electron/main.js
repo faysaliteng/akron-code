@@ -1,5 +1,12 @@
 'use strict';
 const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, globalShortcut, nativeImage, protocol, session, screen } = require('electron');
+const secretstore = require('./secretstore');
+if (process.platform !== 'darwin' || !secretstore.hasLegacySafeStorage()) {
+  try {
+    app.commandLine.appendSwitch('use-mock-keychain');
+    app.commandLine.appendSwitch('password-store', 'basic');
+  } catch (_) {}
+}
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -312,7 +319,8 @@ function summarizeTool(name, args) {
 
 // Pending interactive questions / plan approvals (id -> resolver).
 let pendingQuestions = new Map();
-let nextQuestionId = 1;
+const { createQuestionGate } = require('./question-gate');
+const questionGate = createQuestionGate(pendingQuestions);
 
 // Pending write/bash permission prompts (B8 Claude Code mode, FIFO gate with AbortSignal cleanup).
 const { createPermissionGate } = require('./perm-gate');
@@ -332,7 +340,6 @@ function winTitleBarOverlay(theme) {
 }
 
 const sandbox = require('./sandbox');
-const secretstore = require('./secretstore');
 const search = require('./search');
 const sessionDb = require('./session-db');
 const environments = require('./environments');
@@ -407,7 +414,13 @@ function createWindow() {
   win.webContents.once('did-finish-load', async () => {
     flushDeepLink(win);
     try {
-      const domRes = await win.webContents.executeJavaScript(brandGuard.verifyRendererDomScript());
+      let domRes = null;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        if (win.isDestroyed()) return;
+        domRes = await win.webContents.executeJavaScript(brandGuard.verifyRendererDomScript());
+        if (domRes && domRes.ok) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
       if (!domRes || !domRes.ok) {
         console.error('[brand-guard] Renderer brand verification failed:', JSON.stringify(domRes));
         if (app.isPackaged || process.env.AKRON_ENFORCE_BRAND_SEAL === '1') {
@@ -630,40 +643,22 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   };
 
   // Ask the user a structured question (pauses agent, resumes on answer).
-  const askUser = async (q) => {
-    const id = 'q' + nextQuestionId++;
-    const question = q.question || q.prompt || 'Continue?';
-    const options = q.options || [];
-    const reply = new Promise((resolve) => {
-      pendingQuestions.set(id, resolve);
-      send({ type: 'question', id, question, options });
-      // auto-resolve after 5 min if renderer doesn't respond
-      setTimeout(() => {
-        if (pendingQuestions.has(id)) {
-          pendingQuestions.delete(id);
-          resolve('(no answer)');
-        }
-      }, 300000);
-    });
-    return await reply;
-  };
+  const askUser = async (q) => questionGate.ask({
+    raw: q,
+    runId,
+    convId,
+    signal: ac.signal,
+    emit: send,
+  });
 
   // Exit plan mode: present a plan for approval.
-  const exitPlanMode = async (p) => {
-    const id = 'q' + nextQuestionId++;
-    const plan = p.plan || p.content || '';
-    const reply = new Promise((resolve) => {
-      pendingQuestions.set(id, resolve);
-      send({ type: 'plan', id, plan });
-      setTimeout(() => {
-        if (pendingQuestions.has(id)) {
-          pendingQuestions.delete(id);
-          resolve('(plan not approved)');
-        }
-      }, 300000);
-    });
-    return await reply;
-  };
+  const exitPlanMode = async (p) => questionGate.askPlan({
+    raw: p,
+    runId,
+    convId,
+    signal: ac.signal,
+    emit: send,
+  });
 
   const mcpListResources = async (server) => {
     if (server) return mcp.listResources(server);
@@ -725,45 +720,50 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     // matching only `/^computer_/` silently skipped every real call.
     const cuName = String(toolName || '').replace(/^mcp__computer__/, 'computer_');
     if (/^computer_/.test(cuName)) {
-      const st = computeruse.status();
-      const sensitive = cuName === 'computer_open_app'
-        || (cuName === 'computer_key' && /cmd|command|ctrl|control|alt|option/i.test(String((toolArgs || {}).keys || '')))
-        || (cuName === 'computer_click' && (toolArgs || {}).button === 'right');
-      const want = sensitive ? 'full_control' : 'access';
-      if (!computeruse.satisfies(st.grant, want)) {
-        const granted = await new Promise((resolve) => {
-          const id = 'cu' + Date.now();
-          let onAbort = null;
-          pendingComputerUseRef.val = {
-            id,
-            resolve: (ok) => {
-              if (onAbort && ac && ac.signal) {
-                try { ac.signal.removeEventListener('abort', onAbort); } catch (_) {}
-              }
-              resolve(ok);
-            },
-            tier: want,
-          };
-          if (ac && ac.signal) {
-            if (ac.signal.aborted) {
-              pendingComputerUseRef.val = null;
-              return resolve(false);
-            }
-            onAbort = () => {
-              if (pendingComputerUseRef.val && pendingComputerUseRef.val.id === id) {
-                pendingComputerUseRef.val = null;
-                resolve(false);
-              }
-            };
-            ac.signal.addEventListener('abort', onAbort, { once: true });
-          }
-          send({ type: 'computerUseConsent', id, tier: want, tool: cuName, sensitive });
-        });
-        if (!granted) {
-          send({ type: 'notice', text: 'Computer Use blocked — you did not grant screen access.' });
-          return false;
-        }
+      const curMode = permissions || 'auto';
+      if (curMode === 'auto' || curMode === 'bypass') {
         computer.setEnabled(true);
+      } else {
+        const st = computeruse.status();
+        const sensitive = cuName === 'computer_open_app'
+          || (cuName === 'computer_key' && /cmd|command|ctrl|control|alt|option/i.test(String((toolArgs || {}).keys || '')))
+          || (cuName === 'computer_click' && (toolArgs || {}).button === 'right');
+        const want = sensitive ? 'full_control' : 'access';
+        if (!computeruse.satisfies(st.grant, want)) {
+          const granted = await new Promise((resolve) => {
+            const id = 'cu' + Date.now();
+            let onAbort = null;
+            pendingComputerUseRef.val = {
+              id,
+              resolve: (ok) => {
+                if (onAbort && ac && ac.signal) {
+                  try { ac.signal.removeEventListener('abort', onAbort); } catch (_) {}
+                }
+                resolve(ok);
+              },
+              tier: want,
+            };
+            if (ac && ac.signal) {
+              if (ac.signal.aborted) {
+                pendingComputerUseRef.val = null;
+                return resolve(false);
+              }
+              onAbort = () => {
+                if (pendingComputerUseRef.val && pendingComputerUseRef.val.id === id) {
+                  pendingComputerUseRef.val = null;
+                  resolve(false);
+                }
+              };
+              ac.signal.addEventListener('abort', onAbort, { once: true });
+            }
+            send({ type: 'computerUseConsent', id, tier: want, tool: cuName, sensitive });
+          });
+          if (!granted) {
+            send({ type: 'notice', text: 'Computer Use blocked — you did not grant screen access.' });
+            return false;
+          }
+          computer.setEnabled(true);
+        }
       }
     }
     const mode = permissions || 'auto';
@@ -873,6 +873,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       } catch (_) {}
     }
     permGate.clearRun(runId, 'run_ended');
+    questionGate.clearRun(runId, send);
     runs.delete(runId);
     slog.close();
   }
@@ -897,6 +898,7 @@ ipcMain.handle('autobot:resume', async (event, runId, steeringNote) => {
 
 ipcMain.handle('autobot:cancel', async (event, runId) => {
   permGate.clearRun(runId, 'cancelled');
+  questionGate.clearRun(runId, broadcast);
   const entry = runs.get(runId);
   if (entry) {
     const ac = entry.ac || entry;
@@ -1043,9 +1045,10 @@ ipcMain.handle('autobot:openLegalDoc', (_e, which) => {
   return { ok: true, path: p };
 });
 
-registerFeaturesIpc({ app, ipcMain, shell, dialog, BrowserWindow, session, store, workspace, mcp, mcpStatus, shells, git, pluginsDir, scheduler, sandbox, secretstore, search, sessionDb, environments, depManager, updater, browser, gdrive, runAgent, providertransport, permGate, pendingQuestions, windows, winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix, hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine, humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError });
+registerFeaturesIpc({ app, ipcMain, shell, dialog, BrowserWindow, session, store, workspace, mcp, mcpStatus, shells, git, pluginsDir, scheduler, sandbox, secretstore, search, sessionDb, environments, depManager, updater, browser, gdrive, runAgent, providertransport, permGate, questionGate, pendingQuestions, windows, winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix, hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine, humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError });
 
 app.whenReady().then(() => {
+  try { secretstore.migrateLegacySafeStorage(); } catch (_) {}
   if (process.platform === 'darwin' && !app.isPackaged && app.dock && typeof app.dock.setIcon === 'function') {
     try {
       const dockIconPath = resolveNotificationIconPath({ isPackaged: false });

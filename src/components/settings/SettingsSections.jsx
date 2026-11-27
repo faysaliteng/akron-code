@@ -1183,6 +1183,9 @@ export const POOL_ROLES = [
   { id: 'vision', label: 'Vision' },
   { id: 'fast', label: 'Fast' },
   { id: 'longctx', label: 'Long context' },
+  { id: 'image_gen', label: 'Image Gen' },
+  { id: 'video_gen', label: 'Video Gen' },
+  { id: 'audio_speech', label: 'Audio / TTS' },
 ];
 
 export function parsePoolModels(text) {
