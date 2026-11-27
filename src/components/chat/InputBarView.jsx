@@ -8,7 +8,7 @@ import { ClaudeReconnectPanel, useClaudeReconnect } from '../settings/SettingsSe
 import { SessionModelList, EnvironmentPicker, PERM_MODES, PERM_SHORT, BUILTIN_MENTION_AGENTS, ContextMeter, ProvModelList } from './WorkspaceViews.jsx';
 import { PRESETS, PRESET_KEYS, resolveLoopbackKey, STYLES, REASON_LEVELS, REASON_LABELS, contextWindowFor, loadJSON, saveJSON, useDismiss, toggleDictation, filesToAttachments, uid, ProvNotice, fmtInt, MODEL_WINDOW_CACHE, usedTokens } from '../../utils/appHelpers.jsx';
 
-export function InputBarBody({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, orchestrator, setOrchestrator, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, customStyles = [], customAgents = [], onOpenCustomizations, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, queuePaused, onToggleQueuePaused, onClearQueue, onToggleQueueItemPaused, onReorderQueue, onStepQueueItem, onUpdateQueueItemText, unqueue, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, T }) {
+export function InputBarBody({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, orchestrator, setOrchestrator, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, customStyles = [], customAgents = [], onOpenCustomizations, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, queuePaused, onToggleQueuePaused, onClearQueue, onToggleQueueItemPaused, onReorderQueue, onStepQueueItem, onUpdateQueueItemText, unqueue, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, activeSkillPill, onClearSkillPill, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -816,6 +816,11 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
         inputRef.current.value = '';
         syncInputState('');
         runSlashCommand(text.slice(1));
+      } else if (activeSkillPill && activeSkillPill.id === 'automation') {
+        inputRef.current.value = '';
+        syncInputState('');
+        if (onClearSkillPill) onClearSkillPill();
+        runSlashCommand('automation' + (text ? ' ' + text : ''), { direct: true });
       } else {
         send();
         syncInputState('');
@@ -1209,6 +1214,37 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
         )}
 
       <div className={'composer' + (streaming ? ' is-streaming' : '')}>
+        {activeSkillPill && (
+          <div className="composer-skill-bar" data-testid="composer-skill-pill">
+            <span className="composer-skill-pill">
+              <Icon name={activeSkillPill.icon || 'Clock'} size={12} />
+              <strong>{activeSkillPill.label}</strong>
+              <span className="composer-skill-hint">{activeSkillPill.hint}</span>
+              <button
+                type="button"
+                className="composer-skill-start"
+                onClick={() => {
+                  const text = (inputRef.current?.value || '').trim();
+                  if (inputRef.current) inputRef.current.value = '';
+                  syncInputState('');
+                  if (onClearSkillPill) onClearSkillPill();
+                  runSlashCommand((activeSkillPill.id || 'automation') + (text ? ' ' + text : ''), { direct: true });
+                }}
+              >
+                Start →
+              </button>
+              <button
+                type="button"
+                className="attach-x"
+                title="Remove skill"
+                aria-label="Remove automation skill pill"
+                onClick={() => onClearSkillPill && onClearSkillPill()}
+              >
+                <Icon name="X" size={11} />
+              </button>
+            </span>
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className="attach-chips">
             {attachments.map((a, i) => (
@@ -1654,10 +1690,21 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
               </button>
             )}
             {streaming && <button className="send stop" onClick={stop} title="Stop"><Icon name="Stop" size={16} /></button>}
-            {(!streaming || hasText) && (
+            {(!streaming || hasText || Boolean(activeSkillPill)) && (
               <button
                 className={'send' + (streaming ? ' queued' : '')}
-                onClick={() => { send(); syncInputState(''); }}
+                onClick={() => {
+                  const text = (inputRef.current?.value || '').trim();
+                  if (activeSkillPill && activeSkillPill.id === 'automation') {
+                    if (inputRef.current) inputRef.current.value = '';
+                    syncInputState('');
+                    if (onClearSkillPill) onClearSkillPill();
+                    runSlashCommand('automation' + (text ? ' ' + text : ''), { direct: true });
+                    return;
+                  }
+                  send();
+                  syncInputState('');
+                }}
                 title={streaming ? 'Queue message' : 'Send'}
               >
                 <Icon name="ArrowUp" size={16} />

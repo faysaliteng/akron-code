@@ -20,6 +20,15 @@ export const DEFAULT_APPEARANCE_SETTINGS = {
   bgPattern: 'carbon-weave',
   uiDensity: 'comfortable',
   chatWidth: 'standard',
+  chatCustomWidth: 768,
+  outputWidthMode: 'match',
+  outputCustomWidth: 768,
+  chatSidePadding: 64,
+  outputSidePadding: 12,
+  chatAlignment: 'centered',
+  userPromptAlign: 'antigravity',
+  messageGap: 16,
+  codeBlockMaxHeight: 0,
   messageStyle: 'editorial',
   borderRadius: 'balanced',
   chatFontSize: 14,
@@ -70,13 +79,37 @@ export function computeAppearanceVars(settings = {}, systemPrefersLight = false)
   const accent = /^#[0-9a-fA-F]{3,6}$/.test(String(settings.accentColor || '')) ? settings.accentColor : '#10b981';
   const [r, g, b] = hexToRgb(accent);
   const chatWidthMap = {
-    narrow: '780px',
-    focused: '840px',
-    standard: '1220px',
+    narrow: '680px',
+    focused: '740px',
+    standard: '768px',
+    spacious: '900px',
     wide: '1080px',
-    ultra: '1380px',
+    ultra: '1320px',
     full: '100%',
   };
+  const customW = Math.max(600, Math.min(1800, Number(settings.chatCustomWidth) || 768));
+  const resolvedChatMaxW = chatWidth === 'custom'
+    ? `${customW}px`
+    : (chatWidthMap[chatWidth] || '768px');
+  const outCustomW = Math.max(600, Math.min(1800, Number(settings.outputCustomWidth) || 768));
+  const resolvedOutputMaxW = settings.outputWidthMode === 'custom'
+    ? `${outCustomW}px`
+    : resolvedChatMaxW;
+  const sidePad = settings.chatSidePadding != null
+    ? Math.max(16, Math.min(220, Number(settings.chatSidePadding)))
+    : 64;
+  const outPad = settings.outputSidePadding != null
+    ? Math.max(0, Math.min(48, Number(settings.outputSidePadding)))
+    : 12;
+  const chatAlign = settings.chatAlignment === 'left' ? 'left' : 'centered';
+  const userPromptAlign = settings.userPromptAlign === 'left' ? 'left' : 'antigravity';
+  const densityPadMap = { compact: 10, comfortable: 16, spacious: 24 };
+  const msgPadY = settings.messageGap != null
+    ? Math.max(6, Math.min(36, Number(settings.messageGap)))
+    : (densityPadMap[density] || 16);
+  const codeMaxH = Number(settings.codeBlockMaxHeight) > 0
+    ? `${Math.max(200, Number(settings.codeBlockMaxHeight))}px`
+    : 'none';
   const radiusMap = {
     sharp: { md: '4px', lg: '5px', card: '6px', composer: '8px' },
     balanced: { md: '7px', lg: '9px', card: '12px', composer: '14px' },
@@ -108,6 +141,8 @@ export function computeAppearanceVars(settings = {}, systemPrefersLight = false)
     bgPattern,
     density,
     chatWidth,
+    chatAlign,
+    userPromptAlign,
     msgStyle,
     borderRadius,
     accent,
@@ -118,7 +153,14 @@ export function computeAppearanceVars(settings = {}, systemPrefersLight = false)
       '--accent-strong': shadeHex(accent, -0.22),
       '--accent-soft': `rgba(${r}, ${g}, ${b}, ${accentGlow === 'vibrant' ? '0.24' : (accentGlow === 'none' ? '0.08' : '0.16')})`,
       '--accent-text': theme === 'light' ? shadeHex(accent, -0.35) : shadeHex(accent, 0.58),
-      '--chat-max-w': chatWidthMap[chatWidth] || '1220px',
+      '--chat-max-w': resolvedChatMaxW,
+      '--output-max-w': resolvedOutputMaxW,
+      '--chat-side-pad': `${sidePad}px`,
+      '--output-body-pad-x': `${outPad}px`,
+      '--chat-margin-l': chatAlign === 'left' ? '0px' : 'auto',
+      '--chat-margin-r': 'auto',
+      '--msg-pad-y': `${msgPadY}px`,
+      '--code-max-h': codeMaxH,
       '--radius-md': rad.md,
       '--radius-lg': rad.lg,
       '--radius-card': rad.card,
@@ -149,6 +191,15 @@ export function AppearanceStudioSection({ settings, setSettings, setNotice }) {
           bgPattern: updated.bgPattern,
           uiDensity: updated.uiDensity,
           chatWidth: updated.chatWidth,
+          chatCustomWidth: updated.chatCustomWidth,
+          outputWidthMode: updated.outputWidthMode,
+          outputCustomWidth: updated.outputCustomWidth,
+          chatSidePadding: updated.chatSidePadding,
+          outputSidePadding: updated.outputSidePadding,
+          chatAlignment: updated.chatAlignment,
+          userPromptAlign: updated.userPromptAlign,
+          messageGap: updated.messageGap,
+          codeBlockMaxHeight: updated.codeBlockMaxHeight,
           messageStyle: updated.messageStyle,
           borderRadius: updated.borderRadius,
           chatFontSize: updated.chatFontSize,
@@ -175,9 +226,146 @@ export function AppearanceStudioSection({ settings, setSettings, setNotice }) {
     if (setNotice) setNotice('Reset Appearance & UI Design Studio to factory defaults.');
   };
   const activeAccent = settings.accentColor || '#10b981';
+  const liveVars = computeAppearanceVars(settings, false).style;
+  const effChatW = liveVars['--chat-max-w'] || '768px';
+  const effOutW = liveVars['--output-max-w'] || effChatW;
+  const effSidePad = settings.chatSidePadding ?? 64;
+  const effOutPad = settings.outputSidePadding ?? 12;
+  const parsedChatPx = parseInt(effChatW, 10) || Number(settings.chatCustomWidth) || 768;
+  const parsedOutPx = parseInt(effOutW, 10) || Number(settings.outputCustomWidth) || parsedChatPx;
 
   return (
     <div data-testid="appearance-studio-section">
+      <div className="settings-card">
+        <h3><Icon name="Grid" size={14} /> 📐 Chat UI, Output Width &amp; Side Spacing (Antigravity Layout)</h3>
+        <div className="presets" style={{ marginBottom: 10 }}>
+          <button
+            type="button"
+            className={(settings.chatWidth || 'standard') === 'standard' && (settings.outputWidthMode || 'match') === 'match' && effSidePad === 64 ? 'on' : ''}
+            onClick={() => patch({ chatWidth: 'standard', chatCustomWidth: 768, outputWidthMode: 'match', outputCustomWidth: 768, chatSidePadding: 64, outputSidePadding: 12, chatAlignment: 'centered', userPromptAlign: 'antigravity' })}
+          >
+            Antigravity Default (768px · Centered)
+          </button>
+          <button
+            type="button"
+            className={settings.chatWidth === 'spacious' ? 'on' : ''}
+            onClick={() => patch({ chatWidth: 'spacious', chatCustomWidth: 900, outputWidthMode: 'match', chatSidePadding: 48 })}
+          >
+            Spacious (900px)
+          </button>
+          <button
+            type="button"
+            className={settings.chatWidth === 'wide' ? 'on' : ''}
+            onClick={() => patch({ chatWidth: 'wide', chatCustomWidth: 1080, outputWidthMode: 'match', chatSidePadding: 40 })}
+          >
+            Wide Coding (1080px)
+          </button>
+          <button
+            type="button"
+            className={settings.chatWidth === 'full' ? 'on' : ''}
+            onClick={() => patch({ chatWidth: 'full', outputWidthMode: 'match', chatSidePadding: 36 })}
+          >
+            Full Width (100%)
+          </button>
+        </div>
+
+        <div className="row">
+          <label>
+            Chat &amp; Composer Width Preset
+            <select value={settings.chatWidth || 'standard'} onChange={(e) => patch({ chatWidth: e.target.value })}>
+              <option value="narrow">Narrow (680px)</option>
+              <option value="focused">Focused (740px)</option>
+              <option value="standard">Antigravity Default (768px)</option>
+              <option value="spacious">Spacious (900px)</option>
+              <option value="wide">Wide Coding (1080px)</option>
+              <option value="ultra">Ultra-Wide (1320px)</option>
+              <option value="full">Full Width (100%)</option>
+              <option value="custom">Custom ({settings.chatCustomWidth || 768}px)</option>
+            </select>
+          </label>
+          <label>
+            Chat Width Slider ({effChatW})
+            <input
+              type="range"
+              min="600"
+              max="1800"
+              step="16"
+              value={parsedChatPx}
+              onChange={(e) => patch({ chatWidth: 'custom', chatCustomWidth: Number(e.target.value) })}
+            />
+          </label>
+        </div>
+
+        <div className="row">
+          <label>
+            Chat Output Width Mode
+            <select value={settings.outputWidthMode || 'match'} onChange={(e) => patch({ outputWidthMode: e.target.value })}>
+              <option value="match">Match Chat Width ({effChatW} · Default)</option>
+              <option value="custom">Custom Output Width ({settings.outputCustomWidth || 768}px)</option>
+            </select>
+          </label>
+          <label>
+            Chat Output Width Slider ({effOutW})
+            <input
+              type="range"
+              min="600"
+              max="1800"
+              step="16"
+              value={settings.outputWidthMode === 'custom' ? (Number(settings.outputCustomWidth) || 768) : parsedChatPx}
+              onChange={(e) => patch({ outputWidthMode: 'custom', outputCustomWidth: Number(e.target.value) })}
+            />
+          </label>
+        </div>
+
+        <div className="row">
+          <label>
+            Left &amp; Right Side Spacing ({effSidePad}px)
+            <input
+              type="range"
+              min="16"
+              max="220"
+              step="4"
+              value={effSidePad}
+              onChange={(e) => patch({ chatSidePadding: Number(e.target.value) })}
+            />
+          </label>
+          <label>
+            Output Inner Padding ({effOutPad}px)
+            <input
+              type="range"
+              min="0"
+              max="48"
+              step="2"
+              value={effOutPad}
+              onChange={(e) => patch({ outputSidePadding: Number(e.target.value) })}
+            />
+          </label>
+        </div>
+
+        <div className="row">
+          <label>
+            User Prompt Style
+            <select value={settings.userPromptAlign || 'antigravity'} onChange={(e) => patch({ userPromptAlign: e.target.value })}>
+              <option value="antigravity">Antigravity Right Bubble (Default)</option>
+              <option value="left">Left-Aligned Editorial</option>
+            </select>
+          </label>
+          <label>
+            Wide-Screen Alignment
+            <select value={settings.chatAlignment || 'centered'} onChange={(e) => patch({ chatAlignment: e.target.value })}>
+              <option value="centered">Centered on Wide Screens (Default)</option>
+              <option value="left">Left-Aligned</option>
+            </select>
+          </label>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 6, padding: '6px 10px', borderRadius: 8, border: '1px dashed var(--border-strong)', fontSize: 11.5, color: 'var(--text-300)' }}>
+          <span>[ Side: {effSidePad}px+ ]</span>
+          <span style={{ color: 'var(--accent-text)', fontWeight: 600 }}>[ Chat: {effChatW} · Output: {effOutW} ]</span>
+          <span>[ Side: {effSidePad}px+ ]</span>
+        </div>
+      </div>
+
       <div className="settings-card">
         <h3><Icon name="Palette" size={14} /> 🎛️ UI &amp; Design Studio · Typography, Surface &amp; Accent</h3>
         <div className="row">
@@ -279,15 +467,28 @@ export function AppearanceStudioSection({ settings, setSettings, setNotice }) {
             </select>
           </label>
           <label>
-            Chat Reading Width
-            <select value={settings.chatWidth || 'standard'} onChange={(e) => patch({ chatWidth: e.target.value })}>
-              <option value="focused">Focused (760px)</option>
-              <option value="narrow">Narrow (740px)</option>
-              <option value="standard">Standard (880px–920px)</option>
-              <option value="wide">Wide (1080px–1140px)</option>
-              <option value="full">Full Width (100%)</option>
+            Vertical Message Spacing ({settings.messageGap ?? 16}px)
+            <input
+              type="range"
+              min="8"
+              max="32"
+              step="2"
+              value={settings.messageGap ?? 16}
+              onChange={(e) => patch({ messageGap: Number(e.target.value) })}
+            />
+          </label>
+        </div>
+        <div className="row">
+          <label>
+            Code Block Max Height
+            <select value={String(settings.codeBlockMaxHeight || 0)} onChange={(e) => patch({ codeBlockMaxHeight: Number(e.target.value) })}>
+              <option value="0">Unlimited (Default)</option>
+              <option value="360">Compact (360px)</option>
+              <option value="520">Balanced (520px)</option>
+              <option value="720">Tall (720px)</option>
             </select>
           </label>
+          <div />
         </div>
         <div className="row">
           <label>
@@ -910,8 +1111,33 @@ export function FreeLLMAPISection({ settings, setSettings, orchestrator, saveOrc
 
       {webBotOpen && (
         <div className="freellm-webbot-drawer" data-testid="freellm-webbot-drawer">
-          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>
-            Akron Browser Bot · Guided No-Card API Key Setup
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+            <div style={{ fontWeight: 600, fontSize: 12 }}>
+              Akron Browser Bot · Guided No-Card API Key Setup
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn-mini primary"
+                onClick={() => window.autobot?.extBridgeInstallBrowser && window.autobot.extBridgeInstallBrowser()}
+              >
+                🧩 Add Extension to Browser
+              </button>
+              <button
+                type="button"
+                className="btn-mini"
+                onClick={() => window.autobot?.extBridgeLaunchBrowser && window.autobot.extBridgeLaunchBrowser()}
+              >
+                🚀 Launch with Extension
+              </button>
+              <button
+                type="button"
+                className="btn-mini"
+                onClick={() => window.autobot?.extBridgeOpenFolder && window.autobot.extBridgeOpenFolder()}
+              >
+                📂 Open Folder
+              </button>
+            </div>
           </div>
           <div className="freellm-webbot-grid">
             {webBotProviders.map((wp) => (

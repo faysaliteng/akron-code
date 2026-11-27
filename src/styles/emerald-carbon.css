@@ -257,10 +257,8 @@
   background-image: none;
 }
 
-.app[data-density="compact"] { --msg-pad-y: 10px; }
 .app[data-density="compact"] .sidenav button { padding-top: 5px; padding-bottom: 5px; }
 .app[data-density="compact"] .composer { padding: 8px 10px; }
-.app[data-density="spacious"] { --msg-pad-y: 22px; }
 .app[data-density="spacious"] .composer { padding: 14px 16px; }
 
 .app[data-msg-style="bubbles"] .msg.user .body {
@@ -273,7 +271,7 @@
   background: var(--bg-100);
   border: 1px solid var(--border);
   border-radius: var(--radius-card, 12px);
-  padding: 12px 15px;
+  padding: 12px calc(14px + (var(--output-body-pad-x, 10px) * 0.5));
 }
 
 .accent-swatch-field { display: flex; flex-direction: column; gap: 5px; flex: 1; }

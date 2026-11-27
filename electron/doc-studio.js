@@ -189,7 +189,11 @@ async function readPdfDocument(buf, opts = {}) {
   let parsed = null;
   try {
     let pageCounter = 0;
-    parsed = await pdfParse(buf, {
+    const hasXrefStream = buf.includes('/XRef');
+    const pdfBytes = hasXrefStream
+      ? await pdfDoc.save({ useObjectStreams: false })
+      : new Uint8Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    parsed = await pdfParse(pdfBytes, {
       pagerender: (pageData) => pageData.getTextContent().then((tc) => {
         pageCounter++;
         let lastY;

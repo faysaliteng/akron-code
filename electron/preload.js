@@ -194,6 +194,8 @@ contextBridge.exposeInMainWorld('autobot', {
   remoteKillSwitch: (active) => ipcRenderer.invoke('autobot:remoteKillSwitch', active),
   extBridgeStatus: () => ipcRenderer.invoke('autobot:extBridgeStatus'),
   extBridgeOpenFolder: () => ipcRenderer.invoke('autobot:extBridgeOpenFolder'),
+  extBridgeInstallBrowser: (opts) => ipcRenderer.invoke('autobot:extBridgeInstallBrowser', opts),
+  extBridgeLaunchBrowser: (opts) => ipcRenderer.invoke('autobot:extBridgeLaunchBrowser', opts),
   reaStatus: () => ipcRenderer.invoke('autobot:reaStatus'),
   reaConnect: () => ipcRenderer.invoke('autobot:reaConnect'),
   reaDoctor: () => ipcRenderer.invoke('autobot:reaDoctor'),

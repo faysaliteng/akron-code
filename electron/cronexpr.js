@@ -62,8 +62,70 @@ function resolveToken(t, min, max, names) {
   return v;
 }
 
+function detectLocalTimezone() {
+  let timeZone = 'UTC';
+  try {
+    timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch (_) {}
+  let offsetLabel = 'GMT+0';
+  try {
+    const offMin = -new Date().getTimezoneOffset();
+    const sign = offMin >= 0 ? '+' : '-';
+    const abs = Math.abs(offMin);
+    const hh = Math.floor(abs / 60);
+    const mm = abs % 60;
+    offsetLabel = mm ? `GMT${sign}${hh}:${String(mm).padStart(2, '0')}` : `GMT${sign}${hh}`;
+  } catch (_) {}
+  return { timeZone, offsetLabel, display: `${timeZone} · ${offsetLabel}` };
+}
+
+function splitCronTz(expr) {
+  let raw = String(expr || '').trim();
+  let timeZone = null;
+  const m = /^CRON_TZ=([^\s]+)\s+(.+)$/.exec(raw);
+  if (m) {
+    timeZone = m[1].trim();
+    raw = m[2].trim();
+  }
+  return { raw, timeZone };
+}
+
+const _tzFormatters = new Map();
+function getTzParts(ms, timeZone) {
+  let fmt = _tzFormatters.get(timeZone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour12: false,
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      weekday: 'short',
+    });
+    _tzFormatters.set(timeZone, fmt);
+  }
+  const parts = fmt.formatToParts(new Date(ms));
+  const map = {};
+  for (const p of parts) map[p.type] = p.value;
+  const dowMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const hourNum = Number(map.hour);
+  return {
+    month: Number(map.month),
+    dom: Number(map.day),
+    hour: hourNum === 24 ? 0 : hourNum,
+    minute: Number(map.minute),
+    dow: dowMap[map.weekday] != null ? dowMap[map.weekday] : 0,
+  };
+}
+
 function parse(expr) {
-  const fields = String(expr || '').trim().split(/\s+/);
+  const { raw, timeZone } = splitCronTz(expr);
+  if (timeZone) {
+    try { new Intl.DateTimeFormat('en-US', { timeZone }); } catch (_) { return { ok: false, error: `invalid CRON_TZ "${timeZone}"` }; }
+  }
+  const fields = String(raw || '').trim().split(/\s+/);
   if (fields.length !== 5) return { ok: false, error: 'cron must have exactly 5 fields: minute hour day-of-month month day-of-week' };
   const minute = parseField(fields[0], 0, 59, null);
   if (!minute.ok) return { ok: false, error: 'minute: ' + minute.error };
@@ -80,6 +142,7 @@ function parse(expr) {
     spec: {
       minute: minute.values, hour: hour.values, dom: dom.values, month: month.values, dow: dow.values,
       domStar: fields[2].trim() === '*', dowStar: fields[4].trim() === '*',
+      timeZone: timeZone || null,
     },
   };
 }
@@ -89,9 +152,25 @@ function next(expr, from) {
   const p = typeof expr === 'string' ? parse(expr) : expr;
   if (!p || !p.ok) return null;
   const s = p.spec;
-  let d = new Date(from == null ? Date.now() : from);
-  d.setSeconds(0, 0);
-  d = new Date(d.getTime() + 60 * 1000); // strictly after
+  const tz = s.timeZone || null;
+  let t = Math.floor((from == null ? Date.now() : from) / 60000) * 60000 + 60000;
+  if (tz) {
+    // 1-year minute bound for explicit TZ (covers DST transitions cleanly)
+    const maxSteps = 60 * 24 * 366;
+    for (let i = 0; i < maxSteps; i++) {
+      const pt = getTzParts(t, tz);
+      if (!s.month.has(pt.month)) { t += 60 * 60000; continue; }
+      const domOk = s.dom.has(pt.dom);
+      const dowOk = s.dow.has(pt.dow);
+      const dayOk = (s.domStar && s.dowStar) ? true : (s.domStar ? dowOk : (s.dowStar ? domOk : (domOk || dowOk)));
+      if (!dayOk) { t += 60 * 60000; continue; }
+      if (!s.hour.has(pt.hour)) { t += (s.hour.has((pt.hour + 1) % 24) ? 60000 : 60 * 60000); continue; }
+      if (!s.minute.has(pt.minute)) { t += 60000; continue; }
+      return t;
+    }
+    return null;
+  }
+  let d = new Date(t);
   // Bound the search: 4 years covers any legal cron including Feb 29.
   for (let i = 0; i < 60 * 24 * 366 * 4; i++) {
     if (!s.month.has(d.getMonth() + 1)) { d = new Date(d.getFullYear(), d.getMonth() + 1, 1, 0, 0, 0, 0); continue; }
@@ -126,7 +205,7 @@ function describe(expr) {
   const mins = fmt(s.minute, (m) => String(m).padStart(2, '0'));
   const hrs = fmt(s.hour, (h) => String(h).padStart(2, '0'));
   const days = s.dowStar ? '' : ' on ' + fmt(s.dow, (x) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][x]);
-  return `${hrs}:${mins}${days}`;
+  return `${hrs}:${mins}${days}${s.timeZone ? ` (${s.timeZone})` : ''}`;
 }
 
-module.exports = { parse, next, validate, describe };
+module.exports = { parse, next, validate, describe, detectLocalTimezone, splitCronTz };

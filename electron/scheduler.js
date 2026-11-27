@@ -40,6 +40,104 @@ function createScheduler(opts = {}) {
   let _busy = false;
   let _onEvent = null;
   let _resolveFastProvider = null;
+  const _watchers = new Map(); // taskId -> { watchers: FSWatcher[], debounceTimer }
+  const _runningTasks = new Set();
+
+  function clearWatchersFor(taskId) {
+    const entry = _watchers.get(taskId);
+    if (!entry) return;
+    if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
+    for (const w of entry.watchers || []) {
+      try { w.close(); } catch (_) {}
+    }
+    _watchers.delete(taskId);
+  }
+
+  function clearAllWatchers() {
+    for (const id of [..._watchers.keys()]) clearWatchersFor(id);
+  }
+
+  function normalizeTriggers(spec = {}, fallbackTask = null) {
+    if (Array.isArray(spec.triggers) && spec.triggers.length) {
+      return spec.triggers.map((tr, i) => {
+        const type = ['schedule', 'watch', 'manual'].includes(tr && tr.type) ? tr.type : 'schedule';
+        const id = (tr && tr.id) || ('trg_' + (i + 1));
+        if (type === 'watch') {
+          return {
+            id,
+            type: 'watch',
+            watchGlob: String((tr && (tr.watchGlob || tr.watchPattern)) || '').trim(),
+            watchGit: tr && tr.watchGit !== false,
+            debounceMs: Math.max(100, Math.min(60000, Number(tr && tr.debounceMs) || 3500)),
+          };
+        }
+        if (type === 'manual') {
+          return { id, type: 'manual' };
+        }
+        const rawCron = String((tr && (tr.cronExpression || tr.cron)) || '').trim();
+        const tz = String((tr && tr.timeZone) || spec.timeZone || (fallbackTask && fallbackTask.timeZone) || '').trim();
+        const cadence = rawCron ? 'cron' : (tr && tr.cadence) || 'daily';
+        const atVal = tr && (tr.fireAt != null ? tr.fireAt : tr.at);
+        const parsedAt = atVal != null && String(atVal).trim() !== ''
+          ? (typeof atVal === 'number' ? atVal : Date.parse(atVal))
+          : null;
+        return {
+          id,
+          type: 'schedule',
+          cadence,
+          cron: rawCron || null,
+          cronExpression: rawCron || null,
+          everyMinutes: tr && tr.everyMinutes ? Number(tr.everyMinutes) : null,
+          minute: tr && tr.minute != null ? Number(tr.minute) : null,
+          time: (tr && tr.time) || null,
+          dayOfWeek: tr && tr.dayOfWeek != null ? Number(tr.dayOfWeek) : null,
+          at: parsedAt && !isNaN(parsedAt) ? parsedAt : null,
+          fireAt: parsedAt && !isNaN(parsedAt) ? parsedAt : null,
+          timeZone: tz || cronexpr.detectLocalTimezone().timeZone,
+        };
+      });
+    }
+    const base = fallbackTask || spec || {};
+    const c = base.cadence || 'once';
+    if (c === 'manual') return [{ id: 'trg_1', type: 'manual' }];
+    return [{
+      id: 'trg_1',
+      type: 'schedule',
+      cadence: c,
+      cron: base.cronExpression || base.cron || null,
+      cronExpression: base.cronExpression || base.cron || null,
+      everyMinutes: base.everyMinutes ? Number(base.everyMinutes) : null,
+      minute: base.minute != null ? Number(base.minute) : null,
+      time: base.time || null,
+      dayOfWeek: base.dayOfWeek != null ? Number(base.dayOfWeek) : null,
+      at: base.fireAt != null ? base.fireAt : (base.at != null ? base.at : null),
+      fireAt: base.fireAt != null ? base.fireAt : (base.at != null ? base.at : null),
+      timeZone: base.timeZone || cronexpr.detectLocalTimezone().timeZone,
+    }];
+  }
+
+  function applyPrimaryFromTriggers(task) {
+    const trgs = Array.isArray(task.triggers) ? task.triggers : [];
+    const firstSched = trgs.find((x) => x && x.type === 'schedule');
+    if (firstSched) {
+      task.cadence = firstSched.cadence || 'daily';
+      task.cron = firstSched.cron || null;
+      task.cronExpression = firstSched.cronExpression || firstSched.cron || null;
+      task.everyMinutes = firstSched.everyMinutes || null;
+      task.minute = firstSched.minute != null ? firstSched.minute : null;
+      task.time = firstSched.time || null;
+      task.dayOfWeek = firstSched.dayOfWeek != null ? firstSched.dayOfWeek : null;
+      if (firstSched.fireAt != null || firstSched.at != null) {
+        task.at = firstSched.fireAt != null ? firstSched.fireAt : firstSched.at;
+        task.fireAt = task.at;
+      }
+      if (firstSched.timeZone) task.timeZone = firstSched.timeZone;
+    } else {
+      task.cadence = 'manual';
+      task.cron = null;
+      task.cronExpression = null;
+    }
+  }
 
   function load() {
     const s = readJSON(TASKS_FILE, { tasks: [] });
@@ -89,9 +187,12 @@ function writeTaskSkillFile(task) {
       `description: ${yamlStr(task.description || String(task.prompt || '').slice(0, 120))}`,
       `cadence: ${yamlStr(task.cadence || 'once')}`,
       ...(task.cron ? [`cronExpression: ${yamlStr(task.cron)}`] : []),
+      ...(task.timeZone ? [`timeZone: ${yamlStr(task.timeZone)}`] : []),
       ...(task.model ? [`model: ${yamlStr(task.model)}`] : []),
       ...(task.cwd ? [`cwd: ${yamlStr(task.cwd)}`] : []),
       ...(task.permissionMode ? [`permissionMode: ${yamlStr(task.permissionMode)}`] : []),
+      ...(task.notifyMode ? [`notifyMode: ${yamlStr(task.notifyMode)}`] : []),
+      ...(task.environment && task.environment.kind ? [`environment: ${yamlStr(task.environment.kind + (task.environment.label ? ':' + task.environment.label : ''))}`] : []),
       `useWorktree: ${Boolean(task.useWorktree)}`,
       '---',
       '',
@@ -105,29 +206,35 @@ function writeTaskSkillFile(task) {
   }
 }
 
-// Compute the next fire time (epoch ms) for a task, or null if manual/finished.
-function computeNext(task, from) {
+function computeNextForTrigger(tr, from) {
   const now = from || Date.now();
-  const cadence = task.cadence || 'once';
+  if (!tr) return null;
+  if (tr.type === 'manual' || tr.type === 'watch') return null;
+  const cadence = tr.cadence || 'once';
   if (cadence === 'manual') return null;
   if (cadence === 'cron') {
-    const nxt = cronexpr.next(task.cron, now);
+    let expr = String(tr.cronExpression || tr.cron || '').trim();
+    if (!expr) return null;
+    if (tr.timeZone && !/^CRON_TZ=/.test(expr)) {
+      expr = `CRON_TZ=${tr.timeZone} ${expr}`;
+    }
+    const nxt = cronexpr.next(expr, now);
     return nxt == null ? null : nxt;
   }
   if (cadence === 'once') {
-    const targetAt = task.fireAt != null ? task.fireAt : task.at;
+    const targetAt = tr.fireAt != null ? tr.fireAt : tr.at;
     if (targetAt) {
       const t = typeof targetAt === 'number' ? targetAt : Date.parse(targetAt);
-      if (!isNaN(t)) return task.firedAt ? null : t;
+      if (!isNaN(t)) return tr.firedAt ? null : t;
     }
-    return task.firedAt ? null : now + 60 * 1000;
+    return tr.firedAt ? null : now + 60 * 1000;
   }
   if (cadence === 'every') {
-    const m = Math.max(1, Number(task.everyMinutes) || 60);
+    const m = Math.max(1, Number(tr.everyMinutes) || 60);
     return now + m * 60 * 1000;
   }
   if (cadence === 'hourly') {
-    const minute = Number(task.minute);
+    const minute = Number(tr.minute);
     if (!isNaN(minute) && minute >= 0 && minute <= 59) {
       const d = new Date(now);
       d.setMinutes(minute, 0, 0);
@@ -137,13 +244,13 @@ function computeNext(task, from) {
     return now + 60 * 60 * 1000;
   }
   if (cadence === 'daily' || cadence === 'weekly' || cadence === 'weekdays') {
-    const hm = String(task.time || '09:00').split(':');
+    const hm = String(tr.time || '09:00').split(':');
     const hh = Math.max(0, Math.min(23, parseInt(hm[0], 10) || 0));
     const mm = Math.max(0, Math.min(59, parseInt(hm[1], 10) || 0));
     const d = new Date(now);
     d.setHours(hh, mm, 0, 0);
     if (cadence === 'weekly') {
-      const dow = Math.max(0, Math.min(6, Number(task.dayOfWeek) || 0));
+      const dow = Math.max(0, Math.min(6, Number(tr.dayOfWeek) || 0));
       const delta = (dow - d.getDay() + 7) % 7;
       d.setDate(d.getDate() + delta);
       if (d.getTime() <= now) d.setDate(d.getDate() + 7);
@@ -160,23 +267,48 @@ function computeNext(task, from) {
   return null;
 }
 
-function describe(task) {
-  const c = task.cadence || 'once';
-  if (c === 'manual') return 'manual only (routine)';
-  if (c === 'cron') return 'cron ' + task.cron + ' (' + cronexpr.describe(task.cron) + ')';
-  if (c === 'once') {
-    const t = task.fireAt != null ? task.fireAt : task.at;
-    return 'once at ' + (t ? new Date(t).toLocaleString() : 'soon');
+// Compute the earliest next fire time (epoch ms) across a task's triggers, or null.
+function computeNext(task, from) {
+  const now = from || Date.now();
+  if (Array.isArray(task && task.triggers) && task.triggers.length) {
+    let earliest = null;
+    for (const tr of task.triggers) {
+      if (!tr || tr.type !== 'schedule') continue;
+      const candidate = computeNextForTrigger({ ...tr, firedAt: task.firedAt }, now);
+      if (candidate != null && (earliest == null || candidate < earliest)) {
+        earliest = candidate;
+      }
+    }
+    if (earliest != null) return earliest;
+    if (!task.triggers.some((tr) => tr && tr.type === 'schedule')) return null;
   }
-  if (c === 'every') return 'every ' + (task.everyMinutes || 60) + ' min';
-  if (c === 'hourly') return 'hourly' + (task.minute != null ? ' at :' + String(task.minute).padStart(2, '0') : '');
-  if (c === 'weekdays') return 'weekdays (Mon–Fri) at ' + (task.time || '09:00');
-  if (c === 'weekly') {
+  return computeNextForTrigger(task, now);
+}
+
+function describe(task) {
+  const trgs = Array.isArray(task && task.triggers) ? task.triggers : [];
+  const watchCount = trgs.filter((tr) => tr && tr.type === 'watch').length;
+  const schedTrgs = trgs.filter((tr) => tr && tr.type === 'schedule');
+  let baseDesc = '';
+  const c = task.cadence || 'once';
+  if (c === 'manual') baseDesc = watchCount ? 'Git / file watch trigger' : 'manual only (routine)';
+  else if (c === 'cron') baseDesc = 'cron ' + task.cron + ' (' + cronexpr.describe(task.cron) + ')';
+  else if (c === 'once') {
+    const t = task.fireAt != null ? task.fireAt : task.at;
+    baseDesc = 'once at ' + (t ? new Date(t).toLocaleString() : 'soon');
+  } else if (c === 'every') baseDesc = 'every ' + (task.everyMinutes || 60) + ' min';
+  else if (c === 'hourly') baseDesc = 'hourly' + (task.minute != null ? ' at :' + String(task.minute).padStart(2, '0') : '');
+  else if (c === 'weekdays') baseDesc = 'weekdays (Mon–Fri) at ' + (task.time || '09:00');
+  else if (c === 'weekly') {
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const dayLabel = days[Math.max(0, Math.min(6, Number(task.dayOfWeek) || 0))] || 'Sun';
-    return 'weekly on ' + dayLabel + ' at ' + (task.time || '09:00');
+    baseDesc = 'weekly on ' + dayLabel + ' at ' + (task.time || '09:00');
+  } else {
+    baseDesc = 'daily at ' + (task.time || '09:00');
   }
-  return 'daily at ' + (task.time || '09:00');
+  const extraCount = Math.max(0, schedTrgs.length - 1) + (c !== 'manual' ? watchCount : Math.max(0, watchCount - 1));
+  if (extraCount > 0) baseDesc += ` (+${extraCount} trigger${extraCount > 1 ? 's' : ''})`;
+  return baseDesc;
 }
 
 function waitingReasonFor(task) {
@@ -223,10 +355,13 @@ function listRuns(taskId = '', { limit = 20 } = {}) {
 function create(input) {
   input = input || {};
   if (!input.prompt) return { ok: false, error: 'prompt required' };
-  const cronExpr = String(input.cronExpression || input.cron || '').trim();
-  if ((input.cadence === 'cron') || cronExpr) {
-    const v = cronexpr.validate(cronExpr);
-    if (!v.ok) return { ok: false, error: 'invalid cron: ' + v.error };
+  const triggers = normalizeTriggers(input);
+  for (const tr of triggers) {
+    if (tr.type === 'schedule' && (tr.cadence === 'cron' || tr.cron)) {
+      const expr = tr.timeZone && !/^CRON_TZ=/.test(tr.cron) ? `CRON_TZ=${tr.timeZone} ${tr.cron}` : tr.cron;
+      const v = cronexpr.validate(expr);
+      if (!v.ok) return { ok: false, error: 'invalid cron: ' + v.error };
+    }
   }
   const fireAtRaw = input.fireAt != null ? input.fireAt : input.at;
   let parsedFireAt = null;
@@ -239,6 +374,7 @@ function create(input) {
   const s = load();
   const displayName = String(input.title || input.name || String(input.prompt).slice(0, 48)).trim();
   const id = nextUniqueId(input.taskId || input.id || '', displayName, s.tasks);
+  const cronExpr = String(input.cronExpression || input.cron || '').trim();
   const cadence = cronExpr
     ? 'cron'
     : (parsedFireAt != null ? 'once' : (input.cadence || 'once'));
@@ -249,9 +385,12 @@ function create(input) {
     description: String(input.description || '').trim(),
     prompt: String(input.prompt),
     cadence,
+    triggers,
+    timeZone: String(input.timeZone || cronexpr.detectLocalTimezone().timeZone).trim(),
     cron: cronExpr || null,
     cronExpression: cronExpr || null,
     durable: Boolean(input.durable),
+    mirrorToWorkspace: input.mirrorToWorkspace !== false,
     sentinel: input.sentinel || null,
     expiresAt: cronExpr ? Date.now() + DEFAULT_EXPIRY_MS : null,
     at: parsedFireAt,
@@ -261,12 +400,22 @@ function create(input) {
     time: input.time || null,
     dayOfWeek: input.dayOfWeek != null ? Number(input.dayOfWeek) : null,
     cwd: input.cwd ? String(input.cwd).trim() : '',
+    projectId: input.projectId ? String(input.projectId).trim() : '',
+    environment: input.environment && typeof input.environment === 'object' ? input.environment : { kind: 'local' },
+    allowedMcpServers: input.allowedMcpServers === 'none' || Array.isArray(input.allowedMcpServers) ? input.allowedMcpServers : 'all',
     useWorktree: Boolean(input.useWorktree),
     sourceBranch: input.sourceBranch ? String(input.sourceBranch).trim() : '',
     model: input.model ? String(input.model).trim() : '',
-    permissionMode: ['auto', 'default', 'plan'].includes(input.permissionMode) ? input.permissionMode : 'auto',
+    permissionMode: ['auto', 'default', 'plan', 'ask'].includes(input.permissionMode) ? input.permissionMode : 'auto',
+    maxSteps: Math.max(1, Math.min(80, Number(input.maxSteps) || 25)),
     attentionGate: Boolean(input.attentionGate),
+    retryEnabled: input.retryEnabled !== false,
     notifyOnCompletion: input.notifyOnCompletion !== false,
+    notifyMode: ['all', 'failure', 'never'].includes(input.notifyMode)
+      ? input.notifyMode
+      : (input.notifyOnCompletion === false ? 'never' : 'all'),
+    respectQuietHours: input.respectQuietHours !== false,
+    pushAlert: Boolean(input.pushAlert),
     enabled: input.enabled !== false,
     waitingReason: '',
     retryCount: 0,
@@ -279,17 +428,19 @@ function create(input) {
     runs: [],
     filePath: '',
   };
+  applyPrimaryFromTriggers(task);
   task.filePath = writeTaskSkillFile(task);
   task.nextRunAt = task.enabled ? computeNext(task) : null;
   s.tasks.push(task);
   save(s);
-  if (task.durable) mirrorDurable(s);
+  if (task.durable && task.mirrorToWorkspace !== false) mirrorDurable(s);
+  if (_timer) syncWatchers();
   return { ok: true, task: { ...task, schedule: describe(task), waiting: waitingReasonFor(task) } };
 }
 
 function mirrorDurable(state) {
   try {
-    const durable = (state.tasks || []).filter((t) => t.durable && t.enabled !== false);
+    const durable = (state.tasks || []).filter((t) => t.durable && t.enabled !== false && t.mirrorToWorkspace !== false);
     ensureDir(path.dirname(DURABLE_FILE));
     writeJSON(DURABLE_FILE, { tasks: durable });
     const byCwd = new Map();
@@ -317,17 +468,33 @@ function update(id, patch) {
   if ('fireAt' in patch && !('at' in patch)) patch.at = patch.fireAt;
 
   const allowed = [
-    'name', 'description', 'prompt', 'cadence', 'cron', 'cronExpression',
-    'durable', 'sentinel', 'at', 'fireAt', 'everyMinutes', 'minute', 'time',
-    'dayOfWeek', 'cwd', 'useWorktree', 'sourceBranch', 'model',
-    'permissionMode', 'attentionGate', 'notifyOnCompletion', 'enabled',
+    'name', 'description', 'prompt', 'cadence', 'triggers', 'timeZone', 'cron', 'cronExpression',
+    'durable', 'mirrorToWorkspace', 'sentinel', 'at', 'fireAt', 'everyMinutes', 'minute', 'time',
+    'dayOfWeek', 'cwd', 'projectId', 'environment', 'allowedMcpServers', 'useWorktree', 'sourceBranch',
+    'model', 'permissionMode', 'maxSteps', 'attentionGate', 'retryEnabled',
+    'notifyOnCompletion', 'notifyMode', 'respectQuietHours', 'pushAlert', 'enabled',
   ];
   for (const k of allowed) if (k in patch) t[k] = patch[k];
-  if (t.cron) {
-    const v = cronexpr.validate(t.cron);
-    if (!v.ok) return { ok: false, error: 'invalid cron: ' + v.error };
-    t.cronExpression = t.cron;
-    t.cadence = 'cron';
+  if (Array.isArray(patch.triggers)) {
+    t.triggers = normalizeTriggers({ triggers: patch.triggers, timeZone: t.timeZone }, t);
+    for (const tr of t.triggers) {
+      if (tr.type === 'schedule' && (tr.cadence === 'cron' || tr.cron)) {
+        const expr = tr.timeZone && !/^CRON_TZ=/.test(tr.cron) ? `CRON_TZ=${tr.timeZone} ${tr.cron}` : tr.cron;
+        const v = cronexpr.validate(expr);
+        if (!v.ok) return { ok: false, error: 'invalid cron: ' + v.error };
+      }
+    }
+    applyPrimaryFromTriggers(t);
+  } else {
+    if (t.cron) {
+      const v = cronexpr.validate(t.cron);
+      if (!v.ok) return { ok: false, error: 'invalid cron: ' + v.error };
+      t.cronExpression = t.cron;
+      t.cadence = 'cron';
+    }
+    if ('cadence' in patch || 'cron' in patch || 'time' in patch || 'minute' in patch || 'everyMinutes' in patch || 'dayOfWeek' in patch || 'at' in patch) {
+      t.triggers = normalizeTriggers({}, t);
+    }
   }
   if (t.at != null) {
     const ts = typeof t.at === 'number' ? t.at : Date.parse(t.at);
@@ -337,6 +504,7 @@ function update(id, patch) {
       t.firedAt = null; // re-arm one-time run
     }
   }
+  if ('notifyMode' in patch) t.notifyOnCompletion = patch.notifyMode !== 'never';
   if (patch.enabled === true) {
     t.waitingReason = '';
     t.retryAt = null;
@@ -344,7 +512,8 @@ function update(id, patch) {
   t.filePath = writeTaskSkillFile(t);
   t.nextRunAt = t.enabled === false ? null : computeNext(t);
   save(s);
-  if (t.durable) mirrorDurable(s);
+  if (t.durable && t.mirrorToWorkspace !== false) mirrorDurable(s);
+  if (_timer) syncWatchers();
   return { ok: true, task: { ...t, schedule: describe(t), waiting: waitingReasonFor(t) } };
 }
 
@@ -388,6 +557,7 @@ function remove(id) {
   const i = s.tasks.findIndex((x) => x.id === id);
   if (i === -1) return { ok: false, error: `Unknown task: ${id}` };
   const removed = s.tasks[i];
+  clearWatchersFor(id);
   // Match Claude Desktop: preserve {taskId}/SKILL.md on disk for prompt recovery.
   const skillPath = removed.filePath || taskSkillFilePath(removed.id);
   s.tasks.splice(i, 1);
@@ -396,9 +566,22 @@ function remove(id) {
   return { ok: true, id, skillPath };
 }
 
-async function fire(task, trigger = 'scheduled') {
+async function fire(task, trigger = 'scheduled', extraCtx = {}) {
   const startedAt = Date.now();
-  const result = { at: startedAt, startedAt, completedAt: startedAt, durationMs: 0, ok: true, trigger, output: null, error: null };
+  const result = {
+    at: startedAt,
+    startedAt,
+    completedAt: startedAt,
+    durationMs: 0,
+    ok: true,
+    trigger,
+    convId: null,
+    modelUsed: '',
+    toolsUsed: 0,
+    output: null,
+    error: null,
+  };
+  if (task && task.id) _runningTasks.add(task.id);
   try {
     const proactivity = require('./proactivity');
     if (task && task.attentionGate) {
@@ -419,10 +602,18 @@ async function fire(task, trigger = 'scheduled') {
       }
     }
     if (!_runner) throw new Error('no runner wired');
-    const out = await _runner({ task, trigger });
+    const out = await _runner({ task, trigger, ...(extraCtx || {}) });
     result.completedAt = Date.now();
     result.durationMs = result.completedAt - startedAt;
-    result.output = typeof out === 'string' ? out.slice(0, 4000) : JSON.stringify(out).slice(0, 4000);
+    if (out && typeof out === 'object' && ('output' in out || 'convId' in out)) {
+      const rawOut = out.output != null ? out.output : '';
+      result.output = typeof rawOut === 'string' ? rawOut.slice(0, 4000) : JSON.stringify(rawOut).slice(0, 4000);
+      result.convId = out.convId || null;
+      result.modelUsed = out.model || task.model || '';
+      result.toolsUsed = Number(out.toolsCount) || 0;
+    } else {
+      result.output = typeof out === 'string' ? out.slice(0, 4000) : JSON.stringify(out).slice(0, 4000);
+    }
     try {
       proactivity.upsertMatter({
         source: 'scheduler',
@@ -440,6 +631,8 @@ async function fire(task, trigger = 'scheduled') {
     result.durationMs = result.completedAt - startedAt;
     result.ok = false;
     result.error = e.message;
+  } finally {
+    if (task && task.id) _runningTasks.delete(task.id);
   }
   return result;
 }
@@ -453,12 +646,14 @@ function recordRunOnTask(t, res) {
   t.runs.unshift({
     runId: 'run_' + res.at.toString(36) + '_' + Math.random().toString(36).slice(2, 6),
     taskId: t.id,
+    convId: res.convId || null,
     status: res.ok ? (res.skippedByAttentionGate ? 'skipped' : 'succeeded') : 'failed',
     trigger: res.trigger || 'scheduled',
     startedAt: res.startedAt || res.at,
     completedAt: res.completedAt || res.at,
     durationMs: res.durationMs || 0,
-    model: t.model || '',
+    model: res.modelUsed || t.model || '',
+    toolsCount: Number(res.toolsUsed) || 0,
     cwd: t.cwd || '',
     output: res.output ? String(res.output).slice(0, 1200) : '',
     error: res.error || null,
@@ -466,11 +661,11 @@ function recordRunOnTask(t, res) {
   t.runs = t.runs.slice(0, MAX_RUN_HISTORY);
 }
 
-async function runNow(id) {
+async function runNow(id, triggerName = 'manual', extraCtx = {}) {
   const s = load();
   const t = s.tasks.find((x) => x.id === id);
   if (!t) return { ok: false, error: `Unknown task: ${id}` };
-  const res = await fire(t, 'manual');
+  const res = await fire(t, triggerName || 'manual', extraCtx);
   const s2 = load();
   const t2 = s2.tasks.find((x) => x.id === id);
   if (t2) {
@@ -481,8 +676,67 @@ async function runNow(id) {
     else if (t2.enabled !== false) t2.nextRunAt = computeNext(t2, res.at);
     save(s2);
   }
-  if (_onEvent) { try { _onEvent({ type: 'ran', taskId: id, trigger: 'manual', result: res }); } catch (_) {} }
+  if (_onEvent) { try { _onEvent({ type: 'ran', taskId: id, trigger: triggerName || 'manual', result: res }); } catch (_) {} }
   return { ok: true, result: res };
+}
+
+function matchesWatchGlob(relPath, globStr) {
+  const g = String(globStr || '').trim();
+  if (!g) return true;
+  const norm = String(relPath || '').replace(/\\/g, '/').toLowerCase();
+  const parts = g.split(/[\s,;]+/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (!parts.length) return true;
+  return parts.some((pat) => {
+    const clean = pat.replace(/^\*\*\/?/, '').replace(/^\*/, '');
+    return clean ? norm.includes(clean) : true;
+  });
+}
+
+function syncWatchers() {
+  clearAllWatchers();
+  if (!_runner) return;
+  const s = load();
+  for (const t of s.tasks) {
+    if (t.enabled === false || !t.cwd || !fs.existsSync(t.cwd)) continue;
+    const trgs = Array.isArray(t.triggers) ? t.triggers : [];
+    const watchTrg = trgs.find((tr) => tr && tr.type === 'watch');
+    if (!watchTrg) continue;
+    const entry = { watchers: [], debounceTimer: null };
+    const scheduleWatchFire = (rel) => {
+      if (_runningTasks.has(t.id)) return;
+      if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
+      entry.debounceTimer = setTimeout(() => {
+        entry.debounceTimer = null;
+        if (!_runningTasks.has(t.id)) {
+          runNow(t.id, 'watch', { watchFile: String(rel || '') }).catch(() => {});
+        }
+      }, watchTrg.debounceMs || 3500);
+      if (entry.debounceTimer.unref) entry.debounceTimer.unref();
+    };
+    try {
+      let realCwd = t.cwd;
+      try { realCwd = fs.realpathSync(t.cwd); } catch (_) {}
+      const w = fs.watch(realCwd, { recursive: false }, (_evt, filename) => {
+        const rel = String(filename || '');
+        if (!rel || /^(\.git|\.autobot-worktrees|node_modules|\.claude)/.test(rel)) return;
+        if (!matchesWatchGlob(rel, watchTrg.watchGlob)) return;
+        scheduleWatchFire(rel);
+      });
+      if (w && w.unref) w.unref();
+      entry.watchers.push(w);
+    } catch (_) {}
+    if (watchTrg.watchGit !== false) {
+      const gitHead = path.join(t.cwd, '.git', 'HEAD');
+      if (fs.existsSync(gitHead)) {
+        try {
+          const gw = fs.watch(gitHead, () => scheduleWatchFire('.git/HEAD'));
+          if (gw && gw.unref) gw.unref();
+          entry.watchers.push(gw);
+        } catch (_) {}
+      }
+    }
+    if (entry.watchers.length) _watchers.set(t.id, entry);
+  }
 }
 
 async function tick() {
@@ -522,7 +776,7 @@ async function tick() {
       const res = await fire(due, trigger);
       recordRunOnTask(t, res);
 
-      if (!res.ok && (t.retryCount || 0) < RETRY_BACKOFF_MS.length) {
+      if (!res.ok && t.retryEnabled !== false && (t.retryCount || 0) < RETRY_BACKOFF_MS.length) {
         const delay = RETRY_BACKOFF_MS[t.retryCount || 0];
         t.retryCount = (t.retryCount || 0) + 1;
         t.retryAt = Date.now() + delay;
@@ -549,7 +803,10 @@ function start(runner, onEvent, startOpts = {}) {
   _resolveFastProvider = (startOpts && typeof startOpts.resolveFastProvider === 'function')
     ? startOpts.resolveFastProvider
     : null;
-  if (_timer) return;
+  if (_timer) {
+    syncWatchers();
+    return;
+  }
   const s = load();
   let changed = false;
   let hasOverdue = false;
@@ -560,6 +817,7 @@ function start(runner, onEvent, startOpts = {}) {
     if (t.nextRunAt != null && t.nextRunAt <= now) hasOverdue = true;
   }
   if (changed) save(s);
+  syncWatchers();
   if (hasOverdue) {
     const catchupTimer = setTimeout(() => { tick().catch(() => {}); }, 2500);
     if (catchupTimer.unref) catchupTimer.unref();
@@ -570,11 +828,12 @@ function start(runner, onEvent, startOpts = {}) {
 
 function stop() {
   if (_timer) { clearInterval(_timer); _timer = null; }
+  clearAllWatchers();
 }
 
   return {
     list, listRuns, create, update, remove, runNow, tick, start, stop, computeNext, describe, formatList,
-    createCron, createWakeup, mirrorDurable, taskSkillFilePath, AUTONOMOUS_SENTINEL, DURABLE_FILE,
+    syncWatchers, createCron, createWakeup, mirrorDurable, taskSkillFilePath, AUTONOMOUS_SENTINEL, DURABLE_FILE,
   };
 }
 

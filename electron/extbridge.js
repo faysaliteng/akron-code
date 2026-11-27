@@ -36,6 +36,11 @@ let state = {
 };
 
 function extensionDir() {
+  try {
+    const installer = require('./browser-ext-installer');
+    const res = installer.syncStandaloneExtension();
+    if (res && res.extensionDir && fs.existsSync(res.extensionDir)) return res.extensionDir;
+  } catch (_) {}
   const candidates = [
     process.resourcesPath ? path.join(process.resourcesPath, 'akron-browser-bot') : null,
     path.join(__dirname, '..', 'resources', 'akron-browser-bot'),
@@ -519,15 +524,28 @@ async function status() {
   if (connected) {
     try { tabs = await listTabs(); } catch (_) {}
   }
+  let extMeta = {};
+  let browserMeta = {};
+  try {
+    const installer = require('./browser-ext-installer');
+    extMeta = installer.syncStandaloneExtension() || {};
+    browserMeta = installer.detectBrowsers() || {};
+  } catch (_) {}
   return {
-    running: state.running,
+    running: state.running || Boolean(state.shared),
+    shared: Boolean(state.shared),
     port: state.port,
     bridgeUrl: `ws://127.0.0.1:${state.port}`,
     proxyUrl: `http://127.0.0.1:${state.port}/v1`,
     extensionConnected: connected,
     connectedClients: state.clients.size,
-    extensionVersion: state.extensionVersion,
-    extensionDir: extensionDir(),
+    extensionVersion: state.extensionVersion || extMeta.version || null,
+    extensionDir: extMeta.extensionDir || extensionDir(),
+    extensionId: extMeta.extensionId || '',
+    crxPath: extMeta.crxPath || '',
+    defaultBrowser: browserMeta.defaultBrowser || null,
+    preferredChromiumBrowser: browserMeta.preferredChromiumBrowser || null,
+    installedBrowsers: browserMeta.installedBrowsers || [],
     tabs: Array.isArray(tabs) ? tabs : [],
   };
 }
@@ -654,7 +672,18 @@ function start(opts = {}) {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
     });
 
-    server.on('error', (err) => {
+    server.on('error', async (err) => {
+      if (err && err.code === 'EADDRINUSE') {
+        try {
+          const r = await fetch(`http://127.0.0.1:${listenPort}/v1/health`, { signal: AbortSignal.timeout(1200) });
+          if (r && r.ok) {
+            state.shared = true;
+            state.running = true;
+            state.port = listenPort;
+            return resolve({ ok: true, running: true, shared: true, port: listenPort });
+          }
+        } catch (_) {}
+      }
       console.error('extbridge listener error:', err.message);
       state.running = false;
       resolve({ ok: false, error: err.message });

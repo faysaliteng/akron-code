@@ -131,6 +131,8 @@ export function SettingsModalBody({
 
   // Browser extension bridge status
   const [extStatus, setExtStatus] = useState(null);
+  const [extBusy, setExtBusy] = useState('');
+  const [extActionMsg, setExtActionMsg] = useState('');
   const refreshExtStatus = useCallback(async () => {
     if (!window.autobot || !window.autobot.extBridgeStatus) return;
     try {
@@ -138,6 +140,44 @@ export function SettingsModalBody({
       if (res) setExtStatus(res);
     } catch (_) {}
   }, []);
+  const handleInstallExtBrowser = useCallback(async (browserId = '') => {
+    if (!window.autobot || !window.autobot.extBridgeInstallBrowser) return;
+    setExtBusy('install');
+    setExtActionMsg('');
+    try {
+      const res = await window.autobot.extBridgeInstallBrowser(browserId ? { browserId } : {});
+      if (res && res.ok) {
+        const targets = (res.registeredTargets || []).map((t) => t.name).join(', ');
+        setExtActionMsg(
+          targets
+            ? `✅ Added Akron Browser Bot (${res.extensionId}) to: ${targets}. Folder synced at ${res.extensionDir}`
+            : `✅ Synced standalone CRX3 & unpacked folder at ${res.extensionDir} (${res.extensionId}). Click "Launch Browser with Extension Pre-Loaded" or load unpacked in chrome://extensions.`
+        );
+        if (setNotice) setNotice('✅ Akron Browser Bot synced & ready');
+      } else {
+        setExtActionMsg('⚠️ ' + ((res && res.error) || 'Could not register extension'));
+      }
+      await refreshExtStatus();
+    } finally {
+      setExtBusy('');
+    }
+  }, [refreshExtStatus, setNotice]);
+  const handleLaunchExtBrowser = useCallback(async (browserId = '') => {
+    if (!window.autobot || !window.autobot.extBridgeLaunchBrowser) return;
+    setExtBusy('launch');
+    setExtActionMsg('');
+    try {
+      const res = await window.autobot.extBridgeLaunchBrowser(browserId ? { browserId } : {});
+      if (res && res.ok && res.launched) {
+        setExtActionMsg(`🚀 Launched ${res.browser?.name || 'browser'} with Akron Browser Bot pre-loaded.`);
+      } else {
+        setExtActionMsg((res && res.message) || 'Opened standalone extension folder.');
+      }
+      await refreshExtStatus();
+    } finally {
+      setExtBusy('');
+    }
+  }, [refreshExtStatus]);
   useEffect(() => {
     refreshExtStatus();
     if (section !== 'browser') return undefined;
@@ -379,6 +419,19 @@ export function SettingsModalBody({
 
             {section === 'media' && (
               <MediaStudioApiKeysSection focusKeyId={focusMediaKey} setNotice={setNotice} onOpenBrowserUrl={onOpenBrowserUrl} />
+            )}
+
+            {section === 'appearance' && (
+              <>
+                <AppearanceStudioSection settings={settings} setSettings={setSettings} setNotice={setNotice} />
+                <div className="settings-card">
+                  <TypographySettingsSection
+                    typography={settings.typography}
+                    onChange={(nextTypo) => setSettings({ ...settings, typography: nextTypo })}
+                    setNotice={setNotice}
+                  />
+                </div>
+              </>
             )}
 
             {section === 'notifications' && (
@@ -667,30 +720,82 @@ export function SettingsModalBody({
 
             {section === 'browser' && (
               <>
-                <div className="settings-card">
-                  <h3><Icon name="Globe" size={14} /> Akron Browser Bot · External Browser Bridge</h3>
+                <div className="settings-card" data-testid="browser-ext-card">
+                  <h3><Icon name="Globe" size={14} /> Akron Browser Bot · Standalone &amp; Auto-Installer</h3>
                   <div className="ext-card-status">
                     <div>
                       <span className={'ext-dot' + (extStatus && extStatus.extensionConnected ? ' on' : '')} />
                       <b>{extStatus && extStatus.extensionConnected ? `Connected (v${extStatus.extensionVersion || '1.6.7'})` : 'Listening for extension on ws://127.0.0.1:8766'}</b>
                       <p className="muted" style={{ margin: '4px 0 0' }}>
-                        All models configured in Akron Code Desktop are automatically shared with Akron Browser Bot at <code>http://127.0.0.1:8766/v1</code> — zero separate API keys required.
+                        All models configured in Akron Code Desktop are shared automatically at <code>http://127.0.0.1:8766/v1</code> — zero separate API keys required.
                       </p>
                     </div>
-                    <div style={{ display: 'flex', gap: 6 }}>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       <button type="button" className="btn-mini" onClick={refreshExtStatus}><Icon name="Refresh" size={12} /> Refresh</button>
-                      <button type="button" className="btn-mini primary" onClick={() => window.autobot.extBridgeOpenFolder && window.autobot.extBridgeOpenFolder()}>
-                        <Icon name="Folder" size={12} /> Open Extension Folder
+                      <button type="button" className="btn-mini" onClick={() => window.autobot.extBridgeOpenFolder && window.autobot.extBridgeOpenFolder()}>
+                        <Icon name="Folder" size={12} /> Open Standalone Extension Folder
                       </button>
                     </div>
                   </div>
+
+                  <div className="ct-list" style={{ marginTop: 10 }}>
+                    <div className="ct-row">
+                      <span>Standalone Folder</span>
+                      <code>{(extStatus && extStatus.extensionDir) || '~/Applications/Akron Browser Bot'}</code>
+                    </div>
+                    {extStatus && extStatus.extensionId && (
+                      <div className="ct-row">
+                        <span>Signed Extension ID (CRX3)</span>
+                        <code>{extStatus.extensionId}</code>
+                      </div>
+                    )}
+                    <div className="ct-row">
+                      <span>Detected Default Browser</span>
+                      <code>
+                        {(extStatus && extStatus.defaultBrowser && extStatus.defaultBrowser.name) || 'Detecting…'}
+                        {extStatus && extStatus.preferredChromiumBrowser && extStatus.defaultBrowser && !extStatus.defaultBrowser.isChromium
+                          ? ` (Chromium target: ${extStatus.preferredChromiumBrowser.name})`
+                          : ''}
+                      </code>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                    <button
+                      type="button"
+                      className="btn-mini primary"
+                      data-testid="ext-install-browser-btn"
+                      disabled={!!extBusy}
+                      onClick={() => handleInstallExtBrowser((extStatus && extStatus.preferredChromiumBrowser && extStatus.preferredChromiumBrowser.id) || '')}
+                    >
+                      🧩 {extBusy === 'install'
+                        ? 'Installing CRX3…'
+                        : `Add Akron Web Bot to ${(extStatus && extStatus.preferredChromiumBrowser && extStatus.preferredChromiumBrowser.name) || 'Browser'}`}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-mini"
+                      data-testid="ext-launch-browser-btn"
+                      disabled={!!extBusy}
+                      onClick={() => handleLaunchExtBrowser((extStatus && extStatus.preferredChromiumBrowser && extStatus.preferredChromiumBrowser.id) || '')}
+                    >
+                      🚀 {extBusy === 'launch'
+                        ? 'Launching…'
+                        : `Launch ${(extStatus && extStatus.preferredChromiumBrowser && extStatus.preferredChromiumBrowser.name) || 'Browser'} with Extension Pre-Loaded`}
+                    </button>
+                  </div>
+                  {extActionMsg && (
+                    <div className="muted" style={{ marginTop: 8, fontSize: 12, color: extActionMsg.startsWith('⚠️') ? '#f59e0b' : '#34d399' }}>
+                      {extActionMsg}
+                    </div>
+                  )}
                 </div>
 
                 <div className="settings-card">
-                  <h3>Setup in Chrome / Brave / Edge (1 minute)</h3>
+                  <h3>Manual Load Fallback (Any Chromium Browser)</h3>
                   <ol className="muted" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.65 }}>
-                    <li>Click <b>Open Extension Folder</b> above (points to <code>{(extStatus && extStatus.extensionDir) || 'resources/akron-browser-bot'}</code>).</li>
-                    <li>Open <code>chrome://extensions</code>, enable <b>Developer mode</b>, click <b>Load unpacked</b>, and select that folder.</li>
+                    <li>Click <b>Open Standalone Extension Folder</b> above — it lives outside the app bundle at <code>{(extStatus && extStatus.extensionDir) || '~/Applications/Akron Browser Bot'}</code> with <code>akron-browser-bot.crx</code>.</li>
+                    <li>Open <code>{(extStatus && extStatus.preferredChromiumBrowser && extStatus.preferredChromiumBrowser.schemeUrl) || 'chrome://extensions'}</code>, enable <b>Developer mode</b>, click <b>Load unpacked</b>, and select that folder.</li>
                     <li>Open the Akron Browser Bot side panel — it connects automatically with access to <code>akron-default</code>, <code>akron-planner</code>, <code>akron-coder</code>, <code>akron-vision</code>, <code>akron-fast</code>, and <code>akron-longctx</code>, and Desktop agents can drive tabs via <code>ext_browser</code>.</li>
                   </ol>
                   {extStatus && Array.isArray(extStatus.tabs) && extStatus.tabs.length > 0 && (

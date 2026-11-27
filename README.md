@@ -236,14 +236,34 @@ Manage all integrations, slash skills, `@`-mentionable Custom Sub-Agents (`~/.au
 
 ---
 
-### 6. Built-In Browser Inspect Element & Akron Browser Bot (`:8766` Extension)
-Inspect DOM bounding boxes, computed contrast/CSS tokens, and page screenshots side-by-side inside the workspace, or automate real authenticated tabs via the **Akron Browser Bot** MV3 Chrome/Brave extension with matching inline progress cards.
+### 6. Built-In Browser Inspect Element & Standalone `Akron Browser Bot` (`:8766` CRX3 Auto-Installer)
+- **Standalone User-Accessible Extension Folder:** Automatically synced outside `.app` (`~/Applications/Akron Browser Bot` on macOS, `%LOCALAPPDATA%\AkronLogic\Akron Browser Bot` on Windows, `~/Akron Browser Bot` on Linux) AND shipped top-level alongside `Akron Code.app` inside macOS DMG & ZIP releases.
+- **Deterministic RSA-2048 CRX3 & 1-Click Browser Auto-Setup:** Generates `akron-browser-bot.crx` (`Cr24` v3 signed header), detects the OS default browser, registers Chromium External Extensions JSON / Windows `HKCU\Software\Microsoft\Edge\Extensions` keys automatically, and offers 1-click **Launch Browser with Extension Pre-Loaded**.
 
 ![Built-In Browser Inspect Element Showcase](docs/screenshots/browser-inspect.png)
+
+![Akron Browser Bot Standalone & 1-Click Auto-Setup](docs/screenshots/browser-ext-autosetup-dark.png)
 
 <p align="center">
   <img src="docs/screenshots/browser-bot-inline-plan.png" width="420" alt="Akron Browser Bot Inline Checklist" />
 </p>
+
+---
+
+### 6B. Full-Page `Automations` Hub, `/automation` Skill & Multi-Trigger Scheduler
+- **Full-Page Hub (`Yours` | `Templates` | `Proactive`):** Search, Status filters (`All | Active | Paused | Failed`), Sort (`Next run | Last run | Name`), stopwatch empty state, and **6 jittered non-`:00` starter templates** (*Morning Briefing `7:18 AM`*, *Git & PR Digest `7:52 AM`*, *Nightly Build Sweep `2:14 AM`*, *System Health `7:47 AM`*, *Bug Triage `7:23 AM`*, *Weekly Security Audit `9:37 AM`*).
+- **Guided `/automation` Composer Pill & `New scheduled task` Modal:** Click **`✨ Create with Prompt`** to open Chat with a removable **`🕒 automation`** skill pill, or use the modal featuring an **embedded `<ModelLogo />` picker** (`Auto · DeepSeek V4.1`, `Orchestrator`, Subscriptions, Ollama), **Multi-Trigger Builder** (`Schedule` with `CRON_TZ=` timezone + `Git / File Watch` + `Manual`), **Project & SSH/Remote Environment** pickers, 4-tab **Advanced Settings** (`General | Connectors | Behavior | Notifications`), MCP tool allowlists, and **`Open Run →`** jumping straight to each run's persisted SQLite transcript.
+
+![Automations Hub Dark](docs/screenshots/automations-hub-dark.png)
+
+![New Scheduled Task Modal & Embedded Model Picker](docs/screenshots/automations-modal-dark.png)
+
+---
+
+### 6C. Live Cross-Platform Desktop Verification (macOS Apple Silicon + Windows 11 ARM64 + Linux)
+Every release is validated with native OS execution — including live booting `Akron Code.exe` inside Windows 11 ARM64 (`COLD_BOOT_OK`, standalone `%LOCALAPPDATA%\AkronLogic\Akron Browser Bot` CRX3 sync, and live Edge `HKCU` extension registration).
+
+![Akron Code Live on Windows 11 Desktop](docs/screenshots/windows11-akron-code-live.png)
 
 ---
 

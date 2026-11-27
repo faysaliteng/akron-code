@@ -200,6 +200,19 @@ const SKILL_PROMPTS = {
       'Focus: $ARGUMENTS',
     ].join('\n'),
   },
+  automation: {
+    description: 'Guide the user interactively through creating, scheduling, and testing an automated task.',
+    body: [
+      'Guide the user interactively through designing and creating a real scheduled or event-driven automation in Akron Code.',
+      '',
+      '1. Detect the active project folder (`cwd`) and the user\'s local IANA timezone (`Intl.DateTimeFormat().resolvedOptions().timeZone`).',
+      '2. Use `AskUserQuestion` to collect only missing essentials (skip anything already specified in `$ARGUMENTS`): cadence (`daily`, `weekdays`, `weekly`, `hourly`, `every`, `cron`, or Git/file watch trigger), preferred time (suggesting jittered non-`:00` minutes like `07:18` or `08:47`), and goal/permissions.',
+      '3. Call `scheduled-tasks__create_scheduled_task` to persist the automation as `~/.autobot/scheduled-tasks/<id>/SKILL.md`.',
+      '4. Report the created task ID, schedule, and offer an instant test run using `scheduled-tasks__run_scheduled_task`.',
+      '',
+      'User request / starting goal: $ARGUMENTS',
+    ].join('\n'),
+  },
 };
 
 function skillCommand(name) {
@@ -355,6 +368,7 @@ const BUILTIN = [
   { name: 'background', description: 'In-app tasks run in the background automatically' },
   { name: 'stop', description: 'Stop the current run or background session' },
   { name: 'schedule', description: 'Create or manage scheduled runs', aliases: ['loops', 'loop'] },
+  { name: 'automation', description: 'Guide me through creating an automated recurring or event-driven task', aliases: ['automations'], guiEquivalent: true },
   { name: 'workflows', description: 'Browse workflow history' },
   { name: 'toggle-memory', description: 'Toggle auto-memory for this session' },
   { name: 'autocompact', description: 'Configure the auto-compact window' },
@@ -396,15 +410,8 @@ const BUILTIN = [
   { name: 'autofix-pr', description: 'Monitor and autofix issues on the current PR', guiEquivalent: true },
   { name: 'ultrareview', description: 'Exhaustive review of the pending changes', guiEquivalent: true },
   { name: 'install-github-app', description: 'Set up GitHub Actions CI for this repo', guiEquivalent: true },
-  { name: 'install-slack-app', description: 'Anthropic-hosted Slack app (not applicable)', guiEquivalent: true },
-  { name: 'web-setup', description: 'claude.ai web setup (not applicable)', guiEquivalent: true },
-  { name: 'mobile', description: 'Example mobile app pairing (not applicable)', guiEquivalent: true },
-  { name: 'teleport', description: 'Resume a claude.ai session (not applicable)', guiEquivalent: true },
-  { name: 'stickers', description: 'Anthropic merch (not applicable)', guiEquivalent: true },
-  { name: 'radio', description: 'Example FM lo-fi radio (not applicable)', guiEquivalent: true },
-  { name: 'heapdump', description: 'Terminal JS heap dump (not applicable)', guiEquivalent: true },
+  { name: 'mobile', description: 'Open Mobile & Push Relay pairing (Settings → Server & Pairing)', guiEquivalent: true },
   { name: 'bridge-kick', description: 'Inject bridge failure states (dev tooling)', guiEquivalent: true },
-  { name: 'pro-trial-expired', description: 'Anthropic trial billing surface (not applicable)', guiEquivalent: true },
   { name: 'learn', description: 'Extract a reusable SKILL.md from a solved workflow or bug fix', argumentHint: '[skill-name or topic]', guiEquivalent: true },
 ];
 
@@ -447,6 +454,7 @@ const PINNED_ACTION_ORDER = [
   'diff',
   'rewind',
   'tasks',
+  'automation',
   'schedule',
   'mcp',
   'skills',

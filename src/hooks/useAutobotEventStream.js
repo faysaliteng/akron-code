@@ -7,7 +7,7 @@ export function useAutobotEventStream({
   setLiveSync, setThinking, setSubAgents, setSwarmInfo, setSwarmBoard,
   setPaused, setPermError, setPermissionQueue, setLastUsage,
   commitLive, setError, setModelMenuOpen, setQuestionQueue,
-  setShowSettings, setPanel, setActiveId, setCuConsent,
+  setShowSettings, setPanel, setActiveId, setConvs, setCuConsent,
   setPermissions, setPlanMode, setArtifactsExplicit, setNotice,
   openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
 }) {
@@ -499,6 +499,14 @@ export function useAutobotEventStream({
         case 'notice':
           // Context compaction and other system-level messages from the agent.
           setNotice(String(evt.text || ''));
+          break;
+        case 'scheduled-session':
+          if (evt.conversation && evt.conversation.id && typeof setConvs === 'function') {
+            setConvs((cs) => {
+              const filtered = (Array.isArray(cs) ? cs : []).filter((c) => c.id !== evt.conversation.id);
+              return [evt.conversation, ...filtered];
+            });
+          }
           break;
         case 'limit':
           setNotice(`Paused after ${evt.steps} tool turns — the runaway safety valve, not a step limit. Say "continue" to carry on.`);

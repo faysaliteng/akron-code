@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 
 module.exports = function createRuntimesController(ctx) {
-  const { app, ipcMain, store, workspace, shells, freellm, createRuntimes, providertransport, runAgent, hydrateProvider, hydrateOrchestrator, validateOrchestrator, freellmFallbackApiKey, oneLine, broadcast } = ctx;
+  const { app, ipcMain, store, workspace, shells, freellm, createRuntimes, providertransport, runAgent, hydrateProvider, hydrateOrchestrator, validateOrchestrator, freellmFallbackApiKey, oneLine, broadcast, mcp, autoConnectMcp, sessionDb, notificationService, proactivity, gdrive } = ctx;
 
 // ---------------------------------------------------------------------------
 // Bundled agent runtimes (Claude Code / Codex / Grok CLI) + self-update.
@@ -400,7 +400,7 @@ async function resolveFastProviderForGate(task) {
   try {
     let p = scheduledProvider();
     if (!p || !p.model) return null;
-    if (task && task.model && String(task.model).trim() && String(task.model).trim().toLowerCase() !== 'auto') {
+    if (task && task.model && String(task.model).trim() && !/^(auto|orchestrator)$/i.test(String(task.model).trim())) {
       p = { ...p, model: String(task.model).trim() };
     }
     return await hydrateProvider(p);
@@ -409,55 +409,256 @@ async function resolveFastProviderForGate(task) {
   }
 }
 
-async function runScheduledPrompt({ task }) {
-  const os = require('os');
-  const fs = require('fs');
+async function resolveScheduledProviderAndOrch(task) {
   let provider = scheduledProvider();
   if (!provider || !provider.model) throw new Error('No LLM provider configured — open Settings and select a model first.');
-  if (task && task.model && String(task.model).trim() && String(task.model).trim().toLowerCase() !== 'auto') {
-    provider = { ...provider, model: String(task.model).trim() };
-  }
-  // A scheduled task persists only the account id, so the bearer token is
-  // minted here at fire time (and refreshed if the subscription rotated).
-  provider = await hydrateProvider(provider);
-  let out = '';
   let orch = store.getOrchestrator();
-  try { orch = (await hydrateOrchestrator(orch, hydrateProvider)).orch; } catch (_) { /* keep the pool as stored */ }
-  try { orch = await validateOrchestrator(orch, () => {}); } catch (_) { /* keep the pool as stored */ }
-  let taskCwd = (task && task.cwd && fs.existsSync(task.cwd)) ? task.cwd : workspace.scratch();
+  const reqModel = task && task.model ? String(task.model).trim() : '';
+  const lowerReq = reqModel.toLowerCase();
+
+  if (lowerReq === 'auto') {
+    provider = { ...provider, model: 'auto', routingMode: 'auto', autoRoute: true };
+  } else if (lowerReq === 'orchestrator') {
+    provider = { ...provider, routingMode: 'orchestrator' };
+    orch = { ...(orch || {}), enabled: true };
+  } else if (reqModel.startsWith('account:')) {
+    const m = /^account:([^:]+)::(.+)$/.exec(reqModel);
+    if (m) {
+      provider = { ...provider, oauthProvider: m[1], model: m[2], transport: '', routingMode: '' };
+    }
+  } else if (reqModel) {
+    provider = { ...provider, model: reqModel, routingMode: '' };
+  }
+
+  try {
+    provider = await hydrateProvider(provider);
+  } catch (e) {
+    if (lowerReq === 'auto') {
+      provider = { ...provider, oauthProvider: '', oauth: false, accessToken: '', transport: '' };
+    } else {
+      throw e;
+    }
+  }
+  try { orch = (await hydrateOrchestrator(orch, hydrateProvider)).orch; } catch (_) {}
+  try { orch = await validateOrchestrator(orch, () => {}); } catch (_) {}
+  return { provider, orch };
+}
+
+function gatherAllowedMcpTools(task) {
+  if (!mcp) return { extraTools: [], callMcpTool: undefined, mcpClient: undefined };
+  const allow = task && task.allowedMcpServers;
+  if (allow === 'none') return { extraTools: [], callMcpTool: undefined, mcpClient: undefined };
+  const allowSet = Array.isArray(allow) ? new Set(allow.map((x) => String(x))) : null;
+  const extraTools = [];
+  for (const sid of [...mcp.servers.keys()]) {
+    if (allowSet && !allowSet.has(sid)) continue;
+    const entry = mcp.servers.get(sid);
+    for (const t of (entry && entry.fullTools) || []) {
+      extraTools.push({
+        name: `mcp__${sid}__${t.name}`,
+        description: `[MCP ${entry.name || sid}] ${t.description || ''}`,
+        inputSchema: t.inputSchema,
+      });
+    }
+  }
+  try {
+    if (gdrive && gdrive.status(mcp).connected && !mcp.servers.has('gdrive') && (!allowSet || allowSet.has('gdrive'))) {
+      for (const t of gdrive.toolSpecs()) {
+        extraTools.push({ name: `mcp__gdrive__${t.name}`, description: t.description, inputSchema: t.inputSchema });
+      }
+    }
+  } catch (_) {}
+  const callMcpTool = async (name, args) => {
+    const m = /^mcp__(\w+?)__(.+)$/.exec(name);
+    if (!m) return 'Unknown MCP tool: ' + name;
+    if (m[1] === 'gdrive' && gdrive && !mcp.servers.has('gdrive')) {
+      return await gdrive.callTool(m[2], args || {}, mcp);
+    }
+    return await mcp.callTool(m[1], m[2], args);
+  };
+  return { extraTools, callMcpTool, mcpClient: mcp };
+}
+
+async function runScheduledPrompt({ task, trigger = 'scheduled', watchFile = '' }) {
+  const os = require('os');
+  const fs = require('fs');
+  const startedAt = Date.now();
+  const { provider, orch } = await resolveScheduledProviderAndOrch(task);
+
+  const baseCwd = (task && task.cwd && fs.existsSync(task.cwd)) ? task.cwd : workspace.scratch();
+  let taskCwd = baseCwd;
   if (task && task.useWorktree && task.cwd && fs.existsSync(task.cwd)) {
     try {
-      const wtDir = path.join(os.homedir(), '.autobot', 'worktrees', task.id || ('sched-' + Date.now()));
+      const wtDir = path.join(os.homedir(), '.autobot', 'worktrees', task.id || ('sched-' + startedAt));
       if (fs.existsSync(wtDir)) {
         taskCwd = wtDir;
       } else {
         const git = require('../git');
-        const wtRes = await git.addWorktree(task.cwd, 'sched/' + (task.id || Date.now()), wtDir);
+        const wtRes = await git.addWorktree(task.cwd, 'sched/' + (task.id || startedAt), wtDir);
         if (wtRes && wtRes.ok && wtRes.path && fs.existsSync(wtRes.path)) {
           taskCwd = wtRes.path;
         }
       }
     } catch (_) {}
   }
-  const permMode = (task && task.permissionMode === 'plan') ? 'plan' : 'auto';
-  const finalMessages = await runAgent({
-    provider,
-    orchestrator: orch,
-    messages: [{ role: 'user', content: String(task.prompt) }],
-    cwd: taskCwd,
-    useMemory: true,
-    maxSteps: 0,
-    permissionMode: permMode,
-    emit: (evt) => {
-      if (evt && evt.type === 'delta' && evt.text) out += evt.text;
-    },
-    shell: shells,
-    // A scheduled prompt is its own top-level turn.
-    turnStart: true,
-  });
-  const last = finalMessages && finalMessages[finalMessages.length - 1];
-  if (!out && last && typeof last.content === 'string') out = last.content;
-  return out || '(no output)';
+
+  // Connect & gather MCP tools according to the task's connector policy
+  if (task && task.allowedMcpServers !== 'none') {
+    if (typeof autoConnectMcp === 'function') {
+      try { await autoConnectMcp(taskCwd); } catch (_) {}
+    }
+    if (Array.isArray(task.allowedMcpServers) && task.allowedMcpServers.includes('rea') && mcp && !mcp.servers.has('rea')) {
+      try { await require('../rea').ensureConnected(mcp, { userDataDir: app.getPath('userData') }); } catch (_) {}
+    }
+  }
+  const { extraTools, callMcpTool, mcpClient } = gatherAllowedMcpTools(task);
+
+  const envKind = task && task.environment && task.environment.kind ? task.environment.kind : 'local';
+  const envPrefix = envKind !== 'local'
+    ? `[Execution Environment: ${task.environment.label || envKind}${task.environment.host ? ` (${task.environment.host})` : ''}]\n`
+    : '';
+  const watchPrefix = trigger === 'watch' && watchFile
+    ? `[Triggered by file/git change: ${watchFile}]\n`
+    : '';
+  const userContent = `${envPrefix}${watchPrefix}${String(task.prompt || '')}`;
+  const convId = `sched_${(task && task.id) || 'task'}_${startedAt.toString(36)}`;
+  const permMode = (task && ['auto', 'default', 'plan', 'ask'].includes(task.permissionMode))
+    ? (task.permissionMode === 'ask' ? 'default' : task.permissionMode)
+    : 'auto';
+  const maxSteps = Math.max(0, Number(task && task.maxSteps) || 25);
+
+  let out = '';
+  const toolTraces = [];
+  let usedModel = provider.model || '';
+  let autoRouted = null;
+  let runError = null;
+  let finalMessages = null;
+
+  try {
+    let autoRouterConfig = null;
+    try {
+      const secretstore = require('../secretstore');
+      const providerOauth = require('../provider-oauth');
+      autoRouterConfig = require('../task-router').resolveAutoRouterConfig({
+        settings: store.getSettings(),
+        secretstore,
+        orchestrator: orch,
+        provider,
+      });
+      var oauthAccounts = providerOauth.listAccounts ? providerOauth.listAccounts() : [];
+    } catch (_) {}
+
+    finalMessages = await runAgent({
+      provider,
+      orchestrator: orch,
+      messages: [{ role: 'user', content: userContent }],
+      cwd: taskCwd,
+      useMemory: true,
+      maxSteps,
+      permissionMode: permMode,
+      extraTools,
+      callMcpTool,
+      mcpClient,
+      convId,
+      hydrateProvider,
+      oauthAccounts: typeof oauthAccounts !== 'undefined' ? oauthAccounts : [],
+      autoRouterConfig,
+      emit: (evt) => {
+        if (!evt) return;
+        if (evt.type === 'delta' && evt.text) out += evt.text;
+        else if (evt.type === 'route' && evt.model) {
+          usedModel = evt.model;
+          if (evt.autoRouted) autoRouted = evt.autoRouted;
+        } else if (evt.type === 'tool_start') {
+          toolTraces.push({ id: evt.id, name: evt.name, args: evt.args, status: 'running', at: Date.now() });
+        } else if (evt.type === 'tool_end') {
+          const hit = toolTraces.find((t) => (evt.id && t.id === evt.id) || t.name === evt.name);
+          if (hit) {
+            hit.status = evt.error ? 'error' : 'done';
+            hit.output = evt.result != null ? String(evt.result).slice(0, 800) : '';
+          }
+        }
+      },
+      shell: shells,
+      turnStart: true,
+    });
+    const last = finalMessages && finalMessages[finalMessages.length - 1];
+    if (!out && last && typeof last.content === 'string') out = last.content;
+    if (last && last.model) usedModel = last.model;
+  } catch (err) {
+    runError = err;
+    out = out || '';
+  }
+
+  // Persist every scheduled execution as an inspectable session in SQLite
+  const completedAt = Date.now();
+  const assistantText = runError
+    ? `❌ **Automation Failed**\n\n${runError.message || 'Unknown error'}${out ? '\n\n' + out : ''}`
+    : (out || '(no output)');
+  const savedConv = {
+    id: convId,
+    title: `🕒 ${(task && task.name) || 'Automation Run'}`,
+    cwd: baseCwd,
+    model: usedModel,
+    createdAt: startedAt,
+    updatedAt: completedAt,
+    pinned: false,
+    automationId: task && task.id ? task.id : '',
+    automationName: (task && task.name) || '',
+    triggerReason: trigger,
+    messages: [
+      { id: `${convId}_u`, role: 'user', content: userContent, ts: startedAt },
+      {
+        id: `${convId}_a`,
+        role: 'assistant',
+        content: assistantText,
+        tools: toolTraces,
+        model: usedModel,
+        autoRouted: autoRouted || undefined,
+        durationMs: completedAt - startedAt,
+        ts: completedAt,
+      },
+    ],
+  };
+  try {
+    if (sessionDb && typeof sessionDb.upsertConversation === 'function') {
+      await sessionDb.upsertConversation(savedConv);
+    }
+    if (typeof broadcast === 'function') {
+      broadcast({ type: 'scheduled-session', convId, taskId: task && task.id, conversation: savedConv });
+    }
+  } catch (_) {}
+
+  // Deliver completion/failure notification respecting notifyMode & Quiet Hours
+  try {
+    const ok = !runError;
+    const notifyMode = (task && task.notifyMode) || ((task && task.notifyOnCompletion === false) ? 'never' : 'all');
+    const shouldSend = notifyMode === 'all' || (notifyMode === 'failure' && !ok);
+    let inQuiet = false;
+    if (task && task.respectQuietHours !== false && proactivity && typeof proactivity.loadState === 'function' && typeof proactivity.isInQuietHours === 'function') {
+      try { inQuiet = proactivity.isInQuietHours(proactivity.loadState().quietHours, new Date()); } catch (_) {}
+    }
+    if (shouldSend && (!inQuiet || !ok)) {
+      const title = `${ok ? 'Automation completed' : 'Automation failed'}: ${(task && task.name) || 'Scheduled Task'}`;
+      const body = String(ok ? (out || 'Completed') : (runError.message || 'Execution failed')).slice(0, 200);
+      if (notificationService && typeof notificationService.notify === 'function') {
+        notificationService.notify({ kind: ok ? 'agent' : 'error', title, body, meta: { taskId: task && task.id, convId } });
+      }
+      if (task && task.pushAlert) {
+        try {
+          require('../push-channels').sendPushAlert({ kind: ok ? 'complete' : 'error', title: `Akron · ${title}`, body }).catch(() => {});
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+
+  if (runError) throw runError;
+  return {
+    output: out || '(no output)',
+    convId,
+    model: usedModel,
+    toolsCount: toolTraces.length,
+  };
 }
 
 
@@ -468,12 +669,15 @@ let freellmHandle = null;
 let freellmCompatHandle = null;
 let freellmError = null;
 
+let freellmSharedUrl = null;
+
 function startFreeLLM() {
   if (typeof freellm.setFallbackKeyProvider === 'function') {
     freellm.setFallbackKeyProvider(() => freellmFallbackApiKey());
   }
   freellm.start({ configPath: freellm.CONFIG_FILE }).then((handle) => {
     freellmHandle = handle;
+    freellmSharedUrl = null;
     freellmError = null;
     const live = freellm.PROVIDER_IDS.filter((id) => freellm.isConfigured(id, handle.config));
     console.log('FreeLLMAPI on ' + handle.url + ' (' + (live.join(', ') || 'external router bridge / no internal keys') + ')');
@@ -486,8 +690,31 @@ function startFreeLLM() {
         // Port 31415 already bound by external FreeLLMAPI.app — expected, leave untouched.
       });
     }
-  }).catch((err) => {
+  }).catch(async (err) => {
     freellmHandle = null;
+    try {
+      const cfg = freellm.loadConfig(freellm.CONFIG_FILE);
+      const fb = freellmFallbackApiKey();
+      const hdr = (fb || (cfg && cfg.token)) ? { authorization: 'Bearer ' + (fb || cfg.token) } : {};
+      if (typeof freellm.probeExternalHealth === 'function') {
+        const ext = await freellm.probeExternalHealth(cfg || {}, hdr);
+        if (ext) {
+          freellmSharedUrl = ext;
+          freellmError = null;
+          return;
+        }
+      }
+      if (err && err.code === 'EADDRINUSE') {
+        const port = (cfg && cfg.port) || 3001;
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: hdr, signal: AbortSignal.timeout(1200) }).catch(() => null);
+        if (r && (r.ok || r.status === 401 || r.status === 403)) {
+          freellmSharedUrl = `http://127.0.0.1:${port}/v1`;
+          freellmError = null;
+          return;
+        }
+      }
+    } catch (_) {}
+    freellmSharedUrl = null;
     freellmError = (err && err.message) || 'failed to start';
     console.error('FreeLLMAPI unavailable:', freellmError);
   });
@@ -496,14 +723,15 @@ function startFreeLLM() {
 async function freellmStatus() {
   let cfg = null;
   try { cfg = freellm.loadConfig(freellm.CONFIG_FILE); } catch (_) {}
-  let upstream = null;
+  let upstream = freellmSharedUrl || null;
   try {
     if (typeof freellm.probeExternalHealth === 'function') {
-      upstream = await freellm.probeExternalHealth(cfg || {}, {});
+      upstream = (await freellm.probeExternalHealth(cfg || {}, {})) || upstream;
     }
   } catch (_) {}
   return {
     running: !!freellmHandle || !!upstream,
+    shared: !freellmHandle && !!upstream,
     url: upstream || (freellmHandle ? freellmHandle.url : 'http://127.0.0.1:' + ((cfg && cfg.port) || 3001) + '/v1'),
     upstream: upstream || null,
     configFile: freellm.CONFIG_FILE,

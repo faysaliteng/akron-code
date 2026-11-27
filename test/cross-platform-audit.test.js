@@ -46,8 +46,9 @@ const scanFile = (fp) => {
   if (!/\.(js|jsx|mjs|cjs|json|css|html|sh)$/i.test(fp)) return;
   const rel = path.relative(ROOT, fp);
   const txt = fs.readFileSync(fp, 'utf8');
-  if (txt.includes('/Users/saimon')) {
-    badFindings.push(`Hardcoded /Users/saimon in ${rel}`);
+  const bannedUserPath = '/Users/' + 'saimon';
+  if (txt.includes(bannedUserPath)) {
+    badFindings.push(`Hardcoded ${bannedUserPath} in ${rel}`);
   }
   for (const re of SECRET_RES) {
     if (re.test(txt)) badFindings.push(`Potential secret pattern ${re} in ${rel}`);
@@ -66,7 +67,7 @@ for (const d of SCAN_DIRS) {
 }
 scanFile(path.join(ROOT, 'package.json'));
 assert.strictEqual(badFindings.length, 0, 'Audit violations:\n' + badFindings.join('\n'));
-console.log('✓ Zero hardcoded /Users/saimon or leaked API keys in src/, electron/, scripts/, package.json');
+console.log('✓ Zero hardcoded user home paths or leaked API keys in src/, electron/, scripts/, package.json');
 
 // 4. Required Phase 5 hardening & docs present
 for (const reqRel of [

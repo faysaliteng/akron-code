@@ -661,7 +661,7 @@ function applyFeatures(features) {
 oauthCtrl = registerOauthModelIpc({ ipcMain, store, secretstore, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast, poolNoticeDeduper, bundledRuntimeDir: () => (runtimesCtrl ? runtimesCtrl.bundledRuntimeDir() : ''), getRuntimes: () => (runtimesCtrl ? runtimesCtrl.getRuntimes() : null) });
 const { freellmFallbackApiKey, hydrateLocalFreeLlmProvider, hydrateProvider, validateOrchestrator, oneLine, fetchProviderModels, warmModelCatalogs, replayClaudeRotation } = oauthCtrl;
 
-runtimesCtrl = createRuntimesController({ app, ipcMain, store, workspace, shells, freellm, createRuntimes, providertransport, runAgent, hydrateProvider, hydrateOrchestrator, validateOrchestrator, freellmFallbackApiKey, oneLine, broadcast });
+runtimesCtrl = createRuntimesController({ app, ipcMain, store, workspace, shells, freellm, createRuntimes, providertransport, runAgent, hydrateProvider, hydrateOrchestrator, validateOrchestrator, freellmFallbackApiKey, oneLine, broadcast, mcp, autoConnectMcp, sessionDb, notificationService, proactivity: require('./proactivity'), gdrive });
 const { runtimePathPrefix, startRuntimes, runScheduledPrompt, startFreeLLM } = runtimesCtrl;
 
 winExtCtrl = registerWindowsExtensionsIpc({ windows, artifactWindows, extensionWindows, windowIconProps, winFor, findMainWindow, focusMainWindow, createWindow, createTray, store, extensionhost, artifactcanvas, artifactstore, artifacttypes, extHost, unfurlMod, compliance, computeruse, brandGuard, broadcast, pendingComputerUseRef, mcp, gdrive, computer, oneLine, describeConnectError });
@@ -1370,6 +1370,12 @@ app.whenReady().then(() => {
     extbridge.start({ getProvider: getHydratedProvider, getOrchestrator: getHydratedOrch, getExtraProviders }).then((r) => {
       if (!r || !r.ok) console.error('akron-browser-bot bridge unavailable:', (r && r.error) || 'unknown');
     }).catch(() => {});
+    if (process.env.AKRON_COLD_BOOT_CHECK !== '1') {
+      const tExt = setImmediate(() => {
+        try { require('./browser-ext-installer').installExternalExtension(); } catch (_) {}
+      });
+      if (tExt && typeof tExt.unref === 'function') tExt.unref();
+    }
   } catch (_) {}
   applyFeatures(store.getFeatures());
   try {
@@ -1377,12 +1383,12 @@ app.whenReady().then(() => {
   } catch (e) {
     console.error('ideIpc register failed:', e.message);
   }
-  // Re-assert the login item on boot so a moved/reinstalled app keeps working
-  // (macOS stores the path, and it changes between dev and packaged builds).
+  // Re-assert the login item on boot only when explicitly opted in on a packaged
+  // build so dev/cold-boot runs never trigger OS permission noise.
   try {
     const s = store.getSettings();
-    if (typeof s.launchAtLogin === 'boolean') {
-      app.setLoginItemSettings({ openAtLogin: s.launchAtLogin });
+    if (app.isPackaged && process.env.AKRON_COLD_BOOT_CHECK !== '1' && s && s.launchAtLogin === true) {
+      app.setLoginItemSettings({ openAtLogin: true });
     }
   } catch (err) { console.error('login item restore failed:', err.message); }
   buildMenu();

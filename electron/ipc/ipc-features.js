@@ -513,7 +513,7 @@ ipcMain.handle('autobot:setSettings', (e, patch) => {
   const next = store.setSettings(patch);
   // Launch-at-login is an OS setting, not just a stored flag (Desktop parity:
   // its General pane toggles the login item directly).
-  if (patch && Object.prototype.hasOwnProperty.call(patch, 'launchAtLogin')) {
+  if (patch && Object.prototype.hasOwnProperty.call(patch, 'launchAtLogin') && process.env.AKRON_COLD_BOOT_CHECK !== '1') {
     try {
       app.setLoginItemSettings({ openAtLogin: !!patch.launchAtLogin, openAsHidden: false });
     } catch (err) { console.error('login item update failed:', err.message); }
@@ -1047,11 +1047,29 @@ ipcMain.handle('autobot:extBridgeStatus', () => {
 });
 ipcMain.handle('autobot:extBridgeOpenFolder', () => {
   try {
-    const dir = require('../extbridge').extensionDir();
+    const installer = require('../browser-ext-installer');
+    const synced = installer.syncStandaloneExtension();
+    const dir = (synced && synced.extensionDir) || require('../extbridge').extensionDir();
     if (!fs.existsSync(dir)) return { ok: false, error: 'Extension folder not found' };
     shell.openPath(dir);
-    return { ok: true, dir };
+    return { ok: true, dir, ...(synced || {}) };
   } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle('autobot:extBridgeInstallBrowser', (_e, opts) => {
+  try {
+    const installer = require('../browser-ext-installer');
+    return installer.installExternalExtension(opts || {});
+  } catch (e) { return { ok: false, error: oneLine(e) }; }
+});
+ipcMain.handle('autobot:extBridgeLaunchBrowser', (_e, opts) => {
+  try {
+    const installer = require('../browser-ext-installer');
+    const res = installer.launchBrowserWithExtension(opts || {});
+    if (res && res.ok && !res.launched && res.extensionDir) {
+      try { shell.openPath(res.extensionDir); } catch (_) {}
+    }
+    return res;
+  } catch (e) { return { ok: false, error: oneLine(e) }; }
 });
 ipcMain.handle('autobot:reaStatus', () => {
   try { return rea.status(mcp, { userDataDir: app.getPath('userData') }); } catch (e) { return { ok: false, available: false, connected: false, error: e.message }; }

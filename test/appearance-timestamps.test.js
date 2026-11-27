@@ -125,6 +125,37 @@ test('computeAppearanceVars maps dark/light/auto, accent hex, surfaces, density,
   assert.strictEqual(custom.style['--radius-md'], '12px');
   assert.strictEqual(custom.style['--radius-card'], '16px');
   assert.strictEqual(custom.style['--radius-composer'], '18px');
+
+  const defaults = computeAppearanceVars({}, false);
+  assert.strictEqual(defaults.chatAlign, 'centered');
+  assert.strictEqual(defaults.userPromptAlign, 'antigravity');
+  assert.strictEqual(defaults.style['--chat-max-w'], '768px');
+  assert.strictEqual(defaults.style['--output-max-w'], '768px');
+  assert.strictEqual(defaults.style['--chat-side-pad'], '64px');
+  assert.strictEqual(defaults.style['--output-body-pad-x'], '12px');
+  assert.strictEqual(defaults.style['--chat-margin-l'], 'auto');
+
+  const layoutCustom = computeAppearanceVars({
+    chatWidth: 'custom',
+    chatCustomWidth: 1040,
+    outputWidthMode: 'custom',
+    outputCustomWidth: 1120,
+    chatSidePadding: 52,
+    outputSidePadding: 18,
+    chatAlignment: 'left',
+    userPromptAlign: 'left',
+    messageGap: 22,
+    codeBlockMaxHeight: 520,
+  }, false);
+  assert.strictEqual(layoutCustom.chatAlign, 'left');
+  assert.strictEqual(layoutCustom.userPromptAlign, 'left');
+  assert.strictEqual(layoutCustom.style['--chat-max-w'], '1040px');
+  assert.strictEqual(layoutCustom.style['--output-max-w'], '1120px');
+  assert.strictEqual(layoutCustom.style['--chat-side-pad'], '52px');
+  assert.strictEqual(layoutCustom.style['--output-body-pad-x'], '18px');
+  assert.strictEqual(layoutCustom.style['--chat-margin-l'], '0px');
+  assert.strictEqual(layoutCustom.style['--msg-pad-y'], '22px');
+  assert.strictEqual(layoutCustom.style['--code-max-h'], '520px');
 });
 
 test('App.jsx & styles.css wire compact 11px action bar, user footer timestamps & overlap fix', () => {

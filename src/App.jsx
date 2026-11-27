@@ -162,6 +162,7 @@ export default function App() {
     root.setAttribute('data-pattern', appAppearance.bgPattern || 'carbon-weave');
     root.setAttribute('data-density', appAppearance.density || 'comfortable');
     root.setAttribute('data-msg-style', appAppearance.msgStyle || 'editorial');
+    root.setAttribute('data-user-align', appAppearance.userPromptAlign || 'antigravity');
     root.setAttribute('data-glow', appAppearance.accentGlow || 'subtle');
     root.setAttribute('data-blur', appAppearance.glassBlur || 'standard');
     for (const [k, v] of Object.entries(appAppearance.style)) {
@@ -343,6 +344,7 @@ export default function App() {
   );
   const [cuConsent, setCuConsent] = useState(null); // pending Computer Use consent { id, tier, tool, sensitive }
   const [planMode, setPlanMode] = useState(null); // active plan-mode banner { active, file }
+  const [activeSkillPill, setActiveSkillPill] = useState(null); // e.g. { id: 'automation', icon: 'Clock', label: 'automation', hint: '...' }
   const [gdriveModalOpen, setGdriveModalOpen] = useState(false);
   const [gdriveState, setGdriveState] = useState({ connected: false, mode: null, detectedLocalFolders: [] });
   const [envState, setEnvState] = useState({
@@ -1573,7 +1575,7 @@ export default function App() {
   // command files Claude Code reads (`.claude/commands/*.md`, bundled, user).
   // Every command Claude Code 2.1.x ships is either implemented here, mapped to
   // its GUI surface, or documented as GUI-EQ / N-A — never silently "unknown".
-  const runSlashCommand = async (raw) => {
+  const runSlashCommand = async (raw, opts = {}) => {
     const body = String(raw || '').replace(/^\//, '');
     const [head, ...rest] = body.trim().split(/\s+/);
     const rawCmd = (head || '').toLowerCase();
@@ -2214,9 +2216,27 @@ export default function App() {
         else { note('Nothing is running. `/tasks` lists background work you can inspect or kill.'); }
         break;
       }
+      case 'automation':
+      case 'automations': {
+        if (!argText && !(opts && opts.direct)) {
+          setPanel('chats');
+          setActiveSkillPill({ id: 'automation', icon: 'Clock', label: 'automation', hint: 'Guide me through creating an automated task' });
+          setTimeout(() => { try { inputRef.current && inputRef.current.focus(); } catch (_) {} }, 40);
+          break;
+        }
+        setActiveSkillPill(null);
+        if (streaming) { note('Already running — wait for the current turn to finish.'); break; }
+        let expanded = '';
+        try {
+          const r = await window.autobot.resolveCommand('automation', argText, cwd);
+          if (r && r.prompt) expanded = r.prompt;
+        } catch (_) {}
+        send(expanded || `Guide me through creating an automated recurring or event-driven task. ${argText}`.trim());
+        break;
+      }
       case 'schedule': {
         setPanel('scheduled');
-        note('Opened **Scheduled** — create, edit, or pause recurring runs here.');
+        note('Opened **Automations** — create, edit, or pause recurring runs here.');
         break;
       }
       case 'mission': {
@@ -2349,9 +2369,13 @@ export default function App() {
         send('Set up GitHub Actions for this repository: inspect the project type, write `.github/workflows/ci.yml` that installs dependencies and runs the existing test/lint scripts, and explain how to add the API key as a repository secret. Ask before committing.');
         break;
       }
+      case 'mobile': {
+        openSettingsAt('server');
+        note('Opened **Settings → Server & Pairing** for Mobile & Push Relay setup.');
+        break;
+      }
       case 'install-slack-app':
       case 'web-setup':
-      case 'mobile':
       case 'teleport':
       case 'stickers':
       case 'radio':
@@ -2488,7 +2512,7 @@ export default function App() {
     setLiveSync, setThinking, setSubAgents, setSwarmInfo, setSwarmBoard,
     setPaused, setPermError, setPermissionQueue, setLastUsage,
     commitLive, setError, setModelMenuOpen, setQuestionQueue,
-    setShowSettings, setPanel, setActiveId, setCuConsent,
+    setShowSettings, setPanel, setActiveId, setConvs, setCuConsent,
     setPermissions, setPlanMode, setArtifactsExplicit, setNotice,
     openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
   });
@@ -2500,6 +2524,8 @@ export default function App() {
       data-bg-pattern={appAppearance.bgPattern}
       data-density={appAppearance.density}
       data-chat-width={appAppearance.chatWidth}
+      data-chat-align={appAppearance.chatAlign || 'centered'}
+      data-user-align={appAppearance.userPromptAlign || 'antigravity'}
       data-msg-style={appAppearance.msgStyle}
       data-radius={appAppearance.borderRadius}
       data-platform={isWinHost ? 'win32' : 'darwin'}
@@ -2678,6 +2704,8 @@ export default function App() {
                   envState={envState}
                   onSwitchEnvironment={switchEnvironment}
                   onOpenEnvironments={() => openSettingsAt('environments')}
+                  activeSkillPill={activeSkillPill}
+                  onClearSkillPill={() => setActiveSkillPill(null)}
                   T={T}
                 />
               </>
@@ -2839,7 +2867,19 @@ export default function App() {
               {panel === 'code' && <CodeView cwd={cwd} setCwd={setCwd} permissions={permissions} setPermissions={setPermissions} T={T} />}
               {panel === 'projects' && <ProjectsView projects={projects} setProjects={setProjects} activeProject={activeProject} setActiveProject={setActiveProject} />}
               {panel === 'plugins' && <PluginsView onOpenGdrive={() => setGdriveModalOpen(true)} gdriveState={gdriveState} />}
-              {panel === 'scheduled' && <ScheduledView cwd={cwd} convs={convs} provider={provider} onSendToChat={(txt) => { setPanel('chats'); send(txt); }} />}
+              {panel === 'scheduled' && (
+                <ScheduledView
+                  cwd={cwd}
+                  convs={convs}
+                  provider={provider}
+                  projects={projects}
+                  mcpServers={mcpServers}
+                  envState={envState}
+                  onSendToChat={(txt) => { setPanel('chats'); send(txt); }}
+                  onCreateWithPrompt={() => runSlashCommand('automation')}
+                  onOpenRunSession={(cid) => { if (cid) { selectConv(cid); setPanel('chats'); } }}
+                />
+              )}
               {panel === 'customizations' && (
                 <CustomizationsHub
                   cwd={cwd}
@@ -3006,6 +3046,8 @@ export default function App() {
               envState={envState}
               onSwitchEnvironment={switchEnvironment}
               onOpenEnvironments={() => openSettingsAt('environments')}
+              activeSkillPill={activeSkillPill}
+              onClearSkillPill={() => setActiveSkillPill(null)}
               T={T}
             />
           )}
@@ -3347,6 +3389,7 @@ const SETTINGS_SECTIONS = [
   { id: 'providers', group: 'ai', label: 'Models & Providers', icon: 'Sparkles', sub: 'Primary endpoints, presets, local Ollama, and subscription sign-in.', keys: 'model provider ollama api key preset subscription oauth temperature token limits' },
   { id: 'orchestrator', group: 'ai', label: 'Orchestrator & Pools', icon: 'Orbit', sub: 'DeepSeek Harness profiles, multi-model failover tiers, and role pools.', keys: 'orchestrator pool planner coder vision fast longctx failover swarm profile harness' },
   { id: 'media', group: 'ai', label: 'Images & Video APIs', icon: 'Palette', sub: 'API keys for Imagen 3, Veo 2, GPT-Image-1, Sora, Grok, Wan 2.1, Kling, Luma & Flux.', keys: 'image video studio api key gemini imagen veo openai gpt-image dalle sora xai grok fal replicate wan kling luma cloudflare together flux media' },
+  { id: 'appearance', group: 'ai', label: 'Appearance & Layout', icon: 'Palette', sub: 'Customize chat & output side margins, desktop reading width, fonts, colors, surfaces & density.', keys: 'appearance layout width margin padding side space font size theme color surface density bubbles alignment code height' },
   { id: 'notifications', group: 'ai', label: 'Notifications', icon: 'Notification', sub: 'Choose when to receive desktop notifications and hear synthesized sounds.', keys: 'notifications sound chime staplebops alert agent permissions questions errors' },
   { id: 'project', group: 'workspace', label: 'Project & Budget', icon: 'Folder', sub: 'Per-project profile, workspace instructions, and 20,000-token customizations budget.', keys: 'project token budget global demote rules workspace' },
   { id: 'migrate', group: 'workspace', label: 'Import & Migrate', icon: 'Download', sub: '1-click read-only import from Cursor, Claude Code & VS Code.', keys: 'migrate import cursor claude vscode rules mcp' },
