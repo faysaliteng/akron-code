@@ -255,8 +255,18 @@ export function AccountSection({ T, provider, setProvider }) {
       let r;
       if (kind === 'signout') r = await window.autobot.providerSignOut(id, account);
       else if (kind === 'import') r = await window.autobot.providerImport();
+      else if (kind === 'autoheal') r = await window.autobot.providerAutoHeal({ importMissing: true });
       else if (kind === 'bearer') r = await window.autobot.providerAddBearer(id, account);
-      if (kind === 'import') {
+      if (kind === 'autoheal') {
+        if (r && r.ok !== false) {
+          const healed = Number(r.healed) || 0;
+          const imported = Number(r.imported) || 0;
+          const healthy = Number(r.healthy) || 0;
+          setNotice(`Auto-Heal complete: repaired ${healed} · imported ${imported} · ${healthy} healthy PC account(s).`);
+        } else {
+          setNotice(humanText((r && r.error) || 'Auto-Heal failed'));
+        }
+      } else if (kind === 'import') {
         // Summarise the scan so a successful or all-skipped import is never silent.
         if (r && r.ok !== false && r.result) {
           const im = (r.result.imported || []).length;
@@ -499,8 +509,11 @@ export function AccountSection({ T, provider, setProvider }) {
       </div>
 
       {st && (
-        <div className="account-actions">
-          <button disabled={!!busy} onClick={() => act('import')}>
+        <div className="account-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button type="button" className="primary" disabled={!!busy} onClick={() => act('autoheal')}>
+            <Icon name="Refresh" size={13} /> {busy === 'autoheal:' ? 'Healing PC Accounts…' : 'Auto-Heal PC Accounts'}
+          </button>
+          <button type="button" disabled={!!busy} onClick={() => act('import')}>
             <Icon name="Download" size={13} /> {busy === 'import:' ? T('account.import.scanning') : T('account.import')}
           </button>
         </div>

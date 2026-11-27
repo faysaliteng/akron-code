@@ -171,6 +171,26 @@ const mediaDocToolDefinitions = [
         pages: { type: 'string', description: 'Optional PDF page range e.g. "1-3"' },
         sheet: { type: 'string', description: 'Optional Excel sheet name' },
         entry: { type: 'string', description: 'Optional archive entry path to preview' },
+        extract_images: { type: 'boolean' },
+        format: { type: 'string', enum: ['markdown', 'json', 'text'] },
+        cwd: { type: 'string' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'read_document',
+    description: 'Alias of ReadDocument: universally read PDF, Word, Excel/CSV, PowerPoint, EPUB/RTF/ODT, SQLite, or ZIP/tar.gz archives.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        file_path: { type: 'string' },
+        pages: { type: 'string' },
+        sheet: { type: 'string' },
+        entry: { type: 'string' },
+        extract_images: { type: 'boolean' },
+        format: { type: 'string', enum: ['markdown', 'json', 'text'] },
         cwd: { type: 'string' },
       },
       required: ['path'],
@@ -182,7 +202,7 @@ const mediaDocToolDefinitions = [
     parameters: {
       type: 'object',
       properties: {
-        format: { type: 'string', enum: ['pdf', 'docx', 'xlsx', 'pptx', 'zip', 'tex', 'latex'] },
+        format: { type: 'string', enum: ['pdf', 'docx', 'xlsx', 'pptx', 'zip', 'tex', 'latex', 'latex_pdf'] },
         output_path: { type: 'string' },
         title: { type: 'string' },
         markdown: { type: 'string' },
@@ -197,6 +217,34 @@ const mediaDocToolDefinitions = [
         input_path: { type: 'string' },
         watermark: { type: 'string' },
         stamp_page_numbers: { type: 'boolean' },
+        spec: { type: 'object' },
+        cwd: { type: 'string' },
+      },
+      required: ['format'],
+    },
+  },
+  {
+    name: 'generate_document',
+    description: 'Alias of GenerateDocument: generate .pdf, .docx, .xlsx, .pptx, .zip, or compiled LaTeX .pdf offline.',
+    parameters: {
+      type: 'object',
+      properties: {
+        format: { type: 'string', enum: ['pdf', 'docx', 'xlsx', 'pptx', 'zip', 'tex', 'latex', 'latex_pdf'] },
+        output_path: { type: 'string' },
+        title: { type: 'string' },
+        markdown: { type: 'string' },
+        content: { type: 'string' },
+        latex: { type: 'string' },
+        sections: { type: 'array', items: { type: 'object' } },
+        sheets: { type: 'array', items: { type: 'object' } },
+        slides: { type: 'array', items: { type: 'object' } },
+        files: { type: 'array' },
+        source_dir: { type: 'string' },
+        merge_paths: { type: 'array', items: { type: 'string' } },
+        input_path: { type: 'string' },
+        watermark: { type: 'string' },
+        stamp_page_numbers: { type: 'boolean' },
+        spec: { type: 'object' },
         cwd: { type: 'string' },
       },
       required: ['format'],
@@ -229,7 +277,11 @@ const mediaDocExecutors = {
       pages: args.pages,
       sheet: args.sheet,
       entry: args.entry,
+      extract_images: Boolean(args.extract_images),
+      format: args.format,
     });
+    if (args.format === 'json') return JSON.stringify(r, null, 2);
+    if (args.format === 'text') return r.text || r.markdown || JSON.stringify(r, null, 2);
     return r.markdown || r.text || JSON.stringify(r, null, 2);
   },
   async generate_document(args, execCtx) {
@@ -248,7 +300,9 @@ const mediaDocExecutorsByTool = {
   EditVideo: 'edit_video',
   edit_video: 'edit_video',
   ReadDocument: 'read_document',
+  read_document: 'read_document',
   GenerateDocument: 'generate_document',
+  generate_document: 'generate_document',
 };
 
 module.exports = {

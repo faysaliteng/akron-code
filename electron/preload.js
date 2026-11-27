@@ -84,6 +84,7 @@ contextBridge.exposeInMainWorld('autobot', {
   },
   providerAddBearer: (id, token, label) => ipcRenderer.invoke('autobot:providerAddBearer', id, token, label),
   providerSetActive: (id, account) => ipcRenderer.invoke('autobot:providerSetActive', id, account),
+  providerAutoHeal: (opts) => ipcRenderer.invoke('autobot:providerAutoHeal', opts),
 
   // FreeLLMAPI — the local OpenAI-compatible router that aggregates the free
   // provider keys. Status/models never include key material.
@@ -138,7 +139,12 @@ contextBridge.exposeInMainWorld('autobot', {
   gdriveSearch: (query, opts) => ipcRenderer.invoke('autobot:gdriveSearch', query, opts),
   gdriveRead: (idOrPath) => ipcRenderer.invoke('autobot:gdriveRead', idOrPath),
   resolveCommand: (name, args, cwd) => ipcRenderer.invoke('autobot:resolveCommand', name, args, cwd),
-  listAgentDefs: (cwd) => ipcRenderer.invoke('autobot:listAgents', cwd),
+  listAgentDefs: (cwd) => ipcRenderer.invoke('autobot:listAgentDefs', cwd),
+  saveAgentDef: (payload) => ipcRenderer.invoke('autobot:saveAgentDef', payload),
+  deleteAgentDef: (payload) => ipcRenderer.invoke('autobot:deleteAgentDef', payload),
+  listOutputStyles: (cwd) => ipcRenderer.invoke('autobot:listOutputStyles', cwd),
+  saveOutputStyle: (payload) => ipcRenderer.invoke('autobot:saveOutputStyle', payload),
+  deleteOutputStyle: (payload) => ipcRenderer.invoke('autobot:deleteOutputStyle', payload),
   getProjectMemory: (cwd) => ipcRenderer.invoke('autobot:getProjectMemory', cwd),
   getPermissions: (cwd) => ipcRenderer.invoke('autobot:getPermissions', cwd),
   addPermissionRule: (payload) => ipcRenderer.invoke('autobot:addPermissionRule', payload),

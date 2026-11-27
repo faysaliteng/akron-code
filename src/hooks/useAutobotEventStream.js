@@ -369,6 +369,15 @@ export function useAutobotEventStream({
             if (i >= 0) next[i] = row; else next.push(row);
             return next;
           });
+          if (evt.background && (status === 'done' || status === 'error')) {
+            sendDesktopNotification(
+              status === 'error' ? 'errors' : 'agent',
+              status === 'error' ? 'Akron Code · Background agent error' : 'Akron Code · Background agent complete',
+              `${evt.name || 'Sub-agent'} ${status === 'error' ? 'failed' : 'finished'}.`,
+              settingsRef.current,
+              { convId: evt.convId || runConvRef.current || activeIdRef.current || null }
+            );
+          }
           break;
         }
         case 'swarm': {

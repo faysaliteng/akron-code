@@ -23,7 +23,7 @@ const STANDARD_TOOLS = new Set([
   'Task', 'Agent', 'TaskOutput', 'TaskStop', 'ListAgents', 'Swarm', 'Workflow', 'ToolSearch', 'find_mcp_tools', 'Skill', 'list_skills',
   'TeamCreate', 'TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate', 'SendMessage',
   'CreateCustomTool', 'ListCustomTools', 'DeleteCustomTool', 'ExtractSkill', 'ext_browser', 'rea',
-  'GenerateImage', 'EditImage', 'GenerateVideo', 'EditVideo', 'ReadDocument', 'GenerateDocument',
+  'GenerateImage', 'create_image', 'EditImage', 'edit_image', 'GenerateVideo', 'generate_video', 'EditVideo', 'edit_video', 'ReadDocument', 'read_document', 'GenerateDocument', 'generate_document',
   'EnterWorktree', 'ExitWorktree', 'EnterPlanMode',
   'AskUserQuestion', 'ExitPlanMode', 'KillShell', 'Artifact', 'Cd',
   'memory_add', 'memory_list', 'mcp__visualize__visualize',
@@ -171,7 +171,7 @@ function isToolCapError(e) {
   return /maximum number of items|too many tools|tools.{0,20}(exceed|limit)|request(ed)? too large|tokens per minute|\bTPM\b|payload too large|reduce your/i.test(s);
 }
 
-const SYSTEM_PROMPT = `You are Akron Code, an agentic desktop coding assistant running on the user's Mac (a local alternative to the Example desktop app). You work inside the user's project folder and you actually create, edit, and run code. You do not just describe code — you build it.
+const SYSTEM_PROMPT = `You are Akron Code, the Akron Agent by AkronLogic (akronlogic.com) — an autonomous multi-agent desktop coding IDE and engineering assistant running on the user's machine. You work inside the user's project folder and you actually create, edit, and run code. You do not just describe code — you build it.
 
 ## Working style
 - Be concise. Do the work with tools; narrate only the key steps.
@@ -1556,6 +1556,34 @@ async function runAgent(opts) {
       contextWindow: p.contextWindow,
     }));
     activeIndex = Math.max(0, Math.min(Number(orch.activeIndex) || 0, providerList.length - 1));
+    // Honor the composer's actively selected model on a user turn: when the user
+    // picks e.g. `claude-opus-5-5` in the bottom-right model switcher while the
+    // Orchestrator pool is ON, start on that matching row instead of a stale
+    // `orch.activeIndex` that still points at another vendor (e.g. Gemini).
+    if (opts.turnStart && opts.provider && opts.provider.model) {
+      const sel = normalizeProvider(opts.provider);
+      const selModel = String(sel.model || '').trim().toLowerCase();
+      const selOauth = String(sel.oauthProvider || '').trim().toLowerCase();
+      const selBase = String(sel.baseURL || '').trim().replace(/\/+$/, '').toLowerCase();
+      let hitIdx = providerList.findIndex((p) => {
+        const pm = String(p.model || '').trim().toLowerCase();
+        const po = String(p.oauthProvider || '').trim().toLowerCase();
+        const pb = String(p.baseURL || '').trim().replace(/\/+$/, '').toLowerCase();
+        if (pm !== selModel) return false;
+        if (selOauth) return po === selOauth;
+        if (selBase) return pb === selBase;
+        return true;
+      });
+      if (hitIdx < 0 && !selOauth) {
+        hitIdx = providerList.findIndex((p) => String(p.model || '').trim().toLowerCase() === selModel);
+      }
+      if (hitIdx >= 0) {
+        activeIndex = hitIdx;
+      } else if (sel.accessToken || sel.apiKey || sel.transport) {
+        providerList.unshift(sel);
+        activeIndex = 0;
+      }
+    }
   }
   // Role pools (FreeLLMAPI layout). When the session provider is the pool
   // gateway, the failover chain for this turn comes from the job's pool: the
@@ -1838,6 +1866,22 @@ async function runAgent(opts) {
     messages[0].content += `\n\n<swarm_mode_active>\nSwarm mode is ON. For any non-trivial build, multi-file implementation, audit, or research task with 2 or more independent workstreams, call \`Swarm\` {"goal": "..."} (optionally passing "tasks") or spawn parallel \`Task\` workers right away after at most ONE quick directory check rather than doing every file sequentially yourself.\n</swarm_mode_active>`;
   }
 
+  {
+    const pidRaw = String(provider.oauthProvider || '').split(':')[0] || String(provider.transport || '').toLowerCase();
+    const vendorMap = {
+      claude: 'Anthropic Claude subscription',
+      anthropic: 'Anthropic Claude',
+      antigravity: 'Google Antigravity / Gemini',
+      google: 'Google Gemini',
+      chatgpt: 'OpenAI ChatGPT / Codex subscription',
+      codex: 'OpenAI Codex',
+      grok: 'xAI Grok',
+    };
+    const providerVendorLabel = vendorMap[pidRaw] || (provider.baseURL ? `OpenAI-compatible endpoint (${provider.baseURL})` : 'Configured LLM provider');
+    const routingState = `Orchestrator ${orch && orch.enabled ? `ON (${providerList.length} models in failover pool)` : 'OFF'} · Swarm ${opts.swarm === true ? 'ON' : 'OFF'}`;
+    messages[0].content += `\n\n<runtime_identity>\nAgent identity: Akron Code (Akron Agent by AkronLogic)\nActive model on this turn: ${provider.model || 'auto'}\nActive provider / transport: ${providerVendorLabel}\nRouting state: ${routingState}\nWhen asked who you are or which model is running, identify yourself as Akron Code (the Akron Agent by AkronLogic) powered on this turn by ${provider.model || 'auto'} (${providerVendorLabel}) — never guess or claim you cannot see the active model.\n</runtime_identity>`;
+  }
+
   // 5. Per-turn renderer directives (style / web-search / context notes).
   for (const dirText of foldedDirectives) {
     messages[0].content += '\n\n' + dirText;
@@ -2105,7 +2149,7 @@ async function runAgent(opts) {
   let permissionMode = String(opts.permissionMode || opts.permissions || 'auto');
   let planPrevMode = 'auto';
   const PLAN_SAFE = new Set([
-    'Read', 'ReadDocument', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles',
+    'Read', 'ReadDocument', 'read_document', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles',
     'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion', 'ExitPlanMode',
     'EnterPlanMode', 'Artifact', 'StructuredOutput', 'Monitor', 'TaskOutput',
     'TaskList', 'TaskGet', 'TeamCreate', 'SendMessage', 'ListAgents', 'Skill',

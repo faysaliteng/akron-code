@@ -333,6 +333,7 @@ const BUILTIN = [
   { name: 'subagents', description: 'Open Subagents inspector pane' },
   { name: 'mission', description: 'Open Mission Control live session health board', guiEquivalent: true },
   { name: 'ask-history', description: 'Ask natural-language questions across past coding sessions', guiEquivalent: true },
+  { name: 'customizations', description: 'Open Customizations Hub (Marketplace, Skills, Agents, Outputs, MCP)', guiEquivalent: true },
   { name: 'gdrive', description: 'Open Google Drive setup and file picker', guiEquivalent: true },
   // config & system
   { name: 'hooks', description: 'Show merged hook config' },

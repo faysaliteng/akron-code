@@ -1534,7 +1534,7 @@ async function runToolInner(name, args, ctx) {
   // B8 Claude Code mode: require user approval before mutating tools.
   const MUTATING = new Set([
     'Bash', 'Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'ExtractSkill', 'RunToolScript', 'NotebookEdit', 'JavaScript', 'REPL',
-    'GenerateImage', 'create_image', 'EditImage', 'edit_image', 'GenerateVideo', 'generate_video', 'EditVideo', 'edit_video', 'GenerateDocument',
+    'GenerateImage', 'create_image', 'EditImage', 'edit_image', 'GenerateVideo', 'generate_video', 'EditVideo', 'edit_video', 'GenerateDocument', 'generate_document',
     'KillShell', 'Jira', 'Linear', 'POST', 'CreateCustomTool', 'DeleteCustomTool',
     'mcp__workspace__write_file', 'mcp__workspace__edit_file',
     'mcp__terminal__run_in_terminal', 'mcp__terminal__open_terminal_tab',

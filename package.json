@@ -8,6 +8,7 @@
     "akron": "./bin/akron.js"
   },
   "author": "AkronLogic",
+  "homepage": "https://akronlogic.com",
   "license": "SEE LICENSE IN LICENSE.md",
   "scripts": {
     "build": "vite build",

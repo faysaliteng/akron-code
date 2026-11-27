@@ -735,7 +735,45 @@ ipcMain.handle('autobot:resolveCommand', async (e, name, args, cwd) => {
   } catch (_) { return null; }
 });
 ipcMain.handle('autobot:listAgents', (e, cwd) => {
-  try { return require('../agentdefs').discover(cwdFor(cwd)).map((d) => ({ name: d.name, description: d.description, model: d.model || null, tools: d.tools || null, source: d.source })); } catch (_) { return []; }
+  try {
+    return require('../agentdefs').discover(cwdFor(cwd), { fresh: true }).map((d) => ({
+      name: d.name,
+      role: d.role || '',
+      description: d.description,
+      model: d.model || null,
+      tools: d.tools || null,
+      body: d.body || '',
+      file: d.file || null,
+      source: d.source,
+      scope: d.scope || (d.source === 'project' ? 'workspace' : (d.source === 'builtin' ? 'builtin' : 'global')),
+      custom: !!d.custom,
+    }));
+  } catch (_) { return []; }
+});
+ipcMain.handle('autobot:listAgentDefs', (e, cwd) => {
+  try {
+    return require('../agentdefs').discover(cwdFor(cwd), { fresh: true });
+  } catch (_) { return []; }
+});
+ipcMain.handle('autobot:saveAgentDef', (e, payload = {}) => {
+  try { return require('../agentdefs').saveAgentDef(payload || {}, cwdFor(payload && payload.cwd)); }
+  catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:deleteAgentDef', (e, payload = {}) => {
+  try { return require('../agentdefs').deleteAgentDef(payload || {}, cwdFor(payload && payload.cwd)); }
+  catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:listOutputStyles', (e, cwd) => {
+  try { return require('../output-styles').listOutputStyles(cwdFor(cwd)); }
+  catch (err) { return { ok: false, error: oneLine(err), defaultStyleId: 'default', styles: [] }; }
+});
+ipcMain.handle('autobot:saveOutputStyle', (e, payload = {}) => {
+  try { return require('../output-styles').saveOutputStyle(payload || {}, cwdFor(payload && payload.cwd)); }
+  catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:deleteOutputStyle', (e, payload = {}) => {
+  try { return require('../output-styles').deleteOutputStyle(payload || {}, cwdFor(payload && payload.cwd)); }
+  catch (err) { return { ok: false, error: oneLine(err) }; }
 });
 ipcMain.handle('autobot:getProjectMemory', (e, cwd) => {
   try {
@@ -1281,6 +1319,13 @@ ipcMain.handle('autobot:studioAction', async (event, payload) => {
       shell.showItemInFolder(srcPath);
       return { ok: true };
     }
+    if (action === 'copy_image') {
+      const { clipboard, nativeImage } = require('electron');
+      const img = nativeImage.createFromPath(srcPath);
+      if (img.isEmpty()) return { ok: false, error: 'Could not decode image for clipboard' };
+      clipboard.writeImage(img);
+      return { ok: true, copied: true };
+    }
     if (action === 'saveAs') {
       const ext = path.extname(srcPath).slice(1) || '*';
       const r = await dialog.showSaveDialog(winFor(event), {
@@ -1292,10 +1337,13 @@ ipcMain.handle('autobot:studioAction', async (event, payload) => {
       fs.copyFileSync(srcPath, r.filePath);
       return { ok: true, path: r.filePath };
     }
+    if (action === 'resize') {
+      return await mediaGen.editImage({ input_path: srcPath, operation: 'resize', width: Number(p.width) || 800, height: p.height ? Number(p.height) : undefined, cwd });
+    }
     if (action === 'remove_background' || action === 'upscale' || action === 'ai_edit') {
       return await mediaGen.editImage({ input_path: srcPath, operation: action, instruction: p.instruction || '', cwd });
     }
-    if (action === 'to_gif' || action === 'extract_frames') {
+    if (action === 'to_gif' || action === 'extract_frames' || action === 'extract_audio') {
       return await mediaGen.editVideo({ input_path: srcPath, operation: action, cwd });
     }
     if (action === 'extract_archive') {

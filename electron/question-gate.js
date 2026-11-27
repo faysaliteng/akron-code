@@ -36,11 +36,13 @@ function normalizeAskPayload(raw = {}) {
   const questions = rawList.map((q, idx) => {
     const item = q && typeof q === 'object' ? q : { question: String(q || 'Continue?') };
     const options = Array.isArray(item.options) ? item.options.map(normalizeOption) : [];
+    const multiSelect = Boolean(item.multiSelect || item.is_multi_select);
     return {
       id: String(item.id || `q${idx}`),
       header: String(item.header || '').slice(0, 24),
       question: String(item.question || item.prompt || item.text || 'Continue?'),
-      multiSelect: Boolean(item.multiSelect || item.is_multi_select),
+      multiSelect,
+      isMultiSelect: multiSelect,
       options,
     };
   });

@@ -520,18 +520,35 @@ async function readDocument(inputPath, opts = {}) {
   if (!fs.existsSync(fp)) throw new Error(`Document not found: ${fp}`);
   const buf = fs.readFileSync(fp);
   const lower = fp.toLowerCase();
-  if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) return { path: fp, ...(await readArchiveDocument(buf, '.tar.gz', opts)) };
-  const ext = path.extname(lower);
-  if (ext === '.pdf') return { path: fp, ...(await readPdfDocument(buf, opts)) };
-  if (ext === '.docx') return { path: fp, ...(await readDocxDocument(buf)) };
-  if (['.xlsx', '.xls', '.xlsm', '.csv', '.tsv', '.ods'].includes(ext)) return { path: fp, ...readSpreadsheetDocument(buf, opts) };
-  if (ext === '.pptx') return { path: fp, ...(await readPptxDocument(buf)) };
-  if (ext === '.zip') return { path: fp, ...(await readArchiveDocument(buf, '.zip', opts)) };
-  if (ext === '.epub' || ext === '.odt') return { path: fp, ...(await readEpubOrOdt(buf, ext)) };
-  if (ext === '.rtf') return { path: fp, ...readRtfDocument(buf) };
-  if (ext === '.sqlite' || ext === '.sqlite3' || ext === '.db') return { path: fp, ...(await readSqliteDocument(buf)) };
-  const text = buf.toString('utf8');
-  return { path: fp, ok: true, format: ext.slice(1) || 'txt', text, markdown: text };
+  let res;
+  if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) res = { path: fp, ...(await readArchiveDocument(buf, '.tar.gz', opts)) };
+  else {
+    const ext = path.extname(lower);
+    if (ext === '.pdf') res = { path: fp, ...(await readPdfDocument(buf, opts)) };
+    else if (ext === '.docx') res = { path: fp, ...(await readDocxDocument(buf)) };
+    else if (['.xlsx', '.xls', '.xlsm', '.csv', '.tsv', '.ods'].includes(ext)) res = { path: fp, ...readSpreadsheetDocument(buf, opts) };
+    else if (ext === '.pptx') res = { path: fp, ...(await readPptxDocument(buf)) };
+    else if (ext === '.zip') res = { path: fp, ...(await readArchiveDocument(buf, '.zip', opts)) };
+    else if (ext === '.epub' || ext === '.odt') res = { path: fp, ...(await readEpubOrOdt(buf, ext)) };
+    else if (ext === '.rtf') res = { path: fp, ...readRtfDocument(buf) };
+    else if (ext === '.sqlite' || ext === '.sqlite3' || ext === '.db') res = { path: fp, ...(await readSqliteDocument(buf)) };
+    else {
+      const text = buf.toString('utf8');
+      res = { path: fp, ok: true, format: ext.slice(1) || 'txt', text, markdown: text };
+    }
+  }
+  if (opts.extract_images && ['.docx', '.pptx', '.epub', '.odt'].includes(path.extname(lower))) {
+    try {
+      const zip = await JSZip.loadAsync(buf);
+      const imgEntries = Object.keys(zip.files).filter((k) => /\.(png|jpe?g|webp|gif|svg|emf|wmf)$/i.test(k));
+      res.images = imgEntries;
+      res.imageCount = imgEntries.length;
+    } catch (_) {
+      res.images = [];
+      res.imageCount = 0;
+    }
+  }
+  return res;
 }
 
 function wrapTextToLines(text, maxWidth, font, fontSize) {
@@ -976,18 +993,21 @@ async function generateZipArchive(args, outPath) {
   return { entryCount: Object.keys(zip.files).length, size: buf.length };
 }
 
-async function generateDocument(args = {}, ctx = {}) {
+async function generateDocument(rawArgs = {}, ctx = {}) {
+  const args = (rawArgs && rawArgs.spec && typeof rawArgs.spec === 'object' && !Array.isArray(rawArgs.spec))
+    ? { ...rawArgs.spec, ...rawArgs }
+    : (rawArgs || {});
   const cwd = args.cwd || ctx.cwd || process.cwd();
   const outRaw = args.output_path || args.path || '';
   const fmt = String(args.format || (outRaw ? path.extname(outRaw).slice(1) : '') || 'pdf').toLowerCase().replace(/^\./, '');
-  const resolvedFmt = (fmt === 'tex' || fmt === 'latex') ? 'pdf' : fmt;
+  const resolvedFmt = (fmt === 'tex' || fmt === 'latex' || fmt === 'latex_pdf') ? 'pdf' : fmt;
   const dest = outRaw
     ? (path.isAbsolute(outRaw) ? path.normalize(outRaw) : path.resolve(cwd, outRaw))
     : path.join(cwd || os.tmpdir(), '.akron-studio', `doc-${crypto.randomBytes(3).toString('hex')}.${resolvedFmt}`);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
 
   let meta = {};
-  if (fmt === 'tex' || fmt === 'latex' || args.latex || args.tex) {
+  if (fmt === 'tex' || fmt === 'latex' || fmt === 'latex_pdf' || args.latex || args.tex) {
     meta = await generateLatexPdf({ ...args, cwd }, dest);
   } else if (resolvedFmt === 'pdf') {
     meta = await generatePdfDocument({ ...args, cwd }, dest);

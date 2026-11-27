@@ -24,3 +24,4 @@ MainWindowPage-*.css
 # generated at runtime, machine-specific
 /MINDMAP.md
 /.claude/scheduled_tasks.json
+/.akron-studio/

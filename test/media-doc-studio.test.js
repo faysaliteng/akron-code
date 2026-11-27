@@ -264,6 +264,22 @@ async function test(name, fn) {
     }
   });
 
+  await test('read_document & generate_document lowercase aliases work with latex_pdf & spec', async () => {
+    const aliasPdf = path.join(tmp, 'alias-paper.pdf');
+    const gRes = JSON.parse((await runTool('generate_document', {
+      format: 'latex_pdf',
+      output_path: aliasPdf,
+      spec: {
+        title: 'Alias Spec Report',
+        latex: '\\documentclass{article}\\title{Alias Spec Paper}\\begin{document}\\maketitle\\section{Results}Lowercase alias ok.\\end{document}',
+      },
+    }, { cwd: tmp })).content);
+    assert(fs.existsSync(aliasPdf) && gRes.ok === true);
+    const rdJson = JSON.parse((await runTool('read_document', { path: aliasPdf, format: 'json' }, { cwd: tmp })).content);
+    assert.strictEqual(rdJson.ok, true);
+    assert(String(rdJson.text || rdJson.markdown).includes('Alias Spec Paper'));
+  });
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`\nMEDIA_DOC_STUDIO_RESULTS: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);

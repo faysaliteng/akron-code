@@ -47,7 +47,7 @@ export default function QuestionDock({ queue = [], onAnswer }) {
   const curQ = questions[stepIdx] || questions[0] || null;
   const curId = curQ ? curQ.id : 'q0';
   const curOpts = (curQ && curQ.options) || [];
-  const isMulti = !!(curQ && curQ.multiSelect);
+  const isMulti = Boolean(curQ && (curQ.isMultiSelect || curQ.multiSelect));
   const customVal = customByStep[curId] || '';
 
   const submitAll = (nextMap) => {
@@ -225,6 +225,15 @@ export default function QuestionDock({ queue = [], onAnswer }) {
           )}
 
           <div className="question-dock-custom">
+            {questions.length > 1 && stepIdx > 0 && (
+              <button
+                type="button"
+                className="media-doc-btn"
+                onClick={() => { setStepIdx((s) => Math.max(0, s - 1)); setSelectedOpt(0); }}
+              >
+                Back
+              </button>
+            )}
             <input
               className="question-dock-input"
               placeholder="Other / Type custom answer…"

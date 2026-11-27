@@ -30,6 +30,7 @@ import { shortcutLabels } from './ide/shortcuts';
 import { Icon, iconChar, GoogleDriveIcon, AgentIcon } from './components/Icon.jsx';
 import { ComputerUseModal, CommandPalette, FindBar, GoogleDriveModal } from './features/AppModals.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from './features/WorkspacePanels.jsx';
+import { CustomizationsHub } from './components/customizations/CustomizationsHub.jsx';
 import { MissionControlPane } from './components/MissionControlPane.jsx';
 import { ProactiveDashboard } from './components/ProactiveDashboard.jsx';
 import { ProjectsSidebar } from './components/sidebar/ProjectsSidebar.jsx';
@@ -248,6 +249,9 @@ export default function App() {
   const reasoningLevel = provider.reasoningLevel || 'auto';
   const setReasoningLevel = (lv) => setProvider((p) => ({ ...p, reasoningLevel: lv }));
   const [styleId, setStyleId] = useState('default');
+  const [customAgents, setCustomAgents] = useState([]);
+  const [customStyles, setCustomStyles] = useState([]);
+  const [defaultCustomStyleId, setDefaultCustomStyleId] = useState('default');
   const [showPalette, setShowPalette] = useState(false); // Command Palette (⌘K)
   const [showFind, setShowFind] = useState(false);       // in-chat Find (⌘F)
   const [findQuery, setFindQuery] = useState('');
@@ -536,6 +540,31 @@ export default function App() {
     if (untouchedDefault && savedIsOther) return;
     try { window.autobot.setSettings({ provider }); } catch (_) {}
   }, [provider, settingsAdopted]);
+  // Keep orchestrator.activeIndex aligned when the user switches model in the
+  // composer picker while Orchestrator failover is enabled.
+  useEffect(() => {
+    if (!settingsAdopted) return;
+    if (!orchestrator || !orchestrator.enabled || !Array.isArray(orchestrator.providers) || !orchestrator.providers.length) return;
+    const selModel = String((provider && provider.model) || '').trim().toLowerCase();
+    const selOauth = String((provider && provider.oauthProvider) || '').trim().toLowerCase();
+    const selBase = normBase((provider && provider.baseURL) || '').toLowerCase();
+    if (!selModel) return;
+    const idx = orchestrator.providers.findIndex((p) => {
+      if (!p) return false;
+      const pm = String(p.model || '').trim().toLowerCase();
+      const po = String(p.oauthProvider || '').trim().toLowerCase();
+      const pb = normBase(p.baseURL || '').toLowerCase();
+      if (pm !== selModel) return false;
+      if (selOauth) return po === selOauth;
+      if (selBase) return pb === selBase;
+      return true;
+    });
+    if (idx >= 0 && idx !== orchestrator.activeIndex) {
+      const next = { ...orchestrator, activeIndex: idx };
+      setOrchestrator(next);
+      try { if (window.autobot && window.autobot.setOrchestrator) window.autobot.setOrchestrator(next); } catch (_) {}
+    }
+  }, [provider.model, provider.oauthProvider, provider.baseURL, settingsAdopted]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     saveJSON('autobot:settings', settings);
     applyTypographyToDocument(settings.typography);
@@ -590,6 +619,28 @@ export default function App() {
     setSkills(list);
     return list;
   }, []);
+
+  const refreshCustomizations = useCallback(async () => {
+    try {
+      if (window.autobot && window.autobot.listAgentDefs) {
+        const defs = await window.autobot.listAgentDefs(cwd);
+        if (Array.isArray(defs)) setCustomAgents(defs);
+      }
+    } catch (_) {}
+    try {
+      if (window.autobot && window.autobot.listOutputStyles) {
+        const res = await window.autobot.listOutputStyles(cwd);
+        if (res && Array.isArray(res.styles)) {
+          setCustomStyles(res.styles);
+          if (res.defaultStyleId) {
+            setDefaultCustomStyleId(res.defaultStyleId);
+            setStyleId((cur) => (cur === 'default' && res.defaultStyleId !== 'default' ? res.defaultStyleId : cur));
+          }
+        }
+      }
+    } catch (_) {}
+  }, [cwd]);
+  useEffect(() => { refreshCustomizations(); }, [refreshCustomizations]);
 
   const toggleSkill = useCallback(async (name) => {
     const target = skills.find((x) => x.name === name);
@@ -846,7 +897,7 @@ export default function App() {
     setConvs((cs) => cs.map((c) => (c.id === convId ? { ...c, messages: [...c.messages, userMsg] } : c)));
 
     const payloadMessages = buildPayloadMessages([...currentMessages, userMsg]);
-    const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile });
+    const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile, customStyles });
     if (workbenchMode === 'ide' && editorContextXmlRef.current) {
       directives.push(editorContextXmlRef.current);
     }
@@ -1246,7 +1297,7 @@ export default function App() {
     setError('');
     setConvs((cs) => cs.map((c) => (c.id === convId ? { ...c, messages: kept } : c)));
     const payloadMessages = buildPayloadMessages(kept);
-    const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile });
+    const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile, customStyles });
     if (directives.length) payloadMessages.unshift({ role: 'system', content: directives.join('\n') });
     // Same project-folder rule as send(): never inherit another chat's cwd.
     let runCwd = cwd;
@@ -1667,9 +1718,10 @@ export default function App() {
       }
       case 'output-style': {
         const st = String(argText || '').trim().toLowerCase();
-        const found = STYLES.find((s) => s.id === st || s.name.toLowerCase() === st);
+        const merged = [...STYLES, ...(customStyles || []).filter((c) => !STYLES.some((b) => b.id === c.id))];
+        const found = merged.find((s) => s.id === st || String(s.name || '').toLowerCase() === st);
         if (!st) {
-          note('**Output styles**\n' + STYLES.map((s) => '- `' + s.id + '` — ' + s.name + (s.hint ? ' (' + s.hint + ')' : '') + (s.id === styleId ? '  ← current' : '')).join('\n') + '\n\nUse `/output-style <id>`.');
+          note('**Output styles**\n' + merged.map((s) => '- `' + s.id + '` — ' + s.name + (s.hint ? ' (' + s.hint + ')' : '') + (s.id === styleId ? '  ← current' : '')).join('\n') + '\n\nUse `/output-style <id>` or open Customizations.');
           break;
         }
         if (!found) { note('Unknown style `' + st + '`. Run `/output-style` to list them.'); break; }
@@ -1677,6 +1729,9 @@ export default function App() {
         note('Output style set to **' + found.name + '**.');
         break;
       }
+      case 'customizations':
+        setPanel('customizations');
+        break;
       case 'theme':
       case 'color': {
         const next = (settings.theme === 'dark') ? 'light' : 'dark';
@@ -2511,6 +2566,7 @@ export default function App() {
                   reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
                   swarmEnabled={swarmEnabled} setSwarmEnabled={setSwarmEnabled}
                   styleId={styleId} setStyleId={setStyleId}
+                  customStyles={customStyles} customAgents={customAgents} onOpenCustomizations={() => { setWorkbenchMode('agent'); setPanel('customizations'); }}
                   webSearch={webSearch} setWebSearch={setWebSearch}
                   dictating={dictating} setDictating={setDictating}
                   voiceMode={voiceMode} startVoiceMode={startVoiceMode} stopVoiceMode={stopVoiceMode}
@@ -2549,11 +2605,12 @@ export default function App() {
 
             <div className="section-label">Workspace</div>
             <nav className="sidenav">
+              <button className={panel === 'scheduled' ? 'on' : ''} onClick={() => setPanel('scheduled')} title="Automations & Scheduled Tasks"><Icon name="Clock" size={15} /><span className="label">Automations</span></button>
+              <button className={'sidebar-custom-btn' + (panel === 'customizations' ? ' on' : '')} onClick={() => setPanel('customizations')} title="Customizations Hub (Marketplace, Skills, Custom Agents, Custom Outputs, MCP)"><Icon name="Lightbulb" size={15} /><span className="label">Customizations</span></button>
               <button className={panel === 'search' ? 'on' : ''} onClick={() => { setSearchTab('search'); setPanel('search'); }} title="Search & Ask History"><Icon name="Search" size={15} /><span className="label">Search</span><span className="kbd-hint">{modShift}F</span></button>
               <button className={panel === 'mission' ? 'on' : ''} onClick={() => setPanel('mission')} title="Mission Control (live session health)"><Icon name="Grid" size={15} /><span className="label">Mission</span></button>
               <button className={panel === 'projects' ? 'on' : ''} onClick={() => setPanel('projects')} title={T('sidebar.projects')}><Icon name="Folder" size={15} /><span className="label">{T('sidebar.projects')}</span>{projects.length > 0 && <span className="count">{projects.length}</span>}</button>
               <button className={panel === 'artifacts' ? 'on' : ''} onClick={() => setPanel('artifacts')} title={T('sidebar.artifacts')}><Icon name="Artifacts" size={15} /><span className="label">{T('sidebar.artifacts')}</span>{artifacts.length > 0 && <span className="count">{artifacts.length}</span>}</button>
-              <button className={panel === 'scheduled' ? 'on' : ''} onClick={() => setPanel('scheduled')} title="Automations & Scheduled Tasks"><Icon name="Clock" size={15} /><span className="label">Automations</span></button>
               <div className="sidenav-dock">
                 <button
                   className={(panel === 'chats' ? sessionPane.type === 'files' : panel === 'code') ? 'on' : ''}
@@ -2626,16 +2683,6 @@ export default function App() {
           <div className="sidebar-bottom">
             <button
               type="button"
-              className="sidebar-custom-btn"
-              onClick={() => openSettingsAt('skills')}
-              title="Open Customizations in Settings (Skills, Plugins, MCP Connectors, Memory & Notebooks)"
-            >
-              <Icon name="Lightbulb" size={15} />
-              <span className="label">Customizations</span>
-              <span className="custom-meta">Skills · MCP</span>
-            </button>
-            <button
-              type="button"
               className="sidebar-settings-btn"
               onClick={() => openSettingsAt('providers')}
               title={T('sidebar.settings')}
@@ -2692,6 +2739,28 @@ export default function App() {
               {panel === 'projects' && <ProjectsView projects={projects} setProjects={setProjects} activeProject={activeProject} setActiveProject={setActiveProject} />}
               {panel === 'plugins' && <PluginsView onOpenGdrive={() => setGdriveModalOpen(true)} gdriveState={gdriveState} />}
               {panel === 'scheduled' && <ScheduledView cwd={cwd} convs={convs} onSendToChat={(txt) => { setPanel('chats'); send(txt); }} />}
+              {panel === 'customizations' && (
+                <CustomizationsHub
+                  cwd={cwd}
+                  skills={skills}
+                  toggleSkill={toggleSkill}
+                  refreshSkills={refreshSkills}
+                  mcpServers={mcpServers}
+                  mcpForm={mcpForm}
+                  setMcpForm={setMcpForm}
+                  connectMcp={connectMcp}
+                  disconnectMcp={disconnectMcp}
+                  styleId={styleId}
+                  setStyleId={setStyleId}
+                  agentDefs={customAgents}
+                  outputStyles={customStyles}
+                  defaultStyleId={defaultCustomStyleId}
+                  onRefreshCustomizations={refreshCustomizations}
+                  onOpenGdrive={() => setGdriveModalOpen(true)}
+                  setNotice={setNotice}
+                  setError={setError}
+                />
+              )}
             </div>
 
             {sessionPane.type === 'browser' && (
@@ -2823,6 +2892,7 @@ export default function App() {
             reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
             swarmEnabled={swarmEnabled} setSwarmEnabled={setSwarmEnabled}
             styleId={styleId} setStyleId={setStyleId}
+            customStyles={customStyles} customAgents={customAgents} onOpenCustomizations={() => setPanel('customizations')}
             webSearch={webSearch} setWebSearch={setWebSearch}
             dictating={dictating} setDictating={setDictating}
             voiceMode={voiceMode} startVoiceMode={startVoiceMode} stopVoiceMode={stopVoiceMode}

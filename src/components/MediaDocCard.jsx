@@ -7,7 +7,7 @@ const STUDIO_TOOLS = new Set([
   'EditImage', 'edit_image',
   'GenerateVideo', 'generate_video',
   'EditVideo', 'edit_video',
-  'GenerateDocument', 'ReadDocument',
+  'GenerateDocument', 'generate_document', 'ReadDocument', 'read_document',
 ]);
 
 function classifyExt(filePath) {
@@ -102,6 +102,10 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
       const r = await window.autobot.studioAction({ action, path: filePath, cwd, ...extra });
       if (r && r.canceled) { setStatus(''); return; }
       if (r && r.ok) {
+        if (r.copied) {
+          setStatus('Copied to clipboard');
+          return;
+        }
         setStatus(r.path ? `Saved: ${r.path.split(/[\\/]/).pop()}` : 'Done');
         if (r.path && onPromptAction && action !== 'saveAs' && action !== 'reveal') {
           onPromptAction(`Created ${r.path}`);
@@ -259,16 +263,25 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
       <div className="media-doc-actions">
         {kind === 'image' && (
           <>
+            <button type="button" className="media-doc-btn" onClick={() => runAction('copy_image')}>
+              <Icon name="Copy" size={12} /> Copy Image
+            </button>
             <button type="button" className="media-doc-btn" onClick={() => onPromptAction && onPromptAction(`Edit image ${filePath}: `)}>
-              <Icon name="Edit" size={12} /> Edit / Inpaint
+              <Icon name="Edit" size={12} /> Edit with AI
             </button>
             <button type="button" className="media-doc-btn" onClick={() => runAction('remove_background')}>Remove BG</button>
-            <button type="button" className="media-doc-btn" onClick={() => runAction('upscale')}>Upscale</button>
+            <button type="button" className="media-doc-btn" onClick={() => runAction('upscale')}>Upscale 2×</button>
+            <button
+              type="button"
+              className="media-doc-btn"
+              onClick={() => runAction('resize', { width: Math.max(64, Math.round(((info && info.width) || 1024) / 2)) })}
+            >Resize 50%</button>
           </>
         )}
         {kind === 'video' && (
           <>
             <button type="button" className="media-doc-btn" onClick={() => runAction('to_gif')}>Convert to GIF</button>
+            <button type="button" className="media-doc-btn" onClick={() => runAction('extract_audio')}>Extract Audio</button>
             <button type="button" className="media-doc-btn" onClick={() => runAction('extract_frames')}>Extract Frames</button>
           </>
         )}
@@ -288,12 +301,17 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
         {kind === 'archive' && (
           <button type="button" className="media-doc-btn" onClick={() => runAction('extract_archive')}>Extract to Workspace</button>
         )}
+        <button type="button" className="media-doc-btn" onClick={() => runAction('reveal')}>
+          Reveal in Finder
+        </button>
         <button type="button" className="media-doc-btn" onClick={() => runAction('saveAs')}>
           <Icon name="Download" size={12} /> Save As…
         </button>
-        <button type="button" className="media-doc-btn" onClick={() => (onOpenInIde ? onOpenInIde(filePath) : runAction('reveal'))}>
-          Open in IDE / Finder
-        </button>
+        {onOpenInIde && (
+          <button type="button" className="media-doc-btn" onClick={() => onOpenInIde(filePath)}>
+            Open in IDE
+          </button>
+        )}
       </div>
 
       {zoomOpen && info && (info.dataUrl || info.fileUrl) && (

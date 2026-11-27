@@ -471,7 +471,21 @@ export const msgText = (m) => {
 
 // ---------- payload builders (pure) ----------
 export const buildDirectives = (styleId, reasoningLevel, opts = {}) => {
-  const style = STYLES.find((s) => s.id === styleId);
+  const customList = Array.isArray(opts.customStyles) ? opts.customStyles : [];
+  const mergedStyles = [...STYLES];
+  for (const cs of customList) {
+    if (!cs || !cs.id) continue;
+    const idx = mergedStyles.findIndex((s) => s.id === cs.id);
+    const normalized = {
+      id: cs.id,
+      name: cs.name || cs.id,
+      hint: cs.hint || '',
+      prompt: cs.prompt || cs.directive || '',
+    };
+    if (idx >= 0) mergedStyles[idx] = normalized;
+    else mergedStyles.push(normalized);
+  }
+  const style = mergedStyles.find((s) => s.id === styleId);
   const d = [];
   const profile = opts.harnessProfile ? HARNESS_PROFILES.find((p) => p.id === opts.harnessProfile) : null;
   if (profile && profile.prompt) d.push(profile.prompt);

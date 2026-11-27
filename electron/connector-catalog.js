@@ -213,6 +213,8 @@ const CONNECTOR_ROWS = [
   ['gcloud', 'Google Cloud', 'Cloud', 'oauth', 'Inspect Google Cloud projects, resources and billing.', ['list_projects', 'list_resources']],
   ['azure', 'Microsoft Azure', 'Cloud', 'oauth', 'Inspect Azure subscriptions, resource groups and resources.', ['list_subscriptions', 'list_resources']],
   ['cloudflare', 'Cloudflare', 'Cloud', 'apikey', 'Inspect Cloudflare zones, DNS records, WAF rules and analytics.', ['list_zones', 'list_dns_records', 'list_firewall_rules']],
+  ['firebase', 'Firebase', 'Cloud', 'oauth', 'Manage Firebase projects, Firestore collections, Auth users, Hosting and Functions.', ['list_projects', 'query_firestore', 'list_hosting_sites']],
+  ['docker', 'Docker', 'Engineering', 'none', 'Inspect local Docker containers, images, compose stacks, volumes and logs.', ['list_containers', 'get_container_logs', 'list_images']],
   ['digitalocean', 'DigitalOcean', 'Cloud', 'apikey', 'Inspect Droplets, managed databases and Kubernetes clusters.', ['list_droplets', 'list_databases', 'list_clusters']],
   ['linode', 'Akamai Linode', 'Cloud', 'apikey', 'Inspect Linode instances, volumes and node balancers.', ['list_instances', 'list_volumes']],
   ['vultr', 'Vultr', 'Cloud', 'apikey', 'Inspect Vultr instances, block storage and DNS.', ['list_instances', 'list_dns']],

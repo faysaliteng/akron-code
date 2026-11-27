@@ -49,6 +49,7 @@ async function test(name, fn) {
     assert.strictEqual(multi.questions[0].options[0].recommended, true);
     assert.strictEqual(multi.questions[0].options[0].cleanLabel, 'PostgreSQL');
     assert.strictEqual(multi.questions[1].multiSelect, true);
+    assert.strictEqual(multi.questions[1].isMultiSelect, true);
     assert.deepStrictEqual(multi.questions[1].options.map((o) => o.label), ['Auth', 'Metrics']);
 
     const legacy = normalizeAskPayload({
@@ -130,8 +131,8 @@ async function test(name, fn) {
     assert(!appSrc.includes('<QuestionModal'), 'Blocking <QuestionModal /> must be removed from App.jsx');
     assert(appSrc.includes('<MediaDocCardList'), 'App.jsx Message must render <MediaDocCardList />');
     assert(appSrc.includes('waitingQuestionConvIds'), 'Session tabs must track waitingQuestionConvIds');
-    assert(dockSrc.includes('multiSelect') && dockSrc.includes('Approve & Execute') && dockSrc.includes('Other / Type custom answer'));
-    assert(cardSrc.includes('Extract to Workspace') && cardSrc.includes('Convert to GIF') && cardSrc.includes('Remove BG'));
+    assert(dockSrc.includes('multiSelect') && dockSrc.includes('isMultiSelect') && dockSrc.includes('Approve & Execute') && dockSrc.includes('Other / Type custom answer') && />\s*Back\s*</.test(dockSrc));
+    assert(cardSrc.includes('Extract to Workspace') && cardSrc.includes('Convert to GIF') && cardSrc.includes('Remove BG') && cardSrc.includes('Copy Image') && cardSrc.includes('Extract Audio'));
   });
 
   console.log(`\nQUESTION_DOCK_RESULTS: ${passed} passed, ${failed} failed`);

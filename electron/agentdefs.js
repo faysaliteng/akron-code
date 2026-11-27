@@ -15,6 +15,8 @@
 // statusline-setup, output-style-setup) always exist, and a user definition
 // with the same name overrides the built-in — exactly like Claude Code.
 
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const cc = require('./claudeconfig');
 
@@ -160,16 +162,33 @@ function normalizeName(n) {
   return String(n || '').trim();
 }
 
+function slugifyAgentName(n) {
+  return String(n || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+}
+
+function resolveAgentRoots() {
+  return {
+    claudeDir: process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
+    autobotDir: process.env.AUTOBOT_HOME || path.join(os.homedir(), '.autobot'),
+  };
+}
+
 function defDirs(cwd) {
+  const { claudeDir, autobotDir } = resolveAgentRoots();
   const dirs = [
-    { dir: path.join(cc.CONFIG_DIR, 'agents'), source: 'user' },
+    { dir: path.join(claudeDir, 'agents'), source: 'user', scope: 'global' },
+    { dir: path.join(autobotDir, 'agents'), source: 'autobot', scope: 'global' },
   ];
-  if (cwd) dirs.push({ dir: path.join(cwd, '.claude', 'agents'), source: 'project' });
-  dirs.push({ dir: path.join(cc.AUTOBOT_DIR, 'agents'), source: 'autobot' });
+  if (cwd) dirs.push({ dir: path.join(cwd, '.claude', 'agents'), source: 'project', scope: 'workspace' });
   return dirs;
 }
 
-function fromFile(file, source) {
+function fromFile(file, source, scope = 'global') {
   const text = cc.readText(file);
   if (text == null) return null;
   const { data, body } = cc.parseFrontmatter(text);
@@ -181,12 +200,14 @@ function fromFile(file, source) {
     : (typeof data.tools === 'string' && data.tools.trim() ? data.tools.split(',').map((s) => s.trim()).filter(Boolean) : null);
   return {
     name,
+    role: data.role ? String(data.role).trim() : '',
     description: data.description || `${name} (custom agent)`,
     model: data.model || null,
     tools,
     body: body.trim(),
     file,
     source,
+    scope: scope || (source === 'project' ? 'workspace' : 'global'),
     custom: true,
   };
 }
@@ -194,18 +215,18 @@ function fromFile(file, source) {
 let _cache = { cwd: null, at: 0, list: [] };
 const CACHE_MS = 2000;
 
-// All definitions (built-ins overridden by user files), project scope winning.
+// All definitions (built-ins overridden by user files), workspace scope winning.
 function discover(cwd, { fresh = false } = {}) {
   const now = Date.now();
   if (!fresh && _cache.cwd === (cwd || '') && now - _cache.at < CACHE_MS) return _cache.list;
 
   const byName = new Map();
-  for (const [k, v] of Object.entries(BUILTIN)) byName.set(k.toLowerCase(), { ...v, source: 'builtin' });
+  for (const [k, v] of Object.entries(BUILTIN)) byName.set(k.toLowerCase(), { ...v, source: 'builtin', scope: 'builtin', custom: false });
 
-  // Later dirs (project, then autobot) win over earlier ones.
-  for (const { dir, source } of defDirs(cwd)) {
+  // Later dirs (autobot global, then workspace .claude/agents) win over earlier ones.
+  for (const { dir, source, scope } of defDirs(cwd)) {
     for (const file of cc.listMarkdown(dir, { recursive: false })) {
-      const def = fromFile(file, source);
+      const def = fromFile(file, source, scope);
       if (!def) continue;
       byName.set(def.name.toLowerCase(), def);
     }
@@ -214,6 +235,100 @@ function discover(cwd, { fresh = false } = {}) {
   const list = [...byName.values()];
   _cache = { cwd: cwd || '', at: now, list };
   return list;
+}
+
+function yamlScalar(v) {
+  const s = String(v == null ? '' : v).replace(/\r?\n/g, ' ').trim();
+  if (!s) return '""';
+  if (/[:#"'{}\[\],&*?|>!%@`]/.test(s)) return JSON.stringify(s);
+  return s;
+}
+
+function saveAgentDef(input = {}, cwd = '') {
+  const rawName = normalizeName(input.name || input.handle || '');
+  const slug = slugifyAgentName(rawName);
+  if (!slug) return { ok: false, error: 'Agent name is required' };
+  const name = rawName || slug;
+
+  const reqScope = String(input.scope || input.storage || 'autobot').toLowerCase();
+  const { claudeDir, autobotDir } = resolveAgentRoots();
+  let targetDir = path.join(autobotDir, 'agents');
+  if ((reqScope === 'workspace' || reqScope === 'project') && cwd) {
+    targetDir = path.join(cwd, '.claude', 'agents');
+  } else if (reqScope === 'user' || reqScope === 'claude') {
+    targetDir = path.join(claudeDir, 'agents');
+  }
+  cc.ensureDir(targetDir);
+  const file = path.join(targetDir, `${slug}.md`);
+
+  const toolsArr = Array.isArray(input.tools)
+    ? input.tools.map((t) => String(t || '').trim()).filter(Boolean)
+    : (typeof input.tools === 'string' && input.tools.trim() ? input.tools.split(',').map((s) => s.trim()).filter(Boolean) : null);
+
+  const lines = [
+    '---',
+    `name: ${yamlScalar(name)}`,
+  ];
+  if (input.role && String(input.role).trim()) lines.push(`role: ${yamlScalar(input.role)}`);
+  lines.push(`description: ${yamlScalar(input.description || input.role || `${name} sub-agent`)}`);
+  if (input.model && String(input.model).trim() && String(input.model).trim().toLowerCase() !== 'inherit') {
+    lines.push(`model: ${yamlScalar(input.model)}`);
+  }
+  if (toolsArr && toolsArr.length && !toolsArr.includes('*')) {
+    lines.push(`tools: ${yamlScalar(toolsArr.join(', '))}`);
+  }
+  lines.push('---', '');
+  const body = String(input.body || input.systemPrompt || input.prompt || `You are ${name}. Complete the delegated task carefully and report back concisely.`).trim();
+  fs.writeFileSync(file, `${lines.join('\n')}${body}\n`, { encoding: 'utf8', mode: 0o600 });
+  _cache = { cwd: null, at: 0, list: [] };
+  const list = discover(cwd, { fresh: true });
+  const saved = list.find((d) => d.name.toLowerCase() === name.toLowerCase()) || fromFile(file, (reqScope === 'workspace' || reqScope === 'project') && cwd ? 'project' : 'autobot');
+  return { ok: true, agent: saved, file, agents: list };
+}
+
+function deleteAgentDef(input = {}, cwd = '') {
+  const want = normalizeName(typeof input === 'string' ? input : (input.name || ''));
+  const targetFile = input && typeof input === 'object' ? input.file : '';
+  const dirs = defDirs(cwd);
+  const allowedRoots = dirs.map((d) => path.resolve(d.dir));
+  let deleted = false;
+  if (targetFile) {
+    const abs = path.resolve(String(targetFile));
+    if (!allowedRoots.some((root) => abs.startsWith(root + path.sep))) {
+      return { ok: false, error: 'Refused to delete agent definition outside agents directories' };
+    }
+    if (fs.existsSync(abs)) {
+      fs.unlinkSync(abs);
+      deleted = true;
+    }
+  } else if (want) {
+    const slug = slugifyAgentName(want);
+    for (const d of dirs) {
+      if (input.scope && input.scope !== d.scope && input.scope !== d.source) continue;
+      const direct = path.join(d.dir, `${slug}.md`);
+      if (fs.existsSync(direct)) {
+        fs.unlinkSync(direct);
+        deleted = true;
+      } else {
+        for (const f of cc.listMarkdown(d.dir, { recursive: false })) {
+          const parsed = fromFile(f, d.source, d.scope);
+          if (parsed && parsed.name.toLowerCase() === want.toLowerCase()) {
+            fs.unlinkSync(f);
+            deleted = true;
+          }
+        }
+      }
+    }
+  }
+  if (!deleted) {
+    const builtinHit = want && BUILTIN[want.toLowerCase()];
+    return {
+      ok: false,
+      error: builtinHit ? 'Built-in agents cannot be deleted' : 'Custom agent definition not found',
+    };
+  }
+  _cache = { cwd: null, at: 0, list: [] };
+  return { ok: true, deleted: true, agents: discover(cwd, { fresh: true }) };
 }
 
 function resolve(name, cwd) {
@@ -280,4 +395,6 @@ module.exports = {
   toolAllowed,
   promptFor,
   asToolDescription,
+  saveAgentDef,
+  deleteAgentDef,
 };

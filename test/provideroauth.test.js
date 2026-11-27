@@ -848,5 +848,11 @@ const jwt = (claims) => 'h.' + b64url(claims) + '.sig';
     }
   }
 
+    ok('Settings & InputBar expose Auto-Heal PC accounts UI', (() => {
+      const sSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'settings', 'SettingsSections.jsx'), 'utf8');
+      const iSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'chat', 'InputBarView.jsx'), 'utf8');
+      return sSrc.includes('providerAutoHeal') && sSrc.includes('Auto-Heal PC Accounts') && iSrc.includes('providerAutoHeal');
+    })());
+
   console.log('\n=== RESULT: ' + pass + ' passed, ' + (process.exitCode ? 'FAILURES' : '0 failed') + ' ===');
 })().catch((e) => { console.error('SUITE CRASHED', e); process.exit(1); });

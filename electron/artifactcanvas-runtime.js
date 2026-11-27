@@ -300,6 +300,7 @@ function designRuntime(p) {
 }
 function slidesRuntime(p) {
   var TITLE = p.title || 'Deck';
+  var KEY = p.key || p.id || TITLE;
   var ASPECT = p.aspect === '4:3' ? '4:3' : '16:9';
   var SLIDES = (p.slides || []).map(function (s, i) {
     return {

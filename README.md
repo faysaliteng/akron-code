@@ -77,9 +77,24 @@ sha256sum -c SHA256SUMS.txt --ignore-missing       # Linux
   - **OS-Level Sandbox (`electron/os-sandbox.js`)**: Command-chain canonicalization (`sh -c`, `&&`, `||`, `$()`, backticks) + `workspace-write`, `read-only`, `strict-isolated`, and `full-access` profiles across macOS Seatbelt, Linux `bwrap`, and Windows PowerShell policies.
 - **Built-in Full IDE Workbench & Offline Markmap Mind Maps**:
   - Bundled **Monaco Editor** (`⌘K` / `Ctrl+K` inline diff, Tab Ghost Text, per-hunk Accept/Reject), **`@xterm/xterm`** PTY (`≤16ms` batching), **`@vscode/ripgrep`**, **`@parcel/watcher`**, Git + Worktrees, LSP diagnostics, Command Center (`⌘P`), `24px` status bar, and **100% offline Interactive Markmap Mind Maps** (`src/ide/MindMapView.jsx`) with Zoom/Fit/Collapse/SVG Export and click-to-open files.
-- **Execution Environments, Browser Bot, Permission Dock & Cross-OS Notifications**:
-  - Local, `ssh2`, and `akron-remote-server.js` WebSocket environments with OS keychain secrets (`safeStorage`).
-  - Inline 4-option Antigravity-style **Permission Dock**, FIFO `permissionQueue`, editable **Message Queue Tray**, top-right **Notification Center**, cross-OS native desktop notifications (`electron/notifications.js`), Browser **Inspect Element Mode**, Chrome/Brave **Akron Browser Bot** MV3 extension, **FreeLLM Role Pools**, and **263-tool built-in REA** reverse engineering.
+- **Cross-Platform Subscription Auto-Heal & Permanent OAuth Persistence (`electron/secretstore.js`, `electron/provider-oauth.js`)**:
+  - Stores credentials in portable `aes-256-gcm` `~/.autobot/secrets.json` (`0600`) with encrypted `oauth-mirror/` recovery and 1-time legacy keychain migration so rebuilds never wipe logins or nag for keychain passwords.
+  - Single-flight `refreshFlights` locking (`REFRESH_SKEW_MS = 10 min`) + cross-platform CLI/app credential auto-heal across **macOS**, **Windows**, and **Linux** (`Claude Code`, `Codex CLI`, `Antigravity / Gemini`, `Grok / xAI`) with 1-click **Auto-Heal PC Accounts** in Settings & model picker.
+- **Universal Media Studio & Automatic Capability Router (`electron/media-gen.js`, `electron/orch-router.js`)**:
+  - Automatic routing across `image_gen`, `video_gen`, and `audio_speech` capability chains (Gemini Imagen / Flash-Image, OpenAI GPT Image / DALL-E 3 / Sora, Veo, xAI, Together / Flux, Replicate / fal.ai, ComfyUI) with deterministic offline SVG/Canvas & `@ffmpeg-installer/ffmpeg` + `gifenc` + lossless VP8L WebP fallbacks.
+  - First-class tools: **`GenerateImage`** (`create_image`), **`EditImage`** (`edit_image`), **`GenerateVideo`** (`generate_video`), and **`EditVideo`** (`edit_video`).
+- **Pre-Bundled Office, PDF, ZIP & LaTeX Document Engine (`electron/doc-studio.js`)**:
+  - Offline generation & inspection for **PDF** (`pdf-lib`, `pdf-parse`), **LaTeX `.tex` / `latex_pdf`** (`tectonic`/`pdflatex` + offline KaTeX fallback), **Word `.docx`** (`docx`, `mammoth`), formula-enabled **Excel `.xlsx` / `.csv`** (`xlsx`), **PowerPoint `.pptx`** (`pptxgenjs`), and **`.zip` / `.tar.gz`** (`jszip`, `adm-zip` with Zip-Slip protection).
+  - Unified **`ReadDocument`** (`read_document`) and **`GenerateDocument`** (`generate_document`) tools + auto-extraction for composer file attachments and interactive inline **`<MediaDocCard />`** preview cards (`Reveal in Finder`, `Copy Image`, `Remove BG`, `Upscale 2×`, `Resize 50%`, `Convert to GIF`, `Extract Audio`, PDF/DOCX/XLSX/PPTX/ZIP previews).
+- **Antigravity-Style Full-Page `Customizations` Hub (`src/components/customizations/CustomizationsHub.jsx`)**:
+  - Top-sidebar **Customizations** view with **`Marketplace | Installed`** segmented toggle and live search:
+    - **Marketplace:** Featured Hero Showcase + 2-column categorized shelves (`Google Workspace`, `Developer & Cloud`, `Design, Media & Research`, `Security & Reverse Engineering`) + 400+ connector directory.
+    - **Installed (4 Collapsible Sections):** **Slash Skills & Workflows** (`+ New Skill`, `.md` upload, enable/disable), **Custom Agents** (`~/.autobot/agents/*.md`, `~/.claude/agents/*.md`, `.claude/agents/*.md` synced into `@` mention autocomplete), **Custom Outputs** (`~/.autobot/output-styles/*.md` & presets synced into the Output Style picker & `/output-style`), and **MCP Servers** (`rea` 263-tool built-in suite + `stdio`/`HTTP`/`SSE` servers).
+- **Non-Blocking `<QuestionDock />`, `<PermissionDock />` & Cross-OS Notifications (`electron/question-gate.js`, `electron/notifications.js`)**:
+  - Inline above-composer **`<QuestionDock />`** (`AskUserQuestion` multi-question stepper with `Back`/`Next`, `isMultiSelect`, `Recommended` badges, custom input, and `ExitPlanMode` Plan Approval) + FIFO 4-option **`<PermissionDock />`** + Editable Message Queue Tray.
+  - Native OS desktop notifications with unpacked app icon, Windows Toast XML + `flashFrame`, macOS Dock badge/bounce, and focus-on-click routing straight to `convId`.
+- **Execution Environments, Browser Bot & 263-Tool REA**:
+  - Local, `ssh2`, and `akron-remote-server.js` WebSocket environments, Built-in Chromium Inspect Element Mode, Chrome/Brave **Akron Browser Bot** MV3 extension, **FreeLLM Role Pools**, and **263-tool built-in REA** reverse engineering.
 
 ---
 

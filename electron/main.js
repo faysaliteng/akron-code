@@ -117,6 +117,10 @@ if (process.platform === 'win32') {
   try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch (_) {}
 }
 
+if (process.env.AKRON_COLD_BOOT_CHECK === '1') {
+  try { app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'akron-cb-'))); } catch (_) {}
+}
+
 const gotSingleInstance = app.requestSingleInstanceLock();
 if (!gotSingleInstance && process.env.AKRON_COLD_BOOT_CHECK !== '1') app.quit();
 

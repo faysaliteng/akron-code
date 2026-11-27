@@ -8,7 +8,7 @@ import { ClaudeReconnectPanel, useClaudeReconnect } from '../settings/SettingsSe
 import { SessionModelList, EnvironmentPicker, PERM_MODES, PERM_SHORT, BUILTIN_MENTION_AGENTS, ContextMeter, ProvModelList } from './WorkspaceViews.jsx';
 import { PRESETS, PRESET_KEYS, resolveLoopbackKey, STYLES, REASON_LEVELS, REASON_LABELS, contextWindowFor, loadJSON, saveJSON, useDismiss, toggleDictation, filesToAttachments, uid, ProvNotice, fmtInt, MODEL_WINDOW_CACHE, usedTokens } from '../../utils/appHelpers.jsx';
 
-export function InputBarBody({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, queuePaused, onToggleQueuePaused, onClearQueue, onToggleQueueItemPaused, onReorderQueue, onStepQueueItem, onUpdateQueueItemText, unqueue, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, T }) {
+export function InputBarBody({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, customStyles = [], customAgents = [], onOpenCustomizations, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, queuePaused, onToggleQueuePaused, onClearQueue, onToggleQueueItemPaused, onReorderQueue, onStepQueueItem, onUpdateQueueItemText, unqueue, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -20,6 +20,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [mentionIdx, setMentionIdx] = useState(0);
   const [mentionFiles, setMentionFiles] = useState([]);
+  const [fetchedAgents, setFetchedAgents] = useState([]);
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const addCtxWrapRef = useRef(null);
   const slashPaletteRef = useRef(null);
@@ -70,14 +71,27 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
     Promise.resolve(window.autobot && window.autobot.listWorkspaceFiles ? window.autobot.listWorkspaceFiles(cwd, mentionQuery) : [])
       .then((list) => { if (!cancelled && Array.isArray(list)) setMentionFiles(list); })
       .catch(() => {});
+    if (window.autobot && window.autobot.listAgentDefs) {
+      Promise.resolve(window.autobot.listAgentDefs(cwd))
+        .then((defs) => { if (!cancelled && Array.isArray(defs)) setFetchedAgents(defs); })
+        .catch(() => {});
+    }
     return () => { cancelled = true; };
   }, [mentionQuery, mentionDismissed, cwd]);
 
   const mentionItems = useMemo(() => {
     if (mentionQuery === null) return [];
     const q = mentionQuery.toLowerCase();
-    const agents = BUILTIN_MENTION_AGENTS
-      .filter((a) => !q || a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q))
+    const byName = new Map();
+    for (const a of BUILTIN_MENTION_AGENTS) byName.set(a.name.toLowerCase(), a);
+    for (const src of [fetchedAgents, customAgents]) {
+      for (const a of (Array.isArray(src) ? src : [])) {
+        if (!a || !a.name) continue;
+        byName.set(String(a.name).toLowerCase(), { name: a.name, description: a.description || a.role || 'Custom sub-agent' });
+      }
+    }
+    const agents = [...byName.values()]
+      .filter((a) => !q || a.name.toLowerCase().includes(q) || String(a.description || '').toLowerCase().includes(q))
       .map((a) => ({ id: 'agent:' + a.name, label: '@' + a.name, insert: '@' + a.name + ' ', kind: 'agent', sub: a.description }));
     const files = (mentionFiles || []).map((f) => ({
       id: 'file:' + f.path,
@@ -88,7 +102,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
       fileObj: f,
     }));
     return [...agents, ...files].slice(0, 25);
-  }, [mentionQuery, mentionFiles]);
+  }, [mentionQuery, mentionFiles, customAgents, fetchedAgents]);
   const mentionOpen = mentionQuery !== null && !mentionDismissed && mentionItems.length > 0;
   useEffect(() => { setMentionIdx(0); }, [mentionQuery]);
 
@@ -332,10 +346,13 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
       if (kind === 'signin') r = await window.autobot.providerSignIn(id);
       else if (kind === 'signout') r = await window.autobot.providerSignOut(id, account);
       else if (kind === 'import') r = await window.autobot.providerImport();
+      else if (kind === 'autoheal') r = await window.autobot.providerAutoHeal({ importMissing: true });
       else if (kind === 'bearer') r = await window.autobot.providerAddBearer(id, account);
       if (r && r.cancelled) {
         // The user stopped it — that is not a failure and must not read like one.
         setProvNotice('Sign-in cancelled — no account was added.');
+      } else if (kind === 'autoheal' && r && r.ok !== false) {
+        setProvNotice(`Auto-Heal: repaired ${r.healed || 0} · imported ${r.imported || 0} · ${r.healthy || 0} healthy.`);
       } else if (kind === 'import' && r && r.ok !== false && r.result) {
         // A scan that finds nothing new must still say so — otherwise the button
         // flashes "Scanning…" and appears dead.
@@ -781,7 +798,16 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
     if (w >= 1000000) return Math.round(w / 100000) / 10 + 'M';
     return Math.round(w / 1000) + 'K';
   })();
-  const activeStyle = STYLES.find((s) => s.id === styleId) || STYLES[0];
+  const allStyles = useMemo(() => {
+    const byId = new Map();
+    for (const s of STYLES) byId.set(s.id, s);
+    for (const cs of (Array.isArray(customStyles) ? customStyles : [])) {
+      if (!cs || !cs.id) continue;
+      byId.set(cs.id, { ...cs, prompt: cs.prompt || cs.directive || '' });
+    }
+    return [...byId.values()];
+  }, [customStyles]);
+  const activeStyle = allStyles.find((s) => s.id === styleId) || allStyles[0];
 
   return (
     <div className={'inputbar' + (dragOver ? ' drag-over' : '')} onDragOver={(e) => { e.preventDefault(); setDragOver(true); }} onDragLeave={(e) => { e.preventDefault(); setDragOver(false); }} onDrop={onDropFiles}>
@@ -922,13 +948,19 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                   </button>
                   <div className="model-menu-divider" />
                   <div className="model-menu-head">Style</div>
-                  {STYLES.map((st) => (
+                  {allStyles.map((st) => (
                     <button key={st.id} type="button" role="menuitemradio" aria-checked={styleId === st.id} className={'model-opt' + (styleId === st.id ? ' on' : '')} onClick={() => { setStyleId(st.id); setToolsOpen(false); }}>
                       <span className="model-opt-name">{st.name}</span>
-                      {st.hint && <span className="model-opt-prov">{st.hint}</span>}
+                      {(st.hint || st.custom) && <span className="model-opt-prov">{st.hint || 'Custom'}</span>}
                       {styleId === st.id && <Icon name="Check" size={13} className="model-check" />}
                     </button>
                   ))}
+                  {onOpenCustomizations && (
+                    <button type="button" className="model-opt" onClick={() => { setToolsOpen(false); onOpenCustomizations(); }}>
+                      <Icon name="Add" size={13} />
+                      <span className="model-opt-name">Manage Custom Outputs…</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -1300,6 +1332,10 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                           </div>
                         );
                       })}
+                      <button className="model-opt" disabled={!!provBusy} onClick={() => providerAction('autoheal')}>
+                        <Icon name="Refresh" size={14} />
+                        <span className="model-opt-name">{provBusy === 'autoheal:' ? 'Healing PC accounts…' : 'Auto-Heal PC accounts'}</span>
+                      </button>
                       <button className="model-opt" disabled={!!provBusy} onClick={() => providerAction('import')}>
                         <Icon name="Plug" size={14} />
                         <span className="model-opt-name">{provBusy === 'import:' ? 'Scanning this Mac…' : 'Import accounts from this Mac'}</span>
