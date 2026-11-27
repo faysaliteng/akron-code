@@ -943,6 +943,33 @@ export default function App() {
     setPanel('chats');
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    window.__akronTestHarness = {
+      setTheme: (theme) => setSettings((s) => ({ ...s, theme: theme === 'light' ? 'light' : 'dark' })),
+      setPanel: (p) => setPanel(p),
+      openSettings: (sec) => { setSettingsInitialSection(sec || 'providers'); setShowSettings(true); },
+      closeSettings: () => setShowSettings(false),
+      setConvs: (list, nextActiveId) => {
+        setConvs(list);
+        if (nextActiveId) setActiveId(nextActiveId);
+      },
+      setPermissionQueue: (q) => setPermissionQueue(Array.isArray(q) ? q : []),
+      setQueue: (items, pausedMap) => {
+        setQueued(Array.isArray(items) ? items : []);
+        if (pausedMap) setQueuePausedByConv(pausedMap);
+      },
+      openDuetReview: (mockDuetResult, extra = {}) => {
+        setSessionPane({ type: 'review', width: 680 });
+        setOpenPaneTabs((tabs) => (tabs.includes('review') ? tabs : [...tabs, 'review']));
+        setReviewTarget({ scope: 'all', mockDuetResult, ...extra, at: Date.now() });
+        setPanel('chats');
+      },
+      closePane: () => setSessionPane((p) => ({ ...p, type: null })),
+    };
+    return () => { delete window.__akronTestHarness; };
+  }, [openReview]);
+
   // persist
   useEffect(() => { saveJSON('autobot:convs', convs); }, [convs]);
   // One-time non-destructive sync of existing localStorage chats to SQLite WAL+FTS (~/.autobot/akron.db)
