@@ -1206,13 +1206,26 @@ ipcMain.handle('autobot:transcribeAudio', async (e, payload = {}) => {
     return { ok: false, fallback: 'local-whisper' };
   }
 });
+  const broadcastToOthers = (sender, evt) => {
+    try {
+      if (BrowserWindow && typeof BrowserWindow.getAllWindows === 'function') {
+        for (const w of BrowserWindow.getAllWindows()) {
+          if (w && !w.isDestroyed() && w.webContents && w.webContents !== sender) {
+            w.webContents.send('autobot:event', evt);
+          }
+        }
+        return;
+      }
+    } catch (_) {}
+    if (typeof broadcast === 'function') {
+      try { broadcast(evt); } catch (_) {}
+    }
+  };
 ipcMain.handle('autobot:getOrchestrator', () => store.getOrchestrator());
 ipcMain.handle('autobot:setOrchestrator', (e, patch) => {
   poolNoticeDeduper.reset();
   const next = store.setOrchestrator(patch);
-  if (typeof broadcast === 'function') {
-    try { broadcast({ type: 'orchestrator', orchestrator: next }); } catch (_) {}
-  }
+  broadcastToOthers(e && e.sender, { type: 'orchestrator', orchestrator: next });
   return next;
 });
 // Live model health for the Role pools editor: per-row cooldown / dead / inflight
@@ -1304,9 +1317,7 @@ ipcMain.handle('autobot:setFeatures', async (e, patch) => {
       broadcastEnvChanged(res && res.state);
     } catch (_) {}
   }
-  if (typeof broadcast === 'function') {
-    try { broadcast({ type: 'features', features }); } catch (_) {}
-  }
+  broadcastToOthers(e && e.sender, { type: 'features', features });
   return features;
 });
 ipcMain.handle('autobot:getDefaultCwd', (event, convId, title) => {

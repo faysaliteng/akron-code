@@ -58,8 +58,8 @@ export function SettingsModalBody({
     setProviderKeys((m) => ({ ...(m || {}), [base]: value }));
   };
 
-  const saveOrch = (next) => { setOrchestrator(next); window.autobot.setOrchestrator(next); };
-  const saveFeat = (next) => { setFeatures(next); window.autobot.setFeatures(next); };
+  const saveOrch = (next) => { setOrchestrator(next); };
+  const saveFeat = (next) => { setFeatures(next); };
 
   // Staged preset from the model picker (no key yet). Nothing is committed to
   // the session provider until "Save key & use" — Cancel leaves it untouched.

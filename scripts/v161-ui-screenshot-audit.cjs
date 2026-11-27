@@ -35,11 +35,18 @@ if (process.argv.includes('--worker')) {
     ipcMain.handle(ch, fn);
   }
 
+  let setOrchCount = 0;
+  let setFeatCount = 0;
+
   function installHandlers() {
-    safe('autobot:getVersion', () => ({ version: '1.6.1', app: '1.6.1', platform: process.platform, arch: process.arch }));
-    safe('autobot:getSettings', () => store.getSettings());
-    safe('autobot:setSettings', (_e, patch) => store.setSettings(patch || {}));
-    safe('autobot:getOrchestrator', () => ({
+    setOrchCount = 0;
+    setFeatCount = 0;
+    const baseSettings = store.getSettings();
+    let mockSettings = {
+      ...baseSettings,
+      uiState: { ...(baseSettings?.uiState || {}), sidebarCollapsed: false, _updatedAt: 0 },
+    };
+    let mockOrch = {
       enabled: false,
       activeIndex: 0,
       providers: [
@@ -47,10 +54,27 @@ if (process.argv.includes('--worker')) {
         { model: 'gemini-4-carbon-high', oauthProvider: 'antigravity:saimon@example.com', name: 'Google Antigravity · long-account-email@gmail.com · Gemini 4 Carbon High', enabled: true, role: 'Google Antigravity · 6969loavbal-gmail-com · Reasoning' },
         { model: 'claude-sonnet-5-5', oauthProvider: 'claude:main', name: 'Claude · claude-sonnet-5-5', enabled: true, role: 'Coder' },
       ],
-    }));
-    safe('autobot:setOrchestrator', (_e, patch) => store.setOrchestrator(patch || {}));
-    safe('autobot:getFeatures', () => store.getFeatures());
-    safe('autobot:setFeatures', (_e, patch) => store.setFeatures(patch || {}));
+    };
+    let mockFeatures = { ...(store.getFeatures() || {}), autoRouter: true };
+    safe('autobot:getVersion', () => ({ version: '1.6.2', app: '1.6.2', platform: process.platform, arch: process.arch }));
+    safe('autobot:getSettings', () => mockSettings);
+    safe('autobot:setSettings', (_e, patch) => {
+      mockSettings = { ...mockSettings, ...(patch || {}) };
+      return mockSettings;
+    });
+    safe('autobot:getOrchestrator', () => mockOrch);
+    safe('autobot:setOrchestrator', (_e, patch) => {
+      setOrchCount++;
+      mockOrch = { ...mockOrch, ...(patch || {}) };
+      return mockOrch;
+    });
+    safe('autobot:getFeatures', () => mockFeatures);
+    safe('autobot:setFeatures', (_e, patch) => {
+      setFeatCount++;
+      mockFeatures = { ...mockFeatures, ...(patch || {}) };
+      return mockFeatures;
+    });
+    safe('autobot:getAuditIpcCounts', () => ({ setOrchCount, setFeatCount }));
     safe('autobot:getMemory', () => ({ entries: [] }));
     safe('autobot:getSkills', () => []);
     safe('autobot:listNotebooks', () => []);
@@ -137,7 +161,8 @@ if (process.argv.includes('--worker')) {
     })()`);
     await new Promise((r) => setTimeout(r, 250));
 
-    // 1. Test Preset Sync + No Welcome Overlap even with 6 lines in composer
+    // 1. Test 20x Rapid Mode Preset Switching + Zero IPC Loop + 0px Layout Shake (WelcomeQuickStartBar & InteractiveTutorialModal)
+    const beforeCounts = { setOrchCount: 0, setFeatCount: 0 };
     const presetCheck = await win.webContents.executeJavaScript(`(async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const ta = document.querySelector('.composer textarea');
@@ -150,33 +175,75 @@ if (process.argv.includes('--worker')) {
       const pill = () => (document.querySelector('.model-pill')?.textContent || '').trim();
       const swarmTxt = () => (document.querySelector('.swarm-pill')?.textContent || '').trim();
 
-      document.querySelector('[data-testid="wqs-preset-orchestrator"]')?.click();
-      await sleep(120);
-      const orchPill = pill();
-      const orchSwarm = swarmTxt();
+      const ids = ['orchestrator', 'swarm', 'direct', 'auto'];
+      const wqsHeights = new Set();
+      const wqsTops = new Set();
+      let multiActive = 0;
+      let orchPill = '', swarmPill = '', swarmBadge = '', directPill = '', autoPill = '';
 
-      document.querySelector('[data-testid="wqs-preset-swarm"]')?.click();
-      await sleep(120);
-      const swarmPill = pill();
-      const swarmBadge = swarmTxt();
+      for (let i = 0; i < 20; i++) {
+        const id = ids[i % ids.length];
+        document.querySelector('[data-testid="wqs-preset-' + id + '"]')?.click();
+        await sleep(30);
+        const onCount = document.querySelectorAll('.wqs-card.on').length;
+        if (onCount !== 1) multiActive++;
+        const r = document.querySelector('[data-testid="welcome-quickstart"]')?.getBoundingClientRect();
+        if (r) { wqsHeights.add(Math.round(r.height)); wqsTops.add(Math.round(r.top)); }
+        if (id === 'orchestrator') orchPill = pill();
+        if (id === 'swarm') { swarmPill = pill(); swarmBadge = swarmTxt(); }
+        if (id === 'direct') directPill = pill();
+        if (id === 'auto') autoPill = pill();
+      }
+      await sleep(350);
 
-      document.querySelector('[data-testid="wqs-preset-direct"]')?.click();
-      await sleep(120);
-      const directPill = pill();
-
-      document.querySelector('[data-testid="wqs-preset-auto"]')?.click();
+      // Test InteractiveTutorialModal Step 1 20x rapid clicks + 0px shift
+      document.querySelector('[data-testid="open-tutorial-btn"]')?.click();
       await sleep(150);
-      const autoPill = pill();
+      const modalHeights = new Set();
+      const cardTops = new Set();
+      let modalMulti = 0;
+      for (let i = 0; i < 20; i++) {
+        const id = ids[i % ids.length];
+        document.querySelector('[data-testid="tutorial-preset-' + id + '"]')?.click();
+        await sleep(25);
+        if (document.querySelectorAll('.tutorial-preset-card.on').length !== 1) modalMulti++;
+        const m = document.querySelector('.tutorial-modal')?.getBoundingClientRect();
+        const c = document.querySelector('[data-testid="tutorial-preset-direct"]')?.getBoundingClientRect();
+        if (m) modalHeights.add(Math.round(m.height));
+        if (c) cardTops.add(Math.round(c.top));
+      }
+      document.querySelector('.tutorial-close')?.click();
+      await sleep(150);
 
+      const toastCount = document.querySelectorAll('.notif-toast, .notif-item').length;
       const wqs = document.querySelector('[data-testid="welcome-quickstart"]')?.getBoundingClientRect();
       const cwdBar = document.querySelector('.cwdbar')?.getBoundingClientRect();
       return {
-        orchPill, orchSwarm, swarmPill, swarmBadge, directPill, autoPill,
+        orchPill, swarmPill, swarmBadge, directPill, autoPill,
+        wqsHeights: [...wqsHeights], wqsTops: [...wqsTops], multiActive,
+        modalHeights: [...modalHeights], cardTops: [...cardTops], modalMulti,
+        toastCount,
         wqsBottom: wqs ? Math.round(wqs.bottom) : 0,
         cwdTop: cwdBar ? Math.round(cwdBar.top) : 0,
       };
     })()`);
-    rec('Preset Orchestrator updates bottom pill', /^Orch\b/.test(presetCheck.orchPill), JSON.stringify(presetCheck));
+    // Explicitly push a synthetic 'orchestrator' event from main and confirm renderer does NOT echo IPC back!
+    const preEchoCount = await win.webContents.executeJavaScript(`window.__echoCheck = true; 0`).then(() => 0);
+    const snapPre = { setOrchCount };
+    win.webContents.send('autobot:event', { type: 'orchestrator', orchestrator: { enabled: true, providers: [{ model: 'claude-fable-5-2', enabled: true }], activeIndex: 0 } });
+    await new Promise((r) => setTimeout(r, 250));
+    const echoDelta = setOrchCount - snapPre.setOrchCount;
+    // Restore Auto mode cleanly before screenshot
+    await win.webContents.executeJavaScript(`(async () => {
+      document.querySelector('[data-testid="wqs-preset-auto"]')?.click();
+      await new Promise((r) => setTimeout(r, 120));
+    })()`);
+
+    rec('Zero IPC ping-pong loop (20x rapid switches + synthetic broadcast delta)', setOrchCount <= 25 && echoDelta === 0, `setOrchCount=${setOrchCount}, setFeatCount=${setFeatCount}, echoDelta=${echoDelta}`);
+    rec('WelcomeQuickStartBar 0px layout shake across 20 mode clicks', presetCheck.wqsHeights.length === 1 && presetCheck.wqsTops.length === 1 && presetCheck.multiActive === 0, JSON.stringify({ h: presetCheck.wqsHeights, t: presetCheck.wqsTops, multi: presetCheck.multiActive }));
+    rec('InteractiveTutorialModal 0px layout shake across 20 mode clicks', presetCheck.modalHeights.length === 1 && presetCheck.cardTops.length === 1 && presetCheck.modalMulti === 0, JSON.stringify({ mh: presetCheck.modalHeights, ct: presetCheck.cardTops, multi: presetCheck.modalMulti }));
+    rec('Zero notification toast spam on mode switch', presetCheck.toastCount === 0, `toasts=${presetCheck.toastCount}`);
+    rec('Preset Orchestrator updates bottom pill', /^Orch\b/.test(presetCheck.orchPill), presetCheck.orchPill);
     rec('Preset Swarm turns Swarm ON', /ON/i.test(presetCheck.swarmBadge), presetCheck.swarmBadge);
     rec('Preset Direct clears Orch/Auto prefix', !/^(Orch|Auto)\b/.test(presetCheck.directPill), presetCheck.directPill);
     rec('Preset Auto updates bottom pill to Auto', /^Auto\b/.test(presetCheck.autoPill), presetCheck.autoPill);

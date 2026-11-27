@@ -20,6 +20,8 @@ test('20x atom-by-atom verification of v1.6.1 fixes (UI sync, collapsed sidebar,
 
   const appSrc = fs.readFileSync(path.join(ROOT, 'src/App.jsx'), 'utf8');
   const mainSrc = fs.readFileSync(path.join(ROOT, 'electron/main.js'), 'utf8');
+  const ipcFeatSrc = fs.readFileSync(path.join(ROOT, 'electron/ipc/ipc-features.js'), 'utf8');
+  const settingsBodySrc = fs.readFileSync(path.join(ROOT, 'src/components/settings/SettingsModalBody.jsx'), 'utf8');
   const sidebarJsx = fs.readFileSync(path.join(ROOT, 'src/components/sidebar/ProjectsSidebar.jsx'), 'utf8');
   const inputBarJsx = fs.readFileSync(path.join(ROOT, 'src/components/chat/InputBarView.jsx'), 'utf8');
   const stylesCss = fs.readFileSync(path.join(ROOT, 'src/styles.css'), 'utf8');
@@ -61,6 +63,13 @@ test('20x atom-by-atom verification of v1.6.1 fixes (UI sync, collapsed sidebar,
       // Also confirm syncProviderForOrchestratorToggle wouldn't drift when skipped vs normal
       assert.strictEqual(syncProviderForOrchestratorToggle({ model: 'x', routingMode: 'direct' }, { enabled: true }, { enabled: false }).routingMode, 'orchestrator');
     }
+    // Verify IPC ping-pong guards & detectActivePreset precedence even with stale orchestrator.enabled
+    assert.ok(appSrc.includes('setOrchestrator: adoptOrchestratorFromMain') && appSrc.includes('setFeatures: adoptFeaturesFromMain'), 'Event stream must adopt main broadcasts locally without IPC re-emit');
+    assert.ok(ipcFeatSrc.includes('broadcastToOthers(e && e.sender') && ipcFeatSrc.includes('w.webContents !== sender'), 'ipc-features must exclude sender window when broadcasting');
+    assert.ok(!settingsBodySrc.includes('setOrchestrator(next); window.autobot.setOrchestrator(next)'), 'SettingsModalBody must not duplicate setOrchestrator IPC calls');
+    assert.strictEqual(presetsMod.detectActivePreset({ provider: { model: 'claude-fable-5-2', routingMode: 'direct' }, orchestrator: { enabled: true }, swarmEnabled: false }).id, 'direct');
+    assert.strictEqual(presetsMod.detectActivePreset({ provider: { model: 'claude-fable-5-2', routingMode: 'auto' }, orchestrator: { enabled: true }, swarmEnabled: false }).id, 'auto');
+    assert.strictEqual(presetsMod.detectActivePreset({ provider: { model: 'claude-fable-5-2', routingMode: 'orchestrator' }, orchestrator: { enabled: true }, swarmEnabled: true }).id, 'swarm');
 
     // 2. Collapsed left sidebar & Model Picker CSS guards
     assert.ok(appSrc.includes('collapsed={sidebarCollapsed}'), 'ProjectsSidebar must receive collapsed={sidebarCollapsed}');

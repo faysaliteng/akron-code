@@ -190,15 +190,17 @@ export function applyBeginnerPreset(presetId, state = {}) {
 
 export function detectActivePreset({ provider, orchestrator, swarmEnabled } = {}) {
   const p = provider || {};
-  const orchOn = Boolean((orchestrator && orchestrator.enabled) || p.routingMode === 'orchestrator');
   let id = 'direct';
   if (swarmEnabled) {
     id = 'swarm';
-  } else if (orchOn) {
-    id = 'orchestrator';
-  } else if (p.routingMode === 'auto' || (!p.routingMode && p.model === 'auto')) {
+  } else if (p.routingMode === 'auto' || (!p.routingMode && String(p.model || '').trim().toLowerCase() === 'auto')) {
     id = 'auto';
+  } else if (p.routingMode === 'direct') {
+    id = 'direct';
+  } else if ((orchestrator && orchestrator.enabled) || p.routingMode === 'orchestrator') {
+    id = 'orchestrator';
   }
+  const orchOn = id === 'swarm' || id === 'orchestrator' || Boolean(orchestrator && orchestrator.enabled);
   const meta = BEGINNER_PRESETS.find((x) => x.id === id) || BEGINNER_PRESETS[0];
   const tip = id === 'swarm'
     ? 'Swarm is ON — great for big multi-file jobs; switch to Smart Auto for fast everyday chat.'

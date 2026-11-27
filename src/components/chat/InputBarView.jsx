@@ -914,6 +914,9 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
 
   const selectAutoMode = () => {
     setProvider((v) => ({ ...v, routingMode: 'auto' }));
+    if (setOrchestrator && orchestrator && orchestrator.enabled) {
+      setOrchestrator({ ...orchestrator, enabled: false }, { skipProviderSync: true });
+    }
     setModelMenuOpen(false);
   };
 

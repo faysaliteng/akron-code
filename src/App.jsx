@@ -181,6 +181,7 @@ export default function App() {
     const prev = orchRef.current;
     const next = typeof nextOrFn === 'function' ? nextOrFn(prev) : nextOrFn;
     if (!next || typeof next !== 'object') return;
+    if (JSON.stringify(prev) === JSON.stringify(next)) return;
     orchRef.current = next;
     setOrchestrator(next);
     saveJSON('autobot:orchestrator', next);
@@ -189,6 +190,13 @@ export default function App() {
       setProvider((p) => syncProviderForOrchestratorToggle(p, next, prev));
     }
   }, []);
+  const adoptOrchestratorFromMain = useCallback((next) => {
+    if (!next || typeof next !== 'object') return;
+    if (JSON.stringify(orchRef.current) === JSON.stringify(next)) return;
+    orchRef.current = next;
+    setOrchestrator(next);
+    saveJSON('autobot:orchestrator', next);
+  }, []);
   const [features, setFeatures] = useState(() => loadJSON('autobot:features', { computerUse: true, chrome: false, bridges: false, quickEntry: true, computerUseTeach: false, buddy: false, remoteControl: false, extensions: false, developerMode: false, trustedFolders: false, chromeHost: '127.0.0.1', chromePort: 9222 }));
   const featRef = useRef(features);
   featRef.current = features;
@@ -196,10 +204,18 @@ export default function App() {
     const prev = featRef.current;
     const next = typeof nextOrFn === 'function' ? nextOrFn(prev) : nextOrFn;
     if (!next || typeof next !== 'object') return;
+    if (JSON.stringify(prev) === JSON.stringify(next)) return;
     featRef.current = next;
     setFeatures(next);
     saveJSON('autobot:features', next);
     try { window.autobot.setFeatures(next); } catch (_) { /* main may be older */ }
+  }, []);
+  const adoptFeaturesFromMain = useCallback((next) => {
+    if (!next || typeof next !== 'object') return;
+    if (JSON.stringify(featRef.current) === JSON.stringify(next)) return;
+    featRef.current = next;
+    setFeatures(next);
+    saveJSON('autobot:features', next);
   }, []);
   const [account, setAccount] = useState(() => loadJSON('autobot:account', {
     signedIn: false,
@@ -2490,7 +2506,7 @@ export default function App() {
     setPermError, setPermissionQueue, setLastUsage,
     setError, setModelMenuOpen, setQuestionQueue,
     setShowSettings, setPanel, setActiveId, setConvs, setCuConsent,
-    setPermissions, setPlanMode, setArtifactsExplicit, setNotice, setFeatures: saveFeat, setOrchestrator: saveOrchestrator,
+    setPermissions, setPlanMode, setArtifactsExplicit, setNotice, setFeatures: adoptFeaturesFromMain, setOrchestrator: adoptOrchestratorFromMain,
     openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
   });
   const handleApplyPreset = useCallback((pid) => {
@@ -2502,7 +2518,6 @@ export default function App() {
     setSwarmEnabled(r.swarmEnabled);
     setReasoningLevel(r.reasoningLevel);
     setPermissions(r.permissions);
-    if (r.notice) setNotice(r.notice);
   }, [provider, orchestrator, reasoningLevel, permissions, saveOrchestrator]);
   const welcomeExtraEl = (
     <WelcomeQuickStartBar
