@@ -7,20 +7,54 @@ const { spawn } = require('child_process');
 module.exports = function registerFeaturesIpc(ctx) {
   const {
     app, ipcMain, shell, dialog, BrowserWindow, session,
-    store, workspace, mcp, mcpStatus, shells, git, pluginsDir, scheduler, sandbox,
+    store, workspace, mcp, mcpStatus, autoConnectMcp, shells, git, pluginsDir, scheduler, sandbox,
     secretstore, search, sessionDb, environments, depManager, updater, browser,
-    gdrive, runAgent, providertransport, permGate, questionGate, pendingQuestions, windows,
+    gdrive, runAgent, providertransport, providerOauth, permGate, questionGate, pendingQuestions, windows,
     winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix,
     hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine,
     humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError,
   } = ctx;
   const authFlights = new Map();
 
+  async function resolveCallableProvider(rawProvider, promptHint = '') {
+    let p = (rawProvider && typeof rawProvider === 'object') ? { ...rawProvider } : { ...(store.getSettings().provider || {}) };
+    const isAutoMode = p.routingMode === 'auto'
+      || String(p.model || '').trim().toLowerCase() === 'auto'
+      || (!p.oauthProvider && !String(p.baseURL || '').trim());
+    if (isAutoMode) {
+      let oauthAccounts = [];
+      try {
+        if (providerOauth && typeof providerOauth.listAccounts === 'function') {
+          oauthAccounts = await providerOauth.listAccounts();
+        }
+      } catch (_) {}
+      const orchestrator = store.getOrchestrator ? store.getOrchestrator() : null;
+      const sel = await require('../task-router').classifyAndSelect({
+        messages: [{ role: 'user', content: promptHint || 'Summarize conversation context concisely' }],
+        provider: p,
+        orchestrator,
+        oauthAccounts,
+        providerOauth,
+        store,
+        timeoutMs: 1200,
+      });
+      if (sel && sel.chosen) {
+        p = { ...p, ...sel.chosen, routingMode: 'direct' };
+      }
+    }
+    return hydrateProvider(p);
+  }
+
 ipcMain.handle('autobot:chatOnce', async (event, payload) => {
   try {
     const { chatOnce } = require('../llm');
-    let p = (payload && payload.provider) || store.getSettings().provider || {};
-    try { p = await hydrateProvider(p); } catch (e) {
+    let p;
+    try {
+      const hint = Array.isArray(payload && payload.messages) && payload.messages.length
+        ? String((payload.messages[payload.messages.length - 1] || {}).content || '')
+        : '';
+      p = await resolveCallableProvider(payload && payload.provider, hint);
+    } catch (e) {
       return { ok: false, error: e.message, needsSignIn: e.code === 'provider_needs_signin' };
     }
     const res = await chatOnce({
@@ -41,8 +75,8 @@ ipcMain.handle('autobot:compact', async (event, payload) => {
   try {
     const { chatOnce } = require('../llm');
     const msgs = (payload && payload.messages) || [];
-    let p = (payload && payload.provider) || store.getSettings().provider || {};
-    try { p = await hydrateProvider(p); } catch (e) {
+    let p;
+    try { p = await resolveCallableProvider(payload && payload.provider, 'Summarize conversation transcript concisely'); } catch (e) {
       return { ok: false, error: e.message, needsSignIn: e.code === 'provider_needs_signin' };
     }
     const text = (c) => {
@@ -1215,9 +1249,34 @@ ipcMain.handle('autobot:poolsPreset', () => {
   return require('../orch-router').freellmPreset(base);
 });
 ipcMain.handle('autobot:getFeatures', () => store.getFeatures());
-ipcMain.handle('autobot:setFeatures', (e, patch) => {
-  const features = store.setFeatures(patch);
-  applyFeatures(features);
+ipcMain.handle('autobot:setFeatures', async (e, patch) => {
+  const prev = store.getFeatures ? store.getFeatures() : {};
+  const nextPatch = { ...(patch && typeof patch === 'object' ? patch : {}) };
+  let remoteChanged = false;
+  let wantRemote = Boolean(prev.remoteControl || prev.remoteServerEnabled);
+  if ('remoteControl' in nextPatch || 'remoteServerEnabled' in nextPatch) {
+    if ('remoteServerEnabled' in nextPatch && nextPatch.remoteServerEnabled !== prev.remoteServerEnabled) {
+      wantRemote = !!nextPatch.remoteServerEnabled;
+    } else if ('remoteControl' in nextPatch) {
+      wantRemote = !!nextPatch.remoteControl;
+    }
+    nextPatch.remoteControl = wantRemote;
+    nextPatch.remoteServerEnabled = wantRemote;
+    const hostRunning = Boolean(environments && environments.getState && environments.getState().hostServer && environments.getState().hostServer.running);
+    remoteChanged = (wantRemote !== Boolean(prev.remoteControl)) || (wantRemote !== hostRunning);
+  }
+  const features = store.setFeatures(nextPatch);
+  if (typeof applyFeatures === 'function') applyFeatures(features);
+  if (remoteChanged && environments && typeof environments.toggleHostServer === 'function') {
+    try {
+      const wsRoot = (store.getSettings && store.getSettings().cwd) || undefined;
+      const res = await environments.toggleHostServer(wantRemote, { workspaceRoot: wsRoot });
+      broadcastEnvChanged(res && res.state);
+    } catch (_) {}
+  }
+  if (typeof broadcast === 'function') {
+    try { broadcast({ type: 'features', features }); } catch (_) {}
+  }
   return features;
 });
 ipcMain.handle('autobot:getDefaultCwd', (event, convId, title) => {
@@ -1711,9 +1770,13 @@ ipcMain.handle('autobot:mcpCallTool', async (e, serverId, name, args) => {
 });
 ipcMain.handle('autobot:mcpDisconnect', (e, serverId) => { mcp.disconnect(serverId); return { ok: true }; });
 ipcMain.handle('autobot:mcpStatus', () => mcpStatus());
-ipcMain.handle('autobot:mcpConfig', (e, cwd) => {
+ipcMain.handle('autobot:mcpConfig', async (e, cwd) => {
   try {
-    const c = require('../claudeconfig').loadMcpServers(cwdFor(cwd));
+    const dir = cwdFor(cwd);
+    if (typeof autoConnectMcp === 'function') {
+      await autoConnectMcp(dir).catch(() => {});
+    }
+    const c = require('../claudeconfig').loadMcpServers(dir);
     return { servers: Object.keys(c.servers || {}), sources: c.sources || [], status: mcpStatus() };
   } catch (_) { return { servers: [], sources: [], status: [] }; }
 });
@@ -1841,6 +1904,14 @@ ipcMain.handle('autobot:envDeleteRemote', (e, id) => {
 ipcMain.handle('autobot:envTestRemote', (e, profileOrId) => environments.testRemote(profileOrId));
 ipcMain.handle('autobot:envToggleHostServer', async (e, enabled, opts) => {
   const res = await environments.toggleHostServer(!!enabled, opts || {});
+  try {
+    const features = store.setFeatures({
+      remoteControl: !!(res && res.running),
+      remoteServerEnabled: !!(res && res.running),
+    });
+    if (typeof applyFeatures === 'function') applyFeatures(features);
+    if (typeof broadcast === 'function') broadcast({ type: 'features', features });
+  } catch (_) {}
   broadcastEnvChanged(res && res.state);
   return res;
 });

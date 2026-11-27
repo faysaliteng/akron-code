@@ -645,6 +645,13 @@ export default function App() {
     if (window.autobot.complianceGet) window.autobot.complianceGet().then(setCompliance).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (!window.autobot || !window.autobot.mcpConfig) return;
+    window.autobot.mcpConfig(cwd).then((r) => {
+      if (r && Array.isArray(r.status)) setMcpServers(r.status);
+    }).catch(() => {});
+  }, [cwd]);
+
   // When the active conversation changes, switch the working folder to its
   // project workspace (or create one) — Claude Desktop per-project parity.
   useEffect(() => {
@@ -1668,7 +1675,10 @@ export default function App() {
         if (!r || !r.ok) { note('❌ Compact failed: ' + ((r && r.error) || 'unknown error')); break; }
         const digest = { id: uid(), role: 'assistant', content: '**Compacted conversation** — earlier turns were summarized.\n\n' + String(r.summary || ''), ts: Date.now() };
         setConvs((cs) => cs.map((c) => (c.id === activeId ? { ...c, messages: [digest], compactedAt: Date.now() } : c)));
-        if (r.usage) setLastUsage({ ...r.usage, model: r.model || model, at: Date.now() });
+        const compEst = Math.max(200, Math.round(String(r.summary || '').length / 3.8));
+        const nextCompUsage = { prompt_tokens: compEst, context_tokens: compEst, completion_tokens: Number(r.usage && r.usage.completion_tokens) || 0, total_tokens: compEst, calls: 1, model: r.model || model, estimated: true, convId: activeId, at: Date.now() };
+        recordConvUsage(activeId, nextCompUsage);
+        setLastUsage(nextCompUsage);
         break;
       }
       case 'model':
@@ -2513,7 +2523,7 @@ export default function App() {
     setPaused, setPermError, setPermissionQueue, setLastUsage,
     commitLive, setError, setModelMenuOpen, setQuestionQueue,
     setShowSettings, setPanel, setActiveId, setConvs, setCuConsent,
-    setPermissions, setPlanMode, setArtifactsExplicit, setNotice,
+    setPermissions, setPlanMode, setArtifactsExplicit, setNotice, setFeatures,
     openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
   });
   return (
@@ -2927,6 +2937,10 @@ export default function App() {
                   mcpServers={mcpServers} features={features} saveFeat={saveFeat}
                   runSlashCommand={runSlashCommand}
                   onOpenConnectors={() => openSettingsAt('mcp')}
+                  envState={envState} refreshEnvState={refreshEnvState}
+                  onSwitchEnvironment={switchEnvironment}
+                  onOpenEnvironments={() => openSettingsAt('environments')}
+                  activeConv={active} skills={skills} swarmEnabled={swarmEnabled} permissions={permissions} setNotice={setNotice}
                   T={T}
                 />
               </SessionPane>

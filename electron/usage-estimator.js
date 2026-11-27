@@ -94,21 +94,36 @@ function mergeUsageObjects(prev, next) {
 function normalizeCallUsage(rawUsage, wireMessages = [], tools = null, assistantMsg = null) {
   const u = rawUsage && typeof rawUsage === 'object' ? { ...rawUsage } : {};
 
-  // Anthropic includes input_tokens + cache_read_input_tokens + cache_creation_input_tokens
-  // for total context size fed to the model.
+  // Anthropic reports uncached tail in `input_tokens` plus separate cache-read/creation
+  // counters (sometimes nested under `cache_creation.ephemeral_*_input_tokens`).
+  // OpenAI/Codex/Gemini report total input including cached in `prompt_tokens` / `input_tokens`
+  // alongside `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens` / `cachedContentTokenCount`.
   const baseIn = num(u.prompt_tokens) || num(u.input_tokens);
-  const cacheRead = num(u.cache_read_input_tokens);
-  const cacheCreate = num(u.cache_creation_input_tokens);
-  const combinedAnthropicIn = num(u.input_tokens) + cacheRead + cacheCreate;
+  const anthCacheRead = num(u.cache_read_input_tokens);
+  const nestedCreation = u.cache_creation && typeof u.cache_creation === 'object'
+    ? (num(u.cache_creation.ephemeral_5m_input_tokens) + num(u.cache_creation.ephemeral_1h_input_tokens))
+    : 0;
+  const cacheCreate = Math.max(num(u.cache_creation_input_tokens), nestedCreation);
+  const otherCached = num(u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens)
+    + num(u.input_tokens_details && u.input_tokens_details.cached_tokens)
+    + num(u.cachedContentTokenCount)
+    + num(u.cached_tokens);
+  const cacheRead = Math.max(anthCacheRead, otherCached);
+  const combinedAnthropicIn = num(u.input_tokens) + anthCacheRead + cacheCreate;
 
-  let promptTokens = Math.max(baseIn, combinedAnthropicIn);
+  let promptTokens = Math.max(baseIn, combinedAnthropicIn, otherCached);
   let completionTokens = num(u.completion_tokens) || num(u.output_tokens);
   const reasoningTokens = num(u.reasoning_tokens);
   let estimated = false;
 
-  if (promptTokens <= 0 && Array.isArray(wireMessages) && wireMessages.length) {
-    promptTokens = estimatePromptTokens(wireMessages, tools);
-    if (promptTokens > 0) estimated = true;
+  if (Array.isArray(wireMessages) && wireMessages.length) {
+    const wireEst = estimatePromptTokens(wireMessages, tools);
+    if (promptTokens <= 0 || (wireEst >= 250 && promptTokens < wireEst * 0.2)) {
+      if (wireEst > 0) {
+        promptTokens = wireEst;
+        estimated = true;
+      }
+    }
   }
   if (completionTokens <= 0 && assistantMsg) {
     completionTokens = estimateAssistantTokens(assistantMsg);

@@ -458,10 +458,13 @@ export const contextWindowFor = (model) => {
 export const usedTokens = (u) => {
   if (!u) return 0;
   const ctx = Number(u.context_tokens);
-  if (Number.isFinite(ctx) && ctx > 0) return ctx;
-  const p = Number(u.prompt_tokens || u.input_tokens) || 0;
   const cacheRead = Number(u.cache_read_input_tokens) || 0;
   const cacheCreate = Number(u.cache_creation_input_tokens) || 0;
+  if (Number.isFinite(ctx) && ctx > 0) {
+    if (cacheRead + cacheCreate > ctx) return ctx + cacheRead + cacheCreate;
+    return ctx;
+  }
+  const p = Number(u.prompt_tokens || u.input_tokens) || 0;
   const calls = Number(u.calls) || 0;
   if (p > 0) return calls > 1 ? Math.round(p / calls) : p;
   if (cacheRead + cacheCreate > 0) return cacheRead + cacheCreate;
@@ -523,16 +526,19 @@ export function effectiveUsageForConv(lastUsage, activeConv, provider, live = nu
   let candidate = perConv;
   if (globalMatches && usedTokens(lastUsage) > usedTokens(perConv)) candidate = lastUsage;
   if (!candidate && globalMatches && lastUsage) candidate = lastUsage;
-  if (candidate && usedTokens(candidate) > 0) return candidate;
   const liveChars = live ? (String(live.content || '').length + JSON.stringify(live.tools || []).length) : 0;
-  const est = estimateConvBaselineTokens(activeConv, provider) + (liveChars > 0 ? Math.round(liveChars / 3.8) : 0);
-  if (est <= 0) return candidate || null;
+  const baselineEst = (hasMsgs ? estimateConvBaselineTokens(activeConv, provider) : 0)
+    + (liveChars > 0 ? Math.round(liveChars / 3.8) : 0);
+  const candTokens = usedTokens(candidate);
+  const poisonedSmall = Boolean(baselineEst >= 400 && candTokens < baselineEst * 0.2);
+  if (candidate && candTokens > 0 && !poisonedSmall) return candidate;
+  if (baselineEst <= 0) return candidate || null;
   return {
     ...(candidate || {}),
-    prompt_tokens: est,
-    context_tokens: est,
-    completion_tokens: 0,
-    total_tokens: est,
+    prompt_tokens: Math.max(Number(candidate && candidate.prompt_tokens) || 0, baselineEst),
+    context_tokens: baselineEst,
+    completion_tokens: Number(candidate && candidate.completion_tokens) || 0,
+    total_tokens: Math.max(Number(candidate && candidate.total_tokens) || 0, baselineEst + (Number(candidate && candidate.completion_tokens) || 0)),
     calls: Number(candidate && candidate.calls) || 1,
     model: (candidate && candidate.model) || (live && live.model) || (provider && provider.model) || '',
     estimated: true,

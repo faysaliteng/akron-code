@@ -1,3 +1,31 @@
+# Akron Code (`v1.5.1`) — Production Release Verification (2026-11-27)
+
+**Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.5.1`)
+
+## v1.5.1 Production Gate Summary
+
+| Gate | Command / Platform | Result |
+|---|---|---|
+| Static Syntax / JSX Check | `npm run typecheck` | ✅ `TYPECHECK_OK: verified 375 JS/JSX/MJS/CJS files with 0 syntax/transform errors.` |
+| Full Unit & Integration Suite | `npm test` (`test/*.test.js`) | ✅ **140 / 140 test suites/files passed (0 failures, 0 skipped)** |
+| Stripped-Cache `2`-Token & Real Remote Control Unit Tests | `node --test test/v151-env-context-remote.test.js` | ✅ **3 / 3 passed** (2-token stripped-cache normalization floor, poisoned `context_tokens: 2` recovery from `t1795783272909.jsonl`, HTTP `401`->`200` `/v1/env/ping` Remote Control host toggle, `Auto` `/compact` OAuth resolution, `autoConnectMcp` config hook) |
+| Deterministic Benchmark Evals | `npm run eval:all` | ✅ `EVAL_ALL: 70/70 passed (100%) in 203ms` |
+| Tool Parity Audit | `node scripts/parity-audit.js` | ✅ `DEFS: 184 · tools missing definition: 0 · tools missing handler: 0` |
+| Cross-Platform Audit | `node test/cross-platform-audit.test.js` | ✅ `CROSS_PLATFORM_AUDIT_ALL_PASS` (`0` `.map` files in `dist/` and ASAR) |
+| Cryptographic Brand Seal | `npm run brand:check` | ✅ `BRAND_SEAL_OK 12` (`MAC_ASAR_BRAND_OK: true`, `checkedFiles: 15`) |
+| Line Budget Check | `wc -l electron/main.js src/App.jsx` | ✅ `1539` (`< 1600`) and `3439` (`< 3500`) |
+| Live Electron UI E2E (`v1.5.1` Environment Pane) | `./node_modules/.bin/electron test/live/verify-v151-ui.cjs` | ✅ `UI_V151_E2E_OK` (`ctxTitle: "7% used"`, `ctxSub: "~13,872 / 200,000 tokens · claude-opus-5-5"`, `ringPct: "7%"`, live HTTP `200` `/v1/env/ping`, `42 msgs`, `263 REA`, `4 active · 4 total connectors`, `docs/screenshots/environment-pane-live-v151.png`) |
+| Packaged macOS ARM64 Build + Fuses + Codesign + Cold Boot | `npm run dist:mac`, `@electron/fuses`, `/Applications/Akron Code.app` | ✅ **6/6 Electron Fuses** (`RunAsNode=0, CookieEnc=1, NodeOpts=0, NodeInspect=0, OnlyAsar=1, AsarIntegrity=1`), `codesign --verify --deep --strict OK`, single Spotlight entry (`/Applications/Akron Code.app`), `COLD_BOOT_OK {"ok":true,"brandOk":true,"domOk":true,"ipcOk":true,"checkedFiles":15,"consoleErrorCount":0}` |
+
+### Verified Local macOS Build Checksums (`v1.5.1`)
+
+- `AkronCode-1.5.1-arm64.dmg`: `04375cfdd147fa716b68414c87bbe3daf6ddcdcf66b1d2530bfe12e6692674e6`
+- `AkronCode-1.5.1-arm64.zip`: `b457f87f38114632008966f8cc2b794a79121e70200219cbd42d58f09696841d`
+- `AkronBrowserBot-1.6.7.crx`: `a9275e0f9449990115fbb8589da1062f0c8abf308f2a94cbac4d2782c2fa343c`
+- `AkronBrowserBot-1.6.7.zip`: `ba1e136b8cceb10ea8657f1a9d065d001e8006dbe1c7fe27929b18ec0c918f3e`
+
+---
+
 # Akron Code (`v1.5.0`) — Production Release Verification (2026-11-27)
 
 **Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.5.0`)

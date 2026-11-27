@@ -672,6 +672,16 @@ function applyFeatures(features) {
   computer.setEnabled(!!features.computerUse);
   chrome.configure({ host: features.chromeHost || '127.0.0.1', port: features.chromePort || 9222 });
   registerQuickShortcuts(!!features.quickEntry);
+  try {
+    const cw = require('./cowork');
+    if (features.bridges) cw.startBridge().catch(() => {}); else cw.stopBridge();
+  } catch (_) {}
+  try {
+    if (features.computerUseTeach && computeruse.grant) computeruse.grant('access', { remember: true });
+  } catch (_) {}
+  try {
+    if (features.extensions && extHost && extHost.scan) extHost.scan();
+  } catch (_) {}
 }
 
 oauthCtrl = registerOauthModelIpc({ ipcMain, store, secretstore, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast, poolNoticeDeduper, bundledRuntimeDir: () => (runtimesCtrl ? runtimesCtrl.bundledRuntimeDir() : ''), getRuntimes: () => (runtimesCtrl ? runtimesCtrl.getRuntimes() : null) });
@@ -942,6 +952,16 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       if (verdict.decision === 'ask' && verdict.rule) return await promptPermission(toolName, toolArgs);
     } catch (_) {}
     if (permGate.checkConversationAllow(convId, toolName, toolArgs || {}, runCwd)) return true;
+    try {
+      const curFeat = store.getFeatures ? store.getFeatures() : {};
+      if (curFeat && curFeat.trustedFolders && runCwd && mode === 'ask') {
+        if (/^(Read|Glob|Grep|LS|CodebaseSearch|NotebookRead)$/i.test(toolName)) return true;
+        if (toolName === 'Bash' && toolArgs && (toolArgs.command || toolArgs.cmd)) {
+          require('./os-sandbox').checkCanonicalCommand(String(toolArgs.command || toolArgs.cmd), { protectCredentials: true });
+          return true;
+        }
+      }
+    } catch (_) {}
     if (mode === 'auto' || mode === 'bypass') return true;
     if (mode === 'plan') return false;
     if (mode === 'acceptEdits' && EDIT_TOOLS.has(toolName)) return true;
@@ -966,11 +986,15 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   try {
     send({ type: 'cwd', dir: runCwd });
     const resolvedOrch = await orchReady;
+    const buddyOn = Boolean(store.getFeatures && store.getFeatures().buddy);
+    const runMessages = buddyOn && Array.isArray(messages)
+      ? [{ role: 'system', content: 'Buddy Co-Pilot active: proactively spot edge-case bugs, race conditions, and missing checks in touched files before finishing.' }, ...messages]
+      : messages;
     const finalMessages = await runAgent({
       provider,
       orchestrator: resolvedOrch,
       delegationOrchestrator: delegationOrchestrator || resolvedOrch || orchSource,
-      messages,
+      messages: runMessages,
       cwd: runCwd,
       useMemory,
       maxSteps,
@@ -1219,7 +1243,7 @@ ipcMain.handle('autobot:openLegalDoc', (_e, which) => {
   return { ok: true, path: p };
 });
 
-registerFeaturesIpc({ app, ipcMain, shell, dialog, BrowserWindow, session, store, workspace, mcp, mcpStatus, shells, git, pluginsDir, scheduler, sandbox, secretstore, search, sessionDb, environments, depManager, updater, browser, gdrive, runAgent, providertransport, permGate, questionGate, pendingQuestions, windows, winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix, hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine, humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError });
+registerFeaturesIpc({ app, ipcMain, shell, dialog, BrowserWindow, session, store, workspace, mcp, mcpStatus, autoConnectMcp, shells, git, pluginsDir, scheduler, sandbox, secretstore, search, sessionDb, environments, depManager, updater, browser, gdrive, runAgent, providertransport, providerOauth, permGate, questionGate, pendingQuestions, windows, winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix, hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine, humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError });
 
 app.whenReady().then(() => {
   try { secretstore.migrateLegacySafeStorage(); } catch (_) {}

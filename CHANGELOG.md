@@ -2,6 +2,19 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.5.1] - 2026-11-27
+
+### Fixed & Wired End-to-End
+- **Stripped-Cache `2`-Token Context Bug & Poisoned Session Recovery (`electron/usage-estimator.js`, `src/utils/appHelpers.jsx`):**
+  - Added full vendor cache-token normalization across Anthropic nested `cache_creation.ephemeral_*_input_tokens`, OpenAI `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens` (without double-counting), and Gemini `cachedContentTokenCount` / `cached_tokens`, plus a wire-estimate sanity floor whenever OAuth gateways strip cached tokens down to uncached tail counts (such as `context_tokens: 2`).
+  - Updated `effectiveUsageForConv` and `usedTokens` so existing multi-turn conversations whose `usageByConv` held `<20%` truncated records automatically recover the true baseline token count.
+- **Modular Live Environment Pane (`src/components/chat/EnvPanelView.jsx`, `src/components/chat/WorkspaceViews.jsx`):**
+  - Synced `ContextMeter` ring `%` and `EnvPanel` header (`<1% used` / `7% used`, never `0% used` mismatch), replaced `"No connectors attached"` with live status across connected MCP servers + built-in `rea` (`263` tools), `Computer Use 2.0` (`24` tools), and `Akron Browser Bot (:8766)`, added live Execution Environment host switcher (`This Computer` / SSH / Remote), interactive inline `What is loaded` context inspector card, and spinner + post-compaction baseline refresh on `Compact now`.
+- **Real `Remote Control`, `Auto`-Mode `/compact`, & Feature Toggle Wiring (`electron/ipc/ipc-features.js`, `electron/main.js`, `src/App.jsx`):**
+  - Unified `features.remoteControl` and `features.remoteServerEnabled` with `environments.toggleHostServer` so toggling Remote Control starts/stops the real authenticated HTTP/WebSocket host server (`127.0.0.1:9477`) and shows live URL, **Copy Token**, and **Kill Switch** controls.
+  - Added `resolveCallableProvider` in `autobot:compact` & `autobot:chatOnce` so `/compact`, `/recap`, `/brief`, `/advisor`, and `/btw` resolve OAuth/Orchestrator routes when running in `Auto` mode (`baseURL: ''`).
+  - Made `autobot:mcpConfig` invoke `autoConnectMcp` on workspace load, and wired `bridges` (`cowork.startBridge`/`stopBridge`), `trustedFolders`, `computerUseTeach`, `extensions` (`extHost.scan`), and `buddy` in `electron/main.js`.
+
 ## [1.5.0] - 2026-11-27
 
 ### Fixed & Upgraded

@@ -10,6 +10,8 @@ import { MissionControlPane } from '../MissionControlPane.jsx';
 import { ProactiveDashboard } from '../ProactiveDashboard.jsx';
 import { MediaDocCardList } from '../MediaDocCard.jsx';
 import { ProjectsView, McpView } from '../../features/WorkspacePanels.jsx';
+import { EnvPanel, ContextMeter } from './EnvPanelView.jsx';
+export { EnvPanel, ContextMeter };
 import { IdeWorkbench } from '../../ide/IdeWorkbench.jsx';
 import { MindMapView } from '../../ide/MindMapView.jsx';
 import { shortcutLabels } from '../../ide/shortcuts';
@@ -62,27 +64,7 @@ export function RunActivity({ live, thinking, startedAt }) {
   );
 }
 
-export function ContextMeter({ used, win, size = 44 }) {
-  const rawPct = win > 0 && used > 0 ? Math.max(0, Math.min(100, (used / win) * 100)) : 0;
-  const arcPct = rawPct > 0 ? Math.max(rawPct, 2.5) : 0;
-  const r = (size - 6) / 2;
-  const c = 2 * Math.PI * r;
-  const dash = (arcPct / 100) * c;
-  const tone = rawPct >= 90 ? 'hot' : rawPct >= 70 ? 'warm' : 'cool';
-  return (
-    <span className={'ctx-meter ' + tone} title={fmtInt(used) + ' of ' + fmtInt(win) + ' tokens used'}>
-      <svg width={size} height={size} viewBox={'0 0 ' + size + ' ' + size}>
-        <circle className="ctx-track" cx={size / 2} cy={size / 2} r={r} strokeWidth="3" fill="none" />
-        <circle
-          className="ctx-arc" cx={size / 2} cy={size / 2} r={r} strokeWidth="3" fill="none"
-          strokeDasharray={dash + ' ' + c} strokeDashoffset="0"
-          transform={'rotate(-90 ' + size / 2 + ' ' + size / 2 + ')'}
-        />
-      </svg>
-      <span className="ctx-pct">{formatContextPct(used, win)}</span>
-    </span>
-  );
-}
+// ContextMeter moved to ./EnvPanelView.jsx (re-exported above)
 
 // ---------- context pressure toast ----------
 // The ring in the composer/Environment pane is easy to miss while typing, and
@@ -153,110 +135,7 @@ export function ContextLimitToast({ lastUsage, model, T }) {
   );
 }
 
-export function EnvPanel({ cwd, setCwd, provider, lastUsage, mcpServers, features, saveFeat, runSlashCommand, onOpenConnectors, T }) {
-  const model = (provider && provider.model) || '';
-  // The meter measures the turn that just ran, so prefer the model recorded
-  // in the usage event over whatever is selected now.
-  const win = contextWindowFor((lastUsage && lastUsage.model) || model);
-  const used = usedTokens(lastUsage);
-  const pct = win > 0 ? Math.round((used / win) * 100) : 0;
-  const connected = mcpServers || [];
-  const toolCount = connected.reduce((n, s) => n + ((s.tools && s.tools.length) || 0), 0);
-  // A server that answered but exposed no tools is the honest "needs
-  // reconnecting" signal — we never show a fabricated pending count.
-  const idle = connected.filter((s) => !s.tools || s.tools.length === 0);
-  const folderName = String(cwd || '').replace(/\/+$/, '').split('/').filter(Boolean).pop() || '~';
-  const chooseFolder = async () => {
-    const d = await window.autobot.pickFolder();
-    if (!d) return;
-    setCwd(d);
-    try {
-      const id = loadJSON('autobot:activeId', null);
-      if (id) window.autobot.setWorkspace(id, d).catch(() => {});
-    } catch (_) { /* workspace sync is best-effort */ }
-  };
-  return (
-    <div className="envpanel">
-      <section className="env-sec">
-        <div className="env-sec-title">This computer</div>
-        <div className="env-card">
-          <span className="env-ico"><Icon name="Laptop" size={16} /></span>
-          <div className="env-card-main">
-            <div className="env-card-title">This computer</div>
-            <div className="env-card-sub" title={cwd || '~'}>{folderName}{cwd ? ' · ' + cwd : ''}</div>
-          </div>
-        </div>
-        <button type="button" className="env-action" onClick={chooseFolder}>
-          <Icon name="Folder" size={14} /> Choose folder…
-        </button>
-      </section>
-
-      <section className="env-sec">
-        <div className="env-sec-title">Remote Control</div>
-        <button
-          type="button"
-          className={'env-toggle' + (features && features.remoteControl ? ' on' : '')}
-          onClick={() => saveFeat({ ...features, remoteControl: !(features && features.remoteControl) })}
-          aria-pressed={!!(features && features.remoteControl)}
-        >
-          <span className="env-toggle-track"><span className="env-toggle-knob" /></span>
-          <span className="env-toggle-label">
-            {features && features.remoteControl ? 'On — this machine can be driven remotely' : 'Off — local control only'}
-          </span>
-        </button>
-      </section>
-
-      <section className="env-sec">
-        <div className="env-sec-title">Context</div>
-        <div className="env-card">
-          <ContextMeter used={used} win={win} size={46} />
-          <div className="env-card-main">
-            <div className="env-card-title">{pct}% used</div>
-            <div className="env-card-sub">{fmtInt(used)} / {fmtInt(win)} tokens · {model ? model.split('/').pop() : 'no model'}</div>
-          </div>
-        </div>
-        <div className="env-meter"><span className={'env-meter-fill' + (pct >= 90 ? ' hot' : pct >= 70 ? ' warm' : '')} style={{ width: Math.max(1, Math.min(100, pct)) + '%' }} /></div>
-        <div className="env-row">
-          <button type="button" className="env-action" onClick={() => runSlashCommand('compact')}>
-            <Icon name="Frame" size={14} /> Compact now
-          </button>
-          <button type="button" className="env-action" onClick={() => runSlashCommand('context')}>
-            <Icon name="Activity" size={14} /> What is loaded
-          </button>
-        </div>
-      </section>
-
-      <section className="env-sec">
-        <div className="env-sec-title">Connectors</div>
-        {connected.length === 0 && (
-          <div className="env-empty">No connectors attached. Add an MCP server to give the agent more tools.</div>
-        )}
-        {connected.length > 0 && (
-          <div className="env-card-sub env-summary">
-            {connected.length} connected · {toolCount} tools{idle.length ? ' · ' + idle.length + ' need attention' : ''}
-          </div>
-        )}
-        {connected.map((s) => (
-          <div key={s.serverId} className={'env-conn' + (s.tools && s.tools.length ? '' : ' idle')}>
-            <span className="env-conn-dot" />
-            <span className="env-conn-name" title={s.url || s.name}>{s.name}</span>
-            <span className="env-conn-meta">{(s.tools && s.tools.length) || 0}</span>
-          </div>
-        ))}
-        <button type="button" className="env-action" onClick={onOpenConnectors}>
-          <Icon name="Connectors" size={14} /> Manage connectors
-        </button>
-      </section>
-
-      <section className="env-sec env-sec-last">
-        <div className="env-sec-title">Session</div>
-        <div className="env-card-sub env-summary">
-          {provider ? (provider.label || provider.id || 'provider') : 'no provider'} · tools {provider && provider.supportsTools === false ? 'via text protocol' : 'native'}
-        </div>
-      </section>
-    </div>
-  );
-}
+// EnvPanel moved cleanly to src/components/chat/EnvPanelView.jsx (re-exported above)
 
 // ---------- Mission Control (Swarm + Multi-agent dashboard) ----------
 const MC_PHASES = [

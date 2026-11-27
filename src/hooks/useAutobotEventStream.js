@@ -8,7 +8,7 @@ export function useAutobotEventStream({
   setPaused, setPermError, setPermissionQueue, setLastUsage,
   commitLive, setError, setModelMenuOpen, setQuestionQueue,
   setShowSettings, setPanel, setActiveId, setConvs, setCuConsent,
-  setPermissions, setPlanMode, setArtifactsExplicit, setNotice,
+  setPermissions, setPlanMode, setArtifactsExplicit, setNotice, setFeatures,
   openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
 }) {
   useEffect(() => {
@@ -556,6 +556,11 @@ export function useAutobotEventStream({
           // Settings changed in another window (or via IPC) — re-render gates.
           if (evt.state) {
             setCompliance((prev) => ({ ...(prev || { profile: null, catalog: [] }), state: evt.state }));
+          }
+          break;
+        case 'features':
+          if (evt.features && typeof setFeatures === 'function') {
+            setFeatures(evt.features);
           }
           break;
         case 'deeplink': {
