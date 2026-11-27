@@ -10,10 +10,9 @@ import { InlineEditWidget } from './InlineEditWidget';
 import { shortcutLabels } from './shortcuts';
 import { normalizeTypography, resolveMonoFontStack } from '../typography.js';
 
-export function extractSymbolsFromModel(model) {
-  if (!model) return [];
-  const text = model.getValue();
-  const lines = text.split('\n');
+export function extractSymbolsFromText(text) {
+  if (!text) return [];
+  const lines = String(text).split('\n');
   const syms = [];
   const patterns = [
     { re: /^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/, kind: 'function' },
@@ -32,6 +31,21 @@ export function extractSymbolsFromModel(model) {
     }
   }
   return syms;
+}
+
+export function extractSymbolsFromModel(model) {
+  if (!model) return [];
+  return extractSymbolsFromText(model.getValue());
+}
+
+export function getOrCreateFileModel(tab) {
+  if (!tab || !tab.path) return null;
+  const uri = monaco.Uri.file(tab.path);
+  let model = monaco.editor.getModel(uri);
+  if (!model) {
+    model = monaco.editor.createModel(tab.content || '', tab.language || 'plaintext', uri);
+  }
+  return model;
 }
 
 export function MonacoPane({
@@ -112,6 +126,8 @@ export function MonacoPane({
 
   const latestRef = useRef({});
   latestRef.current = {
+    tabs,
+    viewStates,
     activeTab,
     activeTabPath,
     onSaveTab,
@@ -176,9 +192,9 @@ export function MonacoPane({
     const monoFont = resolveMonoFontStack(typo);
     const codeFontSize = typo.monoSize || 13.5;
     const initTab = latestRef.current.activeTab;
+    const initModel = getOrCreateFileModel(initTab);
     const ed = monaco.editor.create(container, {
-      value: initTab ? initTab.content : '',
-      language: (initTab && initTab.language) || 'plaintext',
+      model: initModel || undefined,
       theme: theme === 'light' ? 'akron-light' : 'akron-dark',
       automaticLayout: true,
       minimap: { enabled: minimap },
@@ -194,18 +210,25 @@ export function MonacoPane({
     });
     editorRef.current = ed;
 
-    ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-      const r = latestRef.current;
-      r.onSaveTab && r.activeTabPath && r.onSaveTab(r.activeTabPath);
-    });
-    ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, () => latestRef.current.openCmdK(ed));
-    ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, () => latestRef.current.onOpenQuickOpen && latestRef.current.onOpenQuickOpen());
-    ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyO, () => latestRef.current.onOpenSymbols && latestRef.current.onOpenSymbols(extractSymbolsFromModel(ed.getModel())));
+    const bindEditorKeys = (targetEd) => {
+      targetEd.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+        const r = latestRef.current;
+        const m = targetEd.getModel();
+        const p = (m && m.uri && (m.uri.fsPath || m.uri.path)) || r.activeTabPath;
+        r.onSaveTab && p && r.onSaveTab(p);
+      });
+      targetEd.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, () => latestRef.current.openCmdK(targetEd));
+      targetEd.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, () => latestRef.current.onOpenQuickOpen && latestRef.current.onOpenQuickOpen());
+      targetEd.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyO, () => latestRef.current.onOpenSymbols && latestRef.current.onOpenSymbols(extractSymbolsFromModel(targetEd.getModel())));
+    };
+    bindEditorKeys(ed);
 
     const dContent = ed.onDidChangeModelContent(() => {
       const r = latestRef.current;
-      if (r.activeTabPath && r.onChangeTabContent) {
-        r.onChangeTabContent(r.activeTabPath, ed.getValue());
+      const m = ed.getModel();
+      const targetPath = (m && m.uri && (r.tabs || []).find((t) => monaco.Uri.file(t.path).toString() === m.uri.toString())?.path) || r.activeTabPath;
+      if (targetPath && r.onChangeTabContent) {
+        r.onChangeTabContent(targetPath, ed.getValue());
       }
     });
     const dCursor = ed.onDidChangeCursorSelection(() => {
@@ -255,14 +278,19 @@ export function MonacoPane({
       const r = latestRef.current;
       if (!r.onMarkersChange) return;
       const all = monaco.editor.getModelMarkers({});
-      const mapped = all.map((m) => ({
-        file: r.activeTabPath || (m.resource && m.resource.path) || '',
-        relPath: r.activeTab ? r.activeTab.relPath : '',
-        line: m.startLineNumber,
-        col: m.startColumn,
-        message: m.message,
-        severity: m.severity === monaco.MarkerSeverity.Error ? 'error' : 'warning',
-      }));
+      const mapped = all.map((m) => {
+        const resUri = m.resource ? m.resource.toString() : '';
+        const matchedTab = (r.tabs || []).find((t) => monaco.Uri.file(t.path).toString() === resUri);
+        const fsPath = matchedTab ? matchedTab.path : ((m.resource && (m.resource.fsPath || m.resource.path)) || r.activeTabPath || '');
+        return {
+          file: fsPath,
+          relPath: matchedTab ? matchedTab.relPath : ((m.resource && (m.resource.fsPath || m.resource.path)) || '').split(/[\\/]/).pop() || '',
+          line: m.startLineNumber,
+          col: m.startColumn,
+          message: m.message,
+          severity: m.severity === monaco.MarkerSeverity.Error ? 'error' : 'warning',
+        };
+      });
       r.onMarkersChange(mapped);
     });
 
@@ -276,27 +304,58 @@ export function MonacoPane({
     };
   }, [diffMode, hasActiveTab]);
 
-  // Sync active tab content/language into primary editor
+  // Switch attached per-file Monaco model & restore cursor/scroll ONLY on tab switch
   useEffect(() => {
     const ed = editorRef.current;
     if (!ed || !activeTab) return;
-    const model = ed.getModel();
-    if (model) {
-      if (model.getLanguageId() !== (activeTab.language || 'plaintext')) {
-        monaco.editor.setModelLanguage(model, activeTab.language || 'plaintext');
-      }
-      if (ed.getValue() !== activeTab.content) {
-        ed.setValue(activeTab.content || '');
-      }
-      const vs = viewStates && viewStates[activeTab.path];
-      if (vs) {
-        try {
-          if (vs.line) ed.setPosition({ lineNumber: vs.line, column: vs.column || 1 });
-          if (typeof vs.scrollTop === 'number') ed.setScrollTop(vs.scrollTop);
-        } catch (_) {}
+    const model = getOrCreateFileModel(activeTab);
+    if (!model) return;
+    if (ed.getModel() !== model) {
+      ed.setModel(model);
+    }
+    if (model.getLanguageId() !== (activeTab.language || 'plaintext')) {
+      monaco.editor.setModelLanguage(model, activeTab.language || 'plaintext');
+    }
+    const vs = latestRef.current.viewStates && latestRef.current.viewStates[activeTab.path];
+    if (vs) {
+      try {
+        if (vs.line) ed.setPosition({ lineNumber: vs.line, column: vs.column || 1 });
+        if (typeof vs.scrollTop === 'number') ed.setScrollTop(vs.scrollTop);
+      } catch (_) {}
+    }
+  }, [activeTab?.path]);
+
+  // Sync external disk reloads without resetting cursor during normal typing
+  useEffect(() => {
+    if (!activeTab) return;
+    const model = getOrCreateFileModel(activeTab);
+    if (!model) return;
+    if (model.getLanguageId() !== (activeTab.language || 'plaintext')) {
+      monaco.editor.setModelLanguage(model, activeTab.language || 'plaintext');
+    }
+    if (model.getValue() !== activeTab.content) {
+      const ed = editorRef.current;
+      const prevSel = ed && ed.getModel() === model ? ed.getSelection() : null;
+      model.setValue(activeTab.content || '');
+      if (ed && prevSel) {
+        try { ed.setSelection(prevSel); } catch (_) {}
       }
     }
-  }, [activeTab?.path, activeTab?.content, activeTab?.language]);
+  }, [activeTab?.content, activeTab?.language]);
+
+  // Dispose per-file Monaco models when their tabs close
+  const openTabsKey = tabs.map((t) => t.path).join('|');
+  useEffect(() => {
+    const openUris = new Set(tabs.map((t) => monaco.Uri.file(t.path).toString()));
+    try {
+      for (const m of monaco.editor.getModels()) {
+        if (m && m.uri && m.uri.scheme === 'file' && !openUris.has(m.uri.toString())) {
+          if (editorRef.current?.getModel() === m || splitEditorRef.current?.getModel() === m) continue;
+          try { m.dispose(); } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }, [openTabsKey]);
 
   useEffect(() => {
     const ed = editorRef.current;
@@ -334,9 +393,9 @@ export function MonacoPane({
     ensureMonaco();
     const typo = normalizeTypography(typography);
     const codeFontSize = typo.monoSize || 13.5;
+    const sharedModel = getOrCreateFileModel(splitTab);
     const ed = monaco.editor.create(container, {
-      value: splitTab.content || '',
-      language: splitTab.language || 'plaintext',
+      model: sharedModel || undefined,
       theme: theme === 'light' ? 'akron-light' : 'akron-dark',
       automaticLayout: true,
       minimap: { enabled: false },
@@ -348,8 +407,18 @@ export function MonacoPane({
       readOnly: false,
     });
     splitEditorRef.current = ed;
+    ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+      const r = latestRef.current;
+      r.onSaveTab && splitTab && r.onSaveTab(splitTab.path);
+    });
+    ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, () => latestRef.current.openCmdK(ed));
+    ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, () => latestRef.current.onOpenQuickOpen && latestRef.current.onOpenQuickOpen());
+    ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyO, () => latestRef.current.onOpenSymbols && latestRef.current.onOpenSymbols(extractSymbolsFromModel(ed.getModel())));
     const d = ed.onDidChangeModelContent(() => {
-      onChangeTabContent && onChangeTabContent(splitTab.path, ed.getValue());
+      const r = latestRef.current;
+      if (r.activeTabPath !== splitTab.path && r.onChangeTabContent) {
+        r.onChangeTabContent(splitTab.path, ed.getValue());
+      }
     });
     return () => {
       try { d.dispose(); } catch (_) {}
@@ -419,20 +488,51 @@ export function MonacoPane({
     const h = changes[safeIdx];
     if (!orig || !mod || !h) return;
     if (action === 'reject') {
-      const origRange = h.originalEndLineNumber >= h.originalStartLineNumber && h.originalStartLineNumber > 0
-        ? new monaco.Range(h.originalStartLineNumber, 1, h.originalEndLineNumber, orig.getLineMaxColumn(h.originalEndLineNumber))
-        : null;
-      const origText = origRange ? orig.getValueInRange(origRange) : '';
-      const modStart = Math.max(1, h.modifiedStartLineNumber);
-      const modEnd = Math.max(modStart, h.modifiedEndLineNumber || modStart);
-      const targetRange = h.modifiedEndLineNumber >= h.modifiedStartLineNumber && h.modifiedStartLineNumber > 0
-        ? new monaco.Range(modStart, 1, modEnd, mod.getLineMaxColumn(modEnd))
-        : new monaco.Range(modStart, 1, modStart, 1);
-      mod.pushEditOperations([], [{ range: targetRange, text: origText }], () => null);
+      const hasOrig = h.originalEndLineNumber >= h.originalStartLineNumber && h.originalStartLineNumber > 0 && h.originalEndLineNumber > 0;
+      const hasMod = h.modifiedEndLineNumber >= h.modifiedStartLineNumber && h.modifiedStartLineNumber > 0 && h.modifiedEndLineNumber > 0;
+      const modLines = mod.getLineCount();
+
+      if (!hasOrig && hasMod) {
+        // Pure insertion in modified -> delete full modified line block cleanly
+        const delRange = h.modifiedEndLineNumber < modLines
+          ? new monaco.Range(h.modifiedStartLineNumber, 1, h.modifiedEndLineNumber + 1, 1)
+          : h.modifiedStartLineNumber > 1
+            ? new monaco.Range(h.modifiedStartLineNumber - 1, mod.getLineMaxColumn(h.modifiedStartLineNumber - 1), h.modifiedEndLineNumber, mod.getLineMaxColumn(h.modifiedEndLineNumber))
+            : new monaco.Range(1, 1, h.modifiedEndLineNumber, mod.getLineMaxColumn(h.modifiedEndLineNumber));
+        mod.pushEditOperations([], [{ range: delRange, text: '' }], () => null);
+      } else if (hasOrig && !hasMod) {
+        // Pure deletion in modified -> insert original lines with proper newline
+        const origLinesText = orig.getValueInRange(new monaco.Range(h.originalStartLineNumber, 1, h.originalEndLineNumber, orig.getLineMaxColumn(h.originalEndLineNumber)));
+        const afterLine = Math.max(0, Math.min(modLines, h.modifiedStartLineNumber));
+        if (afterLine === 0 || h.modifiedStartLineNumber <= 1) {
+          mod.pushEditOperations([], [{ range: new monaco.Range(1, 1, 1, 1), text: origLinesText + '\n' }], () => null);
+        } else {
+          const prevCol = mod.getLineMaxColumn(afterLine);
+          mod.pushEditOperations([], [{ range: new monaco.Range(afterLine, prevCol, afterLine, prevCol), text: '\n' + origLinesText }], () => null);
+        }
+      } else if (hasOrig && hasMod) {
+        const origText = orig.getValueInRange(new monaco.Range(h.originalStartLineNumber, 1, h.originalEndLineNumber, orig.getLineMaxColumn(h.originalEndLineNumber)));
+        const targetRange = new monaco.Range(h.modifiedStartLineNumber, 1, h.modifiedEndLineNumber, mod.getLineMaxColumn(h.modifiedEndLineNumber));
+        mod.pushEditOperations([], [{ range: targetRange, text: origText }], () => null);
+      }
     } else if (action === 'accept' && activeTab) {
       await onSaveTab(activeTab.path);
-      if (window.autobot?.ideGitStage && cwd && activeTab.relPath) {
-        await window.autobot.ideGitStage({ cwd, files: [activeTab.relPath] });
+      if (cwd && activeTab.relPath) {
+        if (window.autobot?.ideGitStagePatch) {
+          const oStart = Math.max(1, h.originalStartLineNumber || 1);
+          const oCount = h.originalEndLineNumber >= h.originalStartLineNumber && h.originalEndLineNumber > 0 ? (h.originalEndLineNumber - h.originalStartLineNumber + 1) : 0;
+          const mStart = Math.max(1, h.modifiedStartLineNumber || 1);
+          const mCount = h.modifiedEndLineNumber >= h.modifiedStartLineNumber && h.modifiedEndLineNumber > 0 ? (h.modifiedEndLineNumber - h.modifiedStartLineNumber + 1) : 0;
+          const oLines = oCount ? Array.from({ length: oCount }, (_, i) => '-' + orig.getLineContent(oStart + i)) : [];
+          const mLines = mCount ? Array.from({ length: mCount }, (_, i) => '+' + mod.getLineContent(mStart + i)) : [];
+          const rel = String(activeTab.relPath).replace(/\\/g, '/');
+          const patch = [`diff --git a/${rel} b/${rel}`, `--- a/${rel}`, `+++ b/${rel}`, `@@ -${oCount ? oStart : Math.max(0, h.originalStartLineNumber)},${oCount} +${mCount ? mStart : Math.max(0, h.modifiedStartLineNumber)},${mCount} @@`, ...oLines, ...mLines, ''].join('\n');
+          await window.autobot.ideGitStagePatch({ cwd, patch }).catch(async () => {
+            if (window.autobot?.ideGitStage) await window.autobot.ideGitStage({ cwd, files: [activeTab.relPath] });
+          });
+        } else if (window.autobot?.ideGitStage) {
+          await window.autobot.ideGitStage({ cwd, files: [activeTab.relPath] });
+        }
       }
     }
   };
@@ -500,7 +600,7 @@ export function MonacoPane({
             title="Toggle Minimap"
             onClick={() => setMinimap((v) => !v)}
           >
-            <Icon name="Grid" size={13} />
+            <Icon name="ListBullet" size={13} />
           </button>
           <button
             type="button"

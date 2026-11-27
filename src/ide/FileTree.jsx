@@ -66,6 +66,8 @@ export function FileTree({
   onRefresh,
   onPickFolder,
   onAddToChat,
+  onEntryRenamed,
+  onEntryDeleted,
   onNotify,
   Icon,
 }) {
@@ -114,8 +116,10 @@ export function FileTree({
       const sep = modalPrompt.targetPath.includes('\\') ? '\\' : '/';
       const next = `${dir}${sep}${val}`;
       const r = await window.autobot.ideRenameEntry({ oldPath: modalPrompt.targetPath, newPath: next });
-      if (r && r.ok) onRefresh && onRefresh();
-      else onNotify && onNotify('❌ ' + (r?.error || 'Rename failed'));
+      if (r && r.ok) {
+        onEntryRenamed && onEntryRenamed(modalPrompt.targetPath, r.path || next);
+        onRefresh && onRefresh();
+      } else onNotify && onNotify('❌ ' + (r?.error || 'Rename failed'));
     }
     setModalPrompt(null);
   };
@@ -206,7 +210,7 @@ export function FileTree({
               <div className="ide-ctx-sep" />
               <button type="button" onClick={() => { const n = ctxMenu.node; setCtxMenu(null); setModalPrompt({ kind: 'rename', targetPath: n.path, value: n.name }); }}>Rename…</button>
               <button type="button" onClick={async () => { const p = ctxMenu.node.path; setCtxMenu(null); await window.autobot.ideDuplicateEntry({ path: p }); onRefresh && onRefresh(); }}>Duplicate</button>
-              <button type="button" className="danger" onClick={async () => { const p = ctxMenu.node.path; setCtxMenu(null); await window.autobot.ideDeleteEntry({ path: p }); onRefresh && onRefresh(); }}>Delete</button>
+              <button type="button" className="danger" onClick={async () => { const p = ctxMenu.node.path; setCtxMenu(null); const r = await window.autobot.ideDeleteEntry({ path: p }); if (r && r.ok !== false) { onEntryDeleted && onEntryDeleted(p); onRefresh && onRefresh(); } }}>Delete</button>
               <div className="ide-ctx-sep" />
               <button type="button" onClick={() => { navigator.clipboard?.writeText(ctxMenu.node.path).catch(() => {}); setCtxMenu(null); }}>Copy Path</button>
               <button type="button" onClick={() => { window.autobot.ideRevealInOS({ path: ctxMenu.node.path }); setCtxMenu(null); }}>{shortcutLabels().revealLabel}</button>

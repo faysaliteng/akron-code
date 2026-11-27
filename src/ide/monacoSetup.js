@@ -9,6 +9,24 @@ import TsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker&inli
 let initialized = false;
 let ghostDisposable = null;
 let codeActionDisposable = null;
+let fixCommandDisposable = null;
+let fixCallbackRef = null;
+let lspHoverDisposable = null;
+let lspDefDisposable = null;
+
+export function registerFixCommand() {
+  if (fixCommandDisposable) return fixCommandDisposable;
+  try {
+    if (monaco.editor && typeof monaco.editor.registerCommand === 'function') {
+      fixCommandDisposable = monaco.editor.registerCommand('akron.fixDiagnostic', (_accessor, arg) => {
+        if (typeof fixCallbackRef === 'function') {
+          fixCallbackRef(arg || {});
+        }
+      });
+    }
+  } catch (_) {}
+  return fixCommandDisposable;
+}
 
 export function ensureMonaco() {
   if (initialized) return monaco;
@@ -95,6 +113,8 @@ export function ensureMonaco() {
     tsNs.javascriptDefaults.setDiagnosticsOptions({ noSemanticValidation: true, noSyntaxValidation: false });
   }
 
+  registerFixCommand();
+
   return monaco;
 }
 
@@ -138,6 +158,8 @@ export function registerGhostTextProvider(fetchCompletionFn) {
 
 export function registerFixWithAkronAction(onFixCallback) {
   ensureMonaco();
+  registerFixCommand();
+  fixCallbackRef = typeof onFixCallback === 'function' ? onFixCallback : null;
   if (codeActionDisposable) { try { codeActionDisposable.dispose(); } catch (_) {} codeActionDisposable = null; }
   if (typeof onFixCallback !== 'function') return () => {};
   const cmdId = 'akron.fixDiagnostic';
@@ -146,21 +168,94 @@ export function registerFixWithAkronAction(onFixCallback) {
       const markers = (context && context.markers) || [];
       if (!markers.length) return { actions: [], dispose: () => {} };
       const top = markers[0];
+      const payload = { model, range, markers, primary: top, uri: model.uri.toString(), file: model.uri.fsPath || model.uri.path || '' };
       return {
         actions: [{
           title: '✦ Fix with Akron Code',
           kind: 'quickfix',
           isPreferred: true,
           diagnostics: markers,
-          run: () => onFixCallback({ model, range, markers, primary: top }),
-          command: { id: cmdId, title: 'Fix with Akron Code', arguments: [{ uri: model.uri.toString(), marker: top }] },
+          run: () => onFixCallback(payload),
+          command: { id: cmdId, title: 'Fix with Akron Code', arguments: [payload] },
         }],
         dispose: () => {},
       };
     },
   });
   return () => {
+    fixCallbackRef = null;
     if (codeActionDisposable) { try { codeActionDisposable.dispose(); } catch (_) {} codeActionDisposable = null; }
+  };
+}
+
+export function registerLspBridgeProviders(getCwdAndLang) {
+  ensureMonaco();
+  if (lspHoverDisposable) { try { lspHoverDisposable.dispose(); } catch (_) {} lspHoverDisposable = null; }
+  if (lspDefDisposable) { try { lspDefDisposable.dispose(); } catch (_) {} lspDefDisposable = null; }
+  if (typeof getCwdAndLang !== 'function') return () => {};
+
+  const toLspPos = (pos) => ({ line: Math.max(0, pos.lineNumber - 1), character: Math.max(0, pos.column - 1) });
+
+  lspHoverDisposable = monaco.languages.registerHoverProvider('*', {
+    async provideHover(model, position) {
+      try {
+        if (!window.autobot?.ideLspRequest) return null;
+        const { cwd } = getCwdAndLang(model) || {};
+        if (!cwd) return null;
+        const res = await window.autobot.ideLspRequest({
+          cwd,
+          language: model.getLanguageId(),
+          method: 'textDocument/hover',
+          params: { textDocument: { uri: model.uri.toString() }, position: toLspPos(position) },
+        });
+        const r = res && res.result;
+        if (!r || !r.contents) return null;
+        const contents = Array.isArray(r.contents) ? r.contents : [r.contents];
+        const md = contents.map((c) => (typeof c === 'string' ? { value: c } : { value: String(c.value || '') })).filter((c) => c.value);
+        return md.length ? { contents: md } : null;
+      } catch (_) {
+        return null;
+      }
+    },
+  });
+
+  lspDefDisposable = monaco.languages.registerDefinitionProvider('*', {
+    async provideDefinition(model, position) {
+      try {
+        if (!window.autobot?.ideLspRequest) return null;
+        const { cwd, onOpenLocation } = getCwdAndLang(model) || {};
+        if (!cwd) return null;
+        const res = await window.autobot.ideLspRequest({
+          cwd,
+          language: model.getLanguageId(),
+          method: 'textDocument/definition',
+          params: { textDocument: { uri: model.uri.toString() }, position: toLspPos(position) },
+        });
+        const raw = res && res.result;
+        const locs = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+        const mapped = locs
+          .filter((l) => l && (l.uri || l.targetUri) && (l.range || l.targetSelectionRange))
+          .map((l) => {
+            const u = monaco.Uri.parse(l.targetUri || l.uri);
+            const rng = l.targetSelectionRange || l.range;
+            if (onOpenLocation && u.fsPath && u.fsPath !== (model.uri.fsPath || '')) {
+              setTimeout(() => onOpenLocation(u.fsPath, rng.start.line + 1, rng.start.character + 1), 0);
+            }
+            return {
+              uri: u,
+              range: new monaco.Range(rng.start.line + 1, rng.start.character + 1, rng.end.line + 1, rng.end.character + 1),
+            };
+          });
+        return mapped.length ? mapped : null;
+      } catch (_) {
+        return null;
+      }
+    },
+  });
+
+  return () => {
+    if (lspHoverDisposable) { try { lspHoverDisposable.dispose(); } catch (_) {} lspHoverDisposable = null; }
+    if (lspDefDisposable) { try { lspDefDisposable.dispose(); } catch (_) {} lspDefDisposable = null; }
   };
 }
 

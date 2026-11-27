@@ -1,26 +1,42 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { shortcutLabels } from './shortcuts';
 
-function buildInlineDiffLines(oldText, newText) {
+export function buildInlineDiffLines(oldText, newText) {
   const a = String(oldText || '').split('\n');
   const b = String(newText || '').split('\n');
-  const out = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      out.push({ type: 'ctx', text: a[i] });
-      i++;
-      j++;
-    } else {
-      out.push({ type: 'del', text: a[i] });
-      out.push({ type: 'add', text: b[j] });
-      i++;
-      j++;
+  const n = a.length;
+  const m = b.length;
+  // Cap DP size for huge selections; exact LCS line diff for practical blocks
+  if (n * m <= 250000) {
+    const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = a[i] === b[j]
+          ? dp[i + 1][j + 1] + 1
+          : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
     }
+    const out = [];
+    let i = 0;
+    let j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) {
+        out.push({ type: 'ctx', text: a[i] });
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        out.push({ type: 'del', text: a[i++] });
+      } else {
+        out.push({ type: 'add', text: b[j++] });
+      }
+    }
+    while (i < n) out.push({ type: 'del', text: a[i++] });
+    while (j < m) out.push({ type: 'add', text: b[j++] });
+    return out;
   }
-  while (i < a.length) out.push({ type: 'del', text: a[i++] });
-  while (j < b.length) out.push({ type: 'add', text: b[j++] });
+  const out = [];
+  for (const ln of a) out.push({ type: 'del', text: ln });
+  for (const ln of b) out.push({ type: 'add', text: ln });
   return out;
 }
 

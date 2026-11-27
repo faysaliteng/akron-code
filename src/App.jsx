@@ -1170,6 +1170,8 @@ export default function App() {
       }
       const inMonaco = Boolean(e.target && e.target.closest && e.target.closest('.monaco-editor'));
       if (inMonaco) return;
+      const inAgentDock = Boolean(e.target && e.target.closest && e.target.closest('.ide-agent-dock'));
+      if (workbenchMode === 'ide' && !inAgentDock) return;
       if (e.key === 'k' || e.key === 'K') { e.preventDefault(); setShowPalette((v) => !v); }
       else if (e.key === 'f' || e.key === 'F') {
         if (workbenchMode === 'ide' && e.shiftKey) return;
@@ -8571,6 +8573,28 @@ function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, 
 
   const onDropFiles = async (e) => {
     e.preventDefault(); setDragOver(false);
+    const akronFileRaw = e.dataTransfer?.getData?.('text/akron-file');
+    if (akronFileRaw) {
+      try {
+        const meta = JSON.parse(akronFileRaw);
+        if (meta && meta.path) {
+          let content = '';
+          if (window.autobot?.ideReadFile) {
+            const r = await window.autobot.ideReadFile({ path: meta.path }).catch(() => null);
+            if (r && r.ok && !r.binary && !r.tooLarge) content = r.content || '';
+          }
+          setAttachments((a) => [...a, {
+            id: uid(),
+            kind: 'text',
+            name: meta.relPath || meta.name || meta.path,
+            path: meta.path,
+            size: Buffer ? undefined : content.length,
+            content,
+          }]);
+          return;
+        }
+      } catch (_) {}
+    }
     const files = e.dataTransfer?.files;
     if (files && files.length) {
       const atts = await filesToAttachments(files);
@@ -8735,7 +8759,7 @@ function InputBar({ streaming, paused, onPause, onResume, send, stop, inputRef, 
           onSwitchEnvironment={onSwitchEnvironment}
           onOpenEnvironments={onOpenEnvironments}
         />
-        <span className="cwd"><Icon name="Folder" size={13} /> {cwd || '~'}</span>
+        <span className="cwd" title={cwd || '~'}><Icon name="Folder" size={13} /><span className="cwd-text">{cwd || '~'}</span></span>
         {(!envState || !envState.active || envState.active.kind === 'local') ? (
           <button className="cwd-pick" onClick={async () => { const d = await window.autobot.pickFolder(); if (d) { setCwd(d); const id = loadJSON('autobot:activeId', null); if (id) window.autobot.setWorkspace(id, d).catch(() => {}); } }}>Change</button>
         ) : (

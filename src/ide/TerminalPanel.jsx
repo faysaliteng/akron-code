@@ -190,6 +190,9 @@ export function TerminalPanel({ cwd, theme, typography = null, initialBuffer = '
   const readersRef = useRef({});
   const searchersRef = useRef({});
   const initStartedRef = useRef(false);
+  const prevCwdRef = useRef(cwd);
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
   const searchInRef = useRef(null);
   const sc = shortcutLabels();
 
@@ -218,11 +221,11 @@ export function TerminalPanel({ cwd, theme, typography = null, initialBuffer = '
     try { await window.autobot.idePtyKill({ id }); } catch (_) {}
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== id);
-      if (activeId === id) setActiveId(next[0] ? next[0].id : null);
-      if (splitId === id) setSplitId(null);
+      setActiveId((cur) => (cur === id ? (next[0] ? next[0].id : null) : cur));
+      setSplitId((cur) => (cur === id ? null : cur));
       return next;
     });
-  }, [activeId, splitId]);
+  }, []);
 
   useEffect(() => {
     if (initStartedRef.current || tabs.length > 0) return;
@@ -230,11 +233,40 @@ export function TerminalPanel({ cwd, theme, typography = null, initialBuffer = '
     createTab(false);
   }, [createTab, tabs.length]);
 
+  // Reset and kill obsolete PTYs when workspace cwd changes
+  useEffect(() => {
+    if (prevCwdRef.current === cwd) return;
+    prevCwdRef.current = cwd;
+    const oldTabs = tabsRef.current || [];
+    for (const t of oldTabs) {
+      try { window.autobot?.idePtyKill?.({ id: t.id }); } catch (_) {}
+    }
+    setTabs([]);
+    setActiveId(null);
+    setSplitId(null);
+    initStartedRef.current = true;
+    createTab(false);
+  }, [cwd, createTab]);
+
+  // Clean up all remaining PTYs on unmount
+  useEffect(() => {
+    return () => {
+      for (const t of (tabsRef.current || [])) {
+        try { window.autobot?.idePtyKill?.({ id: t.id }); } catch (_) {}
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (!window.autobot || !window.autobot.onIdePtyExit) return undefined;
     return window.autobot.onIdePtyExit((evt) => {
       if (!evt || !evt.id) return;
-      setTabs((prev) => prev.filter((t) => t.id !== evt.id));
+      setTabs((prev) => {
+        const next = prev.filter((t) => t.id !== evt.id);
+        setActiveId((cur) => (cur === evt.id ? (next[0] ? next[0].id : null) : cur));
+        setSplitId((cur) => (cur === evt.id ? null : cur));
+        return next;
+      });
     });
   }, []);
 
@@ -320,7 +352,7 @@ export function TerminalPanel({ cwd, theme, typography = null, initialBuffer = '
             type="button"
             className={'ide-icon-btn' + (splitId ? ' active' : '')}
             title={splitId ? 'Close split terminal' : 'Split Terminal'}
-            onClick={() => (splitId ? setSplitId(null) : createTab(true))}
+            onClick={() => (splitId ? killTab(splitId) : createTab(true))}
           >
             <Icon name="ArrowSplitRight" size={13} />
           </button>

@@ -3,7 +3,8 @@ import { FileTree } from './FileTree';
 import { SearchPanel } from './SearchPanel';
 import { GitPanel } from './GitPanel';
 import { AgentChangesPanel } from './AgentChangesPanel';
-import { MonacoPane } from './MonacoPane';
+import { MonacoPane, extractSymbolsFromText } from './MonacoPane';
+import { registerLspBridgeProviders } from './monacoSetup';
 import { TerminalPanel } from './TerminalPanel';
 import { ProblemsPanel } from './ProblemsPanel';
 import { QuickOpenModal } from './QuickOpenModal';
@@ -111,6 +112,10 @@ export function IdeWorkbench({
       if (!opts.silent) setNotice && setNotice(`Binary file (${r.size} bytes) cannot be edited in text mode.`);
       return;
     }
+    if (r.tooLarge) {
+      if (!opts.silent) setNotice && setNotice(`File too large (${(Number(r.size || 0) / (1024 * 1024)).toFixed(1)} MB > 2 MB limit) — cannot load into editor.`);
+      return;
+    }
     const name = filePath.split(/[\\/]/).pop() || filePath;
     const tab = {
       path: r.path,
@@ -139,8 +144,21 @@ export function IdeWorkbench({
     if (!cwd) return undefined;
     let cancelled = false;
     setLayoutLoadedCwd(null);
+    setTabs([]);
+    setActiveTabPath(null);
+    setSplitTabPath(null);
+    setDiffState(null);
+    setLspMarkers([]);
+    setMonacoMarkers([]);
+    setCursorCtx(null);
+    setInitialTermBuffer('');
+    termSerializedRef.current = '';
     refreshTree();
     refreshGit();
+    const disposeLspBridge = registerLspBridgeProviders(() => ({
+      cwd,
+      onOpenLocation: (fp, ln, col) => openFile(fp, ln, col),
+    }));
     window.autobot?.ideLspStatus?.({ cwd }).then((st) => !cancelled && st && setLspInfo(st)).catch(() => {});
     window.autobot?.ideWatchWorkspace?.({ cwd }).catch(() => {});
 
@@ -180,6 +198,7 @@ export function IdeWorkbench({
 
     return () => {
       cancelled = true;
+      try { disposeLspBridge && disposeLspBridge(); } catch (_) {}
       window.autobot?.ideUnwatchWorkspace?.({ cwd }).catch(() => {});
     };
   }, [cwd, refreshTree, refreshGit]);
@@ -278,6 +297,9 @@ export function IdeWorkbench({
     });
   }, [cwd]);
 
+  const lspChangeTimersRef = useRef(new Map());
+  const lspVersionRef = useRef(new Map());
+
   const saveTab = useCallback(async (filePath) => {
     const tab = tabsRef.current.find((t) => t.path === filePath);
     if (!tab || !window.autobot?.ideWriteFile) return;
@@ -286,12 +308,27 @@ export function IdeWorkbench({
       setTabs((prev) => prev.map((t) => (t.path === filePath ? { ...t, savedContent: t.content, dirty: false } : t)));
       refreshGit();
       logOutput(`Saved ${tab.relPath}`);
+      window.autobot?.ideLspNotify?.({
+        cwd,
+        language: tab.language,
+        method: 'textDocument/didSave',
+        params: { file: tab.path, text: tab.content },
+      }).catch(() => {});
     } else {
       setError && setError('❌ Save failed: ' + (r?.error || 'unknown'));
     }
-  }, [refreshGit, logOutput, setError]);
+  }, [cwd, refreshGit, logOutput, setError]);
 
   const closeTab = useCallback((filePath) => {
+    const closing = tabsRef.current.find((t) => t.path === filePath);
+    if (closing) {
+      window.autobot?.ideLspNotify?.({
+        cwd,
+        language: closing.language,
+        method: 'textDocument/didClose',
+        params: { file: closing.path },
+      }).catch(() => {});
+    }
     setTabs((prev) => {
       const next = prev.filter((t) => t.path !== filePath);
       if (activeTabPath === filePath) {
@@ -301,11 +338,31 @@ export function IdeWorkbench({
       if (splitTabPath === filePath) setSplitTabPath(null);
       return next;
     });
-  }, [activeTabPath, splitTabPath]);
+  }, [cwd, activeTabPath, splitTabPath]);
 
   const changeTabContent = useCallback((filePath, content) => {
-    setTabs((prev) => prev.map((t) => (t.path === filePath ? { ...t, content, dirty: content !== t.savedContent } : t)));
-  }, []);
+    let tabLang = 'plaintext';
+    setTabs((prev) => prev.map((t) => {
+      if (t.path !== filePath) return t;
+      tabLang = t.language || 'plaintext';
+      return { ...t, content, dirty: content !== t.savedContent };
+    }));
+    if (window.autobot?.ideLspNotify && cwd) {
+      const prevTimer = lspChangeTimersRef.current.get(filePath);
+      if (prevTimer) clearTimeout(prevTimer);
+      lspChangeTimersRef.current.set(filePath, setTimeout(() => {
+        lspChangeTimersRef.current.delete(filePath);
+        const ver = (lspVersionRef.current.get(filePath) || 1) + 1;
+        lspVersionRef.current.set(filePath, ver);
+        window.autobot.ideLspNotify({
+          cwd,
+          language: tabLang,
+          method: 'textDocument/didChange',
+          params: { file: filePath, textDocument: { version: ver }, contentChanges: [{ text: content }] },
+        }).catch(() => {});
+      }, 250));
+    }
+  }, [cwd]);
 
   const handleViewStateChange = useCallback((filePath, vs) => {
     setViewStates((prev) => ({ ...prev, [filePath]: vs }));
@@ -333,14 +390,19 @@ export function IdeWorkbench({
     window.addEventListener('mouseup', onUp);
   };
 
-  // IDE shortcuts (Ctrl/Cmd + P, Shift+F, J, B)
+  // IDE shortcuts (Ctrl/Cmd + P, Shift+O, Shift+F, J, B)
   useEffect(() => {
     const onKey = (e) => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
+      const curTab = tabsRef.current.find((t) => t.path === activeTabPath) || null;
+      const curSyms = curTab ? extractSymbolsFromText(curTab.content) : [];
       if ((e.key === 'p' || e.key === 'P') && !e.shiftKey) {
         e.preventDefault();
-        setQuickOpen({ mode: 'files', initialQuery: '', symbols: [] });
+        setQuickOpen({ mode: 'files', initialQuery: '', symbols: curSyms });
+      } else if ((e.key === 'o' || e.key === 'O') && e.shiftKey) {
+        e.preventDefault();
+        setQuickOpen({ mode: 'symbols', initialQuery: '@', symbols: curSyms });
       } else if ((e.key === 'f' || e.key === 'F') && e.shiftKey) {
         e.preventDefault();
         setLeftTab('search');
@@ -354,7 +416,7 @@ export function IdeWorkbench({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [activeTabPath]);
 
   const allProblems = [...monacoMarkers, ...lspMarkers];
   const activeTab = tabs.find((t) => t.path === activeTabPath) || null;
@@ -425,25 +487,25 @@ export function IdeWorkbench({
         <div className="ide-activity-bar">
           <button
             type="button"
-            className={'ide-act-btn' + (leftTab === 'explorer' ? ' on' : '')}
+            className={'ide-act-btn' + (leftTab === 'explorer' && !showMindMap ? ' on' : '')}
             title="Explorer"
-            onClick={() => setLeftTab((t) => (t === 'explorer' ? null : 'explorer'))}
+            onClick={() => { setShowMindMap(false); setLeftTab((t) => (t === 'explorer' ? null : 'explorer')); }}
           >
             <Icon name="Files" size={18} />
           </button>
           <button
             type="button"
-            className={'ide-act-btn' + (leftTab === 'search' ? ' on' : '')}
+            className={'ide-act-btn' + (leftTab === 'search' && !showMindMap ? ' on' : '')}
             title={`Search & Replace (${sc.globalSearch})`}
-            onClick={() => setLeftTab((t) => (t === 'search' ? null : 'search'))}
+            onClick={() => { setShowMindMap(false); setLeftTab((t) => (t === 'search' ? null : 'search')); }}
           >
             <Icon name="Search" size={18} />
           </button>
           <button
             type="button"
-            className={'ide-act-btn' + (leftTab === 'git' ? ' on' : '')}
+            className={'ide-act-btn' + (leftTab === 'git' && !showMindMap ? ' on' : '')}
             title="Source Control (Git)"
-            onClick={() => setLeftTab((t) => (t === 'git' ? null : 'git'))}
+            onClick={() => { setShowMindMap(false); setLeftTab((t) => (t === 'git' ? null : 'git')); }}
           >
             <Icon name="GitBranch" size={18} />
             {gitBadgeCount > 0 && <span className="ide-act-badge">{gitBadgeCount}</span>}
@@ -513,6 +575,18 @@ export function IdeWorkbench({
                   onAddToChat={(node) => {
                     setRightOpen(true);
                     onAttachToChat && onAttachToChat({ name: node.name, path: node.path, relPath: node.relPath });
+                  }}
+                  onEntryRenamed={(oldPath, newPath) => {
+                    const nextName = newPath.split(/[\\/]/).pop() || newPath;
+                    const nextRel = relPathOf(cwd, newPath);
+                    setTabs((prev) => prev.map((t) => (t.path === oldPath ? { ...t, path: newPath, name: nextName, relPath: nextRel } : t)));
+                    setActiveTabPath((cur) => (cur === oldPath ? newPath : cur));
+                    setSplitTabPath((cur) => (cur === oldPath ? newPath : cur));
+                  }}
+                  onEntryDeleted={(deletedPath) => {
+                    setTabs((prev) => prev.filter((t) => t.path !== deletedPath && !t.path.startsWith(deletedPath + '/') && !t.path.startsWith(deletedPath + '\\')));
+                    setActiveTabPath((cur) => (cur === deletedPath ? null : cur));
+                    setSplitTabPath((cur) => (cur === deletedPath ? null : cur));
                   }}
                   onNotify={(msg) => setNotice && setNotice(msg)}
                   Icon={Icon}
@@ -602,9 +676,9 @@ export function IdeWorkbench({
               onCursorContext={setCursorCtx}
               onMarkersChange={setMonacoMarkers}
               onFixWithAgent={fixProblemWithAgent}
-              onOpenQuickOpen={() => setQuickOpen({ mode: 'files', initialQuery: '', symbols: [] })}
-              onOpenCommandCenter={() => setQuickOpen({ mode: 'files', initialQuery: '>', symbols: [] })}
-              onOpenSymbols={(syms) => setQuickOpen({ mode: 'symbols', initialQuery: '@', symbols: syms || [] })}
+              onOpenQuickOpen={() => setQuickOpen({ mode: 'files', initialQuery: '', symbols: activeTab ? extractSymbolsFromText(activeTab.content) : [] })}
+              onOpenCommandCenter={() => setQuickOpen({ mode: 'files', initialQuery: '>', symbols: activeTab ? extractSymbolsFromText(activeTab.content) : [] })}
+              onOpenSymbols={(syms) => setQuickOpen({ mode: 'symbols', initialQuery: '@', symbols: syms || (activeTab ? extractSymbolsFromText(activeTab.content) : []) })}
               pendingReveal={pendingReveal}
               viewStates={viewStates}
               onViewStateChange={handleViewStateChange}
@@ -615,64 +689,60 @@ export function IdeWorkbench({
             )}
           </div>
 
-          {bottomTab && (
-            <>
-              <div className="ide-resizer-h" onMouseDown={startDrag('y', bottomH, setBottomH, 110, 460, true)} />
-              <div className="ide-bottom-drawer" style={{ height: bottomH }}>
-                <div className="ide-drawer-head">
-                  <div className="ide-drawer-tabs">
-                    <button type="button" className={bottomTab === 'terminal' ? 'on' : ''} onClick={() => setBottomTab('terminal')}>
-                      Terminal
-                    </button>
-                    <button type="button" className={bottomTab === 'problems' ? 'on' : ''} onClick={() => setBottomTab('problems')}>
-                      Problems {allProblems.length > 0 && <span className="ide-prob-pill">{allProblems.length}</span>}
-                    </button>
-                    <button type="button" className={bottomTab === 'output' ? 'on' : ''} onClick={() => setBottomTab('output')}>
-                      Output
-                    </button>
-                  </div>
-                  <button type="button" className="ide-icon-btn" title={`Close Panel (${sc.toggleTerminal})`} onClick={() => setBottomTab(null)}>
-                    <Icon name="X" size={12} />
-                  </button>
-                </div>
-                <div className="ide-drawer-body">
-                  {bottomTab === 'terminal' && (
-                    <TerminalPanel
-                      cwd={cwd}
-                      theme={theme}
-                      typography={typography}
-                      initialBuffer={initialTermBuffer}
-                      onSerializeChange={(s) => {
-                        termSerializedRef.current = s || '';
-                      }}
-                      onSendToAgent={(snippet) => {
-                        setRightOpen(true);
-                        onSendToAgent && onSendToAgent(`Explain or fix this terminal output:\n\`\`\`\n${snippet}\n\`\`\``);
-                      }}
-                      Icon={Icon}
-                    />
-                  )}
-                  {bottomTab === 'problems' && (
-                    <ProblemsPanel
-                      problems={allProblems}
-                      onSelectProblem={(p) => openFile(p.file, p.line, p.col)}
-                      onFixProblem={fixProblemWithAgent}
-                      onFixAll={fixAllProblemsWithAgent}
-                      Icon={Icon}
-                    />
-                  )}
-                  {bottomTab === 'output' && (
-                    <div className="ide-output-panel">
-                      <div className="ide-output-lsp">
-                        LSP Bridges: {Object.entries(lspInfo).map(([k, v]) => `${k}: ${v.available ? (v.running ? 'running' : 'ready') : 'built-in Monaco'}`).join(' · ')}
-                      </div>
-                      <pre>{outputLogs.join('\n') || 'Workspace watcher and Monaco workers ready.'}</pre>
-                    </div>
-                  )}
-                </div>
+          <div className="ide-resizer-h" style={{ display: bottomTab ? undefined : 'none' }} onMouseDown={startDrag('y', bottomH, setBottomH, 110, 460, true)} />
+          <div className="ide-bottom-drawer" style={{ height: bottomH, display: bottomTab ? 'flex' : 'none' }}>
+            <div className="ide-drawer-head">
+              <div className="ide-drawer-tabs">
+                <button type="button" className={bottomTab === 'terminal' ? 'on' : ''} onClick={() => setBottomTab('terminal')}>
+                  Terminal
+                </button>
+                <button type="button" className={bottomTab === 'problems' ? 'on' : ''} onClick={() => setBottomTab('problems')}>
+                  Problems {allProblems.length > 0 && <span className="ide-prob-pill">{allProblems.length}</span>}
+                </button>
+                <button type="button" className={bottomTab === 'output' ? 'on' : ''} onClick={() => setBottomTab('output')}>
+                  Output
+                </button>
               </div>
-            </>
-          )}
+              <button type="button" className="ide-icon-btn" title={`Close Panel (${sc.toggleTerminal})`} onClick={() => setBottomTab(null)}>
+                <Icon name="X" size={12} />
+              </button>
+            </div>
+            <div className="ide-drawer-body">
+              <div style={{ display: bottomTab === 'terminal' ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0, height: '100%' }}>
+                <TerminalPanel
+                  cwd={cwd}
+                  theme={theme}
+                  typography={typography}
+                  initialBuffer={initialTermBuffer}
+                  onSerializeChange={(s) => {
+                    termSerializedRef.current = s || '';
+                  }}
+                  onSendToAgent={(snippet) => {
+                    setRightOpen(true);
+                    onSendToAgent && onSendToAgent(`Explain or fix this terminal output:\n\`\`\`\n${snippet}\n\`\`\``);
+                  }}
+                  Icon={Icon}
+                />
+              </div>
+              {bottomTab === 'problems' && (
+                <ProblemsPanel
+                  problems={allProblems}
+                  onSelectProblem={(p) => openFile(p.file, p.line, p.col)}
+                  onFixProblem={fixProblemWithAgent}
+                  onFixAll={fixAllProblemsWithAgent}
+                  Icon={Icon}
+                />
+              )}
+              {bottomTab === 'output' && (
+                <div className="ide-output-panel">
+                  <div className="ide-output-lsp">
+                    LSP Bridges: {Object.entries(lspInfo).map(([k, v]) => `${k}: ${v.available ? (v.running ? 'running' : 'ready') : 'built-in Monaco'}`).join(' · ')}
+                  </div>
+                  <pre>{outputLogs.join('\n') || 'Workspace watcher and Monaco workers ready.'}</pre>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Zone 4: Right Akron Code Agent & Swarm Dock */}
