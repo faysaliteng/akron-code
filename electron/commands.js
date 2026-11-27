@@ -406,6 +406,7 @@ const BUILTIN = [
   { name: 'release-notes', description: 'Version and release-info', guiEquivalent: true },
   { name: 'update', description: 'Install a newer build', aliases: ['upgrade', 'install'], guiEquivalent: true },
   { name: 'powerup', description: 'Quick tour of features', guiEquivalent: true },
+  { name: 'tutorial', description: 'Interactive hands-on tutorial, 1-click mode presets, and how-to guide', aliases: ['guide', 'onboarding', 'how-to', 'tour'], guiEquivalent: true },
   { name: 'team-onboarding', description: 'Onboarding guide for a teammate', guiEquivalent: true },
   { name: 'autofix-pr', description: 'Monitor and autofix issues on the current PR', guiEquivalent: true },
   { name: 'ultrareview', description: 'Exhaustive review of the pending changes', guiEquivalent: true },
@@ -460,6 +461,7 @@ const PINNED_ACTION_ORDER = [
   'skills',
   'plugins',
   'gdrive',
+  'tutorial',
   'help',
 ];
 

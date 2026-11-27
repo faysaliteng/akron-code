@@ -83,13 +83,14 @@ export function ComputerUseModal({ consent, answer }) {
   );
 }
 
-export function CommandPalette({ onClose, onNewChat, onSearch, onToggleBrowser, onToggleCode, onSettings, onQuickEntry, onAbout, onExport, onToggleSidebar, onToggleTheme }) {
+export function CommandPalette({ onClose, onNewChat, onSearch, onToggleBrowser, onToggleCode, onSettings, onOpenTutorial, onQuickEntry, onAbout, onExport, onToggleSidebar, onToggleTheme }) {
   const [q, setQ] = useState('');
   const inputRef = useRef(null);
   useEffect(() => { inputRef.current?.focus(); }, []);
 
   const COMMANDS = [
     { key: 'new', label: 'New chat', icon: 'Add', run: onNewChat },
+    { key: 'tutorial', label: 'Interactive Tutorial & How-To Guide…', icon: 'GraduationCap', run: () => onOpenTutorial && onOpenTutorial('tour') },
     { key: 'search', label: 'Search conversations…', icon: 'Search', run: onSearch },
     { key: 'browser', label: 'Toggle browser pane', icon: 'Globe', run: onToggleBrowser },
     { key: 'code', label: 'Code mode', icon: 'Code', run: onToggleCode },

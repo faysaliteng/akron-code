@@ -66,6 +66,8 @@ import { SettingsModalBody } from './components/settings/SettingsModalBody.jsx';
 import { resolveAgainstCwd, isHtmlPath, attachDocumentLinkRouter } from './utils/linkAndFileHelpers.js';
 import { sendDesktopNotification, convToMarkdown, convToHtml, escapeHtml, fmtSize, extractCodeBlocks, filesToAttachments, toggleDictation, useDismiss, priceFor, FREELLM_LOOPBACK_BASES, MODEL_WINDOW_CACHE, HARNESS_PROFILES, SOUND_PRESETS, playUiSound, extractLinks, fetchUnfurl, parseCodeInfo, copyTextToClipboard, extractMessageText } from './utils/appHelpers.jsx';
 import { extractPersistedSettings, mergeBootSettings, reconcileBootProvider, syncProviderForOrchestratorToggle, mergeBootUiState } from './utils/settingsPersistence.js';
+import { InteractiveTutorialModal, WelcomeQuickStartBar } from './components/InteractiveTutorialModal.jsx';
+import { TUTORIAL_SEEN_KEY, applyBeginnerPreset, shouldAutoOpenTutorial } from './utils/tutorialPresets.js';
 
 // Compact record of what the assistant actually did with tools last turn.
 // Model switches need this: the new model sees files + mindmap, but without the
@@ -218,6 +220,17 @@ export default function App() {
   // A keyless preset clicked in the model picker: Settings opens with it staged
   // and the session provider only switches once a key is saved.
   const [pendingPreset, setPendingPreset] = useState(null);
+  const [tutorialState, setTutorialState] = useState(() => ({
+    open: shouldAutoOpenTutorial({
+      tutorialSeen: Boolean(loadJSON(TUTORIAL_SEEN_KEY, false)),
+      isTestEnv: Boolean(typeof window !== 'undefined' && window.autobot && window.autobot.isTestEnv),
+      webdriver: typeof navigator !== 'undefined' && Boolean(navigator.webdriver),
+      search: typeof window !== 'undefined' && window.location ? window.location.search : '',
+    }),
+    tab: 'tour',
+  }));
+  const openTutorial = useCallback((tab = 'tour') => setTutorialState({ open: true, tab: tab === 'guide' ? 'guide' : 'tour' }), []);
+  const closeTutorial = useCallback(() => { saveJSON(TUTORIAL_SEEN_KEY, true); setTutorialState((s) => ({ ...s, open: false })); }, []);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => !!loadJSON('autobot:sidebarCollapsed', false));
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [scrolledAway, setScrolledAway] = useState(false);
@@ -2302,11 +2315,21 @@ export default function App() {
         break;
       }
       case 'powerup': {
-        note('**Quick tour** — start with `/help`, then try `/plan` for read-only exploration, `/compact` to shrink context, `/context` to see what is loaded, and `/usage` for tokens and cost.');
+        openTutorial('tour');
+        note('**Quick tour** — opened the **Interactive Hands-On Tutorial**. Try `/plan`, `/compact`, `/context`, and `/usage`.');
+        break;
+      }
+      case 'tutorial':
+      case 'guide':
+      case 'onboarding':
+      case 'how-to':
+      case 'tour': {
+        openTutorial(cmd === 'guide' || cmd === 'how-to' ? 'guide' : 'tour');
         break;
       }
       case 'team-onboarding': {
-        note('**Onboarding a teammate:** install the app, set a provider in Settings, open the project folder, then `/init` writes `CLAUDE.md`. `/usage` summarises tokens and cost.');
+        openTutorial('guide');
+        note('**Onboarding a teammate:** install the app, open **Guide & Tutorial** for 1-click presets, set your workspace folder, then `/init` writes `CLAUDE.md`.');
         break;
       }
       case 'autofix-pr': {
@@ -2648,6 +2671,7 @@ export default function App() {
                   attachments={attachments} setAttachments={setAttachments}
                   reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
                   swarmEnabled={swarmEnabled} setSwarmEnabled={setSwarmEnabled}
+                  onOpenTutorial={openTutorial}
                   styleId={styleId} setStyleId={setStyleId}
                   customStyles={customStyles} customAgents={customAgents} onOpenCustomizations={() => { setWorkbenchMode('agent'); setPanel('customizations'); }}
                   webSearch={webSearch} setWebSearch={setWebSearch}
@@ -2697,6 +2721,7 @@ export default function App() {
               <button className={panel === 'projects' ? 'on' : ''} onClick={() => setPanel('projects')} title={T('sidebar.projects')}><Icon name="Folder" size={15} /><span className="label">{T('sidebar.projects')}</span>{projects.length > 0 && <span className="count">{projects.length}</span>}</button>
               <button className={panel === 'artifacts' ? 'on' : ''} onClick={() => setPanel('artifacts')} title={T('sidebar.artifacts')}><Icon name="Artifacts" size={15} /><span className="label">{T('sidebar.artifacts')}</span>{artifacts.length > 0 && <span className="count">{artifacts.length}</span>}</button>
               <button className={panel === 'media' ? 'on' : ''} onClick={() => setPanel('media')} title="Images & Video Studio (AI Image & Video Generator + Library)"><Icon name="Palette" size={15} /><span className="label">Images &amp; Video</span></button>
+              <button className={tutorialState.open ? 'on' : ''} onClick={() => openTutorial('tour')} title="Interactive Tutorial, 1-Click Mode Setup & How-To Guide" data-testid="sidebar-tutorial-btn"><Icon name="GraduationCap" size={15} /><span className="label">Guide &amp; Tutorial</span></button>
               <div className="sidenav-dock">
                 <button
                   className={(panel === 'chats' ? sessionPane.type === 'files' : panel === 'code') ? 'on' : ''}
@@ -2781,7 +2806,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} uiSettings={settings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => openInIde(fp)} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} />}
+              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} uiSettings={settings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => openInIde(fp)} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} welcomeExtra={<WelcomeQuickStartBar provider={provider} orchestrator={orchestrator} swarmEnabled={swarmEnabled} onApplyPreset={(pid) => { const r = applyBeginnerPreset(pid, { provider, orchestrator, reasoningLevel, permissions }); setProvider(r.provider); saveOrchestrator(r.orchestrator); setSwarmEnabled(r.swarmEnabled); setReasoningLevel(r.reasoningLevel); setPermissions(r.permissions); if (r.notice) setNotice(r.notice); }} onOpenTutorial={openTutorial} onFillPrompt={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} />} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} initialTab={searchTab} provider={provider} onOpenSessionLink={openSessionDeepLink} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'mission' && (
                 <MissionControlPane
@@ -3006,6 +3031,7 @@ export default function App() {
               attachments={attachments} setAttachments={setAttachments}
               reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
               swarmEnabled={swarmEnabled} setSwarmEnabled={setSwarmEnabled}
+              onOpenTutorial={openTutorial}
               styleId={styleId} setStyleId={setStyleId}
               customStyles={customStyles} customAgents={customAgents} onOpenCustomizations={() => setPanel('customizations')}
               webSearch={webSearch} setWebSearch={setWebSearch}
@@ -3026,6 +3052,27 @@ export default function App() {
           )}
         </main>
       </div>
+      )}
+
+      {tutorialState.open && (
+        <InteractiveTutorialModal
+          initialTab={tutorialState.tab}
+          provider={provider}
+          orchestrator={orchestrator}
+          swarmEnabled={swarmEnabled}
+          permissions={permissions}
+          cwd={cwd}
+          mcpServers={mcpServers}
+          providerKeys={providerKeys}
+          onApplyPreset={(pid) => { const r = applyBeginnerPreset(pid, { provider, orchestrator, reasoningLevel, permissions }); setProvider(r.provider); saveOrchestrator(r.orchestrator); setSwarmEnabled(r.swarmEnabled); setReasoningLevel(r.reasoningLevel); setPermissions(r.permissions); if (r.notice) setNotice(r.notice); }}
+          onClose={closeTutorial}
+          onOpenSettings={(sec) => openSettingsAt(sec || 'providers')}
+          onNewChat={newChat}
+          onTogglePane={(tp) => toggleSessionPane(tp)}
+          onPickFolder={async () => { const d = await window.autobot.pickFolder(); if (d) { setCwd(d); if (activeId) window.autobot.setWorkspace(activeId, d).catch(() => {}); } }}
+          onFillPrompt={(txt) => { setPanel('chats'); setTimeout(() => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }, 30); }}
+          onRunPrompt={(txt) => { setPanel('chats'); setTimeout(() => send(txt), 30); }}
+        />
       )}
 
       {showSettings && (
@@ -3086,6 +3133,7 @@ export default function App() {
           onToggleBrowser={() => { setShowPalette(false); toggleSessionPane('browser'); }}
           onToggleCode={() => { setShowPalette(false); setPanel('code'); }}
           onSettings={() => { setShowPalette(false); setShowSettings(true); }}
+          onOpenTutorial={(tab) => { setShowPalette(false); openTutorial(tab); }}
           onQuickEntry={() => { setShowPalette(false); window.autobot.openQuickEntry(); }}
           onAbout={() => { setShowPalette(false); window.autobot.openAbout(); }}
           onExport={() => { setShowPalette(false); if (active) exportConv(active); }}

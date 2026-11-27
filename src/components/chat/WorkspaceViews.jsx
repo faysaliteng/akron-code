@@ -521,7 +521,7 @@ export function SegmentView({ segments, tools, streaming }) {
 }
 
 // ---------- Chat view ----------
-function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, thinking, paused, onScrollAway, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onLearnSkill, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError, onPromptAction, onOpenInIde, onOpenMediaStudio, onConfigureMediaKey, uiSettings }) {
+function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, thinking, paused, onScrollAway, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onLearnSkill, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError, onPromptAction, onOpenInIde, onOpenMediaStudio, onConfigureMediaKey, uiSettings, welcomeExtra = null }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [subExpanded, setSubExpanded] = useState(false);
@@ -781,10 +781,11 @@ function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, t
         </div>
       </div>
       {messages.length === 0 && !live && (
-        <div className="welcome">
+        <div className={'welcome' + (welcomeExtra ? ' has-quickstart' : '')}>
           <Logo size={56} />
           <h1>{timeGreeting()}</h1>
           <p className="muted">{T('welcome.prompt')}</p>
+          {welcomeExtra}
         </div>
       )}
       {MessageComponent && messages.map((m, i) => <MessageComponent key={m.id} m={m} convId={convId} cwd={cwd} idx={i} turnLabel={turnPrompts[i]} subAgentCount={subCount} taskCount={bgTasksCount} uiSettings={uiSettings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} onOpenMediaStudio={onOpenMediaStudio} onConfigureMediaKey={onConfigureMediaKey} />)}

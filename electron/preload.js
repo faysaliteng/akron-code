@@ -2,6 +2,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('autobot', {
+  isTestEnv: Boolean(process.env.AKRON_NO_DIALOG === '1' || process.env.AKRON_COLD_BOOT_CHECK === '1' || process.env.NODE_ENV === 'test'),
   run: (payload) => ipcRenderer.invoke('autobot:run', payload),
   pause: (runId) => ipcRenderer.invoke('autobot:pause', runId),
   resume: (runId, steeringNote) => ipcRenderer.invoke('autobot:resume', runId, steeringNote),
