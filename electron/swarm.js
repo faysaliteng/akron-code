@@ -15,6 +15,23 @@
 const TIER_RANK = { small: 0, heavy: 1, critical: 2 };
 const router = require('./orch-router');
 const gate = require('./provider-gate');
+const usageEstimator = require('./usage-estimator');
+
+function ensureHighThinkingSupervisor(sup, roster = []) {
+  if (!sup || typeof sup !== 'object') return sup;
+  let picked = { ...sup };
+  const curModel = String(picked.model || '').trim();
+  // Prefer the matching `-high` variant over `-low` or `-medium` on the same provider/tier when present.
+  if (curModel && /-(?:low|medium)$/i.test(curModel) && Array.isArray(roster) && roster.length) {
+    const highSlug = curModel.replace(/-(?:low|medium)$/i, '-high');
+    const match = roster.find((r) => r && String(r.model || '').trim().toLowerCase() === highSlug.toLowerCase());
+    if (match) picked = { ...match, tier: 'critical' };
+    else if (String(picked.oauthProvider || '').toLowerCase().startsWith('antigravity')) picked.model = highSlug;
+  }
+  if (!picked._disableThinking) picked.reasoningLevel = 'high';
+  picked.tier = 'critical';
+  return picked;
+}
 
 // The supervisor plans and reviews; it must not start building during planning.
 // During review it may run commands and repair integration defects / missing pieces.
@@ -638,6 +655,32 @@ async function swarm(goal, opts = {}) {
   if (!goal || !String(goal).trim()) throw new Error('swarm requires a goal');
   const emit = opts.emit || (() => {});
   const started = Date.now();
+  const swarmUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0, context_tokens: 0, model: '' };
+  const trackedRunAgent = async (agentOpts = {}) => {
+    const callerEmit = typeof agentOpts.emit === 'function' ? agentOpts.emit : () => {};
+    let memberLastUsage = null;
+    const out = await runAgent({
+      ...agentOpts,
+      emit: (evt) => {
+        if (evt && evt.type === 'usage' && evt.usage) memberLastUsage = evt.usage;
+        else if (evt && evt.type === 'done' && evt.usage) memberLastUsage = evt.usage;
+        callerEmit(evt);
+      },
+    });
+    const lastU = memberLastUsage || (Array.isArray(out) ? ([...out].reverse().find((m) => m && m.usage) || {}).usage : null);
+    const normU = usageEstimator.normalizeCallUsage(lastU);
+    if (normU) {
+      swarmUsage.prompt_tokens += normU.prompt_tokens || 0;
+      swarmUsage.completion_tokens += normU.completion_tokens || 0;
+      swarmUsage.total_tokens += normU.total_tokens || 0;
+      swarmUsage.calls += Number(lastU && lastU.calls) || 1;
+      const ctx = Number(lastU && lastU.context_tokens) || normU.prompt_tokens || 0;
+      if (ctx > swarmUsage.context_tokens) swarmUsage.context_tokens = ctx;
+      if (!swarmUsage.model && (lastU && lastU.model)) swarmUsage.model = lastU.model;
+      emit({ type: 'usage', subrun: true, usage: { ...swarmUsage }, model: swarmUsage.model });
+    }
+    return out;
+  };
   // Role pools (FreeLLMAPI layout): supervisor on Planner, workers on Coder
   // (or the role/tier the plan asks for), each with its own downward failover
   // chain. Without pools the swarm keeps the frontier-only roster, but every
@@ -680,16 +723,23 @@ async function swarm(goal, opts = {}) {
   };
 
   // Supervisor: an explicit pin wins; otherwise Planner / the strongest tier.
+  // Supervisor thinking mode is ALWAYS forced to 'high' (+ `-high` variant when available).
   let supervisorOrch = null;
   let supervisor = null;
   if (opts.supervisor) {
-    supervisor = { ...opts.supervisor, tier: 'critical' };
+    supervisor = ensureHighThinkingSupervisor({ ...opts.supervisor, tier: 'critical' }, roster);
   } else {
     supervisorOrch = chainFor('critical', 0, 'planner');
-    supervisor = supervisorOrch ? { ...supervisorOrch.providers[0], tier: 'critical' }
-      : (opts.provider ? { ...opts.provider, tier: 'critical' } : null);
+    supervisor = supervisorOrch ? ensureHighThinkingSupervisor({ ...supervisorOrch.providers[0], tier: 'critical' }, roster)
+      : (opts.provider ? ensureHighThinkingSupervisor({ ...opts.provider, tier: 'critical' }, roster) : null);
   }
   if (!supervisor) throw new Error('swarm has no model to run on (configure a provider or an orchestrator tier)');
+  if (supervisorOrch && Array.isArray(supervisorOrch.providers)) {
+    supervisorOrch = {
+      ...supervisorOrch,
+      providers: supervisorOrch.providers.map((p) => ensureHighThinkingSupervisor(p, roster)),
+    };
+  }
   const keyOf = (r) => (r && r.oauthProvider
     ? 'oauth|' + r.oauthProvider + '|' + String(r.model || '')
     : String((r && r.baseURL) || '') + '|' + String((r && r.model) || ''));
@@ -704,7 +754,7 @@ async function swarm(goal, opts = {}) {
     phase: 'start',
     goal,
     pools: !!poolOrch,
-    supervisor: { model: supervisor.model, baseURL: supervisor.baseURL },
+    supervisor: { model: supervisor.model, baseURL: supervisor.baseURL, reasoningLevel: supervisor.reasoningLevel || 'high' },
     roster: roster.map((r) => ({ model: r.model, tier: r.tier, role: r.jobRole || undefined })),
   });
 
@@ -717,7 +767,7 @@ async function swarm(goal, opts = {}) {
   }
   if (!plan) {
     plan = await decompose({
-      runAgent, supervisor, supervisorOrch, roster, rosterText, goal, emit,
+      runAgent: trackedRunAgent, supervisor, supervisorOrch, roster, rosterText, goal, emit,
       maxTasks: opts.maxTasks, maxSteps: opts.maxSteps, cwd: opts.cwd, signal: opts.signal,
     });
   }
@@ -945,7 +995,7 @@ async function swarm(goal, opts = {}) {
     emit({ type: 'subagent', id: agentId, name, status: 'running', role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, round });
     try {
       if (workerAc.signal.aborted) throw new Error('aborted');
-      const out = await runAgent({
+      const out = await trackedRunAgent({
         provider: p,
         orchestrator: task.chain || null,
         messages: [{ role: 'user', content: workerPrompt(String(goal), task, { me: workerName, channel }) + (briefing ? '\n\n' + briefing : '') }],
@@ -1114,7 +1164,7 @@ async function swarm(goal, opts = {}) {
         const effectiveReviewTools = (opts.readOnly === true || opts.permissionMode === 'plan')
           ? READONLY_REVIEW_TOOLS
           : ((opts.allowReviewRepair === true || hasWorkerErrors) ? REVIEW_TOOLS : READONLY_REVIEW_TOOLS);
-        const out = await runAgent({
+        const out = await trackedRunAgent({
           provider: supervisor,
           orchestrator: supervisorOrch,
           messages: [{
@@ -1145,8 +1195,9 @@ async function swarm(goal, opts = {}) {
     answer = done.map((r) => `### ${r.title} (${r.role || r.tier} · ${r.model || 'model'})\n${r.result}`).join('\n\n');
   }
 
+  if (!swarmUsage.model) swarmUsage.model = supervisor.model;
   const summary = {
-    supervisor: { model: supervisor.model, baseURL: supervisor.baseURL },
+    supervisor: { model: supervisor.model, baseURL: supervisor.baseURL, reasoningLevel: supervisor.reasoningLevel || 'high' },
     planSource: source,
     pools: !!poolOrch,
     tasks: tasks.map(({ chain, provider, ...t }) => ({ ...t, model: t.model })),
@@ -1155,6 +1206,7 @@ async function swarm(goal, opts = {}) {
     members: board.status(),
     answer,
     reviewError,
+    usage: swarmUsage.total_tokens > 0 ? { ...swarmUsage } : null,
     ms: Date.now() - started,
   };
   emit({ type: 'swarm', phase: 'done', ms: summary.ms, answer: answer.slice(0, 4000) });
@@ -1162,7 +1214,7 @@ async function swarm(goal, opts = {}) {
 }
 
 module.exports = {
-  TIER_RANK, normalizeTier, buildRoster, pickProvider, rosterSummary, isFrontier,
+  TIER_RANK, normalizeTier, ensureHighThinkingSupervisor, buildRoster, pickProvider, rosterSummary, isFrontier,
   extractJSON, normalizePlan, swarm, decompose,
   createBoard, boardTools, STALL_NOTE, PLAN_TOOLS, READONLY_REVIEW_TOOLS, REVIEW_TOOLS, MAX_CONCURRENCY,
   SUPERVISOR_PLAN_PROMPT, SUPERVISOR_MERGE_PROMPT,

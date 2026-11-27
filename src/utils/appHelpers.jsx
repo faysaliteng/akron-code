@@ -459,9 +459,91 @@ export const usedTokens = (u) => {
   if (!u) return 0;
   const ctx = Number(u.context_tokens);
   if (Number.isFinite(ctx) && ctx > 0) return ctx;
-  const p = Number(u.prompt_tokens) || 0;
+  const p = Number(u.prompt_tokens || u.input_tokens) || 0;
+  const cacheRead = Number(u.cache_read_input_tokens) || 0;
+  const cacheCreate = Number(u.cache_creation_input_tokens) || 0;
   const calls = Number(u.calls) || 0;
-  return calls > 1 ? Math.round(p / calls) : p;
+  if (p > 0) return calls > 1 ? Math.round(p / calls) : p;
+  if (cacheRead + cacheCreate > 0) return cacheRead + cacheCreate;
+  return 0;
+};
+export const USAGE_BY_CONV_KEY = 'autobot:usageByConv';
+export function recordConvUsage(convId, usage) {
+  if (!convId || !usage || typeof usage !== 'object') return;
+  try {
+    const map = loadJSON(USAGE_BY_CONV_KEY, {}) || {};
+    const keys = Object.keys(map);
+    if (keys.length > 80 && !map[convId]) {
+      keys.sort((a, b) => (Number(map[a]?.at) || 0) - (Number(map[b]?.at) || 0));
+      for (let i = 0; i < keys.length - 60; i++) delete map[keys[i]];
+    }
+    const prev = map[convId] || null;
+    const nextCtx = usedTokens(usage);
+    if (prev && nextCtx <= 0 && usedTokens(prev) > 0) {
+      map[convId] = { ...prev, ...usage, context_tokens: prev.context_tokens || usedTokens(prev), prompt_tokens: usage.prompt_tokens || prev.prompt_tokens, at: Date.now() };
+    } else {
+      map[convId] = { ...usage, convId, at: Number(usage.at) || Date.now() };
+    }
+    saveJSON(USAGE_BY_CONV_KEY, map);
+  } catch (_) {}
+}
+export function loadConvUsage(convId) {
+  if (!convId) return null;
+  try {
+    const map = loadJSON(USAGE_BY_CONV_KEY, {}) || {};
+    return map[convId] || null;
+  } catch (_) {
+    return null;
+  }
+}
+export function estimateConvBaselineTokens(conv, provider) {
+  if (!conv || !Array.isArray(conv.messages) || conv.messages.length === 0) return 0;
+  let chars = 0;
+  for (const m of conv.messages) {
+    if (!m) continue;
+    chars += msgText(m).length;
+    if (Array.isArray(m.tools)) chars += JSON.stringify(m.tools).length;
+    if (Array.isArray(m.attachments)) {
+      for (const a of m.attachments) chars += (a && a.content ? String(a.content).length : (a && a.isImage ? 4000 : 120));
+    }
+  }
+  const sysOverhead = provider && provider.supportsTools === false ? 300 : 2200;
+  return Math.max(1, Math.round(chars / 3.8) + sysOverhead);
+}
+export function effectiveUsageForConv(lastUsage, activeConv, provider, live = null) {
+  const cid = activeConv && activeConv.id;
+  const hasMsgs = Boolean(activeConv && Array.isArray(activeConv.messages) && activeConv.messages.length > 0);
+  const perConv = cid ? loadConvUsage(cid) : null;
+  const globalMatches = Boolean(lastUsage && (!lastUsage.convId || (cid && lastUsage.convId === cid)));
+  const liveHasData = Boolean(live && (live.content || (Array.isArray(live.tools) && live.tools.length)));
+  if (!hasMsgs && !liveHasData) {
+    if (globalMatches && usedTokens(lastUsage) > 0 && lastUsage.convId === cid) return lastUsage;
+    return null;
+  }
+  let candidate = perConv;
+  if (globalMatches && usedTokens(lastUsage) > usedTokens(perConv)) candidate = lastUsage;
+  if (!candidate && globalMatches && lastUsage) candidate = lastUsage;
+  if (candidate && usedTokens(candidate) > 0) return candidate;
+  const liveChars = live ? (String(live.content || '').length + JSON.stringify(live.tools || []).length) : 0;
+  const est = estimateConvBaselineTokens(activeConv, provider) + (liveChars > 0 ? Math.round(liveChars / 3.8) : 0);
+  if (est <= 0) return candidate || null;
+  return {
+    ...(candidate || {}),
+    prompt_tokens: est,
+    context_tokens: est,
+    completion_tokens: 0,
+    total_tokens: est,
+    calls: Number(candidate && candidate.calls) || 1,
+    model: (candidate && candidate.model) || (live && live.model) || (provider && provider.model) || '',
+    estimated: true,
+    convId: cid || null,
+  };
+}
+export const formatContextPct = (used, win) => {
+  if (!(win > 0) || !(used > 0)) return '0%';
+  const raw = (used / win) * 100;
+  if (raw < 1) return '<1%';
+  return Math.min(100, Math.round(raw)) + '%';
 };
 export const msgText = (m) => {
   const c = m && m.content;

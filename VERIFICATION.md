@@ -1,3 +1,39 @@
+# Akron Code (`v1.5.0`) — Production Release Verification (2026-11-27)
+
+**Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.5.0`)
+
+## v1.5.0 Production Gate Summary
+
+| Gate | Command / Platform | Result |
+|---|---|---|
+| Static Syntax / JSX Check | `npm run typecheck` | ✅ `TYPECHECK_OK: verified 372 JS/JSX/MJS/CJS files with 0 syntax/transform errors.` |
+| Full Unit & Integration Suite | `npm test` (`test/*.test.js`) | ✅ **137 / 137 test suites/files passed (0 failures, 0 skipped)** |
+| Deterministic Benchmark Evals | `npm run eval:all` | ✅ `EVAL_ALL: 70/70 passed (100%) in 162ms` |
+| Tool Parity Audit | `node scripts/parity-audit.js` | ✅ `DEFS: 184 · tools missing definition: 0 · tools missing handler: 0` |
+| Cross-Platform Audit | `node test/cross-platform-audit.test.js` | ✅ `CROSS_PLATFORM_AUDIT_ALL_PASS` (`0` `.map` files in `dist/` and ASAR) |
+| Cryptographic Brand Seal | `npm run brand:seal && npm run brand:check` | ✅ `BRAND_SEAL_OK 12` (`MAC_ASAR_BRAND_OK: true`, `checkedFiles: 15`) |
+| Line Budget Check | `wc -l electron/main.js src/App.jsx` | ✅ `1515` (`< 1600`) and `3425` (`< 3500`) |
+| Live Electron UI E2E (`v1.5.0`) | `./node_modules/.bin/electron test/live/verify-v150-ui.cjs` | ✅ `UI_V150_E2E_OK` (`HEAVY_CTX_PCT: 11%`, `EMPTY_CTX_PCT: 0%`, `SETTINGS_MCP_PARADEV: {"hasParadevCard":true...}`, fresh PNGs in `docs/screenshots/{paradev-subscription-bridge-dark,runtimes-updates}.png`) |
+| Packaged macOS ARM64 Build + Fuses + Codesign + Cold Boot | `npm run dist:mac`, `@electron/fuses`, `/Applications/Akron Code.app` | ✅ **6/6 Electron Fuses** (`RunAsNode=0, CookieEnc=1, NodeOpts=0, NodeInspect=0, OnlyAsar=1, AsarIntegrity=1`), `codesign --verify --deep --strict OK`, single Spotlight entry (`/Applications/Akron Code.app`), `COLD_BOOT_OK {"ok":true,"brandOk":true,"domOk":true,"ipcOk":true,"checkedFiles":15,"consoleErrorCount":0}` |
+| Windows x64/ARM64 Packaging + Fuses | `electron-builder --win nsis portable --x64` & `--win nsis --arm64` | ✅ Emitted `AkronCode-1.5.0-win-setup-{x64,arm64}.exe`, `AkronCode-1.5.0-win-setup.exe`, `AkronCode-1.5.0-win-portable-x64.exe` + `latest.yml` (**6/6 Electron Fuses** on `x64` & `arm64`) |
+| Linux x64 Packaging + ELF Fuses | `electron-builder --linux AppImage tar.gz --x64` | ✅ Emitted `AkronCode-1.5.0-linux-x86_64.AppImage`, `AkronCode-1.5.0-linux-x64.tar.gz` + `latest-linux.yml` (**5/5 Linux ELF Fuses** `RunAsNode=0, CookieEnc=1, NodeOpts=0, NodeInspect=0, OnlyAsar=1`) |
+| Live Real-Linux OS Execution (`ssh seventrip`, Ubuntu 6.8 x86_64 / Node `v20.20.1`) | `typecheck`, `brand:check`, `akron doctor --json`, `akron update --check --json`, `v150-supervisor-usage-updater-paradev`, `updater-and-deps`, `cross-platform-audit` | ✅ **ALL PASSED** (`akron doctor --json` 9/9 checks including `@vscode/ripgrep-linux-x64/bin/rg` & `184 tools loaded`; `v150` 6/6; `cross-platform-audit` + `updater-and-deps` passed) |
+
+### Verified Local Build Artifact Checksums (`v1.5.0` — `release/SHA256SUMS.txt`)
+
+- `AkronCode-1.5.0-arm64.dmg`: `65a5bc9f2c135879adbd247082a20f14af46b948f8dc3aa8bd5e4411270e3b68`
+- `AkronCode-1.5.0-arm64.zip`: `7376799529ca6597c13912495511ec0a65f0f721b8e45cc40feaca9412252326`
+- `AkronCode-1.5.0-linux-x64.tar.gz`: `7e86324c69b00a5f5feb49856962c13e2b090337fdc9a26133ee0c25be94bc1c`
+- `AkronCode-1.5.0-linux-x86_64.AppImage`: `ee29d57d9dbf6fb2fedf28daef231a43386e106f96ad694746c93a8576c5d46f`
+- `AkronCode-1.5.0-win-portable-x64.exe`: `3abc329aa7d49887e98bae0e820a0e7284c6b4950ce4404a7dfcdba22107f05c`
+- `AkronCode-1.5.0-win-setup-arm64.exe`: `b1a3d436d52f4165ac2b0b277fe7647fbdc39ef47f6a5ca065c47255b18a366e`
+- `AkronCode-1.5.0-win-setup-x64.exe`: `2a5b1950334ab6ea98071220853c90aca5068303f7cf59f188de6c908f84146e`
+- `AkronCode-1.5.0-win-setup.exe`: `f3cb22e79687a04053d18d2db2c65d9eec22fe32d7853ebcfcbe74ba19b10936`
+- `AkronBrowserBot-1.6.7.crx`: `a9275e0f9449990115fbb8589da1062f0c8abf308f2a94cbac4d2782c2fa343c`
+- `AkronBrowserBot-1.6.7.zip`: `ba1e136b8cceb10ea8657f1a9d065d001e8006dbe1c7fe27929b18ec0c918f3e`
+
+---
+
 # Akron Code (`v1.4.0`) — Production Release Verification (2026-11-27)
 
 **Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.4.0`)

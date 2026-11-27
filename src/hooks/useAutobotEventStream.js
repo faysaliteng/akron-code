@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { summarizeChangedFiles } from '../components/LiveProgress.jsx';
-import { uid, cleanErr, sendDesktopNotification } from '../utils/appHelpers.jsx';
+import { uid, cleanErr, sendDesktopNotification, usedTokens, recordConvUsage } from '../utils/appHelpers.jsx';
 
 export function useAutobotEventStream({
   runIdRef, liveRef, runStartedAtRef, runConvRef, activeIdRef, settingsRef,
@@ -203,7 +203,23 @@ export function useAutobotEventStream({
           setPermError('');
           setPermissionQueue((q) => q.filter((p) => evt.runId && p.runId && p.runId !== evt.runId));
           setQuestionQueue((q) => q.filter((x) => evt.runId && x.runId && x.runId !== evt.runId));
-          if (evt && evt.usage) setLastUsage({ ...evt.usage, model: evt.usage.model || (evt.usage && evt.usage.model) || null, at: Date.now() });
+          if (evt && evt.usage) {
+            const targetConvId = evt.convId || runConvRef.current || activeIdRef.current || null;
+            setLastUsage((prev) => {
+              const incomingCtx = usedTokens(evt.usage);
+              const prevCtx = (prev && (!prev.convId || prev.convId === targetConvId)) ? usedTokens(prev) : 0;
+              const next = {
+                ...(incomingCtx <= 0 && prevCtx > 0 ? prev : {}),
+                ...evt.usage,
+                ...(incomingCtx <= 0 && prevCtx > 0 ? { context_tokens: prevCtx, prompt_tokens: Math.max(Number(evt.usage.prompt_tokens) || 0, Number(prev.prompt_tokens) || 0) } : {}),
+                model: evt.usage.model || evt.model || (prev && prev.model) || null,
+                convId: targetConvId,
+                at: Date.now(),
+              };
+              recordConvUsage(targetConvId, next);
+              return next;
+            });
+          }
           const snapTools = (liveRef.current && liveRef.current.tools) || [];
           const snapCps = (liveRef.current && liveRef.current.checkpoints) || [];
           const elapsedSec = runStartedAtRef.current ? Math.max(1, Math.round((Date.now() - runStartedAtRef.current) / 1000)) : 0;
@@ -320,7 +336,14 @@ export function useAutobotEventStream({
           setLiveSync((l) => (l ? { ...l, failover: { from: evt.from, to: evt.to, reason: evt.reason }, model: evt.to || l.model } : l));
           break;
         case 'model':
-          if (evt.model) setLastUsage((u) => ({ ...(u || {}), model: evt.model, at: Date.now() }));
+          if (evt.model) {
+            const targetConvId = evt.convId || runConvRef.current || activeIdRef.current || null;
+            setLastUsage((u) => {
+              const sameConv = !u || !u.convId || u.convId === targetConvId;
+              const next = { ...(sameConv && u ? u : {}), model: evt.model, convId: targetConvId, at: (sameConv && u && u.at) || Date.now() };
+              return next;
+            });
+          }
           setLiveSync((l) => {
             if (!l) return l;
             return {
@@ -491,7 +514,25 @@ export function useAutobotEventStream({
           setNotice('Goal: ' + evt.goal);
           break;
         case 'usage':
-          if (evt.usage) setLastUsage({ ...evt.usage, model: evt.model || (evt.usage && evt.usage.model) || null, at: Date.now() });
+          if (evt.usage) {
+            const targetConvId = evt.convId || runConvRef.current || activeIdRef.current || null;
+            setLastUsage((prev) => {
+              const incomingCtx = usedTokens(evt.usage);
+              const prevCtx = (prev && (!prev.convId || prev.convId === targetConvId)) ? usedTokens(prev) : 0;
+              const keepPrevCtx = (evt.subrun && prevCtx > 0) || (incomingCtx <= 0 && prevCtx > 0);
+              const effCtx = evt.subrun ? Math.max(incomingCtx, prevCtx) : (incomingCtx > 0 ? incomingCtx : prevCtx);
+              const next = {
+                ...(keepPrevCtx && prev ? prev : {}),
+                ...evt.usage,
+                ...(effCtx > 0 ? { context_tokens: effCtx } : {}),
+                model: evt.subrun && prev && prev.model ? prev.model : (evt.model || (evt.usage && evt.usage.model) || (prev && prev.model) || null),
+                convId: targetConvId,
+                at: Date.now(),
+              };
+              recordConvUsage(targetConvId, next);
+              return next;
+            });
+          }
           if (evt.model) {
             setLiveSync((l) => (l ? { ...l, model: evt.model || l.model } : l));
           }

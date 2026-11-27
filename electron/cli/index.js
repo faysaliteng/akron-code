@@ -600,6 +600,7 @@ async function main(argv = process.argv.slice(2)) {
         '  akron daemon <start|stop|status|install|uninstall>',
         '  akron review [--adversarial] [--with <model>] [--ci]',
         '  akron remote start [--port 9477]',
+        '  akron update [--check] [--apply] [--json]',
         '  akron doctor [--json]',
         '  akron eval [security|coding|browser|all]',
         '',
@@ -630,6 +631,27 @@ async function main(argv = process.argv.slice(2)) {
     return await runRepl({ cwd, model, mode, permissionMode, yolo, resumeId, continueLast });
   }
   if (cmd === 'doctor') return runDoctor({ cwd, json });
+  if (cmd === 'update') {
+    const updater = require('../updater');
+    const pkg = require(path.join(__dirname, '..', '..', 'package.json'));
+    const checkRes = await updater.checkForUpdates({ currentVersion: pkg.version });
+    const wantApply = args.includes('--apply') || args.includes('--download');
+    if (wantApply && checkRes.ok && checkRes.updateAvailable && checkRes.asset) {
+      const dl = await updater.downloadAndVerifyUpdate({ asset: checkRes.asset, sumsUrl: checkRes.sumsUrl });
+      const applied = (dl.ok && args.includes('--apply')) ? updater.applyUpdate(dl.path) : null;
+      process.stdout.write(JSON.stringify({ check: checkRes, download: dl, applied }, null, 2) + '\n');
+      return dl.ok ? 0 : 1;
+    }
+    if (json) {
+      process.stdout.write(JSON.stringify(checkRes, null, 2) + '\n');
+    } else if (checkRes.ok) {
+      process.stdout.write(`Akron Code v${checkRes.currentVersion} -> latest v${checkRes.latestVersion} (updateAvailable: ${checkRes.updateAvailable}, via: ${checkRes.via || 'github'})\n`);
+      if (checkRes.asset) process.stdout.write(`Asset: ${checkRes.asset.name} (${checkRes.asset.downloadUrl})\n`);
+    } else {
+      process.stderr.write(`Update check failed: ${checkRes.error}\n`);
+    }
+    return checkRes.ok ? 0 : 1;
+  }
   if (cmd === 'review') return await runReviewCli({ cwd, adversarial, withModel, ci, json });
   if (cmd === 'eval') return runEvalCli(pos[1] || 'all');
   if (cmd === 'daemon') {

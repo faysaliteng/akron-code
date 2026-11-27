@@ -316,7 +316,56 @@ async function listWorktrees(cwd) {
   return { isRepo: true, root, worktrees };
 }
 
-async function addWorktree(cwd, branch, targetDir) {
+function readWorktreeHookConfig(rootDir) {
+  const candidates = [
+    path.join(rootDir, '.akron', 'worktree.json'),
+    path.join(rootDir, '.superset', 'config.json'),
+  ];
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (parsed && typeof parsed === 'object') {
+        const setup = Array.isArray(parsed.setup) ? parsed.setup.map(String).filter(Boolean) : [];
+        const teardown = Array.isArray(parsed.teardown) ? parsed.teardown.map(String).filter(Boolean) : [];
+        return { path: p, setup, teardown };
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function runWorktreeHooks(phase, wtDir, rootDir) {
+  const cfg = readWorktreeHookConfig(rootDir);
+  if (!cfg) return { ran: [], source: '' };
+  const cmds = phase === 'teardown' ? cfg.teardown : cfg.setup;
+  if (!cmds.length) return { ran: [], source: cfg.path };
+  const sh = process.platform === 'win32' ? true : require('./paths').defaultPosixShell();
+  const hookEnv = {
+    ...process.env,
+    AKRON_ROOT_PATH: rootDir,
+    AKRON_WORKSPACE_PATH: wtDir,
+    SUPERSET_ROOT_PATH: rootDir,
+    SUPERSET_WORKSPACE_PATH: wtDir,
+  };
+  const ran = [];
+  for (const cmd of cmds) {
+    const out = await new Promise((resolve) => {
+      exec(cmd, { cwd: wtDir, timeout: 60000, maxBuffer: 2 * 1024 * 1024, shell: sh, env: hookEnv, windowsHide: true }, (err, stdout, stderr) => {
+        resolve({
+          cmd,
+          ok: !err,
+          output: String(stdout || stderr || (err ? err.message : '')).trim().slice(0, 600),
+        });
+      });
+    });
+    ran.push(out);
+    if (!out.ok) break;
+  }
+  return { ran, source: cfg.path };
+}
+
+async function addWorktree(cwd, branch, targetDir, opts = {}) {
   const root = await findRoot(cwd || process.cwd());
   if (!root) return { ok: false, error: 'Not inside a git repository.' };
   const safeBranch = String(branch || '').trim().replace(/[^\w./-]+/g, '-');
@@ -324,27 +373,35 @@ async function addWorktree(cwd, branch, targetDir) {
   const dest = targetDir && String(targetDir).trim()
     ? path.resolve(root, String(targetDir).trim())
     : path.join(path.dirname(root), `${path.basename(root)}-${safeBranch.replace(/[\\/]+/g, '-')}`);
+  const finishAdd = async () => {
+    const hooks = opts && opts.skipScripts ? { ran: [], source: '' } : await runWorktreeHooks('setup', dest, root);
+    return { ok: true, path: dest, branch: safeBranch, hooks, ...(await listWorktrees(root)) };
+  };
   try {
     execFileSync('git', ['worktree', 'add', '-b', safeBranch, dest], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    return { ok: true, path: dest, branch: safeBranch, ...(await listWorktrees(root)) };
+    return await finishAdd();
   } catch (e) {
     // Branch might already exist — try attaching existing branch without -b
     try {
       execFileSync('git', ['worktree', 'add', dest, safeBranch], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      return { ok: true, path: dest, branch: safeBranch, ...(await listWorktrees(root)) };
+      return await finishAdd();
     } catch (e2) {
       return { ok: false, error: String((e2 && e2.stderr) || (e && e.stderr) || (e2 && e2.message) || e) };
     }
   }
 }
 
-async function removeWorktree(cwd, targetDir) {
+async function removeWorktree(cwd, targetDir, opts = {}) {
   const root = await findRoot(cwd || process.cwd());
   if (!root) return { ok: false, error: 'Not inside a git repository.' };
   if (!targetDir) return { ok: false, error: 'Worktree path required.' };
   try {
+    const absTarget = path.resolve(String(targetDir));
+    const hooks = (!opts || !opts.skipScripts) && fs.existsSync(absTarget)
+      ? await runWorktreeHooks('teardown', absTarget, root)
+      : { ran: [], source: '' };
     execFileSync('git', ['worktree', 'remove', '--force', String(targetDir)], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    return { ok: true, ...(await listWorktrees(root)) };
+    return { ok: true, hooks, ...(await listWorktrees(root)) };
   } catch (e) {
     return { ok: false, error: String((e && e.stderr) || (e && e.message) || e) };
   }

@@ -238,9 +238,12 @@ export function LiveChecklistCard({ tools = [], subAgents = [], swarmInfo = null
     const items = [];
     const readCount = tools.filter((t) => /^(Read|Glob|Grep|LS|ListDir)$/i.test(String(t?.name || ''))).length;
     const editRows = tools.filter((t) => /^(Write|Edit|MultiEdit|StrReplace|Artifact)$/i.test(String(t?.name || '')));
-    const cmdRows = tools.filter((t) => /^(Bash|mcp__terminal__.*)$/i.test(String(t?.name || '')));
-    const anyRunningEdit = editRows.some((t) => t.status === 'running');
-    const anyRunningCmd = cmdRows.some((t) => t.status === 'running');
+    const verifyRows = tools.filter((t) => /^(Bash|mcp__.*|browser_.*|WebSearch|WebFetch|NotebookEdit|computer_.*)$/i.test(String(t?.name || '')));
+    const stName = String((streamingTool && streamingTool.name) || '');
+    const streamingEdit = /^(Write|Edit|MultiEdit|StrReplace|Artifact)$/i.test(stName);
+    const streamingVerify = Boolean(stName) && !/^(Read|Glob|Grep|LS|ListDir|TodoWrite|Write|Edit|MultiEdit|StrReplace|Artifact)$/i.test(stName);
+    const anyRunningEdit = editRows.some((t) => t.status === 'running') || streamingEdit;
+    const anyRunningVerify = verifyRows.some((t) => t.status === 'running') || streamingVerify;
 
     items.push({
       content: readCount > 0 ? `Inspect workspace & context (${readCount} reads)` : 'Inspect workspace & context',
@@ -259,14 +262,14 @@ export function LiveChecklistCard({ tools = [], subAgents = [], swarmInfo = null
     }
     items.push({
       content: editRows.length ? `Write & update files (${editRows.length})` : 'Write & update project files',
-      status: anyRunningEdit ? 'in_progress' : (editRows.length > 0 ? 'completed' : (cmdRows.length > 0 ? 'completed' : 'in_progress')),
+      status: anyRunningEdit ? 'in_progress' : (editRows.length > 0 ? 'completed' : (verifyRows.length > 0 ? 'completed' : 'in_progress')),
     });
     items.push({
-      content: cmdRows.length ? `Verify & run commands (${cmdRows.length})` : 'Run tests & verify build',
-      status: anyRunningCmd ? 'in_progress' : (cmdRows.length > 0 ? 'completed' : 'pending'),
+      content: verifyRows.length ? `Verify & run commands (${verifyRows.length})` : 'Run tests & verify build',
+      status: anyRunningVerify ? 'in_progress' : (verifyRows.length > 0 ? 'completed' : 'pending'),
     });
     return { explicit: false, items };
-  }, [tools, subAgents, swarmInfo, streaming]);
+  }, [tools, subAgents, swarmInfo, streamingTool, streaming]);
 
   if (!plan || !plan.items.length) return null;
 

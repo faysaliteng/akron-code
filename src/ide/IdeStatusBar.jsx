@@ -167,7 +167,7 @@ export function IdeStatusBar({
             title="Active AI Model & Context Usage"
             onClick={onOpenProviders}
           >
-            <span>{modelLabel}{contextPct != null ? ` · ${contextPct}%` : ''}</span>
+            <span>{modelLabel}{contextPct != null ? ` · ${contextPct > 0 && contextPct < 1 ? '<1%' : `${contextPct}%`}` : ''}</span>
           </button>
         )}
       </div>

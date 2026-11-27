@@ -66,10 +66,12 @@ function readJSON(file, fb) {
 // Hooks come from the project's .claude/settings.json plus the user-level one.
 // Project hooks win on identical matcher+command (last one registered wins).
 function loadHookConfig(cwd) {
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  const includeUser = process.env.AUTOBOT_DISABLE_USER_HOOKS !== '1';
   const sources = [
-    path.join(os.homedir(), '.claude', 'settings.json'),
+    includeUser ? path.join(claudeDir, 'settings.json') : null,
     cwd ? path.join(String(cwd), '.claude', 'settings.json') : null,
-    path.join(os.homedir(), '.autobot', 'hooks.json'),
+    includeUser ? path.join(os.homedir(), '.autobot', 'hooks.json') : null,
   ].filter(Boolean);
   const merged = {};
   for (const ev of EVENTS) merged[ev] = [];

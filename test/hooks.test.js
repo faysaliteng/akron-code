@@ -10,6 +10,9 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'helio-hooks-'));
+process.env.CLAUDE_CONFIG_DIR = path.join(root, '.claude-empty');
+process.env.AUTOBOT_DISABLE_USER_HOOKS = '1';
 const hooks = require('../electron/hooks');
 
 let passed = 0;
@@ -21,8 +24,6 @@ function ok(name, cond, detail) {
   else { failed++; failures.push(name + (detail ? ' — ' + detail : '')); console.log('  FAIL ' + name + (detail ? ' — ' + detail : '')); }
 }
 function group(name) { console.log('\n# ' + name); }
-
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'helio-hooks-'));
 function makeCwd(hooksConfig) {
   const dir = fs.mkdtempSync(path.join(root, 'cwd-'));
   if (hooksConfig) {

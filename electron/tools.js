@@ -1108,6 +1108,31 @@ const executors = {
     }
   },
 
+  async paradev_workspaces({ action, workspaceId, environment, name, agent, prompt, organizationId }) {
+    const paradev = require('./paradev-client');
+    const act = String(action || 'list').toLowerCase();
+    let res;
+    if (act === 'list') res = await paradev.listWorkspaces({ organizationId });
+    else if (act === 'get' || act === 'retrieve') res = await paradev.getWorkspace(workspaceId);
+    else if (act === 'create') res = await paradev.createWorkspace({ organizationId, environment, name, agent, prompt });
+    else if (act === 'delete') res = await paradev.deleteWorkspace(workspaceId);
+    else return { content: `Unsupported ParadevWorkspaces action "${act}". Expected list | get | create | delete.`, isError: true };
+    if (!res || !res.ok) return { content: (res && res.error) || 'Paradev request failed', isError: true };
+    return untrusted.wrapUntrusted(truncate(JSON.stringify(res.data, null, 2)), { source: 'ParadevWorkspaces' });
+  },
+
+  async paradev_tasks({ action, id, title, description, priority, statusId }) {
+    const paradev = require('./paradev-client');
+    const act = String(action || 'list').toLowerCase();
+    let res;
+    if (act === 'list') res = await paradev.listTasks();
+    else if (act === 'create') res = await paradev.createTask({ title, description, priority, statusId });
+    else if (act === 'update') res = await paradev.updateTask({ id, title, description, priority, statusId });
+    else return { content: `Unsupported ParadevTasks action "${act}". Expected list | create | update.`, isError: true };
+    if (!res || !res.ok) return { content: (res && res.error) || 'Paradev task request failed', isError: true };
+    return untrusted.wrapUntrusted(truncate(JSON.stringify(res.data, null, 2)), { source: 'ParadevTasks' });
+  },
+
   ...require('./tools/browser-executors')({ truncate }),
 
   async apply_patch({ patch, input, cwd, _readMtimes, _takeCheckpoint }) {
@@ -1247,6 +1272,8 @@ const toolDefinitions = [
   { name: 'Artifact', description: "Create or update a named artifact that appears in the Artifacts panel and can open in its own window. `language` selects the renderer: html | svg | mermaid | react | markdown | text, plus the two canvas types — 'design' (a board of live artboards) and 'slides' (a navigable deck). For 'design' pass JSON: {\"title\":\"...\",\"artboards\":[{\"name\":\"Mobile\",\"width\":390,\"height\":844,\"html\":\"<div>…</div>\",\"notes\":\"…\"}]}. For 'slides' pass JSON: {\"title\":\"...\",\"slides\":[{\"title\":\"Intro\",\"html\":\"<p>…</p>\",\"bullets\":[\"…\"],\"notes\":\"speaker notes\"}]} (markdown separated by --- also works).", parameters: { type: 'object', properties: { name: { type: 'string' }, language: { type: 'string', description: 'html | svg | mermaid | react | markdown | text | design | slides' }, content: { type: 'string' } }, required: ['name', 'content'] } },
   { name: 'Jira', description: 'Interact with Jira (search/list/get/create issues) if JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN are configured.', parameters: { type: 'object', properties: { action: { type: 'string', description: 'search | get | create' }, jql: { type: 'string' }, issueKey: { type: 'string' }, project: { type: 'string' }, summary: { type: 'string' }, description: { type: 'string' } }, required: ['action'] } },
   { name: 'Linear', description: 'Interact with Linear (list/search issues) if LINEAR_API_KEY is configured.', parameters: { type: 'object', properties: { action: { type: 'string', description: 'issues | search' }, query: { type: 'string' } } } },
+  { name: 'ParadevWorkspaces', description: 'Manage Paradev/Superset cloud sandboxes when Paradev API key is configured (list/get/create/delete).', parameters: { type: 'object', properties: { action: { type: 'string', description: 'list | get | create | delete' }, workspaceId: { type: 'string' }, environment: { type: 'string' }, name: { type: 'string' }, agent: { type: 'string' }, prompt: { type: 'string' }, organizationId: { type: 'string' } } } },
+  { name: 'ParadevTasks', description: 'List, create, or update Paradev/Superset tasks when Paradev API key is configured.', parameters: { type: 'object', properties: { action: { type: 'string', description: 'list | create | update' }, id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' }, priority: { type: 'string' }, statusId: { type: 'string' } } } },
   { name: 'mcp__secrets__request_secret', description: '[secrets] Request a secret value (e.g. API key) by name from the secrets store.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
 
   // ---- Virtual built-in MCP namespaces (mirror Claude Code's internal MCP tools 1:1) ----
@@ -1447,6 +1474,8 @@ const executorsByTool = {
   ToolSearch: 'tool_search',
   Jira: 'jira',
   Linear: 'linear',
+  ParadevWorkspaces: 'paradev_workspaces',
+  ParadevTasks: 'paradev_tasks',
 
   // ---- Virtual built-in MCP namespaces (reuse existing executors) ----
   mcp__workspace__bash: 'bash',
@@ -1654,7 +1683,7 @@ async function runToolInner(name, args, ctx) {
   const MUTATING = new Set([
     'Bash', 'Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'ExtractSkill', 'RunToolScript', 'NotebookEdit', 'JavaScript', 'REPL',
     'GenerateImage', 'create_image', 'EditImage', 'edit_image', 'GenerateVideo', 'generate_video', 'EditVideo', 'edit_video', 'GenerateDocument', 'generate_document',
-    'KillShell', 'Jira', 'Linear', 'POST', 'CreateCustomTool', 'DeleteCustomTool',
+    'KillShell', 'Jira', 'Linear', 'ParadevWorkspaces', 'ParadevTasks', 'POST', 'CreateCustomTool', 'DeleteCustomTool',
     'mcp__workspace__write_file', 'mcp__workspace__edit_file',
     'mcp__terminal__run_in_terminal', 'mcp__terminal__open_terminal_tab',
   ]);
@@ -1761,7 +1790,11 @@ async function runToolInner(name, args, ctx) {
           .map((m) => `- #${m.seq} ${m.from}${m.to ? ' → @' + m.to : ''}: ${String(m.text).replace(/\s+/g, ' ').slice(0, 160)}`)
           .join('\n')
         : '';
-      return `SWARM COMPLETE — ${out.results.length} agents, supervisor ${out.supervisor.model}, ${Math.round(out.ms / 1000)}s\n\nROSTER\n${table}${feed}\n\nFINAL ANSWER\n${out.answer}`;
+      const textOut = `SWARM COMPLETE — ${out.results.length} agents, supervisor ${out.supervisor.model}, ${Math.round(out.ms / 1000)}s\n\nROSTER\n${table}${feed}\n\nFINAL ANSWER\n${out.answer}`;
+      if (out.usage && typeof ctx.emit === 'function') {
+        ctx.emit({ type: 'usage', subrun: true, usage: out.usage, model: out.supervisor.model });
+      }
+      return textOut;
     } catch (e) {
       if (ctx.signal && ctx.signal.aborted) throw e;
       return 'Swarm error: ' + (e && e.message ? e.message : String(e));

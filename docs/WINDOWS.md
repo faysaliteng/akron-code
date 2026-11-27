@@ -1,6 +1,6 @@
-# Akron Code `v1.4.0` on Windows 11 & 10 (`x64` & `ARM64`)
+# Akron Code `v1.5.0` on Windows 11 & 10 (`x64` & `ARM64`)
 
-Akron Code ships native **NSIS Setup installers** (`AkronCode-1.4.0-win-setup-x64.exe` and `AkronCode-1.4.0-win-setup-arm64.exe`) and a **Portable executable** (`AkronCode-1.4.0-win-portable-x64.exe`), plus zero-`node-gyp` PowerShell/C# `user32.dll` + `UIAutomationClient` Windows Computer Use 2.0.
+Akron Code ships native **NSIS Setup installers** (`AkronCode-1.5.0-win-setup-x64.exe` and `AkronCode-1.5.0-win-setup-arm64.exe`) and a **Portable executable** (`AkronCode-1.5.0-win-portable-x64.exe`), plus zero-`node-gyp` PowerShell/C# `user32.dll` + `UIAutomationClient` Windows Computer Use 2.0.
 
 ---
 
@@ -8,9 +8,9 @@ Akron Code ships native **NSIS Setup installers** (`AkronCode-1.4.0-win-setup-x6
 
 | Artifact / Check | Verified Result |
 |---|---|
-| Windows x64 & ARM64 Packaging (`electron-builder --win nsis --x64 --arm64`, `portable --x64`) | ✅ Built `AkronCode-1.4.0-win-setup-x64.exe`, `AkronCode-1.4.0-win-setup-arm64.exe`, `AkronCode-1.4.0-win-portable-x64.exe` |
+| Windows x64 & ARM64 Packaging (`electron-builder --win nsis --x64 --arm64`, `portable --x64`) | ✅ Built `AkronCode-1.5.0-win-setup-x64.exe`, `AkronCode-1.5.0-win-setup-arm64.exe`, `AkronCode-1.5.0-win-portable-x64.exe` |
 | Electron Security Fuses (`scripts/harden-fuses.js`) | ✅ `RunAsNode=0`, `OnlyLoadAppFromAsar=1`, `EnableEmbeddedAsarIntegrityValidation=1` verified on both x64 and ARM64 `Akron Code.exe` binaries |
-| Prior Windows 11 ARM64 VM Smoke (`v1.2.0`) | ✅ Silent NSIS `/S` (`NSIS_EXIT=0`, Desktop & Start Menu shortcuts, `COLD_BOOT_OK` 0 errors, CRX3 & Edge registry `1.6.7`) — shared NSIS/main-process template retained in `v1.4.0` |
+| Prior Windows 11 ARM64 VM Smoke (`v1.2.0`) | ✅ Silent NSIS `/S` (`NSIS_EXIT=0`, Desktop & Start Menu shortcuts, `COLD_BOOT_OK` 0 errors, CRX3 & Edge registry `1.6.7`) — shared NSIS/main-process template retained in `v1.5.0` |
 | Stdio Broken-Pipe Hardening (`electron/main.js`) | ✅ `EPIPE` / `ERR_STREAM_DESTROYED` guards on `process.stdout` / `process.stderr` + `uncaughtException` prevent GUI launch console crashes |
 | Windows Computer Use 2.0 (`electron/computer-win-linux.js`) | ✅ PowerShell / C# `user32.dll` mouse/keyboard/window capture + `UIAutomationClient` `ax_snapshot`/`ax_find` with zero native C++ `node-gyp` addons |
 

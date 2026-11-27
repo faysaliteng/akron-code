@@ -47,7 +47,7 @@ import { ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSec
 // `storeError` stays honest: dismissal is per surface and per mounted
 // component, so it never clears the underlying error, only this rendering of it.
 import {
-  ProvNotice, renderMarkdown, resolveLoopbackKey, timeGreeting, cleanErr, usedTokens, contextWindowFor,
+  ProvNotice, renderMarkdown, resolveLoopbackKey, timeGreeting, cleanErr, usedTokens, contextWindowFor, effectiveUsageForConv,
   PRESETS, PRESET_KEYS, STYLES, REASON_LEVELS, DEFAULT_PROVIDER, loadJSON, saveJSON, uid, Logo,
   LinkPreviews, fmtTokens, estimateCost, fmtCost, msgText, buildDirectives, fmtElapsed, fmtMessageTimestamp, fmtMessageFullTimestamp,
 } from './utils/appHelpers.jsx';
@@ -1761,12 +1761,12 @@ export default function App() {
         break;
       // ---------- model & context ----------
       case 'usage': {
-        if (!lastUsage) { note('No token usage recorded yet for this session. Run a message first.'); break; }
-        const u = lastUsage;
+        const u = effectiveUsageForConv(lastUsage, active, provider, liveForActive);
+        if (!u) { note('No token usage recorded yet for this session. Run a message first.'); break; }
         const cost = estimateCost(u.model || model, u.prompt_tokens, u.completion_tokens);
         const ctxUsed = usedTokens(u);
         const ctxWin = contextWindowFor(u.model || model);
-        const ctxPct = ctxWin > 0 ? Math.round((ctxUsed / ctxWin) * 100) : 0;
+        const ctxPct = ctxWin > 0 && ctxUsed > 0 ? ((ctxUsed / ctxWin) * 100 < 1 ? '<1' : String(Math.round((ctxUsed / ctxWin) * 100))) : '0';
         note('**Usage** (last run)\n- Model: `' + (u.model || model) + '`\n- Prompt: ' + fmtTokens(u.prompt_tokens) + ' tokens (sum across ' + (u.calls || 1) + ' call(s))\n- Completion: ' + fmtTokens(u.completion_tokens) + ' tokens\n- Total: ' + fmtTokens(u.total_tokens) + ' tokens across ' + (u.calls || 1) + ' call(s)\n- Context now: ' + fmtTokens(ctxUsed) + ' / ' + fmtTokens(ctxWin) + ' (' + ctxPct + '% of window)\n- Est. cost: ' + fmtCost(cost));
         break;
       }
@@ -2598,9 +2598,12 @@ export default function App() {
           orchestrator={orchestrator}
           envState={envState}
           contextPct={(() => {
-            const win = contextWindowFor((lastUsage && lastUsage.model) || (provider && provider.model) || '');
-            const used = usedTokens(lastUsage);
-            return win > 0 && used > 0 ? Math.min(100, Math.round((used / win) * 100)) : null;
+            const effU = effectiveUsageForConv(lastUsage, active, provider, liveForActive);
+            const win = contextWindowFor((effU && effU.model) || (provider && provider.model) || '');
+            const used = usedTokens(effU);
+            if (!(win > 0 && used > 0)) return null;
+            const raw = (used / win) * 100;
+            return raw < 1 ? 0.5 : Math.min(100, Math.round(raw));
           })()}
           setError={setError}
           setNotice={setNotice}
@@ -2698,7 +2701,7 @@ export default function App() {
                   voiceMode={voiceMode} startVoiceMode={startVoiceMode} stopVoiceMode={stopVoiceMode}
                   sessionPane={sessionPane} toggleSessionPane={toggleSessionPane}
                   permissions={permissions} setPermissions={setPermissions}
-                  lastUsage={lastUsage}
+                  lastUsage={effectiveUsageForConv(lastUsage, active, provider, liveForActive)}
                   gdriveState={gdriveState}
                   onOpenGdrive={() => setGdriveModalOpen(true)}
                   envState={envState}
@@ -2920,7 +2923,7 @@ export default function App() {
             {sessionPane.type === 'env' && (
               <SessionPane {...paneProps} icon="DotsHorizontal" title="Environment">
                 <EnvPanel
-                  cwd={cwd} setCwd={setCwd} provider={provider} lastUsage={lastUsage}
+                  cwd={cwd} setCwd={setCwd} provider={provider} lastUsage={effectiveUsageForConv(lastUsage, active, provider, liveForActive)}
                   mcpServers={mcpServers} features={features} saveFeat={saveFeat}
                   runSlashCommand={runSlashCommand}
                   onOpenConnectors={() => openSettingsAt('mcp')}
@@ -3038,7 +3041,7 @@ export default function App() {
               voiceMode={voiceMode} startVoiceMode={startVoiceMode} stopVoiceMode={stopVoiceMode}
               sessionPane={sessionPane} toggleSessionPane={toggleSessionPane}
               permissions={permissions} setPermissions={setPermissions}
-              lastUsage={lastUsage}
+              lastUsage={effectiveUsageForConv(lastUsage, active, provider, liveForActive)}
               gdriveState={gdriveState}
               onOpenGdrive={() => setGdriveModalOpen(true)}
               envState={envState}
@@ -3123,8 +3126,8 @@ export default function App() {
       )}
 
       <ContextLimitToast
-        lastUsage={lastUsage}
-        model={(lastUsage && lastUsage.model) || (provider && provider.model) || ''}
+        lastUsage={effectiveUsageForConv(lastUsage, active, provider, liveForActive)}
+        model={((effectiveUsageForConv(lastUsage, active, provider, liveForActive) || {}).model) || (provider && provider.model) || ''}
         T={T}
       />
     </div>

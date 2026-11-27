@@ -2,6 +2,21 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.5.0] - 2026-11-27
+
+### Fixed & Upgraded
+- **Context Meter `0%` Fix & Accurate Token Accounting (`electron/usage-estimator.js`, `electron/providertransport.js`, `electron/llm.js`, `electron/swarm.js`, `src/utils/appHelpers.jsx`, `src/hooks/useAutobotEventStream.js`):**
+  - Fixed Anthropic SSE `message_delta` wiping `message_start` `input_tokens` and cache token counts; now merges usage frames and counts `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` in `prompt_tokens`/`context_tokens`.
+  - Added deterministic fallback token estimation when gateways omit SSE usage, per-conversation usage tracking + reloaded-conversation baseline estimation (`effectiveUsageForConv`), Swarm cumulative sub-run aggregation that preserves parent context % downward, and `<1%` arc/label precision on 1M-token context windows.
+- **LiveProgress & Streaming Indicator Accuracy (`src/components/LiveProgress.jsx`, `src/components/chat/WorkspaceViews.jsx`):**
+  - Verification/browser/MCP/search/computer tools keep Step 4 marked `in_progress` while actively running instead of prematurely showing `4/4` completed under a spinner, and suppressed duplicate active-tool pills between `RunActivity` and `LiveToolActivityCard`.
+- **Always-High Supervisor Thinking (`electron/swarm.js`, `electron/task-router.js`, `electron/orch-router.js`, `electron/llm.js`, `electron/providertransport.js`):**
+  - Enforced `reasoningLevel = 'high'` across Supervisor, Auto planner, Orchestrator planner pools, and Swarms (upgrading `-low`/`-medium` variants to `-high` when available), and wired Gemini `thinkingConfig` + `part.thought` live streaming into `googleChat`.
+- **Paradev Raw API Subscription Bridge & Worktree Hooks (`electron/paradev-client.js`, `src/components/settings/ParadevIntegrationCard.jsx`, `electron/tools.js`, `electron/git.js`):**
+  - Added SuperJSON tRPC client supporting Personal API Keys (`sk_live_*`) for server-backed Whisper dictation (`voice.transcribe` fallback), cloud sandboxes (`ParadevWorkspaces`), organization tasks (`ParadevTasks`), MCP server registration, and native `.akron/worktree.json` + `.superset/config.json` `setup`/`teardown` worktree scripts.
+- **Rate-Limit-Proof Cross-OS Auto-Updater (`electron/updater.js`, `src/components/settings/SettingsSections.jsx`, `scripts/inject-mac-ext-folder.js`, `electron/cli/index.js`):**
+  - Added GitHub Web redirect + `latest-mac.yml`/`latest.yml`/`latest-linux.yml` fallback when GitHub REST API returns HTTP `403`/`429`, atomic macOS `.zip` bundle swap (or Finder reveal when `/Applications` is read-only) / `.dmg` open, Windows NSIS launch + quit, Linux `.AppImage`/`.tar.gz` support, `akron update [--check] [--apply]` CLI command, fixed Settings initial `v1.0.0` string, and `test/hooks.test.js` `CLAUDE_CONFIG_DIR` isolation.
+
 ## [1.4.0] - 2026-11-27
 
 ### Added & Upgraded

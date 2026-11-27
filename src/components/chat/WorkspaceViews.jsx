@@ -14,7 +14,7 @@ import { IdeWorkbench } from '../../ide/IdeWorkbench.jsx';
 import { MindMapView } from '../../ide/MindMapView.jsx';
 import { shortcutLabels } from '../../ide/shortcuts';
 import {
-  renderMarkdown, extractCodeBlocks, cleanErr, contextWindowFor, usedTokens,
+  renderMarkdown, extractCodeBlocks, cleanErr, contextWindowFor, usedTokens, formatContextPct,
   useTicker, fmtElapsed, shortPath, describeTool, Logo, LinkPreviews, useDismiss,
   convToMarkdown, convToHtml, loadJSON, fmtInt, timeGreeting, copyTextToClipboard,
 } from '../../utils/appHelpers.jsx';
@@ -30,19 +30,15 @@ export function RunActivity({ live, thinking, startedAt }) {
   const work = tools.filter((t) => t.name !== 'TodoWrite' && t.name !== 'exitPlanMode');
   const last = running || work[work.length - 1] || null;
   const lastSeg = segments[segments.length - 1];
+  // LiveToolActivityCard below the stream renders detailed target/bytes/timer
+  // for active tool calls — suppress duplicate top-pill tool echoing so the UI
+  // never shows two competing `browser_js…` pills at once.
+  const liveCardVisible = Boolean(running || (stTool && stTool.name));
   let label = 'Thinking';
   let target = '';
-  if (running) {
-    const d = describeTool(running.name, running.args);
-    const verb = (d && d.verb) ? d.verb : (running.name || 'Working');
-    label = verb + '…';
-    target = (d && d.target) || '';
-  } else if (stTool && stTool.name) {
-    const d = describeTool(stTool.name, stTool.target ? { path: stTool.target, file_path: stTool.target, query: stTool.target, tool: stTool.target, goal: stTool.target, command: stTool.target } : {});
-    const kb = stTool.bytes >= 1024 ? (stTool.bytes / 1024).toFixed(1) + ' KB' : (stTool.bytes ? stTool.bytes + ' B' : '');
-    const verb = (d && d.verb) ? d.verb : (stTool.name || 'Working');
-    label = verb + '…';
-    target = [stTool.target || (d && d.target), kb].filter(Boolean).join(' · ');
+  if (liveCardVisible) {
+    label = 'Running tool…';
+    target = '';
   } else if (lastSeg && lastSeg.type === 'text' && live && live.content) {
     label = 'Writing…';
   } else if (last) {
@@ -67,11 +63,12 @@ export function RunActivity({ live, thinking, startedAt }) {
 }
 
 export function ContextMeter({ used, win, size = 44 }) {
-  const pct = win > 0 ? Math.max(0, Math.min(100, (used / win) * 100)) : 0;
+  const rawPct = win > 0 && used > 0 ? Math.max(0, Math.min(100, (used / win) * 100)) : 0;
+  const arcPct = rawPct > 0 ? Math.max(rawPct, 2.5) : 0;
   const r = (size - 6) / 2;
   const c = 2 * Math.PI * r;
-  const dash = (pct / 100) * c;
-  const tone = pct >= 90 ? 'hot' : pct >= 70 ? 'warm' : 'cool';
+  const dash = (arcPct / 100) * c;
+  const tone = rawPct >= 90 ? 'hot' : rawPct >= 70 ? 'warm' : 'cool';
   return (
     <span className={'ctx-meter ' + tone} title={fmtInt(used) + ' of ' + fmtInt(win) + ' tokens used'}>
       <svg width={size} height={size} viewBox={'0 0 ' + size + ' ' + size}>
@@ -82,7 +79,7 @@ export function ContextMeter({ used, win, size = 44 }) {
           transform={'rotate(-90 ' + size / 2 + ' ' + size / 2 + ')'}
         />
       </svg>
-      <span className="ctx-pct">{Math.round(pct)}%</span>
+      <span className="ctx-pct">{formatContextPct(used, win)}</span>
     </span>
   );
 }

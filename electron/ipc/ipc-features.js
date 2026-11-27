@@ -1111,7 +1111,16 @@ ipcMain.handle('autobot:transcribeAudio', async (e, payload = {}) => {
         if (/openai\.com/i.test(base)) model = 'whisper-1';
       }
     }
-    if (!base || !key) return { ok: false, fallback: 'local-whisper' };
+    if (!base || !key) {
+      try {
+        const paradev = require('../paradev-client');
+        if (paradev.resolveCredentials().configured) {
+          const pv = await paradev.transcribeAudio({ audioBase64: wavB64, mimeType: 'audio/wav' });
+          if (pv && pv.ok && pv.text) return pv;
+        }
+      } catch (_) {}
+      return { ok: false, fallback: 'local-whisper' };
+    }
     const buf = Buffer.from(wavB64, 'base64');
     const fd = new FormData();
     fd.append('file', new Blob([buf], { type: 'audio/wav' }), 'speech.wav');
@@ -1854,7 +1863,71 @@ ipcMain.handle('autobot:updateDownload', (e, opts) => updater.downloadAndVerifyU
     try { e.sender.send('autobot:event', { type: 'app-update-progress', ...prog }); } catch (_) {}
   },
 }));
-ipcMain.handle('autobot:updateApply', (e, stagedPath) => updater.applyUpdate(stagedPath));
+ipcMain.handle('autobot:updateApply', (e, stagedPath) => updater.applyUpdate(stagedPath, {
+  appBundlePath: process.platform === 'darwin' ? path.resolve(process.execPath, '..', '..', '..') : undefined,
+  quitApp: () => { try { setTimeout(() => app.quit(), 450); } catch (_) {} },
+}));
+
+// ---- Paradev (Superset) Raw API Subscription Bridge ----
+ipcMain.handle('autobot:paradevStatus', async (e, opts = {}) => {
+  try { return await require('../paradev-client').getStatus(opts || {}); } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:paradevSaveConfig', (e, payload = {}) => {
+  try { return require('../paradev-client').saveConfig(payload || {}); } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:paradevTranscribe', async (e, payload = {}) => {
+  try { return await require('../paradev-client').transcribeAudio(payload || {}); } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:paradevWorkspaces', async (e, payload = {}) => {
+  try {
+    const pv = require('../paradev-client');
+    const act = String((payload && payload.action) || 'list').toLowerCase();
+    if (act === 'create') return await pv.createWorkspace(payload);
+    if (act === 'delete') return await pv.deleteWorkspace(payload.workspaceId);
+    if (act === 'get') return await pv.getWorkspace(payload.workspaceId);
+    return await pv.listWorkspaces(payload || {});
+  } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:paradevTasks', async (e, payload = {}) => {
+  try {
+    const pv = require('../paradev-client');
+    const act = String((payload && payload.action) || 'list').toLowerCase();
+    if (act === 'create') return await pv.createTask(payload);
+    if (act === 'update') return await pv.updateTask(payload);
+    return await pv.listTasks(payload || {});
+  } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+ipcMain.handle('autobot:paradevAddMcp', async () => {
+  try {
+    const pv = require('../paradev-client');
+    const presets = pv.getMcpServerPresets();
+    const added = [];
+    for (const srv of presets) {
+      try {
+        const info = await mcp.connect(srv);
+        const entry = mcp.servers.get(info.serverId);
+        if (entry) entry.fullTools = info.tools || [];
+        added.push(srv.name);
+      } catch (_) {}
+    }
+    return { ok: true, added, status: mcpStatus() };
+  } catch (err) { return { ok: false, error: oneLine(err) }; }
+});
+
+// Background auto-update check scheduler (runs once shortly after startup, then every 4h)
+if (!process.env.AKRON_COLD_BOOT_CHECK && process.env.NODE_ENV !== 'test') {
+  const _updSched = updater.createUpdateScheduler({
+    intervalMs: 4 * 60 * 60 * 1000,
+    getOptions: () => ({ currentVersion: app.getVersion() }),
+    onUpdateAvailable: (info) => {
+      for (const w of windows) {
+        try { if (w && !w.isDestroyed()) w.webContents.send('autobot:event', { type: 'app-update-available', ...info }); } catch (_) {}
+      }
+    },
+  });
+  const _tUpd = setTimeout(() => { _updSched.runOnce().catch(() => {}); _updSched.start(); }, 18000);
+  if (_tUpd && typeof _tUpd.unref === 'function') _tUpd.unref();
+}
 ipcMain.handle('autobot:tokenBudget', (e, payload = {}) => {
   try { return require('../token-budget').analyzeCustomizationBudget(payload); } catch (err) { return { error: err.message, items: [] }; }
 });

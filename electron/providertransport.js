@@ -43,6 +43,7 @@ const CLOUDCODE_BASE = 'https://daily-cloudcode-pa.googleapis.com/v1internal';
 // Context windows + auto-compact budgets. Pure data module, no imports, so this
 // does not create a cycle (and survives asar packing).
 const catalog = require('./model-catalog');
+const usageEstimator = require('./usage-estimator');
 
 // Ask for the 1M beta once the request estimate passes Anthropic's default
 // window with headroom for its tokenizer being a little finer than ours.
@@ -751,13 +752,14 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
     }
     message.finish_reason = anthropicFinish(data && data.stop_reason);
     if (data && data.model) message.model = String(data.model);
-    if (data && data.usage) message.usage = data.usage;
+    if (data && data.usage) message.usage = usageEstimator.normalizeCallUsage(data.usage) || data.usage;
     if (!message.model) message.model = String(provider.model || '');
     return message;
   }
 
   const accs = new Map(); // block index -> tool acc
   const thinkBlocks = new Map(); // block index -> { type, thinking, signature, data }
+  let rawUsage = null;
   for await (const ev of sseEvents(opened.stream)) {
     const type = ev.type;
     if (type === 'content_block_start') {
@@ -794,16 +796,19 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
     } else if (type === 'message_delta') {
       const d = ev.delta || {};
       if (d.stop_reason) message.finish_reason = anthropicFinish(d.stop_reason);
-      if (ev.usage) message.usage = ev.usage;
+      if (ev.usage) rawUsage = usageEstimator.mergeUsageObjects(rawUsage, ev.usage);
     } else if (type === 'message_start') {
       if (ev.message && ev.message.model) message.model = String(ev.message.model);
-      if (ev.message && ev.message.usage) message.usage = ev.message.usage;
+      if (ev.message && ev.message.usage) rawUsage = usageEstimator.mergeUsageObjects(rawUsage, ev.message.usage);
     } else if (type === 'error') {
       const e = ev.error || {};
       const err = new Error('LLM ' + (e.type || 'error') + ': ' + (e.message || 'provider error'));
       err.transient = e.type === 'overloaded_error' || e.type === 'api_error';
       throw err;
     }
+  }
+  if (rawUsage) {
+    message.usage = usageEstimator.normalizeCallUsage(rawUsage) || rawUsage;
   }
   if (thinkBlocks.size) {
     message._anthropicThinkingBlocks = [...thinkBlocks.values()].filter((tb) => (tb.type === 'thinking' && tb.thinking && tb.signature) || (tb.type === 'redacted_thinking' && tb.data));
@@ -1417,7 +1422,15 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
   const { systemParts, contents } = toGeminiContents(messages, provider && provider.model);
   const want = Number(maxTokensOverride || provider.maxTokens) > 0
     ? Number(maxTokensOverride || provider.maxTokens) : 32000;
-  const request = { contents, generationConfig: { maxOutputTokens: want } };
+  const generationConfig = { maxOutputTokens: want };
+  const rLevel = String((provider && provider.reasoningLevel) || '').toLowerCase();
+  const modelStr = String((provider && provider.model) || '');
+  const geminiThinkingBudgets = { low: 2048, medium: 8192, high: 24576 };
+  const isGeminiThinkingCapable = /^gemini-(?:2\.5|[3-9])/i.test(modelStr) && !/-(?:low|medium|high|xhigh)$/i.test(modelStr);
+  if (!provider._disableThinking && isGeminiThinkingCapable && geminiThinkingBudgets[rLevel]) {
+    generationConfig.thinkingConfig = { includeThoughts: true, thinkingBudget: geminiThinkingBudgets[rLevel] };
+  }
+  const request = { contents, generationConfig };
   if (systemParts.length) request.systemInstruction = { parts: systemParts };
   if (tools && tools.length) {
     const declarations = toGeminiDeclarations(tools);
@@ -1427,7 +1440,7 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
   // (sending one is what produced the old `403 The caller does not have
   // permission`), and `requestType`/`userAgent` mirror the desktop client.
   const body = { model: provider.model, request, userAgent: 'antigravity', requestType: 'agent' };
-  const res = await fetchWithTimeout(cloudcodeBase(provider) + ':streamGenerateContent?alt=sse', {
+  const postGoogle = (payloadObj) => fetchWithTimeout(cloudcodeBase(provider) + ':streamGenerateContent?alt=sse', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -1435,9 +1448,20 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
       authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
       'user-agent': ANTIGRAVITY_UA,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payloadObj),
     signal,
   }, 'antigravity');
+
+  let res = await postGoogle(body);
+  if (!res.ok && generationConfig.thinkingConfig && res.status === 400) {
+    const errBody = await res.text().catch(() => '');
+    if (/thinking|thinkingConfig|thinking_budget/i.test(errBody)) {
+      const strippedReq = { ...request, generationConfig: { maxOutputTokens: want } };
+      res = await postGoogle({ ...body, request: strippedReq });
+    } else {
+      throw httpError('antigravity', res, errBody);
+    }
+  }
   if (!res.ok) throw httpError('antigravity', res, await res.text().catch(() => ''));
 
   const message = { role: 'assistant', content: '', tool_calls: [] };
@@ -1448,9 +1472,12 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
     const cand = (resp.candidates || [])[0];
     if (cand) {
       for (const part of (cand.content && cand.content.parts) || []) {
-        // Thinking parts carry `thought: true`. Rendering them would splice the
-        // model's reasoning into the visible answer.
-        if (part.thought) continue;
+        // Thinking parts carry `thought: true`. Route them through onDelta(text, true)
+        // so the UI ThinkBlock streams live without splicing into visible prose.
+        if (part.thought) {
+          if (typeof part.text === 'string' && part.text) onDelta(part.text, true);
+          continue;
+        }
         if (typeof part.text === 'string' && part.text) {
           message.content += part.text;
           onDelta(part.text);

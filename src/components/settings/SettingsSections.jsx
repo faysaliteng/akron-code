@@ -791,6 +791,7 @@ export function DependenciesAndUpdaterSection({ setNotice }) {
   const [deps, setDeps] = useState(null);
   const [installingId, setInstallingId] = useState('');
   const [lspNote, setLspNote] = useState('');
+  const [curVer, setCurVer] = useState('');
   const [upd, setUpd] = useState(null);
   const [updBusy, setUpdBusy] = useState('');
   const [updProg, setUpdProg] = useState(null);
@@ -798,6 +799,12 @@ export function DependenciesAndUpdaterSection({ setNotice }) {
   const api = (typeof window !== 'undefined' && window.autobot) || {};
 
   const refreshDeps = useCallback(async () => {
+    if (api.getVersion) {
+      try {
+        const v = await api.getVersion();
+        if (v && (v.app || v.version)) setCurVer(String(v.app || v.version));
+      } catch (_) {}
+    }
     if (!api.depsStatus) return;
     try {
       const r = await api.depsStatus();
@@ -813,6 +820,7 @@ export function DependenciesAndUpdaterSection({ setNotice }) {
       if (!evt) return;
       if (evt.type === 'dep-lsp' && evt.message) setLspNote(evt.message);
       if (evt.type === 'app-update-progress') setUpdProg(evt);
+      if (evt.type === 'app-update-available' && evt.latestVersion) setUpd((u) => u || evt);
     });
   }, [api]);
 
@@ -877,7 +885,7 @@ export function DependenciesAndUpdaterSection({ setNotice }) {
         <h3>App Auto-Update (GitHub Releases)</h3>
         <div className="env-prof-row">
           <div className="env-prof-meta">
-            <span className="env-prof-title">Akron Code v{(upd && upd.currentVersion) || '1.0.0'}</span>
+            <span className="env-prof-title">Akron Code v{(upd && upd.currentVersion) || curVer || '1.5.0'}</span>
             <span className="env-prof-sub">
               {upd
                 ? (upd.ok

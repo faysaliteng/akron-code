@@ -1583,10 +1583,20 @@ async function selectModelForTier({
   // Fill any remaining failover slots up to 11
   for (const item of hydratedList.slice(1)) pushChain(item);
 
+  // Supervisor / Planner turns MUST always run with High reasoning effort.
+  const isPlannerRoute = lookupRole === 'planner';
+  if (isPlannerRoute && chosen && !chosen._disableThinking) chosen.reasoningLevel = 'high';
+  for (let i = 0; i < failoverChain.length; i++) {
+    const peer = failoverChain[i];
+    if (peer && (isPlannerRoute || peer.role === 'planner' || peer.tier === 'critical') && !peer._disableThinking) {
+      failoverChain[i] = { ...peer, reasoningLevel: 'high' };
+    }
+  }
+
   return {
     chosen,
     failoverChain,
-    classification: { ...cls, model: chosen.model || cls.model || '' },
+    classification: { ...cls, model: chosen.model || cls.model || '', ...(isPlannerRoute ? { reasoningLevel: 'high' } : {}) },
   };
 }
 

@@ -177,7 +177,7 @@ function resolve(orch, role, provider) {
       supportsTools: m.tools !== false,
       temperature: provider && provider.temperature,
       maxTokens: provider && provider.maxTokens,
-      reasoningLevel: provider && provider.reasoningLevel,
+      reasoningLevel: pickedRole === 'planner' ? 'high' : (provider && provider.reasoningLevel),
       role: pickedRole,
       tier: ROLE_TIER[pickedRole] || 'heavy',
       frontier: true,

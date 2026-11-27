@@ -1737,6 +1737,13 @@ async function runAgent(opts) {
       }
     } catch (_) { /* routing hint only */ }
   }
+  if (opts.role === 'supervisor' || opts.role === 'planner' || opts.swarm === true || (autoRoutedMeta && autoRoutedMeta.role === 'planner')) {
+    for (let pi = 0; pi < providerList.length; pi++) {
+      if (providerList[pi] && !providerList[pi]._disableThinking) {
+        providerList[pi] = { ...providerList[pi], reasoningLevel: 'high' };
+      }
+    }
+  }
   const homeIndex = activeIndex;
   const getIndex = () => activeIndex % providerList.length;
   const setIndex = (i) => { activeIndex = i % providerList.length; };
@@ -2411,10 +2418,11 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
   const usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0, context_tokens: 0, model: activeServedModel };
   const addUsage = (u, resolvedModel) => {
     if (resolvedModel) recordModelUsed(resolvedModel);
-    if (!u || typeof u !== 'object') return;
-    const pin = Number(u.prompt_tokens != null ? u.prompt_tokens : u.input_tokens);
-    const pout = Number(u.completion_tokens != null ? u.completion_tokens : u.output_tokens);
-    const ptotal = Number(u.total_tokens);
+    const normU = require('./usage-estimator').normalizeCallUsage(u);
+    if (!normU) return;
+    const pin = Number(normU.prompt_tokens);
+    const pout = Number(normU.completion_tokens);
+    const ptotal = Number(normU.total_tokens);
     if (Number.isFinite(pin) && pin > 0) { usageTotals.prompt_tokens += pin; usageTotals.context_tokens = pin; }
     if (Number.isFinite(pout) && pout > 0) usageTotals.completion_tokens += pout;
     usageTotals.total_tokens += (Number.isFinite(ptotal) && ptotal > 0
@@ -2549,13 +2557,19 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           recordModelUsed(stepModel);
           emit({ type: 'model', model: stepModel, modelsUsed: modelsUsed.slice(), ...(autoRoutedMeta ? { autoRouted: autoRoutedMeta } : {}) });
         }
+        const effectiveUsage = require('./usage-estimator').normalizeCallUsage(
+          m && m.usage,
+          wireMessages,
+          withTools ? tools : null,
+          m
+        );
         // Record the output tokens this attempt produced into the shared pool.
         // A discarded token-limit attempt still cost tokens, so it counts too.
-        if (m && m.usage) {
-          const out = Number(m.usage.completion_tokens != null ? m.usage.completion_tokens : m.usage.output_tokens);
+        if (effectiveUsage) {
+          const out = Number(effectiveUsage.completion_tokens != null ? effectiveUsage.completion_tokens : effectiveUsage.output_tokens);
           if (Number.isFinite(out) && out > 0) budgetPool.addOutput(out);
         }
-        addUsage(m && m.usage, stepModel);
+        addUsage(effectiveUsage, stepModel);
         if (process.env.AUTOBOT_TRACE) {
           traceLine({
             t: new Date().toISOString(),
@@ -3665,6 +3679,14 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           result = typeof r === 'string' ? r : r.content;
           isError = typeof r === 'object' && Boolean(r.isError);
           if (r && typeof r === 'object' && r.imageDataUrl) imageDataUrl = r.imageDataUrl;
+          if (r && typeof r === 'object' && r.usage) {
+            const su = r.usage;
+            usageTotals.prompt_tokens += Number(su.prompt_tokens) || 0;
+            usageTotals.completion_tokens += Number(su.completion_tokens) || 0;
+            usageTotals.total_tokens += Number(su.total_tokens) || 0;
+            usageTotals.calls += Number(su.calls) || 1;
+            if (!usageTotals.context_tokens && Number(su.context_tokens) > 0) usageTotals.context_tokens = Number(su.context_tokens);
+          }
           if (_bashPreSnap && opts.convId) {
             try {
               const ck = require('./checkpoints');

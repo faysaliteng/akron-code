@@ -9,6 +9,7 @@ import { ProjectSettingsPanel } from './ProjectSettingsPanel.jsx';
 import { MigrationWizard } from './MigrationWizard.jsx';
 import { AutoSwitchBrainSection, FreeLLMAPISection, ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection, MediaStudioApiKeysSection } from './ExtendedSettingsPanels.jsx';
 import { OrchPaidProvidersPanel } from './OrchPaidProvidersPanel.jsx';
+import { ParadevIntegrationCard } from './ParadevIntegrationCard.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from '../../features/WorkspacePanels.jsx';
 import { SkillsViewBody, PluginsViewBody } from '../chat/WorkspaceViews.jsx';
 import {
@@ -32,7 +33,7 @@ export function SettingsModalBody({
   const [section, setSection] = useState(initialSection || 'providers');
   const [navFilter, setNavFilter] = useState('');
   const [orchPaidProviders, setOrchPaidProviders] = useState([]);
-  const [appVer, setAppVer] = useState('1.4.0');
+  const [appVer, setAppVer] = useState('1.5.0');
   useEffect(() => {
     if (window.autobot && typeof window.autobot.getVersion === 'function') {
       window.autobot.getVersion().then((v) => {
@@ -867,14 +868,17 @@ export function SettingsModalBody({
             )}
 
             {section === 'environments' && (
-              <EnvironmentsSection
-                envState={envState}
-                refreshEnvState={refreshEnvState}
-                onSwitchEnvironment={onSwitchEnvironment}
-                setError={setError}
-                setNotice={setNotice}
-                cwd={cwd}
-              />
+              <>
+                <EnvironmentsSection
+                  envState={envState}
+                  refreshEnvState={refreshEnvState}
+                  onSwitchEnvironment={onSwitchEnvironment}
+                  setError={setError}
+                  setNotice={setNotice}
+                  cwd={cwd}
+                />
+                <ParadevIntegrationCard setNotice={setNotice} />
+              </>
             )}
 
             {section === 'security' && (
@@ -930,9 +934,12 @@ export function SettingsModalBody({
             )}
 
             {section === 'mcp' && (
-              <div className="settings-card">
-                <McpView mcpServers={mcpServers} mcpForm={mcpForm} setMcpForm={setMcpForm} connectMcp={connectMcp} disconnectMcp={disconnectMcp} />
-              </div>
+              <>
+                <div className="settings-card">
+                  <McpView mcpServers={mcpServers} mcpForm={mcpForm} setMcpForm={setMcpForm} connectMcp={connectMcp} disconnectMcp={disconnectMcp} />
+                </div>
+                <ParadevIntegrationCard setNotice={setNotice} />
+              </>
             )}
 
             {section === 'memory' && (
