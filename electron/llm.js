@@ -516,7 +516,8 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
     body.reasoning_effort = provider.reasoningLevel;
   }
   const headers = { 'content-type': 'application/json' };
-  if (provider.apiKey) headers['authorization'] = 'Bearer ' + provider.apiKey;
+  const authTok = provider.apiKey || provider.accessToken;
+  if (authTok) headers['authorization'] = 'Bearer ' + authTok;
 
   const isThinkingOrFrontier = !provider._disableThinking && (
     (provider.reasoningLevel && provider.reasoningLevel !== 'auto') ||
@@ -1816,6 +1817,32 @@ async function runAgent(opts) {
       }
     }
   }
+  if (typeof opts.hydrateProvider === 'function' && Array.isArray(providerList) && providerList.length) {
+    for (let pi = 0; pi < providerList.length; pi++) {
+      const p = providerList[pi];
+      if (!p || !((p.oauthProvider && !p.accessToken) || (p.baseURL && !p.apiKey && !p.oauthProvider))) continue;
+      try {
+        const h = await opts.hydrateProvider(p);
+        if (h && typeof h === 'object') {
+          providerList[pi] = normalizeProvider({
+            ...p,
+            ...h,
+            model: p.model || h.model,
+            role: p.role || h.role,
+            tier: p.tier || h.tier,
+            maxConcurrent: p.maxConcurrent || h.maxConcurrent,
+            gateKey: p.gateKey || h.gateKey,
+            reasoningLevel: p.reasoningLevel || h.reasoningLevel,
+            contextWindow: p.contextWindow || h.contextWindow,
+            supportsTools: p.supportsTools !== false && h.supportsTools !== false,
+          });
+        }
+      } catch (_) {}
+    }
+    if (effectiveOrch && Array.isArray(effectiveOrch.providers)) {
+      effectiveOrch = { ...effectiveOrch, providers: providerList };
+    }
+  }
   const homeIndex = activeIndex;
   const getIndex = () => activeIndex % providerList.length;
   const setIndex = (i) => { activeIndex = i % providerList.length; };
@@ -2331,6 +2358,9 @@ async function runAgent(opts) {
   let planNudges = 0;
   let hookNudges = 0;
   let autoContinueNudges = 0;
+  let toolsRunSinceAutoContinue = 0;
+  let lastAutoContinueTodoSig = '';
+  let stalledAutoContinueCount = 0;
   let blankPostToolRetries = 0;
   let todoWriteUsedInTurn = false;
   let activeTodos = [];
@@ -2990,16 +3020,28 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       }
       // Autonomous completion gate: on long-horizon auto builds, finish open TodoWrite items
       // and execute proposed verification steps instead of stopping to ask "Want me to do that?".
+      // Guard against repeating the final summary when the model made zero todo/tool progress or
+      // explicitly reported a manual blocker (e.g., an external browser tab needing manual action).
       if (depth === 0 && permissionMode === 'auto' && opts._disableAutoContinue !== true && step >= 1) {
         const incompleteTodos = todoWriteUsedInTurn
           ? activeTodos.filter((t) => t && String(t.status || '').toLowerCase() !== 'completed')
           : [];
         const replyTail = String(message.content || '').trim();
+        const todoSig = incompleteTodos.map((t) => `${t.id || ''}:${t.status || ''}:${t.content || ''}`).join('|');
+        const explicitBlocker = /\b(manual step needed|cannot complete|can't complete|can't finish|cannot finish|stopping here|needs to be closed by hand|blocked from completing|close (?:the|it) (?:manually|by hand))\b/i.test(replyTail);
         const prematureBailout = (wroteSomething || ranSwarmInTurn)
+          && !explicitBlocker
           && /\b(want me to|would you like me to|shall i|should i proceed|next step:\s*i can)\b[\s\S]{0,220}\?\s*$/i.test(replyTail);
+        if (autoContinueNudges > 0 && todoSig && todoSig === lastAutoContinueTodoSig) stalledAutoContinueCount++;
+        else stalledAutoContinueCount = 0;
+        const zeroToolRetry = autoContinueNudges > 0 && toolsRunSinceAutoContinue === 0;
+        const blockerHalt = explicitBlocker && (autoContinueNudges >= 1 || step >= 1);
+        const stalledHalt = stalledAutoContinueCount >= 1;
         const maxAutoWaves = incompleteTodos.length > 0 ? 8 : 3;
-        if ((incompleteTodos.length > 0 || prematureBailout) && autoContinueNudges < maxAutoWaves) {
+        if ((incompleteTodos.length > 0 || prematureBailout) && !zeroToolRetry && !blockerHalt && !stalledHalt && autoContinueNudges < maxAutoWaves) {
           autoContinueNudges++;
+          lastAutoContinueTodoSig = todoSig;
+          toolsRunSinceAutoContinue = 0;
           if (incompleteTodos.length > 0) {
             const openList = incompleteTodos.slice(0, 6).map((t) => `- [${t.status || 'pending'}] ${t.content || t.id}`).join('\n');
             emit({ type: 'notice', text: `Autonomous loop — ${incompleteTodos.length} todo item(s) still open; continuing…` });
@@ -3083,8 +3125,15 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     };
     const baseDelOrch = opts.delegationOrchestrator || effectiveOrch || orch || null;
     const useOauthRoster = Array.isArray(opts.oauthAccounts) || typeof opts.hydrateProvider === 'function';
+    const unhealthyOauthIds = new Set(
+      (Array.isArray(opts.oauthAccounts) ? opts.oauthAccounts : [])
+        .filter((a) => a && (a.needsSignIn || a.expired || a.hasToken === false))
+        .map((a) => String(a.id || '').trim())
+        .filter(Boolean)
+    );
     let delegationProviders = Array.isArray(baseDelOrch && baseDelOrch.providers)
-      ? baseDelOrch.providers.filter((p) => p && p.enabled !== false && (!p.oauthProvider || p.accessToken || useOauthRoster))
+      ? baseDelOrch.providers.filter((p) => p && p.enabled !== false
+        && (!p.oauthProvider || (!unhealthyOauthIds.has(String(p.oauthProvider)) && (p.accessToken || useOauthRoster))))
       : [];
     if (useOauthRoster) {
       try {
@@ -3731,6 +3780,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     };
 
     const pendingImages = [];
+    if (Array.isArray(calls) && calls.length) toolsRunSinceAutoContinue += calls.length;
     const waves = (!textCalls && calls.length > 1)
       ? partitionToolWaves(calls)
       : calls.map((tc) => ({ parallel: false, items: [tc] }));

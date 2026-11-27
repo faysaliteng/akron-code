@@ -93,6 +93,7 @@ const LABELS = {
   open_tab: (args) => navigation(args?.url, "in a new tab"),
   list_tabs: () => pair("Checking the open tabs", "Checked the open tabs"),
   switch_tab: () => pair("Switching tabs", "Switched tabs"),
+  close_tab: () => pair("Closing the tab", "Closed the tab"),
   go_back: () => pair("Going back", "Went back"),
   go_forward: () => pair("Going forward", "Went forward"),
   screenshot: () => pair("Taking a screenshot", "Took a screenshot"),

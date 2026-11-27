@@ -212,10 +212,10 @@ function collectPostEditDiagnostics(fp, _cwd = null) {
   return `\n\nDiagnostics for ${fp}:\n` + issues.map((x) => `  - ${x}`).join('\n');
 }
 
-function collectSourceFilesRecursive(dir, limit = 250) {
+function collectSourceFilesRecursive(dir, limit = 250, { skipJson = false } = {}) {
   const out = [];
   const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'vendor', '.autobot', '.akron', '.next', '.nuxt']);
-  const EXTS = new Set(['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.json']);
+  const EXTS = new Set(['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', ...(skipJson ? [] : ['.json'])]);
   const walk = (cur) => {
     if (out.length >= limit) return;
     let entries;
@@ -258,8 +258,70 @@ function execAsync(file, args, cwd, timeoutMs = 30000) {
   });
 }
 
-async function runShadowCheck(cwd, { timeoutMs = 30000 } = {}) {
-  const dir = cwd ? path.resolve(cwd) : process.cwd();
+function isTempScratchRoot(dir) {
+  const norm = path.resolve(String(dir || ''));
+  const osTmp = path.resolve(require('os').tmpdir());
+  return norm === '/tmp' || norm === '/private/tmp' || norm === osTmp;
+}
+
+async function runShadowCheck(cwd, { timeoutMs = 30000, path: targetPath, files: targetFiles } = {}) {
+  let dir = cwd ? path.resolve(cwd) : process.cwd();
+  const explicitFiles = [];
+  const resolveAgainstDir = (p) => (path.isAbsolute(p) ? path.resolve(p) : path.resolve(dir, p));
+
+  if (fs.existsSync(dir)) {
+    try {
+      if (fs.statSync(dir).isFile()) {
+        explicitFiles.push(dir);
+        dir = path.dirname(dir);
+      }
+    } catch (_) {}
+  }
+
+  if (targetPath) {
+    const tp = resolveAgainstDir(String(targetPath));
+    try {
+      if (fs.existsSync(tp) && fs.statSync(tp).isDirectory()) {
+        dir = tp;
+      } else {
+        explicitFiles.push(tp);
+      }
+    } catch (_) {
+      explicitFiles.push(tp);
+    }
+  }
+
+  if (Array.isArray(targetFiles)) {
+    for (const f of targetFiles) {
+      if (!f) continue;
+      explicitFiles.push(resolveAgainstDir(String(f)));
+    }
+  }
+
+  const dedupExplicit = [...new Set(explicitFiles)];
+  if (dedupExplicit.length > 0) {
+    const errors = [];
+    for (const fp of dedupExplicit) {
+      if (!fs.existsSync(fp)) {
+        errors.push(`Diagnostics for ${fp}:\n  - [Missing file] File does not exist.`);
+        continue;
+      }
+      const diag = collectPostEditDiagnostics(fp, path.dirname(fp));
+      if (diag) errors.push(diag.trim());
+    }
+    const syntaxCheck = {
+      name: 'syntax-scan',
+      ok: errors.length === 0,
+      code: errors.length ? 1 : 0,
+      output: errors.join('\n') || `Checked ${dedupExplicit.length} target file${dedupExplicit.length === 1 ? '' : 's'} — no syntax errors detected.`,
+    };
+    return {
+      ok: syntaxCheck.ok,
+      checks: [syntaxCheck],
+      summary: `${syntaxCheck.ok ? 'PASS' : 'FAIL'} [${syntaxCheck.name}]\n${syntaxCheck.output}`,
+    };
+  }
+
   const checks = [];
 
   const pkgPath = path.join(dir, 'package.json');
@@ -285,7 +347,9 @@ async function runShadowCheck(cwd, { timeoutMs = 30000 } = {}) {
 
   // Always scan JS/MJS/CJS/JSX/TS files recursively (even when package.json typecheck
   // runs, because workspace sandboxes or standalone .mjs/.js files may sit outside it).
-  const scanned = collectSourceFilesRecursive(dir, 250);
+  // Avoid flagging unrelated `.json` daemon state files when scanning shared OS temp roots.
+  const skipJson = isTempScratchRoot(dir) && !fs.existsSync(pkgPath) && !fs.existsSync(path.join(dir, '.git'));
+  const scanned = collectSourceFilesRecursive(dir, 250, { skipJson });
   const scanTargets = scanned;
   if (scanTargets.length > 0 || !hasTypecheck) {
     const errors = [];

@@ -25,6 +25,8 @@ let state = {
   port: DEFAULT_PORT,
   running: false,
   reclaimTimer: null,
+  pingTimer: null,
+  reloadAttemptedForVersion: '',
   getProvider: null,
   getOrchestrator: null,
   getExtraProviders: null,
@@ -468,6 +470,44 @@ function sendExtensionRequest(payload, timeoutMs = 20000) {
   });
 }
 
+function compareSemver(a, b) {
+  const pa = String(a || '').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || '').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length, 3);
+  for (let i = 0; i < len; i++) {
+    const da = pa[i] || 0;
+    const db = pb[i] || 0;
+    if (da !== db) return da > db ? 1 : -1;
+  }
+  return 0;
+}
+
+function getBundledExtensionVersion() {
+  try {
+    const installer = require('./browser-ext-installer');
+    const src = installer.getBundledSourceExtensionDir();
+    if (src && fs.existsSync(path.join(src, 'manifest.json'))) {
+      const m = JSON.parse(fs.readFileSync(path.join(src, 'manifest.json'), 'utf8'));
+      if (m && m.version) return String(m.version);
+    }
+  } catch (_) {}
+  return '';
+}
+
+function maybeSyncAndHotReloadExtension(connectedVersion, ws) {
+  try {
+    const bundledVer = getBundledExtensionVersion();
+    const curVer = String(connectedVersion || '').trim();
+    if (!bundledVer || !curVer || compareSemver(curVer, bundledVer) >= 0) return;
+    if (state.reloadAttemptedForVersion === `${curVer}->${bundledVer}`) return;
+    state.reloadAttemptedForVersion = `${curVer}->${bundledVer}`;
+    try { require('./browser-ext-installer').syncStandaloneExtension({ force: true }); } catch (_) {}
+    if (ws && ws.readyState === 1 && compareSemver(curVer, '1.6.13') >= 0) {
+      try { ws.send(JSON.stringify({ type: 'ext_reload', request_id: 'reload_' + Date.now() })); } catch (_) {}
+    }
+  } catch (_) {}
+}
+
 function attachSocket(ws) {
   state.clients.add(ws);
   state.activeSocket = ws;
@@ -479,9 +519,17 @@ function attachSocket(ws) {
       try { ws.send(JSON.stringify({ type: 'pong' })); } catch (_) {}
       return;
     }
+    if (msg.type === 'pong') {
+      return;
+    }
     if (msg.type === 'ext_hello') {
       state.extensionVersion = msg.version || state.extensionVersion || '1.6.7';
+      maybeSyncAndHotReloadExtension(state.extensionVersion, ws);
       return;
+    }
+    if (msg.type === 'ext_status_result' && msg.version) {
+      state.extensionVersion = msg.version;
+      maybeSyncAndHotReloadExtension(msg.version, ws);
     }
     if (msg.request_id && state.pending.has(msg.request_id)) {
       const p = state.pending.get(msg.request_id);
@@ -535,6 +583,16 @@ async function ensureConnectedOrShared() {
     } catch (_) {}
     return 'shared';
   }
+  // If THIS process owns the HTTP+WS server on state.port, never probe localhost as a peer
+  // (self-probing our own /v1/health used to misclassify a momentary MV3 wake gap as 'shared').
+  if (state.running && state.server) {
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline) {
+      if (state.activeSocket && state.activeSocket.readyState === 1) return 'direct';
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return 'none';
+  }
   try {
     const h = await peerFetchJson('/v1/health', { timeoutMs: 1000 });
     if (h && h.ok) return 'shared';
@@ -581,17 +639,38 @@ async function callTool(tool, args = {}, tabId) {
       tabs,
     };
   }
-  const mode = await ensureConnectedOrShared();
-  if (mode === 'shared') {
-    const body = { action: tool, args: args && typeof args === 'object' ? args : {} };
-    if (Number.isInteger(tabId)) body.tabId = tabId;
-    const peer = await peerFetchJson('/v1/ext/tool', { method: 'POST', body, timeoutMs: 36000 });
-    return peer && peer.result !== undefined ? peer.result : peer;
+  let result;
+  try {
+    const mode = await ensureConnectedOrShared();
+    if (mode === 'shared') {
+      const body = { action: tool, args: args && typeof args === 'object' ? args : {} };
+      if (Number.isInteger(tabId)) body.tabId = tabId;
+      const peer = await peerFetchJson('/v1/ext/tool', { method: 'POST', body, timeoutMs: 36000 });
+      result = peer && peer.result !== undefined ? peer.result : peer;
+    } else {
+      const payload = { type: 'ext_tool', tool, args };
+      if (Number.isInteger(tabId)) payload.tabId = tabId;
+      const res = await sendExtensionRequest(payload, 35000);
+      result = res.result;
+    }
+    return result;
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    if (/Unknown tool:\s*sidepanel_status/i.test(msg)) {
+      return {
+        ok: true,
+        bridgeConnected: true,
+        extensionVersion: state.extensionVersion || 'legacy',
+        openPanels: 0,
+        sessions: [],
+        note: `Loaded browser extension (${state.extensionVersion || 'legacy'}) does not expose sidepanel_status in memory yet. Extension files on disk were synced — click Reload once on Akron Browser Bot in chrome://extensions or brave://extensions.`,
+      };
+    }
+    if (/Unknown tool:\s*(close_tab|tabs_close)/i.test(msg)) {
+      throw new Error(`Browser extension v${state.extensionVersion || 'legacy'} loaded in browser memory does not support ${tool} yet. Extension files were upgraded on disk (${extensionDir()}); click Reload once on Akron Browser Bot in brave://extensions / chrome://extensions and retry.`);
+    }
+    throw err;
   }
-  const payload = { type: 'ext_tool', tool, args };
-  if (Number.isInteger(tabId)) payload.tabId = tabId;
-  const res = await sendExtensionRequest(payload, 35000);
-  return res.result;
 }
 
 async function status() {
@@ -782,6 +861,16 @@ function start(opts = {}) {
         state.port = (addr && addr.port) || listenPort;
         state.running = true;
         state.shared = false;
+        if (!state.pingTimer) {
+          state.pingTimer = setInterval(() => {
+            for (const ws of state.clients) {
+              if (ws && ws.readyState === 1) {
+                try { ws.send(JSON.stringify({ type: 'ping' })); } catch (_) {}
+              }
+            }
+          }, 20000);
+          if (state.pingTimer.unref) state.pingTimer.unref();
+        }
         resListen(state.port);
       };
       server.once('error', onErr);
@@ -895,6 +984,10 @@ function stop() {
     try { clearInterval(state.reclaimTimer); } catch (_) {}
     state.reclaimTimer = null;
   }
+  if (state.pingTimer) {
+    try { clearInterval(state.pingTimer); } catch (_) {}
+    state.pingTimer = null;
+  }
   state.shared = false;
   for (const [, p] of state.pending) {
     clearTimeout(p.timer);
@@ -924,5 +1017,5 @@ module.exports = {
   listTabs,
   callTool,
   extensionDir,
-  _internal: { gatherBackends, resolveCandidateList, normalizeOpenAIMessages, inferModelTransport },
+  _internal: { gatherBackends, resolveCandidateList, normalizeOpenAIMessages, inferModelTransport, ensureConnectedOrShared, maybeSyncAndHotReloadExtension, state },
 };

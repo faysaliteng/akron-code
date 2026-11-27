@@ -765,14 +765,35 @@ async function swarm(goal, opts = {}) {
     return { enabled: true, providers, activeIndex: 0, role: 'pinned' };
   };
 
-  // Supervisor: an explicit pin wins; otherwise Planner / the strongest tier.
+  const keyOf = (r) => (r && r.oauthProvider
+    ? 'oauth|' + r.oauthProvider + '|' + String(r.model || '')
+    : String((r && r.baseURL) || '') + '|' + String((r && r.model) || ''));
+
+  // Supervisor: an explicit pin wins if frontier (or when roster has no frontier models);
+  // otherwise upgrade to the strongest healthy Planner / frontier model with failover.
   // Supervisor thinking mode is ALWAYS forced to 'high' (+ `-high` variant when available).
   let supervisorOrch = null;
   let supervisor = null;
+  const defaultSupOrch = chainFor('critical', 0, 'planner');
   if (opts.supervisor) {
-    supervisor = ensureHighThinkingSupervisor({ ...opts.supervisor, tier: 'critical' }, roster);
+    const frontierRoster = roster.filter((r) => r && r.frontier && (!gate || typeof gate.usable !== 'function' || gate.usable(r)));
+    let chosenSup = opts.supervisor;
+    if (!isFrontier(chosenSup) && frontierRoster.length) {
+      chosenSup = (defaultSupOrch && defaultSupOrch.providers && defaultSupOrch.providers.find((r) => isFrontier(r)))
+        || pickProvider(frontierRoster, 'critical', 0)
+        || chosenSup;
+    }
+    supervisor = ensureHighThinkingSupervisor({ ...chosenSup, tier: 'critical' }, roster);
+    const supRest = ((defaultSupOrch && Array.isArray(defaultSupOrch.providers)) ? defaultSupOrch.providers : roster)
+      .filter((r) => keyOf(r) !== keyOf(supervisor));
+    supervisorOrch = {
+      enabled: true,
+      activeIndex: 0,
+      role: 'planner',
+      providers: [supervisor, ...supRest],
+    };
   } else {
-    supervisorOrch = chainFor('critical', 0, 'planner');
+    supervisorOrch = defaultSupOrch;
     supervisor = supervisorOrch ? ensureHighThinkingSupervisor({ ...supervisorOrch.providers[0], tier: 'critical' }, roster)
       : (opts.provider ? ensureHighThinkingSupervisor({ ...opts.provider, tier: 'critical' }, roster) : null);
   }
@@ -783,9 +804,6 @@ async function swarm(goal, opts = {}) {
       providers: supervisorOrch.providers.map((p) => ensureHighThinkingSupervisor(p, roster)),
     };
   }
-  const keyOf = (r) => (r && r.oauthProvider
-    ? 'oauth|' + r.oauthProvider + '|' + String(r.model || '')
-    : String((r && r.baseURL) || '') + '|' + String((r && r.model) || ''));
   const supKey = keyOf(supervisor);
   if (!roster.some((r) => keyOf(r) === supKey)) {
     roster.push({ ...supervisor, tier: 'critical', role: 'supervisor' });
@@ -1102,8 +1120,22 @@ async function swarm(goal, opts = {}) {
           emit({ ...evt, subagent: name, agentId, tier: task.tier, model: servedBy });
         },
       });
-      const last = [...(out || [])].reverse().find((m) => m.role === 'assistant' && m.content);
-      let result = last ? last.content : '(worker finished with no text)';
+      const last = [...(out || [])].reverse().find((m) => m.role === 'assistant' && String(m.content || '').trim());
+      let result = '';
+      if (last && String(last.content || '').trim()) {
+        result = String(last.content);
+      } else {
+        const toolSteps = [];
+        for (const m of (out || [])) {
+          if (m && m.role === 'tool') {
+            const snippet = String(m.content || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+            toolSteps.push(`- ${m.name || 'tool'}: ${snippet || '(ok)'}`);
+          }
+        }
+        result = toolSteps.length
+          ? `Completed ${toolSteps.length} tool step(s):\n${toolSteps.slice(0, 8).join('\n')}`
+          : '(worker finished with no text)';
+      }
       let preservedWorktree = null;
       if (worktreeInfo) {
         let dirtyOrCommitted = false;

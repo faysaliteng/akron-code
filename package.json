@@ -1,7 +1,7 @@
 {
   "name": "akronbot",
   "productName": "Akron Code",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "description": "Akron Code — multi-agent desktop coding IDE by Akronlogic.com",
   "main": "electron/main.js",
   "bin": {

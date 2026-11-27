@@ -1179,8 +1179,18 @@ const executors = {
     });
   },
 
-  async shadow_check({ cwd, timeout }) {
-    const res = await editGuard.runShadowCheck(resolveDir(cwd), { timeoutMs: timeout || 30000 });
+  async shadow_check({ cwd, path: targetPath, file_path: targetFilePath, files, timeout } = {}) {
+    const baseDir = resolveDir(cwd);
+    const chosenPath = targetPath || targetFilePath;
+    const resolvedTarget = chosenPath ? resolvePath(chosenPath, baseDir) : undefined;
+    const resolvedFiles = Array.isArray(files)
+      ? files.map((f) => resolvePath(String(f), baseDir)).filter(Boolean)
+      : undefined;
+    const res = await editGuard.runShadowCheck(baseDir, {
+      path: resolvedTarget,
+      files: resolvedFiles,
+      timeoutMs: timeout || 30000,
+    });
     if (!res.ok) return { content: res.summary, isError: true };
     return res.summary;
   },
@@ -1280,7 +1290,7 @@ const toolDefinitions = [
   { name: 'Edit', description: 'Make a targeted change to an existing file: replace old_string with new_string. old_string must match exactly ONE place in the file (include surrounding lines to make it unique) unless replace_all is true. Read the file first and copy old_string exactly, including indentation (without the Read line-number prefix).', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path (Example-style)' }, old_string: { type: 'string', description: 'Exact text to replace (copy from Read output)' }, new_string: { type: 'string', description: 'Replacement text' }, replace_all: { type: 'boolean', description: 'Replace every occurrence' }, cwd: { type: 'string' } }, required: ['path', 'old_string', 'new_string'] } },
   { name: 'MultiEdit', description: 'Apply several {old_string,new_string} replacements to one file in a single call, in order (each sees the previous result), all-or-nothing. Each old_string must be unique unless that edit sets replace_all. Use instead of many separate Edits.', parameters: { type: 'object', properties: { path: { type: 'string' }, file_path: { type: 'string', description: 'Alias of path' }, edits: { type: 'array', items: { type: 'object', properties: { old_string: { type: 'string' }, new_string: { type: 'string' }, replace_all: { type: 'boolean' } }, required: ['old_string', 'new_string'] } }, cwd: { type: 'string' } }, required: ['path', 'edits'] } },
   { name: 'ApplyPatch', description: 'Atomically apply multi-file Add/Update/Delete changes in Codex V4A patch format (`*** Begin Patch` ... `*** End Patch`, with fuzzy line matching and post-edit diagnostics).', parameters: { type: 'object', properties: { patch: { type: 'string', description: 'Patch text starting with *** Begin Patch and ending with *** End Patch' }, input: { type: 'string', description: 'Alias for patch' }, cwd: { type: 'string' } }, required: ['patch'] } },
-  { name: 'ShadowCheck', description: 'Run fast background typecheck/lint/syntax verification on the workspace before finishing a coding turn.', parameters: { type: 'object', properties: { cwd: { type: 'string' }, timeout: { type: 'number' } } } },
+  { name: 'ShadowCheck', description: 'Run fast background typecheck/lint/syntax verification on the workspace (or an explicit path/files list) before finishing a coding turn.', parameters: { type: 'object', properties: { cwd: { type: 'string' }, path: { type: 'string', description: 'Optional single file or directory path to syntax-check' }, file_path: { type: 'string', description: 'Alias for path' }, files: { type: 'array', items: { type: 'string' }, description: 'Optional explicit list of file paths to syntax-check' }, timeout: { type: 'number' } } } },
   { name: 'CodebaseSearch', description: 'Hybrid symbol + BM25 + semantic trigram search over the incremental SQLite/Merkle workspace index (respects .gitignore and .akronignore).', parameters: { type: 'object', properties: { query: { type: 'string', description: 'Symbol name, concept, or natural-language code query' }, limit: { type: 'number', description: 'Max ranked hits (default 12)' }, cwd: { type: 'string' } }, required: ['query'] } },
   { name: 'RunToolScript', description: 'Execute an isolated async JavaScript batching script (`tools.read`, `tools.glob`, `tools.grep`, `tools.codebaseSearch`, `tools.write`, `tools.edit`) to combine multi-file reads/searches/edits in 1 turn.', parameters: { type: 'object', properties: { code: { type: 'string', description: 'Async JS body using `await tools.*` and `return`' }, timeout: { type: 'number', description: 'Timeout in ms (default 15000, max 60000)' }, cwd: { type: 'string' } }, required: ['code'] } },
   { name: 'Glob', description: 'Find files matching a glob pattern (supports **, *, ?, [abc], {a,b}), e.g. "**/*.{ts,tsx}". Results are sorted by modification time (newest first); node_modules and .git are skipped. Use `path` to set the search root.', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string', description: 'Directory to search from (default: cwd)' }, cwd: { type: 'string' } }, required: ['pattern'] } },

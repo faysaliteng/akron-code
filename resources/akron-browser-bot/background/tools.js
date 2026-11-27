@@ -1030,7 +1030,7 @@ async function runTool(name, args, ctx) {
     case "tabs_select": {
       const id = Number(args?.tabId);
       if (!Number.isInteger(id)) throw new Error("tabId must be an integer.");
-      if (isTask(ctx)) {
+      if (isTask(ctx) && !ctx?.fromBridge) {
         const mine = await taskTabs({ tabId, groupId: ctx.groupId, taskTabIds: ctx.taskTabIds });
         if (!mine.tabs.some((t) => t.id === id)) {
           throw new Error(
@@ -1066,7 +1066,7 @@ async function runTool(name, args, ctx) {
       const rawId = args?.tabId != null ? Number(args.tabId) : tabId;
       const id = Number.isInteger(rawId) ? rawId : Math.trunc(Number(rawId));
       if (!Number.isInteger(id) || id <= 0) throw new Error("tabId must be a positive integer.");
-      if (isTask(ctx)) {
+      if (isTask(ctx) && !ctx?.fromBridge) {
         const mine = await taskTabs({ tabId, groupId: ctx.groupId, taskTabIds: ctx.taskTabIds });
         if (mine.tabs.length && !mine.tabs.some((t) => t.id === id)) {
           throw new Error(`Tab ${id} is not one of your task tabs.`);

@@ -292,7 +292,7 @@ function syncUpdateBadge(updateState) {
 }
 
 async function getUpdateState() {
-  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.12";
+  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.13";
   try {
     const r = await chrome.storage.local.get(UPDATE_STATE_KEY);
     const saved = r?.[UPDATE_STATE_KEY];
@@ -339,7 +339,7 @@ async function checkForUpdatesNow({ manual = false } = {}) {
     getSettings().catch(() => ({})),
     getUpdateState(),
   ]);
-  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.12";
+  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.13";
   const result = await checkForExtensionUpdate({
     currentVersion,
     repo: GITHUB_REPO,
@@ -2113,6 +2113,28 @@ if (chrome.tabs.onCreated) {
 globalThis.__autobotExecuteTool = executeTool;
 
 const bridgeTaskTabIds = new Set();
+const BRIDGE_TABS_KEY = "autobot_bridge_tab_ids";
+
+async function hydrateBridgeTaskTabIds() {
+  try {
+    const store = chrome.storage?.session || chrome.storage?.local;
+    if (!store?.get) return;
+    const data = await store.get(BRIDGE_TABS_KEY).catch(() => ({}));
+    const list = Array.isArray(data?.[BRIDGE_TABS_KEY]) ? data[BRIDGE_TABS_KEY] : [];
+    for (const id of list) {
+      if (Number.isInteger(id) && id > 0) bridgeTaskTabIds.add(id);
+    }
+  } catch {}
+}
+
+async function persistBridgeTaskTabIds() {
+  try {
+    const store = chrome.storage?.session || chrome.storage?.local;
+    if (!store?.set) return;
+    await store.set({ [BRIDGE_TABS_KEY]: [...bridgeTaskTabIds].slice(-100) }).catch(() => {});
+  } catch {}
+}
+hydrateBridgeTaskTabIds();
 
 function coerceTabId(v) {
   if (Number.isInteger(v) && v > 0) return v;
@@ -2268,13 +2290,24 @@ async function handleBridgeMessage(event, socket) {
   } catch {
     return;
   }
+  if (message?.type === "ping") {
+    try { socket.send(JSON.stringify({ type: "pong" })); } catch {}
+    return;
+  }
+  if (message?.type === "ext_reload") {
+    try { socket.send(JSON.stringify({ type: "ext_reload_ack", request_id: message.request_id, ok: true })); } catch {}
+    setTimeout(() => {
+      try { chrome.runtime?.reload?.(); } catch {}
+    }, 150);
+    return;
+  }
   if (message?.type === "ext_status") {
     try {
       const tabs = await chrome.tabs.query({}).catch(() => []);
       socket.send(JSON.stringify({
         type: "ext_status_result",
         request_id: message.request_id,
-        version: chrome.runtime?.getManifest?.().version || "1.6.7",
+        version: chrome.runtime?.getManifest?.().version || "1.6.13",
         tabs: tabs.map((t) => ({ id: t.id, title: t.title || "", url: t.url || "", active: !!t.active, windowId: t.windowId })),
       }));
     } catch (e) {
@@ -2293,6 +2326,7 @@ async function handleBridgeMessage(event, socket) {
   }
   if (message?.type === "ext_tool") {
     try {
+      await hydrateBridgeTaskTabIds();
       if (typeof message.tool === "string" && message.tool.startsWith("sidepanel_")) {
         const result = await runSidepanelBridgeAction(message.tool, message.args || {}, message.tabId);
         socket.send(JSON.stringify({ type: "ext_tool_result", request_id: message.request_id, ok: true, result }));
@@ -2320,6 +2354,7 @@ async function handleBridgeMessage(event, socket) {
       });
       if (Number.isInteger(result?.closedTabId)) bridgeTaskTabIds.delete(result.closedTabId);
       if (Number.isInteger(result?.tabId)) bridgeTaskTabIds.add(result.tabId);
+      await persistBridgeTaskTabIds();
       socket.send(JSON.stringify({ type: "ext_tool_result", request_id: message.request_id, ok: true, result }));
     } catch (e) {
       try { socket.send(JSON.stringify({ type: "ext_tool_result", request_id: message.request_id, ok: false, error: String(e?.message || e) })); } catch {}

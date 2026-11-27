@@ -80,7 +80,7 @@ for (const n of [
   check(`tool ${n}`, names.includes(n));
 }
 check("all tools have object schema", TOOL_DEFS.every((t) => t.parameters?.type === "object"));
-check("37 tools exposed", names.length === 37, `got ${names.length}`);
+check("38 tools exposed", names.length === 38, `got ${names.length}`);
 check("no duplicate tool names", new Set(names).size === names.length);
 
 /* ---------- 2. storage round-trip ---------- */
@@ -1416,8 +1416,11 @@ const sentTypes = [...new Set([...swSrc.matchAll(/type:\s*"([a-z_]+)"/g)].map((m
     "transcribe",
     "ext_hello",
     "ext_status_result",
+    "ext_sidepanel_result",
     "ext_tool_result",
     "ext_self_update",
+    "ext_reload_ack",
+    "pong",
   ].includes(t));
 for (const t of sentTypes) {
   check(`side panel handles "${t}"`, panelSrc.includes(`case "${t}"`));

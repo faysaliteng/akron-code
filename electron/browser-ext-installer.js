@@ -327,6 +327,26 @@ function compareSemver(a, b) {
   return 0;
 }
 
+function writeExtensionBundleToDir(sourceDir, targetDir, crxRes, fsMod = fs) {
+  fsMod.mkdirSync(targetDir, { recursive: true });
+  const files = collectExtensionFiles(sourceDir, '', fsMod);
+  for (const f of files) {
+    if (f.rel === 'manifest.json') continue;
+    const targetFile = path.join(targetDir, f.rel);
+    fsMod.mkdirSync(path.dirname(targetFile), { recursive: true });
+    fsMod.copyFileSync(f.abs, targetFile);
+  }
+  fsMod.writeFileSync(path.join(targetDir, 'manifest.json'), crxRes.patchedManifestBuffer);
+  fsMod.writeFileSync(path.join(targetDir, 'HOW_TO_INSTALL.txt'), buildHowToInstallText(targetDir, crxRes.extensionId), 'utf8');
+}
+
+function isAkronExtensionManifest(rawText, parsedManifest) {
+  if (!parsedManifest || typeof parsedManifest !== 'object') return false;
+  if (/akron/i.test(String(parsedManifest.name || '')) || /akron/i.test(String(parsedManifest.description || ''))) return true;
+  const sw = String((parsedManifest.background && parsedManifest.background.service_worker) || '');
+  return parsedManifest.name === '__MSG_appName__' && sw === 'background/service-worker.js' && parsedManifest.default_locale === 'en';
+}
+
 function syncStandaloneExtension({
   sourceDir = getBundledSourceExtensionDir(),
   targetDir = '',
@@ -344,8 +364,35 @@ function syncStandaloneExtension({
   const srcManifest = JSON.parse(fsMod.readFileSync(path.join(sourceDir, 'manifest.json'), 'utf8'));
   const crxPath = path.join(destDir, 'akron-browser-bot.crx');
   const destManifestPath = path.join(destDir, 'manifest.json');
+  const crxRes = buildCrx3Package({ sourceDir, outCrxPath: crxPath, keyPath, fsMod });
 
-  // Never downgrade an already auto-updated user folder (e.g. GitHub auto-update 1.6.11 > bundled 1.6.10).
+  // Upgrade any legacy unpacked Akron extension folders (e.g. ~/Documents/AkronBrowserBot) in lockstep
+  // when caller didn't override `targetDir`, so browsers still pointing at older folders stay current.
+  const syncedExtraDirs = [];
+  if (!targetDir) {
+    const legacyCandidates = [
+      path.join(homeDir, 'Documents', 'AkronBrowserBot'),
+      path.join(homeDir, 'Documents', EXTENSION_FOLDER_NAME),
+      path.join(homeDir, 'Applications', 'AkronBrowserBot'),
+      path.join(homeDir, 'AkronBrowserBot'),
+    ].filter((d) => path.resolve(d) !== path.resolve(destDir));
+    for (const extraDir of legacyCandidates) {
+      const mPath = path.join(extraDir, 'manifest.json');
+      if (!fsMod.existsSync(mPath)) continue;
+      try {
+        const rawM = fsMod.readFileSync(mPath, 'utf8');
+        const parsedM = JSON.parse(rawM);
+        if (!isAkronExtensionManifest(rawM, parsedM)) continue;
+        if (!force && parsedM.version && compareSemver(parsedM.version, srcManifest.version) > 0) continue;
+        if (force || !parsedM.version || compareSemver(parsedM.version, srcManifest.version) < 0 || !parsedM.key) {
+          writeExtensionBundleToDir(sourceDir, extraDir, crxRes, fsMod);
+          syncedExtraDirs.push(extraDir);
+        }
+      } catch (_) {}
+    }
+  }
+
+  // Never downgrade an already auto-updated primary user folder (e.g. GitHub auto-update > bundled).
   if (!force && fsMod.existsSync(destManifestPath) && fsMod.existsSync(crxPath)) {
     try {
       const dm = JSON.parse(fsMod.readFileSync(destManifestPath, 'utf8'));
@@ -359,6 +406,7 @@ function syncStandaloneExtension({
           crxPath,
           extensionId,
           version: String(dm.version),
+          syncedExtraDirs,
         };
       }
     } catch (_) {}
@@ -375,19 +423,11 @@ function syncStandaloneExtension({
   }
 
   if (needsSync) {
-    fsMod.mkdirSync(destDir, { recursive: true });
-    const files = collectExtensionFiles(sourceDir, '', fsMod);
-    for (const f of files) {
-      if (f.rel === 'manifest.json') continue;
-      const targetFile = path.join(destDir, f.rel);
-      fsMod.mkdirSync(path.dirname(targetFile), { recursive: true });
-      fsMod.copyFileSync(f.abs, targetFile);
-    }
+    writeExtensionBundleToDir(sourceDir, destDir, crxRes, fsMod);
+  } else {
+    fsMod.writeFileSync(destManifestPath, crxRes.patchedManifestBuffer);
+    fsMod.writeFileSync(path.join(destDir, 'HOW_TO_INSTALL.txt'), buildHowToInstallText(destDir, crxRes.extensionId), 'utf8');
   }
-
-  const crxRes = buildCrx3Package({ sourceDir, outCrxPath: crxPath, keyPath, fsMod });
-  fsMod.writeFileSync(destManifestPath, crxRes.patchedManifestBuffer);
-  fsMod.writeFileSync(path.join(destDir, 'HOW_TO_INSTALL.txt'), buildHowToInstallText(destDir, crxRes.extensionId), 'utf8');
 
   return {
     ok: true,
@@ -395,6 +435,7 @@ function syncStandaloneExtension({
     crxPath,
     extensionId: crxRes.extensionId,
     version: crxRes.version,
+    syncedExtraDirs,
   };
 }
 
