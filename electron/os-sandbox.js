@@ -81,7 +81,7 @@ function hasDestructiveRecursiveRm(sub) {
   return false;
 }
 
-const CREDENTIAL_PATH_RE = /(?:~\/|\$HOME\/|\/Users\/[^/\s]+\/|\/home\/[^/\s]+\/|\/root\/|%USERPROFILE%[\\/])(?:\.ssh\/id_|\.aws\/credentials|\.gnupg\/|\.autobot\/secrets\.json|\.autobot\/oauth\.json|\.autobot\/oauth-mirror)/i;
+const CREDENTIAL_PATH_RE = /(?:(?:~\/|\$HOME\/|"\$HOME"\/|\/Users\/[^/\s]+\/|\/home\/[^/\s]+\/|\/root\/|%USERPROFILE%[\\/])(?:\.ssh\/id_|\.aws\/credentials|\.gnupg\/|\.autobot\/(?:secrets\.json|oauth\.json|oauth-mirror))|\.autobot[\s\S]*\b(?:secrets|oauth|oauth-mirror)\.json\b)/i;
 
 function unquote(s) {
   const t = String(s || '').trim();

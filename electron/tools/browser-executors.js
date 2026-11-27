@@ -218,7 +218,7 @@ module.exports = function buildBrowserAndCuExecutors({ truncate }) {
     return JSON.stringify(res);
   },
   async browser_replay_skill({ name, skipStartUrl } = {}) {
-    const skills = require('./browser-skills');
+    const skills = require('../browser-skills');
     const sk = skills.loadSkill(name);
     if (!sk) return `Browser skill "${name}" not found.`;
     const res = await skills.replaySkill(sk, {
@@ -236,7 +236,7 @@ module.exports = function buildBrowserAndCuExecutors({ truncate }) {
     const r = await browser.click(selector, index);
     if (!r.ok) return 'Browser error: ' + r.error;
     if (!r.found) return `No element matched selector "${selector}" at index ${Number(index) || 0}.`;
-    return `Clicked <${r.tag}> "${r.text}".`;
+    return untrusted.wrapUntrusted(`Clicked <${r.tag}> "${r.text}".`, { source: 'Browser' });
   },
   async browser_type({ selector, text }) {
     const r = await browser.type(selector, text);
@@ -251,13 +251,14 @@ module.exports = function buildBrowserAndCuExecutors({ truncate }) {
   async browser_js({ code }) {
     const r = await browser.executeJS(code, true);
     if (!r.ok) return 'Browser error: ' + r.error;
-    return typeof r.result === 'object' ? JSON.stringify(r.result, null, 2) : String(r.result);
+    const raw = typeof r.result === 'object' ? JSON.stringify(r.result, null, 2) : String(r.result);
+    return untrusted.wrapUntrusted(raw, { source: 'BrowserJS' });
   },
   async browser_hover({ selector, index }) {
     const r = await browser.hover(selector, index);
     if (!r.ok) return 'Browser error: ' + r.error;
     if (!r.found) return `No element matched selector "${selector}" at index ${Number(index) || 0}.`;
-    return `Hovered <${r.tag}> "${r.text}".`;
+    return untrusted.wrapUntrusted(`Hovered <${r.tag}> "${r.text}".`, { source: 'Browser' });
   },
   async browser_select({ selector, value }) {
     const r = await browser.select(selector, value);

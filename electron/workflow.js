@@ -55,9 +55,9 @@ function hashCall(c) {
 // the export keyword off — nothing else about the script changes.
 function normalizeScript(src) {
   let s = String(src || '');
-  s = s.replace(/\bexport\s+const\s+meta\s*=/, 'const meta =');
-  s = s.replace(/\bexport\s+default\s+/g, '');
-  s = s.replace(/\bexport\s+(?=(?:async\s+)?(?:function|const|let|var|class)\b)/g, '');
+  s = s.replace(/^([ \t]*(?:\/\*[\s\S]*?\*\/\s*)*)export\s+const\s+meta\s*=/m, '$1const meta =');
+  s = s.replace(/^([ \t]*(?:\/\*[\s\S]*?\*\/\s*)*)export\s+default\s+/gm, '$1');
+  s = s.replace(/^([ \t]*(?:\/\*[\s\S]*?\*\/\s*)*)export\s+(?=(?:async\s+)?(?:function|const|let|var|class)\b)/gm, '$1');
   return s;
 }
 
@@ -396,7 +396,8 @@ async function runWorkflow(opts = {}) {
     // agents; it does not touch the machine directly.
   };
 
-  const hadExportDefault = /(?:^|\n)\s*export\s+default\s+/.test(String(script || ''));
+  const strippedComments = String(script || '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const hadExportDefault = /(?:^|\n)\s*export\s+default\s+/.test(strippedComments);
   let body = hadExportDefault
     ? String(script || '')
         .replace(/\bexport\s+const\s+meta\s*=/, 'const meta =')

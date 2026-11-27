@@ -108,7 +108,7 @@ function makeExecutor(spec) {
     }
 
     if (useInlineReplFallback) {
-      const wrappedCode = `process.env.TOOL_ARGS_JSON = ${JSON.stringify(payload)};\n${spec.script}`;
+      const wrappedCode = `const __akronPrevEnv = process.env.TOOL_ARGS_JSON;\nprocess.env.TOOL_ARGS_JSON = ${JSON.stringify(payload)};\ntry {\n${spec.script}\n} finally {\n  if (__akronPrevEnv === undefined) delete process.env.TOOL_ARGS_JSON;\n  else process.env.TOOL_ARGS_JSON = __akronPrevEnv;\n}`;
       require('./repl').evalJS({ code: wrappedCode, timeout: spec.timeoutMs, cwd, reset: true })
         .then((r) => resolve({ content: clipOut((r && r.output) || '(no output)'), isError: !(r && r.ok) }))
         .catch((e) => resolve({ content: `Custom tool "${spec.name}" error: ${e && e.message ? e.message : String(e)}`, isError: true }));

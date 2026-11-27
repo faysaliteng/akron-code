@@ -50,7 +50,9 @@ function snapshotFile(conv, turn, filePath) {
     } catch (_) { existed = false; }
     const rec = { path: abs, backup, existed };
     meta.files.push(rec);
-    fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
+    const tmpMeta = `${metaFile}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tmpMeta, JSON.stringify(meta, null, 2));
+    fs.renameSync(tmpMeta, metaFile);
     return rec;
   } catch (_) {
     return null;

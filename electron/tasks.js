@@ -157,22 +157,34 @@ function createTask(input = {}) {
   ensureTeam(team);
   const subject = String(input.subject || input.title || '').trim();
   if (!subject) return { ok: false, error: 'subject required' };
-  const id = nextTaskId(team);
-  const task = {
-    id,
-    subject,
-    description: String(input.description || ''),
-    activeForm: String(input.activeForm || input.active_form || subject),
-    status: 'pending',
-    owner: input.owner || null,
-    blocks: Array.isArray(input.blocks) ? input.blocks.map(String) : [],
-    blockedBy: Array.isArray(input.blockedBy || input.blocked_by) ? input.blockedBy.map(String) : [],
-    metadata: input.metadata && typeof input.metadata === 'object' ? { ...input.metadata } : {},
-    createdAt: now(),
-    updatedAt: now(),
-  };
-  writeJSON(taskFile(team, id), task);
-  return { ok: true, task };
+  const dir = taskDir(team);
+  fs.mkdirSync(dir, { recursive: true });
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const id = String(Number(nextTaskId(team)) + attempt);
+    const file = taskFile(team, id);
+    const task = {
+      id,
+      subject,
+      description: String(input.description || ''),
+      activeForm: String(input.activeForm || input.active_form || subject),
+      status: 'pending',
+      owner: input.owner || null,
+      blocks: Array.isArray(input.blocks) ? input.blocks.map(String) : [],
+      blockedBy: Array.isArray(input.blockedBy || input.blocked_by) ? input.blockedBy.map(String) : [],
+      metadata: input.metadata && typeof input.metadata === 'object' ? { ...input.metadata } : {},
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    try {
+      const fd = fs.openSync(file, 'wx');
+      try { fs.writeFileSync(fd, JSON.stringify(task, null, 2), 'utf8'); } finally { fs.closeSync(fd); }
+      return { ok: true, task };
+    } catch (e) {
+      if (e && e.code === 'EEXIST') continue;
+      throw e;
+    }
+  }
+  return { ok: false, error: 'concurrent createTask contention' };
 }
 
 function getTask(input = {}) {

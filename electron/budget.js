@@ -77,9 +77,36 @@ function view() {
   };
 }
 
+function createPool() {
+  const local = { total: null, spent: 0 };
+  return {
+    setTotal(n) {
+      const v = Number(n);
+      local.total = Number.isFinite(v) && v > 0 ? Math.round(v) : null;
+      return local.total;
+    },
+    applyDirective(text) {
+      const n = parseDirective(text);
+      if (n != null) local.total = n;
+      return n;
+    },
+    addOutput(n) {
+      const v = Number(n);
+      if (Number.isFinite(v) && v > 0) local.spent += Math.round(v);
+      return local.spent;
+    },
+    spent() { return local.spent; },
+    total() { return local.total; },
+    remaining() { return local.total == null ? Infinity : Math.max(0, local.total - local.spent); },
+    exhausted() { return local.total != null && local.spent >= local.total; },
+    reset() { local.total = null; local.spent = 0; },
+    snapshot() { return { total: local.total, spent: local.spent }; },
+  };
+}
+
 function reset() {
   state.total = null;
   state.spent = 0;
 }
 
-module.exports = { parseDirective, applyDirective, setTotal, addOutput, spent, remaining, exhausted, view, reset };
+module.exports = { parseDirective, applyDirective, setTotal, addOutput, spent, remaining, exhausted, view, reset, createPool };

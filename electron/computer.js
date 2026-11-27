@@ -583,9 +583,34 @@ async function captureDisplayViaElectron(displayIdx = activeDisplayIndex) {
   }
 }
 
+function sanitizeScreenshotDir(rawDir, fallbackSubdir = 'autobot-computer') {
+  if (!rawDir) return path.join(os.tmpdir(), fallbackSubdir);
+  const resolved = path.resolve(String(rawDir));
+  try {
+    const winSec = require('./window-security');
+    if (winSec && typeof winSec.isBlockedCredentialTarget === 'function' && winSec.isBlockedCredentialTarget(resolved)) {
+      throw new Error(`screenshot dir "${rawDir}" points inside a protected credential location`);
+    }
+  } catch (e) {
+    if (e && /protected credential/i.test(e.message)) throw e;
+  }
+  if (/^\/(?:etc|System|usr|bin|sbin|private\/etc)(?:\/|$)/i.test(resolved)) {
+    throw new Error(`screenshot dir "${rawDir}" targets a restricted system directory`);
+  }
+  return resolved;
+}
+
+function execFileP(file, args, opts = {}) {
+  return new Promise((resolve) => {
+    execFile(file, args, opts, (err, stdout, stderr) => {
+      resolve({ err, stdout: stdout || '', stderr: stderr || '' });
+    });
+  });
+}
+
 async function screenshot(opts = {}) {
   gate();
-  const dir = opts.dir || path.join(os.tmpdir(), 'autobot-computer');
+  const dir = sanitizeScreenshotDir(opts.dir);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `shot-${Date.now()}.png`);
   const dispIdx = opts.displayIndex != null ? Number(opts.displayIndex) : activeDisplayIndex;
@@ -604,8 +629,10 @@ async function screenshot(opts = {}) {
     return { path: file, size: buf.length, width: size.width, height: size.height, scale: 1, nativeScale: 1, displayIndex: dispIdx, b64: buf.toString('base64') };
   }
 
-  const displayFlag = dispIdx > 0 ? `-D ${dispIdx + 1} ` : '';
-  const { err } = await execP(`/usr/sbin/screencapture ${displayFlag}-x "${file}"`, { timeout: 20000 });
+  const capArgs = [];
+  if (dispIdx > 0) capArgs.push('-D', String(dispIdx + 1));
+  capArgs.push('-x', file);
+  const { err } = await execFileP('/usr/sbin/screencapture', capArgs, { timeout: 20000 });
   const size = screenPointsSync(dispIdx);
   let haveShot = !err && fs.existsSync(file) && fs.statSync(file).size > 0;
   if (!haveShot) {
@@ -644,7 +671,7 @@ async function zoom({ x1 = 0, y1 = 0, x2 = 400, y2 = 300, dir } = {}) {
   const ry = Math.round(Math.min(Number(y1) || 0, Number(y2) || 0));
   const rw = Math.max(16, Math.round(Math.abs((Number(x2) || 0) - (Number(x1) || 0))));
   const rh = Math.max(16, Math.round(Math.abs((Number(y2) || 0) - (Number(y1) || 0))));
-  const outDir = dir || path.join(os.tmpdir(), 'autobot-computer');
+  const outDir = sanitizeScreenshotDir(dir);
   fs.mkdirSync(outDir, { recursive: true });
   const file = path.join(outDir, `zoom-${Date.now()}.png`);
 
@@ -653,7 +680,7 @@ async function zoom({ x1 = 0, y1 = 0, x2 = 400, y2 = 300, dir } = {}) {
   } else if (process.platform === 'linux') {
     winLinux.linuxScreenshot(file, { x: rx, y: ry, w: rw, h: rh }, null);
   } else {
-    const { err } = await execP(`/usr/sbin/screencapture -x -R ${rx},${ry},${rw},${rh} "${file}"`, { timeout: 20000 });
+    const { err } = await execFileP('/usr/sbin/screencapture', ['-x', '-R', `${rx},${ry},${rw},${rh}`, file], { timeout: 20000 });
     const haveShot = !err && fs.existsSync(file) && fs.statSync(file).size > 0;
     if (!haveShot) {
       const viaEl = await captureDisplayViaElectron(activeDisplayIndex);

@@ -176,11 +176,20 @@ function startMonitor({ command, description, timeoutMs = 300000, persistent = f
     cwd: cwd || process.cwd(),
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
     windowsHide: true,
   });
   let timer = null;
   job.stop = () => {
-    try { child.kill('SIGTERM'); } catch (_) {}
+    try {
+      if (process.platform !== 'win32' && child.pid) {
+        try { process.kill(-child.pid, 'SIGTERM'); } catch (_) {}
+        const tKill = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {} }, 1200);
+        if (tKill && typeof tKill.unref === 'function') tKill.unref();
+      } else {
+        child.kill('SIGTERM');
+      }
+    } catch (_) {}
     if (timer) clearTimeout(timer);
     finish(job, 'stopped');
   };

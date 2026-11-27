@@ -17,6 +17,7 @@ export function MissionControlPane({
   activeId,
   streaming,
   streamingConvId,
+  streamingConvIds,
   waitingPermissionConvIds,
   onOpenSession,
   onSendQuickReply,
@@ -36,12 +37,15 @@ export function MissionControlPane({
       title: c.title || 'Untitled',
       cwd: c.cwd || '',
       updatedAt: c.updatedAt || c.ts || 0,
-      streaming: Boolean(streaming && (streamingConvId === c.id || (!streamingConvId && c.id === activeId))),
+      streaming: Boolean(
+        (streamingConvIds && typeof streamingConvIds.has === 'function' && streamingConvIds.has(c.id))
+        || (streaming && (streamingConvId === c.id || (!streamingConvId && c.id === activeId)))
+      ),
       waitingApproval: Boolean(waitingPermissionConvIds && waitingPermissionConvIds.has(c.id)),
       contextPct: estimateContextPct(c),
       messages: (c.messages || []).slice(-16),
     }));
-  }, [convs, streaming, streamingConvId, activeId, waitingPermissionConvIds]);
+  }, [convs, streaming, streamingConvId, streamingConvIds, activeId, waitingPermissionConvIds]);
 
   const refresh = useCallback(async () => {
     if (!window.autobot || !window.autobot.allSessionsHealth) {

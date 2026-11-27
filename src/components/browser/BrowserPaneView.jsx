@@ -300,11 +300,12 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
     if (reqAt && handledPreviewAtRef.current === reqAt) return undefined;
     handledPreviewAtRef.current = reqAt;
     const wantNewTab = !!(previewUrl && previewUrl.newTab);
+    const isArtifactPreview = !!(previewUrl && previewUrl.artifactPreview);
     let cancelled = false;
     const apply = (u) => {
       if (cancelled || !u) return;
       if (wantNewTab) {
-        const reuseBlank = tabs.length === 1 && /google\.com/i.test(tabs[0].url || '');
+        const reuseBlank = !isArtifactPreview && tabs.length === 1 && /google\.com/i.test(tabs[0].url || '');
         if (reuseBlank) {
           const oldId = tabs[0].id;
           const oldWv = webviews.current[oldId];
@@ -318,7 +319,16 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
           setOmnibox(u);
           return;
         }
-        openTab(u);
+        const pid = isArtifactPreview ? previewTabRef.current : null;
+        if (pid && webviews.current[pid]) {
+          patchTab(pid, { loading: true });
+          try { webviews.current[pid].loadURL(u); } catch (_) {}
+          setActiveId(pid);
+          setOmnibox(u);
+          return;
+        }
+        const openedId = openTab(u);
+        if (isArtifactPreview && openedId) previewTabRef.current = openedId;
         return;
       }
       const pid = previewTabRef.current;
@@ -330,7 +340,7 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
         setOmnibox(u);
         return;
       }
-      const reuse = !pid && tabs.length === 1 && /google\.com/i.test(tabs[0].url || '');
+      const reuse = !isArtifactPreview && !pid && tabs.length === 1 && /google\.com/i.test(tabs[0].url || '');
       const id = pid || (reuse ? tabs[0].id : 'tab' + nextTabNum.current++);
       previewTabRef.current = id;
       if (reuse && webviews.current[id]) {

@@ -70,6 +70,7 @@ function isTextProtocolToolMessage(m) {
 function maskOlderToolOutputs(messages, {
   keepRecentSteps = DEFAULT_KEEP_RECENT_STEPS,
   minChars = DEFAULT_MASK_MIN_CHARS,
+  quantizeSteps = 0,
 } = {}) {
   const list = Array.isArray(messages) ? messages : [];
   if (!list.length) return [];
@@ -83,7 +84,12 @@ function maskOlderToolOutputs(messages, {
   if (assistantIndices.length <= keepRecentSteps) {
     return list.slice();
   }
-  const cutoffIdx = assistantIndices[assistantIndices.length - keepRecentSteps];
+  // Quantize the cutoff boundary in buckets of 8 assistant turns for large
+  // production windows so prefix cache hashes stay byte-identical across steps.
+  const rawCutPos = assistantIndices.length - keepRecentSteps;
+  const stepBucket = Number(quantizeSteps) > 1 ? Math.floor(Number(quantizeSteps)) : (keepRecentSteps >= 16 ? 8 : 1);
+  const bucketedPos = stepBucket > 1 ? Math.max(0, Math.floor(rawCutPos / stepBucket) * stepBucket) : rawCutPos;
+  const cutoffIdx = assistantIndices[bucketedPos];
 
   return list.map((m, idx) => {
     if (!m || idx >= cutoffIdx) return m;

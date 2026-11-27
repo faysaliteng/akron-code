@@ -470,13 +470,18 @@ function update(id, patch) {
   if ('fireAt' in patch && !('at' in patch)) patch.at = patch.fireAt;
 
   const allowed = [
-    'name', 'description', 'prompt', 'cadence', 'triggers', 'timeZone', 'cron', 'cronExpression',
+    'name', 'description', 'prompt', 'cadence', 'triggers', 'timeZone', 'cron', 'cronExpression', 'recurring',
     'durable', 'mirrorToWorkspace', 'sentinel', 'at', 'fireAt', 'everyMinutes', 'minute', 'time',
     'dayOfWeek', 'cwd', 'projectId', 'environment', 'allowedMcpServers', 'useWorktree', 'sourceBranch',
     'model', 'permissionMode', 'maxSteps', 'attentionGate', 'retryEnabled',
     'notifyOnCompletion', 'notifyMode', 'respectQuietHours', 'pushAlert', 'enabled',
   ];
   for (const k of allowed) if (k in patch) t[k] = patch[k];
+  if (patch.recurring === false && !('cadence' in patch)) {
+    t.cadence = 'once';
+    t.cron = null;
+    t.cronExpression = null;
+  }
   if (Array.isArray(patch.triggers)) {
     t.triggers = normalizeTriggers({ triggers: patch.triggers, timeZone: t.timeZone }, t);
     for (const tr of t.triggers) {
@@ -488,13 +493,13 @@ function update(id, patch) {
     }
     applyPrimaryFromTriggers(t);
   } else {
-    if (t.cron) {
+    if (t.cron && patch.recurring !== false && t.cadence !== 'once') {
       const v = cronexpr.validate(t.cron);
       if (!v.ok) return { ok: false, error: 'invalid cron: ' + v.error };
       t.cronExpression = t.cron;
       t.cadence = 'cron';
     }
-    if ('cadence' in patch || 'cron' in patch || 'time' in patch || 'minute' in patch || 'everyMinutes' in patch || 'dayOfWeek' in patch || 'at' in patch) {
+    if ('cadence' in patch || 'cron' in patch || 'recurring' in patch || 'time' in patch || 'minute' in patch || 'everyMinutes' in patch || 'dayOfWeek' in patch || 'at' in patch) {
       t.triggers = normalizeTriggers({}, t);
     }
   }

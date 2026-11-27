@@ -180,7 +180,7 @@ function resolve(orch, role, provider) {
       reasoningLevel: pickedRole === 'planner' ? 'high' : (provider && provider.reasoningLevel),
       role: pickedRole,
       tier: ROLE_TIER[pickedRole] || 'heavy',
-      frontier: true,
+      frontier: !/\b([1-9]|[12][0-9]|3[0-5])b\b/i.test(m.model),
     });
   }
   return rows;

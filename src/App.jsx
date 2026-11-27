@@ -52,6 +52,7 @@ import {
   LinkPreviews, fmtTokens, estimateCost, fmtCost, msgText, buildDirectives, fmtElapsed, fmtMessageTimestamp, fmtMessageFullTimestamp,
 } from './utils/appHelpers.jsx';
 import { useAutobotEventStream } from './hooks/useAutobotEventStream.js';
+import { useSessionRuns } from './hooks/useSessionRuns.js';
 import {
   EnvPanel, MissionControl, RunLogPanel, ChatView, ArtifactPreview, SearchView,
   ArtifactsView, SkillsViewBody, PluginsViewBody, ExtensionsView, ScheduledViewBody,
@@ -75,14 +76,14 @@ const summarizeTrace = (tools) => {
   const clip = (v, n) => {
     if (v == null) return '';
     const s = typeof v === 'string' ? v : (() => { try { return JSON.stringify(v); } catch { return ''; } })();
-    return (s || '').replace(/\s+/g, ' ').trim().slice(0, n || 110);
+    return (s || '').replace(/\s+/g, ' ').trim().slice(0, n || 420);
   };
-  const lines = list.slice(-15).map((t) => {
+  const lines = list.slice(-30).map((t) => {
     const a = t.args || {};
     const target = a.path || a.file || a.command || a.query || a.url || a.name || a.description || a.prompt || '';
     const bad = /^(Error|Tool error)/i.test(String(t.result || '').trim());
-    const lim = /^(Task|Agent|Swarm|Workflow)$/.test(t.name) ? 600 : 110;
-    return `- ${t.name}${target ? '(' + clip(target, 90) + ')' : ''} → ${bad ? 'ERROR: ' : ''}${clip(t.result, lim) || '(no result)'}`;
+    const lim = /^(Task|Agent|Swarm|Workflow)$/.test(t.name) ? 1200 : 420;
+    return `- ${t.name}${target ? '(' + clip(target, 90) + ')' : ''} → ${bad ? 'ERROR: ' : ''}${clip(t.result, lim) || '(completed, empty output)'}`;
   });
   return '\n\n[Tool actions taken in your previous turn — this already happened, do not redo it]\n' + lines.join('\n');
 };
@@ -219,13 +220,7 @@ export default function App() {
   const [pendingPreset, setPendingPreset] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => !!loadJSON('autobot:sidebarCollapsed', false));
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [streaming, setStreaming] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const pausedRef = useRef(false);
-  pausedRef.current = paused;
   const [scrolledAway, setScrolledAway] = useState(false);
-  // Wall-clock start of the active run — powers the live "Working · 12s" row.
-  const [runStartedAt, setRunStartedAt] = useState(0);
   // Token accounting for /usage, /cost, /context and /insights. `usage` events
   // stream from the main process each step; the final `done` carries the total.
   const [lastUsage, setLastUsage] = useState(() => loadJSON('autobot:lastUsage', null));
@@ -241,18 +236,6 @@ export default function App() {
   });
   useEffect(() => { saveJSON('autobot:queued', queued); }, [queued]);
   useEffect(() => { saveJSON('autobot:queuePausedByConv', queuePausedByConv); }, [queuePausedByConv]);
-  const [thinking, setThinking] = useState('');
-  const [live, setLive] = useState(null); // { content, tools: [] }
-  // The live stream is mirrored in a ref and every update goes through
-  // setLiveSync, so commitLive can read the final stream synchronously instead
-  // of calling setConvs from inside a setLive updater — React.StrictMode runs
-  // updaters twice, which duplicated every assistant reply.
-  const liveRef = useRef(null);
-  const setLiveSync = useCallback((v) => {
-    const next = typeof v === 'function' ? v(liveRef.current) : v;
-    liveRef.current = next;
-    setLive(next);
-  }, []);
   const [cwd, setCwd] = useState('');
   const [error, setErrorRaw] = useState('');
   const [questionQueue, setQuestionQueue] = useState([]); // FIFO pending QuestionDock & Plan prompts
@@ -266,9 +249,6 @@ export default function App() {
   const [skills, setSkills] = useState([]);
   const [mcpServers, setMcpServers] = useState([]);
   const [mcpForm, setMcpForm] = useState({ transport: 'stdio', command: '', args: '', url: '' });
-  const [subAgents, setSubAgents] = useState([]); // { key, name, status, role, jobRole, model, tier, ms, failover, posts, progress }
-  const [swarmInfo, setSwarmInfo] = useState(null); // { supervisor, roster, pools, phase, wave, startedAt }
-  const [swarmBoard, setSwarmBoard] = useState([]); // [{ seq, from, to, channel, text, at }]
   const [notebooks, setNotebooks] = useState([]); // names
   const [activeNotebook, setActiveNotebook] = useState(null);
   const [notebookCells, setNotebookCells] = useState([]);
@@ -357,6 +337,32 @@ export default function App() {
     () => new Set(questionQueue.map((q) => q.convId).filter(Boolean)),
     [questionQueue]
   );
+  const {
+    runsByConvRef,
+    activeRun,
+    streaming,
+    paused,
+    runStartedAt,
+    thinking,
+    liveForActive,
+    anyStreaming,
+    streamingConvIds,
+    streamingConvId,
+    resolveConvForEvent,
+    isEventForLiveRun,
+    startSessionRun,
+    updateSessionRun,
+    commitSessionLive,
+  } = useSessionRuns({
+    activeId,
+    setConvs,
+    setPermissionQueue,
+    setQuestionQueue,
+    setPermError,
+    setScrolledAway,
+  });
+  const streamingRef = useRef(false);
+  streamingRef.current = streaming;
   const [cuConsent, setCuConsent] = useState(null); // pending Computer Use consent { id, tier, tool, sensitive }
   const [planMode, setPlanMode] = useState(null); // active plan-mode banner { active, file }
   const [activeSkillPill, setActiveSkillPill] = useState(null); // e.g. { id: 'automation', icon: 'Clock', label: 'automation', hint: '...' }
@@ -417,9 +423,6 @@ export default function App() {
 
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
-  const runIdRef = useRef(null);
-  const streamingRef = useRef(false);
-  streamingRef.current = streaming;
   const voiceActiveRef = useRef(false);
   const voiceRecRef = useRef(null);
   const spokenIdsRef = useRef(new Set());
@@ -802,7 +805,7 @@ export default function App() {
     if (!targetUrl) return;
     // Object identity (not the bare string) so previewing the same file again —
     // after an edit — still triggers a reload in the pane.
-    setPreviewUrl({ url: targetUrl, newTab: !!(opts && opts.newTab), at: Date.now() });
+    setPreviewUrl({ url: targetUrl, newTab: !!(opts && opts.newTab), artifactPreview: !!(opts && opts.artifactPreview), at: Date.now() });
     showSessionPane('browser');
     setPanel('chats');
   }, [showSessionPane]);
@@ -842,7 +845,7 @@ export default function App() {
     // A pending jump-to-message (from global search) wins over auto-scroll.
     if (pendingScroll) return;
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, live, thinking, pendingScroll]);
+  }, [messages, liveForActive, thinking, pendingScroll]);
 
   // Global search → jump: scroll the matched message into view and flash it.
   useEffect(() => {
@@ -856,221 +859,150 @@ export default function App() {
     return () => clearTimeout(t);
   }, [pendingScroll, activeId]);
 
-  // Which conversation the in-flight run belongs to (survives chat switching).
-  const runConvRef = useRef(null);
-  const runActiveRef = useRef(false);
-  // The conversation the current team (sub-agents / swarm) belongs to. The
-  // rows are global state, so without this they painted into every chat.
-  const teamConvRef = useRef(null);
-  const subAgentsRef = useRef(subAgents);
-  subAgentsRef.current = subAgents;
-  const swarmInfoRef = useRef(swarmInfo);
-  swarmInfoRef.current = swarmInfo;
-  const swarmBoardRef = useRef(swarmBoard);
-  swarmBoardRef.current = swarmBoard;
-  const runStartedAtRef = useRef(0);
-  runStartedAtRef.current = runStartedAt;
-  const commitLive = useCallback(() => {
-    // A run emits BOTH `done` (stream ended) and `complete` (run promise settled).
-    // Ignore the duplicate — otherwise it would swallow the next run's stream.
-    if (!runActiveRef.current) return;
-    runActiveRef.current = false;
-    // Resolve the owning conversation NOW: the setLive updater below runs in the
-    // render phase, long after runConvRef has been cleared.
-    const target = runConvRef.current || activeIdRef.current;
-    runConvRef.current = null;
-    setStreaming(false);
-    setPaused(false);
-    setScrolledAway(false);
-    setThinking('');
-    setPermError('');
-    setPermissionQueue((q) => q.filter((p) => {
-      if (runIdRef.current && p.runId && p.runId !== runIdRef.current) return true;
-      return false;
-    }));
-    const startedAt = runStartedAtRef.current;
-    // Read the stream from the ref and issue two independent state updates.
-    // Calling setConvs inside a setLive updater double-appended under StrictMode.
-    const l = liveRef.current;
-    setLiveSync(null);
-    const hasTeam = teamConvRef.current === target && subAgentsRef.current && subAgentsRef.current.length > 0;
-    if (l && (l.content || (l.tools && l.tools.length) || (l.checkpoints && l.checkpoints.length) || hasTeam)) {
-      // Bind the reply to the conversation the run was started from — the user
-      // may have switched chats while it streamed.
-      const msg = {
-        id: uid(),
-        role: 'assistant',
-        content: l.content || '',
-        tools: l.tools || [],
-        segments: l.segments,
-        checkpoints: l.checkpoints || [],
-        checkpointId: l.checkpointId || null,
-        model: l.model || '',
-        autoRouted: l.autoRouted || undefined,
-        modelsUsed: Array.isArray(l.modelsUsed) && l.modelsUsed.length ? l.modelsUsed : undefined,
-        subAgents: hasTeam ? subAgentsRef.current : undefined,
-        swarmInfo: teamConvRef.current === target && swarmInfoRef.current ? swarmInfoRef.current : undefined,
-        ts: Date.now(),
-        completedAt: Date.now(),
-        durationMs: startedAt ? Date.now() - startedAt : 0,
-      };
-      setConvs((cs) => cs.map((c) => (c.id === target ? {
-        ...c,
-        messages: [...c.messages, msg],
-        ...(hasTeam ? {
-          subAgents: subAgentsRef.current,
-          swarmInfo: swarmInfoRef.current,
-          swarmBoard: swarmBoardRef.current,
-        } : {}),
-      } : c)));
-    }
-  }, [setLiveSync]);
-
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const convsRef = useRef(convs);
   convsRef.current = convs;
+  const sendingLocksRef = useRef(new Set());
+  const dispatchedQueueIdsRef = useRef(new Set());
 
   const send = useCallback(async (textOverride, attsOverride, convOverride) => {
-    // Guard: React event handlers may pass the event object when the handler is
-    // wired as `onClick={send}`. Only accept an explicit string override.
     const override = typeof textOverride === 'string' ? textOverride : undefined;
     const text = (override !== undefined ? override : (inputRef.current?.value || '')).trim();
     const atts = Array.isArray(attsOverride) ? attsOverride : attachments;
     if (!text && atts.length === 0) return;
-    if (streamingRef.current && pausedRef.current && text && runIdRef.current && window.autobot && window.autobot.resume) {
+
+    const targetConvId = (typeof convOverride === 'string' && convOverride) ? convOverride : activeIdRef.current;
+    const targetRun = targetConvId ? (runsByConvRef.current[targetConvId] || null) : null;
+    if (targetRun && targetRun.streaming && targetRun.paused && text && targetRun.runId && window.autobot && window.autobot.resume) {
       if (override === undefined && inputRef.current) inputRef.current.value = '';
-      await window.autobot.resume(runIdRef.current, text);
+      await window.autobot.resume(targetRun.runId, text);
       return;
     }
-    // Example parity: a message sent while a reply is streaming is not dropped —
-    // it is queued and dispatched the moment the current turn finishes.
-    if (streamingRef.current) {
-      if (override === undefined) inputRef.current.value = '';
+    if ((targetRun && targetRun.streaming) || (targetConvId && sendingLocksRef.current.has(targetConvId))) {
+      if (override === undefined && inputRef.current) inputRef.current.value = '';
       if (!Array.isArray(attsOverride)) setAttachments([]);
-      setQueued((q) => [...q, { id: uid(), text, atts, convId: activeId, paused: false }]);
+      setQueued((q) => [...q, { id: uid(), text, atts, convId: targetConvId, paused: false }]);
       return;
     }
-    if (override === undefined) inputRef.current.value = '';
+    if (override === undefined && inputRef.current) inputRef.current.value = '';
     setError('');
 
-    let convId = (typeof convOverride === 'string' && convOverride) ? convOverride : activeId;
+    let convId = targetConvId;
     const autoTitle = text.slice(0, 48) || atts.map((a) => a.name).join(', ').slice(0, 48);
     const isNewConv = !convId;
     if (isNewConv) convId = uid();
+    sendingLocksRef.current.add(convId);
 
-    // Resolve the project folder for the conversation we are about to run in.
-    // The run must never inherit `cwd` state from a different conversation: that
-    // is how a generated site landed in a stale `untitled-*` folder while the
-    // preview pane and the cwd bar pointed at the titled folder.
-    let runCwd = cwd;
-    if (isNewConv || convId !== activeId || !runCwd) {
-      const existingTitle = convsRef.current.find((c) => c.id === convId)?.title || '';
-      runCwd = await window.autobot.getWorkspace(convId)
-        || await window.autobot.getDefaultCwd(convId, existingTitle || autoTitle);
-      if (runCwd) { saveJSON('autobot:workspace:' + convId, runCwd); setCwd(runCwd); }
+    try {
+      const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
+      const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
+      const runId = uid();
+
+      const userMsg = {
+        id: uid(),
+        role: 'user',
+        content: text || (atts.length ? '📎 ' + atts.map((a) => a.name).join(', ') : ''),
+        attachments: atts.map((a) => ({ name: a.name, size: a.size, isText: a.isText, content: a.content, isImage: a.isImage, dataUrl: a.dataUrl })),
+        ts: Date.now(),
+        createdAt: Date.now(),
+      };
+      const currentMessages = isNewConv ? [] : (convsRef.current.find((c) => c.id === convId)?.messages || []);
+      if (isNewConv) {
+        activeIdRef.current = convId;
+        setActiveId(convId);
+        setConvs((cs) => [{ id: convId, title: autoTitle, messages: [userMsg], ts: Date.now() }, ...cs]);
+      } else {
+        setConvs((cs) => cs.map((c) => (c.id === convId ? {
+          ...c,
+          ...(c.messages.length === 0 ? { title: autoTitle } : {}),
+          messages: [...c.messages, userMsg],
+        } : c)));
+      }
+      if (!Array.isArray(attsOverride)) setAttachments([]);
+
+      startSessionRun(convId, runId, {
+        content: '',
+        tools: [],
+        model: effProvider.routingMode === 'auto' ? '' : (effProvider.model || provider.model || ''),
+      });
+
+      let runCwd = cwd;
+      if (isNewConv || convId !== activeIdRef.current || !runCwd) {
+        const existingTitle = convsRef.current.find((c) => c.id === convId)?.title || '';
+        runCwd = await window.autobot.getWorkspace(convId)
+          || await window.autobot.getDefaultCwd(convId, existingTitle || autoTitle);
+        if (runCwd) {
+          saveJSON('autobot:workspace:' + convId, runCwd);
+          if (convId === activeIdRef.current) setCwd(runCwd);
+        }
+      }
+
+      const payloadMessages = buildPayloadMessages([...currentMessages, userMsg]);
+      const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile, customStyles });
+      if (workbenchMode === 'ide' && editorContextXmlRef.current) {
+        directives.push(editorContextXmlRef.current);
+      }
+      if (directives.length) payloadMessages.unshift({ role: 'system', content: directives.join('\n') });
+
+      const started = await window.autobot.run({
+        runId,
+        messages: payloadMessages,
+        provider: effProvider,
+        cwd: runCwd || undefined,
+        useMemory: settings.useMemory,
+        orchestrator,
+        permissions,
+        convId,
+        title: convsRef.current.find((c) => c.id === convId)?.title || autoTitle,
+        swarm: swarmEnabled,
+      });
+      if (started && started.ok === false) {
+        commitSessionLive(convId, runId);
+        if (convId === activeIdRef.current) setError(cleanErr(started.error || 'The provider rejected this run.'));
+        if (started.needsSignIn) setModelMenuOpen(true);
+      }
+    } finally {
+      sendingLocksRef.current.delete(convId);
     }
+  }, [convs, provider, providerKeys, cwd, settings.useMemory, settings.harnessProfile, orchestrator, attachments, styleId, webSearch, activeProject, permissions, swarmEnabled, workbenchMode, customStyles, runsByConvRef, startSessionRun, commitSessionLive]);
 
-    if (isNewConv) {
-      setActiveId(convId);
-      setConvs((cs) => [{ id: convId, title: autoTitle, messages: [], ts: Date.now() }, ...cs]);
-    } else {
-      setConvs((cs) => cs.map((c) => (c.id === convId && c.messages.length === 0 ? { ...c, title: autoTitle } : c)));
-    }
-
-    const userMsg = {
-      id: uid(),
-      role: 'user',
-      content: text || (atts.length ? '📎 ' + atts.map((a) => a.name).join(', ') : ''),
-      attachments: atts.map((a) => ({ name: a.name, size: a.size, isText: a.isText, content: a.content, isImage: a.isImage, dataUrl: a.dataUrl })),
-      ts: Date.now(),
-      createdAt: Date.now(),
-    };
-    const currentMessages = convId ? (convsRef.current.find((c) => c.id === convId)?.messages || []) : [];
-    setConvs((cs) => cs.map((c) => (c.id === convId ? { ...c, messages: [...c.messages, userMsg] } : c)));
-
-    const payloadMessages = buildPayloadMessages([...currentMessages, userMsg]);
-    const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile, customStyles });
-    if (workbenchMode === 'ide' && editorContextXmlRef.current) {
-      directives.push(editorContextXmlRef.current);
-    }
-    if (directives.length) payloadMessages.unshift({ role: 'system', content: directives.join('\n') });
-
-    // Only consume the composer's attachment tray when this send came from the
-    // composer — a queued message carries its own snapshot.
-    if (!Array.isArray(attsOverride)) setAttachments([]);
-
-    // Pin the run to its conversation before any event can arrive.
-    runConvRef.current = convId;
-    runActiveRef.current = true;
-    teamConvRef.current = convId;
-    const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
-    const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
-    setPaused(false);
-    setStreaming(true);
-    setRunStartedAt(Date.now());
-    setThinking('');
-    setLiveSync({ content: '', tools: [], model: effProvider.routingMode === 'auto' ? '' : (effProvider.model || provider.model || '') });
-    setSubAgents([]);
-    setSwarmInfo(null);
-    setSwarmBoard([]);
-    const runId = uid();
-    runIdRef.current = runId;
-
-    const started = await window.autobot.run({
-      runId,
-      messages: payloadMessages,
-      provider: effProvider,
-      cwd: runCwd || undefined,
-      useMemory: settings.useMemory,
-      orchestrator,
-      permissions,
-      convId,
-      title: convsRef.current.find((c) => c.id === convId)?.title || autoTitle,
-      // Gate for the Swarm tool: off by default, on only when the user opts in.
-      swarm: swarmEnabled,
-    });
-    // Backstop: the handler emits a proper `error` event, but if that delivery
-    // is ever lost the composer must not stay spinning forever.
-    if (started && started.ok === false && runActiveRef.current) {
-      runActiveRef.current = false;
-      runConvRef.current = null;
-      setStreaming(false);
-      setThinking('');
-      setLiveSync(null);
-      setError(cleanErr(started.error || 'The provider rejected this run.'));
-      if (started.needsSignIn) setModelMenuOpen(true);
-    }
-  }, [activeId, convs, provider, cwd, settings.useMemory, settings.harnessProfile, streaming, orchestrator, attachments, styleId, webSearch, activeProject, permissions, swarmEnabled]);
-
-  const stop = useCallback(() => {
-    setPaused(false);
-    if (runIdRef.current) window.autobot.cancel(runIdRef.current);
-  }, []);
+  const stop = useCallback((convOverride = null) => {
+    const cid = (typeof convOverride === 'string' && convOverride) ? convOverride : activeIdRef.current;
+    const run = cid ? runsByConvRef.current[cid] : null;
+    if (!run || !run.runId) return;
+    if (window.autobot && window.autobot.cancel) window.autobot.cancel(run.runId);
+    commitSessionLive(cid, run.runId);
+  }, [runsByConvRef, commitSessionLive]);
 
   const pauseRun = useCallback(() => {
-    if (runIdRef.current && window.autobot && window.autobot.pause) {
-      setPaused(true);
-      window.autobot.pause(runIdRef.current);
+    const cid = activeIdRef.current;
+    const run = cid ? runsByConvRef.current[cid] : null;
+    if (run && run.runId && window.autobot && window.autobot.pause) {
+      updateSessionRun(cid, (r) => ({ ...r, paused: true }));
+      window.autobot.pause(run.runId);
     }
-  }, []);
+  }, [runsByConvRef, updateSessionRun]);
 
   const resumeRun = useCallback((note = '') => {
-    if (runIdRef.current && window.autobot && window.autobot.resume) {
-      setPaused(false);
-      window.autobot.resume(runIdRef.current, note);
+    const cid = activeIdRef.current;
+    const run = cid ? runsByConvRef.current[cid] : null;
+    if (run && run.runId && window.autobot && window.autobot.resume) {
+      updateSessionRun(cid, (r) => ({ ...r, paused: false }));
+      window.autobot.resume(run.runId, note);
     }
-  }, []);
+  }, [runsByConvRef, updateSessionRun]);
 
-  // Auto-dispatch the first unpaused queued message once idle and its conversation queue isn't paused.
   useEffect(() => {
-    if (streaming || !queued.length) return;
-    if (streamingRef.current || runActiveRef.current) return;
-    const { next, rest } = pickNextRunnableQueued(queued, queuePausedByConv);
-    if (!next) return;
-    setQueued(rest);
-    send(next.text, next.atts, next.convId);
-  }, [streaming, queued, queuePausedByConv, send]);
+    if (!queued.length) return;
+    const { next } = pickNextRunnableQueued(queued, queuePausedByConv, streamingConvIds);
+    if (!next || dispatchedQueueIdsRef.current.has(next.id) || (next.convId && sendingLocksRef.current.has(next.convId))) return;
+    dispatchedQueueIdsRef.current.add(next.id);
+    setQueued((q) => q.filter((x) => x.id !== next.id));
+    Promise.resolve(send(next.text, next.atts, next.convId)).finally(() => {
+      dispatchedQueueIdsRef.current.delete(next.id);
+    });
+  }, [queued, queuePausedByConv, streamingConvIds, send]);
 
   const unqueue = useCallback((id) => setQueued((q) => q.filter((x) => x.id !== id)), []);
   const clearQueuedForConv = useCallback((convId) => {
@@ -1094,24 +1026,21 @@ export default function App() {
   const updateQueuedText = useCallback((id, text) => {
     setQueued((q) => q.map((x) => (x.id === id ? { ...x, text } : x)));
   }, []);
-  // Dispatch a specific queued item immediately: if idle, send now; if streaming, move it to front and cancel live run.
   const sendQueuedNow = useCallback((id) => {
     const target = id ? queued.find((x) => x.id === id) : queued[0];
     if (!target) return;
-    if (!streamingRef.current) {
-      setQueued((q) => q.filter((x) => x.id !== target.id));
-      send(target.text, target.atts, target.convId);
-      return;
+    const cid = target.convId || null;
+    const targetRun = cid ? (runsByConvRef.current[cid] || null) : null;
+    if (cid) setQueuePausedByConv((m) => ({ ...m, [cid]: false }));
+    setQueued((q) => q.filter((x) => x.id !== target.id));
+    if (targetRun && targetRun.streaming) {
+      if (targetRun.runId && window.autobot && window.autobot.cancel) {
+        window.autobot.cancel(targetRun.runId);
+      }
+      commitSessionLive(cid, targetRun.runId);
     }
-    if (target.convId) {
-      setQueuePausedByConv((m) => ({ ...m, [target.convId]: false }));
-    }
-    setQueued((q) => {
-      const unpaused = { ...target, paused: false };
-      return [unpaused, ...q.filter((x) => x.id !== target.id)];
-    });
-    if (runIdRef.current) window.autobot.cancel(runIdRef.current);
-  }, [queued, send]);
+    send(target.text, target.atts, cid);
+  }, [queued, send, runsByConvRef, commitSessionLive]);
 
   // Quick Entry (menu-bar / global-hotkey) → insert or send into the composer.
   useEffect(() => {
@@ -1231,13 +1160,8 @@ export default function App() {
     } catch (_) {}
   }, [cuConsent]);
 
-  // The live stream belongs to one conversation; don't paint it into another one.
-  const liveForActive = live && (!runConvRef.current || runConvRef.current === activeId) ? live : null;
-
-  // Starting a new chat must not discard an in-flight run's stream — that run is
-  // committed to its own conversation and `liveForActive` keeps it off-screen.
+  // Starting a new chat leaves background streaming runs untouched so multiple sessions run concurrently.
   const newChat = () => {
-    if (!streamingRef.current) setLiveSync(null);
     setActiveId(null);
     setError('');
     setPanel('chats');
@@ -1415,8 +1339,8 @@ export default function App() {
     setConvs((cs) => cs.map((c) => (c.id === convId ? { ...c, messages: c.messages.filter((_, i) => i !== idx) } : c)));
   };
   const retryMessage = async (convId, idx) => {
-    // Retry regenerates in place; it never queues behind a live run.
-    if (streamingRef.current || runActiveRef.current) { setNotice('Wait for the current reply to finish before retrying.'); return; }
+    const existingRun = convId ? (runsByConvRef.current[convId] || null) : null;
+    if (existingRun && existingRun.streaming) { setNotice('Wait for the current reply in this conversation to finish before retrying.'); return; }
     const conv = convsRef.current.find((c) => c.id === convId);
     if (!conv) return;
     const msgs = conv.messages;
@@ -1429,44 +1353,29 @@ export default function App() {
     const payloadMessages = buildPayloadMessages(kept);
     const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile, customStyles });
     if (directives.length) payloadMessages.unshift({ role: 'system', content: directives.join('\n') });
-    // Same project-folder rule as send(): never inherit another chat's cwd.
     let runCwd = cwd;
     if (convId !== activeIdRef.current || !runCwd) {
       runCwd = await window.autobot.getWorkspace(convId)
         || await window.autobot.getDefaultCwd(convId, conv.title || '');
       if (runCwd) { saveJSON('autobot:workspace:' + convId, runCwd); if (convId === activeIdRef.current) setCwd(runCwd); }
     }
-    // Pin the run to its conversation before any event can arrive — without
-    // this commitLive bailed (runActiveRef false), the composer spun forever
-    // and the regenerated reply was dropped.
-    runConvRef.current = convId;
-    runActiveRef.current = true;
-    teamConvRef.current = convId;
     const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
     const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
-    setPaused(false);
-    setStreaming(true);
-    setRunStartedAt(Date.now());
-    setThinking('');
-    setLiveSync({ content: '', tools: [], model: effProvider.routingMode === 'auto' ? '' : (effProvider.model || provider.model || '') });
-    setSubAgents([]);
-    setSwarmInfo(null);
-    setSwarmBoard([]);
     const runId = uid();
-    runIdRef.current = runId;
+    startSessionRun(convId, runId, {
+      content: '',
+      tools: [],
+      model: effProvider.routingMode === 'auto' ? '' : (effProvider.model || provider.model || ''),
+    });
     const started = await window.autobot.run({
       runId, messages: payloadMessages, provider: effProvider,
       cwd: runCwd || undefined, useMemory: settings.useMemory, orchestrator, permissions,
       convId, title: conv.title || '',
       swarm: swarmEnabled,
     });
-    if (started && started.ok === false && runActiveRef.current) {
-      runActiveRef.current = false;
-      runConvRef.current = null;
-      setStreaming(false);
-      setThinking('');
-      setLiveSync(null);
-      setError(cleanErr(started.error || 'The provider rejected this run.'));
+    if (started && started.ok === false) {
+      commitSessionLive(convId, runId);
+      if (convId === activeIdRef.current) setError(cleanErr(started.error || 'The provider rejected this run.'));
       if (started.needsSignIn) setModelMenuOpen(true);
     }
   };
@@ -1794,7 +1703,6 @@ export default function App() {
         clearMemory();
         setConvs([]);
         setActiveId(null);
-        setLiveSync(null);
         setError('✅ Reset complete.');
         break;
       case 'status':
@@ -2497,24 +2405,23 @@ export default function App() {
 
   const clearActiveConversation = () => {
     setConvs((cs) => cs.map((c) => (c.id === activeId ? { ...c, messages: [] } : c)));
-    setLiveSync(null);
+    if (activeId) commitSessionLive(activeId);
   };
 
   const artifacts = useMemo(() => {
     const blocks = [];
     for (const m of messages) if (m.role === 'assistant') blocks.push(...extractCodeBlocks(m.content));
-    if (live) blocks.push(...extractCodeBlocks(live.content));
+    if (liveForActive) blocks.push(...extractCodeBlocks(liveForActive.content));
     for (const a of artifactsExplicit) blocks.push({ lang: a.language || 'text', code: a.content, label: a.name });
     return blocks;
-  }, [messages, live, artifactsExplicit]);
+  }, [messages, liveForActive, artifactsExplicit]);
 
-  const liveTeam = teamConvRef.current === activeId;
   const effectiveSubAgents = useMemo(
-    () => deriveSubAgents(liveTeam ? subAgents : [], active, messages, liveForActive),
-    [liveTeam, subAgents, active, messages, liveForActive]
+    () => deriveSubAgents((activeRun && activeRun.subAgents) || [], active, messages, liveForActive),
+    [activeRun, active, messages, liveForActive]
   );
-  const effectiveSwarmInfo = (liveTeam && swarmInfo) || (active && active.swarmInfo) || null;
-  const effectiveSwarmBoard = (liveTeam && swarmBoard.length ? swarmBoard : null) || (active && active.swarmBoard) || [];
+  const effectiveSwarmInfo = (activeRun && activeRun.swarmInfo) || (active && active.swarmInfo) || null;
+  const effectiveSwarmBoard = (activeRun && activeRun.swarmBoard && activeRun.swarmBoard.length ? activeRun.swarmBoard : null) || (active && active.swarmBoard) || [];
   const allActiveTools = useMemo(
     () => (messages || []).flatMap((m) => m.tools || []).concat((liveForActive && liveForActive.tools) || []),
     [messages, liveForActive]
@@ -2555,10 +2462,10 @@ export default function App() {
     </>
   );
   useAutobotEventStream({
-    runIdRef, liveRef, runStartedAtRef, runConvRef, activeIdRef, settingsRef,
-    setLiveSync, setThinking, setSubAgents, setSwarmInfo, setSwarmBoard,
-    setPaused, setPermError, setPermissionQueue, setLastUsage,
-    commitLive, setError, setModelMenuOpen, setQuestionQueue,
+    runsByConvRef, resolveConvForEvent, isEventForLiveRun, updateSessionRun, commitSessionLive,
+    activeIdRef, settingsRef,
+    setPermError, setPermissionQueue, setLastUsage,
+    setError, setModelMenuOpen, setQuestionQueue,
     setShowSettings, setPanel, setActiveId, setConvs, setCuConsent,
     setPermissions, setPlanMode, setArtifactsExplicit, setNotice, setFeatures: saveFeat, setOrchestrator: saveOrchestrator,
     openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
@@ -2582,7 +2489,7 @@ export default function App() {
     >
       <div className="titlebar">
         <div className="titlebar-brand">
-          <Logo size={16} active={streaming} />
+          <Logo size={16} active={anyStreaming} />
           <span className="brand">Akron Code</span>
           <span className="sub">{T('brand.sub')}</span>
           <div className="ws-mode-switch" role="group" aria-label="Workspace mode">
@@ -2614,7 +2521,7 @@ export default function App() {
               onClick={() => selectConv(tab.id)}
               title={tab.title || 'Untitled session'}
             >
-              {streaming && runConvRef.current === tab.id && <span className="ws-tab-dot" />}
+              {streamingConvIds.has(tab.id) && <span className="ws-tab-dot" />}
               {renderTabAlerts(tab.id)}
               <span className="ws-tab-label">{tab.title || 'Untitled session'}</span>
               <button type="button" className="ws-tab-x" aria-label="Close tab" onClick={(e) => closeWorkspaceTab(tab.id, e)}>
@@ -2826,8 +2733,9 @@ export default function App() {
               projects={projects}
               activeId={activeId}
               panel={panel}
-              streaming={streaming}
-              streamingConvId={runConvRef.current}
+              streaming={anyStreaming}
+              streamingConvId={streamingConvId}
+              streamingConvIds={streamingConvIds}
               sessionHealthMap={sessionHealthMap}
               waitingPermissionConvIds={waitingPermissionConvIds}
               onSelectConv={selectConv}
@@ -2879,14 +2787,14 @@ export default function App() {
                 <MissionControlPane
                   convs={convs}
                   activeId={activeId}
-                  streaming={streaming}
-                  streamingConvId={runConvRef.current}
+                  streaming={anyStreaming}
+                  streamingConvId={streamingConvId}
+                  streamingConvIds={streamingConvIds}
                   waitingPermissionConvIds={waitingPermissionConvIds}
                   onOpenSession={(cid) => selectConv(cid)}
                   onSendQuickReply={(cid, txt) => {
                     selectConv(cid);
-                    const cObj = convs.find((c) => c.id === cid) || null;
-                    send(txt, [], cObj);
+                    send(txt, [], cid);
                   }}
                   onDiagnoseUnstick={(cid, row) => {
                     selectConv(cid);

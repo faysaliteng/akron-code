@@ -294,13 +294,11 @@ const SLASH_COMMANDS = {
 const executors = {
   async bash({ command, cwd, timeout, description, run_in_background, dangerouslyDisableSandbox }, execCtx) {
     if (!command) return 'Error: command required';
-    if (!dangerouslyDisableSandbox) {
-      const canonical = osSandbox.checkCanonicalCommand(command, {
-        profile: 'workspace-write',
-        protectCredentials: true,
-      });
-      if (!canonical.ok) return `Sandbox blocked: ${canonical.reason}`;
-    }
+    const canonical = osSandbox.checkCanonicalCommand(command, {
+      profile: 'workspace-write',
+      protectCredentials: true,
+    });
+    if (!canonical.ok) return `Sandbox blocked: ${canonical.reason}`;
     // Example's Bash runs either to completion or detached. A detached job must
     // outlive the tool call and be addressable by TaskOutput / KillShell.
     if (run_in_background) {
@@ -463,6 +461,23 @@ const executors = {
         }
         return `Image file: ${fp} (${st.size} bytes, ${ext.slice(1)}). Image contents cannot be shown as text.`;
       }
+      const LARGE_READ_LIMIT = 20 * 1024 * 1024;
+      if (st.size > LARGE_READ_LIMIT) {
+        const startLine = Math.max(1, parseInt(offset, 10) || 1);
+        const maxLines = Math.min(Math.max(1, parseInt(limit, 10) || 400), 2000);
+        const sampleBytes = Math.min(st.size, 1024 * 1024);
+        const fd = fs.openSync(fp, 'r');
+        const headBuf = Buffer.alloc(sampleBytes);
+        let bytesRead = 0;
+        try { bytesRead = fs.readSync(fd, headBuf, 0, sampleBytes, 0); } finally { fs.closeSync(fd); }
+        const slice = headBuf.slice(0, bytesRead);
+        if (isBinaryBuffer(slice)) return `Binary file: ${fp} (${st.size} bytes) — not shown.`;
+        if (startLine === 1) {
+          return formatNumbered(slice.toString('utf8'), fp, 1, maxLines, '(empty file)')
+            + `\n[File is ${(st.size / (1024 * 1024)).toFixed(1)} MB — showing initial bounded slice. Use Bash (sed/head/tail/rg) for deeper offsets.]`;
+        }
+        return `Error: ${fp} is ${(st.size / (1024 * 1024)).toFixed(1)} MB (>20 MB read guard) at offset ${startLine}. Use Bash (\`sed -n '${startLine},${startLine + maxLines}p'\` or \`rg\`) to inspect specific line ranges.`;
+      }
       const buf = fs.readFileSync(fp);
       editGuard.recordFileRead(_readMtimes, fp, buf, st);
       if (isBinaryBuffer(buf)) {
@@ -492,6 +507,10 @@ const executors = {
     if (wr !== true) return 'Error: ' + wr.reason;
     return editGuard.withFileLock(fp, async () => {
       try {
+        if (fs.existsSync(fp)) {
+          const stale = editGuard.checkStaleRead(_readMtimes, fp);
+          if (!stale.ok) return stale.error;
+        }
         fs.mkdirSync(path.dirname(fp), { recursive: true });
         const body = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
         // Guard against the classic "model wrote a fragment" failure: a file that
@@ -653,9 +672,11 @@ const executors = {
     return out;
   },
 
-  async grep({ pattern, path: p, cwd, glob: g, output_mode = 'content', context, type, head_limit = 250, offset = 0, multiline }) {
+  async grep(rawArgs = {}) {
+    const { pattern, path: p, file_path: fp, cwd, glob: g, output_mode = 'content', context, type, head_limit = 250, offset = 0, multiline } = rawArgs;
+    const ignoreCase = Boolean(rawArgs['-i'] || rawArgs.case_insensitive || rawArgs.ignoreCase);
     if (!pattern) return 'Error: Grep requires a "pattern".';
-    const target = p ? resolvePath(p, cwd) : resolveDir(cwd);
+    const target = (p || fp) ? resolvePath(p || fp, cwd) : resolveDir(cwd);
     const gp = sandbox.isReadAllowed(target);
     if (gp !== true) return 'Error: ' + gp.reason;
     // `path` may be a FILE (Example accepts either). rg's cwd must be a real
@@ -670,6 +691,7 @@ const executors = {
     } catch (_) {}
     const mode = ['content', 'files_with_matches', 'count'].includes(output_mode) ? output_mode : 'content';
     const args = ['-n', '--no-heading', '--color', 'never'];
+    if (ignoreCase) args.push('-i');
     if (multiline) args.push('-U');
     if (mode === 'files_with_matches') args.push('--files-with-matches');
     if (mode === 'count') args.push('--count');
@@ -691,6 +713,7 @@ const executors = {
     if (out === null) {
       // No ripgrep on PATH — same semantics with grep.
       const gargs = ['-rIn'];
+      if (ignoreCase) gargs.push('-i');
       if (mode === 'files_with_matches') gargs.push('-l');
       if (mode === 'count') gargs.push('-c');
       if (context) gargs.push('-C', String(Math.max(0, parseInt(context, 10) || 0)));
@@ -732,8 +755,9 @@ const executors = {
   },
 
   // ---- Notebooks (.ipynb real file editing + legacy stored notebooks) ----
-  async notebook_read({ name, notebook_path, path: p, cwd }) {
-    const targetPath = notebook_path || (p && /\.ipynb$/i.test(p) ? p : '');
+  async notebook_read({ name, notebook_path, path: p, file_path: fpAlias, filePath, cwd }) {
+    const candidate = notebook_path || p || fpAlias || filePath;
+    const targetPath = candidate && (/\.ipynb$/i.test(candidate) || (!name && /[\\/.]/.test(String(candidate)))) ? candidate : '';
     if (targetPath) {
       const fp = resolvePath(targetPath, cwd);
       const rd = sandbox.isReadAllowed(fp);
@@ -1067,7 +1091,7 @@ const executors = {
       } else {
         return 'Unsupported Jira action. Use search, get, or create.';
       }
-      const res = await fetch(url, { method, headers: { authorization: auth, 'content-type': 'application/json', accept: 'application/json' }, body });
+      const res = await fetch(url, { method, headers: { authorization: auth, 'content-type': 'application/json', accept: 'application/json' }, body, signal: AbortSignal.timeout(30000) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (idemKey) sideEffectsGuard.finishExecution(idemKey, 'uncertain', `HTTP ${res.status}`);
@@ -1098,7 +1122,7 @@ const executors = {
     else if (act === 'search') gql = `query { issueSearch(filter: { query: ${JSON.stringify(query || '')} }, first: 10) { nodes { identifier title } } }`;
     else return 'Unsupported Linear action. Use issues or search.';
     try {
-      const res = await fetch('https://api.linear.app/graphql', { method: 'POST', headers: { authorization: key, 'content-type': 'application/json' }, body: JSON.stringify({ query: gql }) });
+      const res = await fetch('https://api.linear.app/graphql', { method: 'POST', headers: { authorization: key, 'content-type': 'application/json' }, body: JSON.stringify({ query: gql }), signal: AbortSignal.timeout(30000) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return `Linear error ${res.status}: ${JSON.stringify(data).slice(0, 500)}`;
       const nodes = data.data && (data.data.issues ? data.data.issues.nodes : data.data.issueSearch && data.data.issueSearch.nodes) || [];
@@ -1122,14 +1146,16 @@ const executors = {
     return untrusted.wrapUntrusted(truncate(JSON.stringify(res.data, null, 2)), { source: 'ParadevWorkspaces' });
   },
 
-  async paradev_tasks({ action, id, title, description, priority, statusId }) {
+  async paradev_tasks({ action, id, title, description, priority, statusId, tracker, team, assigneeId, prUrl, labels }) {
     const paradev = require('./paradev-client');
     const act = String(action || 'list').toLowerCase();
     let res;
     if (act === 'list') res = await paradev.listTasks();
-    else if (act === 'create') res = await paradev.createTask({ title, description, priority, statusId });
-    else if (act === 'update') res = await paradev.updateTask({ id, title, description, priority, statusId });
-    else return { content: `Unsupported ParadevTasks action "${act}". Expected list | create | update.`, isError: true };
+    else if (act === 'statuses') res = await paradev.listTaskStatuses({ tracker, team });
+    else if (act === 'create') res = await paradev.createTask({ title, description, priority, statusId, tracker, team, assigneeId, labels });
+    else if (act === 'update') res = await paradev.updateTask({ id, title, description, priority, statusId, tracker, assigneeId, prUrl, labels });
+    else if (act === 'delete') res = await paradev.deleteTask({ id, tracker });
+    else return { content: `Unsupported ParadevTasks action "${act}". Expected list | statuses | create | update | delete.`, isError: true };
     if (!res || !res.ok) return { content: (res && res.error) || 'Paradev task request failed', isError: true };
     return untrusted.wrapUntrusted(truncate(JSON.stringify(res.data, null, 2)), { source: 'ParadevTasks' });
   },
@@ -1172,7 +1198,15 @@ const executors = {
   async run_tool_script({ code, timeout, cwd, _ctx }) {
     const baseCtx = _ctx || { cwd };
     const callHostTool = async (method, mArgs) => {
-      const a = { ...(mArgs || {}), cwd: (mArgs && mArgs.cwd) || cwd };
+      const coerceArgs = (m, raw) => {
+        if (typeof raw === 'string') {
+          if (m === 'glob') return { pattern: raw };
+          if (m === 'grep' || m === 'codebaseSearch') return { query: raw, pattern: raw };
+          return { path: raw };
+        }
+        return raw && typeof raw === 'object' ? { ...raw } : {};
+      };
+      const a = { ...coerceArgs(method, mArgs), cwd: (mArgs && typeof mArgs === 'object' && mArgs.cwd) || cwd };
       const map = {
         read: 'Read',
         glob: 'Glob',
@@ -1183,6 +1217,9 @@ const executors = {
       };
       const toolName = map[method];
       if (!toolName) throw new Error('Disallowed bridge method: ' + method);
+      if ((toolName === 'Write' || toolName === 'Edit') && typeof baseCtx.takeCheckpoint === 'function') {
+        try { baseCtx.takeCheckpoint(toolName, a); } catch (_) {}
+      }
       const out = await runTool(toolName, a, baseCtx);
       return out && out.content != null ? out.content : String(out || '');
     };
@@ -1253,8 +1290,8 @@ const toolDefinitions = [
   { name: 'TodoWrite', description: 'Create/update a structured todo list to track multi-step work.', parameters: { type: 'object', properties: { todos: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, content: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] }, activeForm: { type: 'string', description: 'Present-participle label while status is in_progress (e.g. "Running tests")' }, priority: { type: 'string', enum: ['low', 'medium', 'high'] } } } } }, required: ['todos'] } },
   { name: 'Task', description: 'Spawn a sub-agent to complete a self-contained, multi-step task and return its result. Use for parallelizable or independent work. Multiple Task/Agent blocks in one message run concurrently. Supports subagent_type (general-purpose, Explore, Plan, Bash, verifier, code-reviewer, etc.), resume by agentId, fork_context, max_turns, tier/model pinning, run_in_background, team_name, and worktree isolation.', parameters: { type: 'object', properties: { description: { type: 'string', description: 'Short label (3–5 words)' }, prompt: { type: 'string', description: 'The full instructions for the sub-agent' }, subagent_type: { type: 'string', description: 'Agent type/persona, e.g. general-purpose, Explore, Plan, verifier, code-reviewer' }, model: { type: 'string', description: 'Optional model id to run this sub-agent on' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'], description: 'Optional complexity tier; picks the matching model from the provider pool' }, resume: { type: 'string', description: 'Agent ID from a prior Task/Agent call to resume with full conversation history preserved' }, fork_context: { type: 'boolean', description: 'Include condensed parent conversation context so the sub-agent inherits prior discoveries' }, max_turns: { type: 'number', description: 'Optional max tool-use turns for this sub-agent' }, run_in_background: { type: 'boolean', description: 'Run detached; returns an id and output_file for TaskOutput' }, name: { type: 'string', description: 'Teammate name for team coordination' }, team_name: { type: 'string', description: 'Team to join' }, mode: { type: 'string', description: 'Sub-agent permission mode' }, isolation: { type: 'string', enum: ['worktree'], description: 'Isolate in a git worktree' }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
   { name: 'Agent', description: 'Spawn a sub-agent (alias of Task) to delegate a self-contained piece of work. Multiple Agent blocks in one message run concurrently.', parameters: { type: 'object', properties: { description: { type: 'string', description: 'Short label (3–5 words)' }, prompt: { type: 'string' }, subagent_type: { type: 'string' }, model: { type: 'string' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, resume: { type: 'string', description: 'Agent ID from a prior Task/Agent call to resume with full conversation history preserved' }, fork_context: { type: 'boolean', description: 'Include condensed parent conversation context' }, max_turns: { type: 'number', description: 'Optional max tool-use turns for this sub-agent' }, run_in_background: { type: 'boolean', description: 'Run detached; returns an id and output_file for TaskOutput' }, name: { type: 'string' }, team_name: { type: 'string' }, mode: { type: 'string' }, isolation: { type: 'string', enum: ['worktree'] }, cwd: { type: 'string' } }, required: ['description', 'prompt'] } },
-  { name: 'Swarm', description: 'Run a user-enabled supervisor-led team on FRONTIER models only. The supervisor decomposes the goal into subtasks, tags each with a complexity tier, every subtask runs CONCURRENTLY on a frontier model, then the supervisor reviews and merges the results into one answer. Use for large builds or any task that splits into independent parts.', parameters: { type: 'object', properties: { goal: { type: 'string', description: 'The overall objective for the team' }, tasks: { type: 'array', description: 'Optional explicit subtasks; omit to let the supervisor plan', items: { type: 'object', properties: { title: { type: 'string' }, prompt: { type: 'string' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, model: { type: 'string' } } } }, concurrency: { type: 'number', description: 'Max subtasks running at once (default 4)' }, maxTasks: { type: 'number', description: 'Max subtasks the supervisor may create (default 6)' }, critique: { type: 'boolean', description: 'Run the supervisor review/merge step (default true)' }, cwd: { type: 'string' } }, required: ['goal'] } },
-  { name: 'NotebookRead', description: 'Read the cells of a notebook by name.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+  { name: 'Swarm', description: 'Run a user-enabled supervisor-led team on FRONTIER models only. The supervisor decomposes the goal into subtasks, tags each with a complexity tier, every subtask runs CONCURRENTLY on a frontier model, then the supervisor reviews and merges the results into one answer. Use for large builds or any task that splits into independent parts.', parameters: { type: 'object', properties: { goal: { type: 'string', description: 'The overall objective for the team' }, tasks: { type: 'array', description: 'Optional explicit subtasks; omit to let the supervisor plan', items: { type: 'object', properties: { title: { type: 'string' }, prompt: { type: 'string' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, model: { type: 'string' }, owns: { type: 'array', items: { type: 'string' } }, isolation: { type: 'string', enum: ['inherit', 'worktree'] } } } }, concurrency: { type: 'number', description: 'Max subtasks running at once (default 4)' }, maxTasks: { type: 'number', description: 'Max subtasks the supervisor may create (default 6)' }, isolation: { type: 'string', enum: ['inherit', 'auto', 'worktree'], description: 'Use "auto" or "worktree" to isolate concurrent overlapping writers in Git worktrees' }, critique: { type: 'boolean', description: 'Run the supervisor review/merge step (default true)' }, cwd: { type: 'string' } }, required: ['goal'] } },
+  { name: 'NotebookRead', description: 'Read the cells of a notebook by path or name.', parameters: { type: 'object', properties: { notebook_path: { type: 'string', description: 'Path to the .ipynb file' }, path: { type: 'string', description: 'Alias for notebook_path' }, name: { type: 'string', description: 'Stored notebook name' } } } },
   { name: 'NotebookEdit', description: 'Edit a Jupyter notebook cell. Provide notebook_path and new_source. edit_mode: replace (default) | insert | delete. For insert, cell_id is the cell to insert AFTER (omit to insert at top); for delete, cell_id identifies the cell. Also accepts the legacy {name, cells} form to rewrite a stored notebook.', parameters: { type: 'object', properties: { notebook_path: { type: 'string', description: 'Path to the .ipynb file' }, cell_id: { type: 'string', description: 'Target cell id (for insert/replace/delete)' }, new_source: { type: 'string', description: 'New cell source' }, cell_type: { type: 'string', enum: ['code', 'markdown', 'raw'], description: 'Cell type (default code)' }, edit_mode: { type: 'string', enum: ['replace', 'insert', 'delete'], description: 'Default replace' }, name: { type: 'string', description: 'Legacy: stored notebook name' }, cells: { type: 'array', description: 'Legacy: full cell list', items: { type: 'object', properties: { language: { type: 'string' }, source: { type: 'string' } } } } }, required: ['notebook_path'] } },
   { name: 'AskUserQuestion', description: 'Ask the user one or more structured questions and wait for the answers. Use when you need a decision, clarification, or choice before proceeding. Each question has a header and 2–4 options; the user may also type their own answer.', parameters: { type: 'object', properties: { questions: { type: 'array', description: 'Questions to ask', items: { type: 'object', properties: { question: { type: 'string' }, header: { type: 'string', description: 'Short label (max 12 chars)' }, options: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, description: { type: 'string' } } } }, multiSelect: { type: 'boolean' } } } }, answers: { type: 'object', description: 'Pre-filled answers keyed by question (optional)' }, annotations: { type: 'object', description: 'Arbitrary annotations returned alongside' }, metadata: { type: 'object', description: 'Free-form metadata' }, question: { type: 'string', description: 'Legacy: shorthand for a single question' }, options: { type: 'array', description: 'Legacy: shorthand options', items: { type: 'object', properties: { label: { type: 'string' }, description: { type: 'string' } } } } } } },
   { name: 'KillShell', description: 'Kill a running background shell or job by its id (shell_id/task_id).', parameters: { type: 'object', properties: { shell_id: { type: 'string', description: 'Background shell/job id' }, task_id: { type: 'string', description: 'Alias for shell_id' } }, required: ['shell_id'] } },
@@ -1270,7 +1307,7 @@ const toolDefinitions = [
   { name: 'list_skills', description: 'List available skills.', parameters: { type: 'object', properties: {} } },
   { name: 'list_notebooks', description: 'List available notebooks.', parameters: { type: 'object', properties: {} } },
   { name: 'list_slash_commands', description: 'List available slash commands.', parameters: { type: 'object', properties: {} } },
-  { name: 'REPL', description: 'Run JavaScript in a persistent REPL session. Supports top-level await. State (variables, functions, imports) persists across calls within the session; `reset`/language may be set to start fresh.', parameters: { type: 'object', properties: { code: { type: 'string', description: 'JavaScript to evaluate (top-level await allowed)' }, description: { type: 'string', description: 'What this snippet does (3–5 words)' }, timeout: { type: 'number', description: 'Timeout in ms (default 30000, max 600000)' }, language: { type: 'string', description: 'Language: javascript (default), python, or bash' }, reset: { type: 'boolean', description: 'Start a fresh session' }, cwd: { type: 'string' } }, required: ['code'] } },
+  { name: 'REPL', description: 'Run JavaScript in a persistent isolated Node session. Supports top-level await. JS state survives across calls; Python and Bash run fresh per call.', parameters: { type: 'object', properties: { code: { type: 'string', description: 'JavaScript to evaluate (top-level await allowed)' }, description: { type: 'string', description: 'What this snippet does (3–5 words)' }, timeout: { type: 'number', description: 'Timeout in ms (default 30000, max 600000)' }, language: { type: 'string', description: 'Language: javascript (default), python, or bash' }, reset: { type: 'boolean', description: 'Start a fresh session' }, cwd: { type: 'string' } }, required: ['code'] } },
   { name: 'JavaScript', description: 'Execute a JavaScript snippet with Node.js and return its stdout/stderr.', parameters: { type: 'object', properties: { code: { type: 'string' }, cwd: { type: 'string' } }, required: ['code'] } },
   { name: 'Cd', description: 'Change the current working directory for subsequent Bash/Read/Write/Glob/Grep tools.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
   { name: 'TaskStop', description: 'Stop a running background task, sub-agent, monitor or shell by its id.', parameters: { type: 'object', properties: { task_id: { type: 'string', description: 'Id of the background task/agent to stop' }, shell_id: { type: 'string', description: 'Alias: id of a background shell to stop' }, name: { type: 'string', description: 'Legacy: sub-agent label to stop' } } } },
@@ -1468,7 +1505,6 @@ const executorsByTool = {
   NotebookEdit: 'notebook_edit',
   Skill: 'skill',
   SlashCommand: 'slash_command',
-  KillShell: 'kill_shell',
   memory_add: 'memory_add',
   ExtractSkill: 'extract_skill',
   memory_list: 'memory_list',
@@ -1548,6 +1584,11 @@ const executorsByTool = {
   browser_type: 'browser_type',
   browser_press: 'browser_press',
   browser_js: 'browser_js',
+  browser_hover: 'browser_hover',
+  browser_select: 'browser_select',
+  browser_scroll: 'browser_scroll',
+  browser_wait_for: 'browser_wait_for',
+  browser_tabs: 'browser_tabs',
 
   // ---- Plugins / MCP registry / scheduled tasks / custom skills ----
   plugins__list_plugins: 'plugins_list_plugins',
@@ -1582,11 +1623,14 @@ function fileHead(fp, raw, lines) {
 // that convention. Accepting it here means a Example-shaped Write from any
 // backend actually lands on disk instead of "path argument required".
 const FILE_TOOLS = new Set([
-  'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
+  'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'NotebookRead',
+  'ReadDocument', 'read_document', 'EditImage', 'edit_image', 'EditVideo', 'edit_video', 'SendUserFile',
   'mcp__workspace__write_file', 'mcp__workspace__edit_file', 'write_file', 'edit_file',
 ]);
 const FILE_ARG_ALIASES = {
-  path: ['file_path', 'filePath', 'filename', 'file'],
+  path: ['file_path', 'filePath', 'filename', 'file', 'input_path'],
+  input_path: ['path', 'file_path', 'filePath', 'file'],
+  notebook_path: ['path', 'file_path', 'filePath', 'file'],
   content: ['file_text', 'contents'],
   old_string: ['old_str', 'oldString'],
   new_string: ['new_str', 'newString'],
@@ -1628,33 +1672,56 @@ function toolTimeoutMs(name, args) {
   if (name === 'WebFetch') return 60 * 1000;
   return 5 * 60 * 1000;
 }
-function withTimeout(promise, ms, label) {
+function withTimeout(promise, ms, label, signal = null, onTimeoutAbort = null) {
+  if (signal && signal.aborted) return Promise.reject(new Error('aborted'));
   let timer = null;
-  const guard = new Promise((resolve) => {
-    timer = setTimeout(() => resolve({
-      content: `Tool error: ${label} did not respond within ${Math.round(ms / 1000)}s and was abandoned. The run continues — retry with a narrower or simpler call.`,
-      isError: true,
-      timedOut: true,
-    }), ms);
+  let abortTimer = null;
+  let onAbort = null;
+  const guard = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      if (typeof onTimeoutAbort === 'function') { try { onTimeoutAbort(); } catch (_) {} }
+      resolve({
+        content: `Tool error: ${label} did not respond within ${Math.round(ms / 1000)}s and was abandoned. The run continues — retry with a narrower or simpler call.`,
+        isError: true,
+        timedOut: true,
+      });
+    }, ms);
+    if (signal && typeof signal.addEventListener === 'function') {
+      onAbort = () => {
+        if (abortTimer) return;
+        abortTimer = setTimeout(() => reject(new Error('aborted')), 40);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
   });
-  return Promise.race([Promise.resolve(promise), guard]).finally(() => clearTimeout(timer));
+  return Promise.race([Promise.resolve(promise), guard]).finally(() => {
+    clearTimeout(timer);
+    clearTimeout(abortTimer);
+    if (signal && onAbort && typeof signal.removeEventListener === 'function') {
+      signal.removeEventListener('abort', onAbort);
+    }
+  });
 }
 
-/**
- * Run a built-in tool. Never throws for a tool failure: any exception becomes
- * { content: 'Tool error: …', isError: true } so the model can recover. Only an
- * abort (ctx.signal aborted) propagates.
- * @param {string} name tool name
- * @param {object} args tool arguments
- * @param {object} ctx optional context: { cwd, shell, askUser, runSubagent, exitPlanMode, mcpListResources, mcpReadResource, signal, checkDeny, approveTool, ... }
- */
 async function runTool(name, args, ctx) {
   ctx = ctx || {};
+  const toolAc = new AbortController();
+  const parentSignal = ctx.signal || null;
+  const onParentAbort = () => { try { toolAc.abort(); } catch (_) {} };
+  if (parentSignal) {
+    if (parentSignal.aborted) toolAc.abort();
+    else if (typeof parentSignal.addEventListener === 'function') parentSignal.addEventListener('abort', onParentAbort, { once: true });
+  }
+  const childCtx = { ...ctx, signal: toolAc.signal, _toolAbort: () => { try { toolAc.abort(); } catch (_) {} } };
   try {
-    return await runToolInner(name, args, ctx);
+    return await runToolInner(name, args, childCtx);
   } catch (e) {
-    if (ctx.signal && ctx.signal.aborted) throw e;
+    if (toolAc.signal.aborted || (parentSignal && parentSignal.aborted)) throw e;
     return { content: 'Tool error: ' + (e && e.message ? e.message : String(e)), isError: true };
+  } finally {
+    if (parentSignal && typeof parentSignal.removeEventListener === 'function') {
+      parentSignal.removeEventListener('abort', onParentAbort);
+    }
   }
 }
 
@@ -1767,7 +1834,7 @@ async function runToolInner(name, args, ctx) {
       emitFn({ type: 'subagent', id: job.id, name: label, status: 'started', role: 'worker', background: true });
       return `Started background agent "${label}" (${job.id}). output_file: ${outputFile}\nPoll it with TaskOutput({task_id:"${job.id}"}) (optionally block:true) or stop it with TaskStop({task_id:"${job.id}"}).`;
     }
-    const subOut = await withTimeout(runSubagent(args), toolTimeoutMs(name, args), name);
+    const subOut = await withTimeout(runSubagent({ ...args, signal: ctx.signal }), toolTimeoutMs(name, args), name, ctx.signal, ctx._toolAbort);
     return (subOut == null || subOut === '') ? '(sub-agent completed with no text output)' : subOut;
   }
   if (name === 'Swarm') {
@@ -1779,6 +1846,7 @@ async function runToolInner(name, args, ctx) {
         runAgent: ctx.runAgent,
         provider: ctx.provider,
         orchestrator: ctx.orchestrator,
+        supervisor: ctx.swarmSupervisor || undefined,
         emit: ctx.emit || (() => {}),
         tasks: Array.isArray(args.tasks) && args.tasks.length ? args.tasks : undefined,
         concurrency: Math.min(Number(args.concurrency) || 4, 8),
@@ -1786,10 +1854,12 @@ async function runToolInner(name, args, ctx) {
         signal: ctx.signal,
         poolOrchestrator: ctx.poolOrchestrator,
         depth: ctx.depth,
+        permissionMode: ctx.permissionMode,
+        worktreeIsolation: args.isolation || args.worktreeIsolation || undefined,
         critique: args.critique !== false,
         cwd: args.cwd || ctx.cwd,
         maxSteps: Number(args.maxSteps) || 0,
-      }), toolTimeoutMs(name, args), name);
+      }), toolTimeoutMs(name, args), name, ctx.signal, ctx._toolAbort);
       if (out && out.timedOut) return out;
       const table = out.results
         .map((r) => `- ${r.title} — ${r.tier} · ${r.model || 'model'} · ${r.status} (${r.ms}ms)`)
@@ -1942,7 +2012,9 @@ async function runToolInner(name, args, ctx) {
     if (!shell) return 'No shell manager available.';
     const id = args.terminal_id || args.id;
     try {
-      const out = await shell.run(id, args.command, { timeoutMs: Math.min(Number(args.timeout) || 60, 120) * 1000 });
+      const rawT = Number(args.timeout) || 60;
+      const timeoutMs = rawT >= 1000 ? Math.min(rawT, 120000) : Math.min(rawT, 120) * 1000;
+      const out = await shell.run(id, args.command, { timeoutMs });
       return out;
     } catch (e) {
       return 'Terminal error: ' + e.message;
@@ -2048,7 +2120,14 @@ async function runToolInner(name, args, ctx) {
     if (!args.route) return 'Error: route required.';
     cowork.registerBridge(args.route, args.method, async ({ body }) => {
       const msg = (body && (body.message || body.text || body.prompt)) || JSON.stringify(body || {});
-      const out = await ctx.runAgent({ messages: [{ role: 'user', content: String(msg) }], maxSteps: 0 });
+      const out = await ctx.runAgent({
+        messages: [{ role: 'user', content: String(msg) }],
+        maxSteps: 40,
+        emit: (evt) => {
+          if (!evt || evt.type === 'done' || evt.type === 'complete') return;
+          if (typeof ctx.emit === 'function') ctx.emit({ ...evt, subagent: `bridge:${args.route}` });
+        },
+      });
       const last = [...out].reverse().find((m) => m.role === 'assistant' && m.content);
       return { reply: last ? last.content : '(bot completed)' };
     });
@@ -2122,7 +2201,7 @@ async function runToolInner(name, args, ctx) {
       const textOut = (out && typeof out === 'object' && typeof out.text === 'string')
         ? out.text
         : (typeof out === 'string' ? out : JSON.stringify(out, null, 2));
-      if (/^(read_|find|list_tabs|execute_javascript)/.test(action)) {
+      if (/^(read_|find|list_tabs|execute_javascript|get_|wait_for|snapshot)/.test(action)) {
         return untrusted.wrapUntrusted(textOut, { source: `ChromeBot:${action}` });
       }
       return textOut;
@@ -2229,7 +2308,7 @@ async function runToolInner(name, args, ctx) {
         return { content: 'Remote environment error: ' + (remErr && remErr.message ? remErr.message : String(remErr)), isError: true };
       }
     }
-    const content = await withTimeout(fn(finalArgs, { signal: ctx.signal, cwd: finalArgs.cwd, emit: ctx.emit, currentToolId: ctx.currentToolId, provider: ctx.provider, orchestrator: ctx.orchestrator }), toolTimeoutMs(name, finalArgs), name);
+    const content = await withTimeout(fn(finalArgs, { signal: ctx.signal, cwd: finalArgs.cwd, emit: ctx.emit, currentToolId: ctx.currentToolId, provider: ctx.provider, orchestrator: ctx.orchestrator }), toolTimeoutMs(name, finalArgs), name, ctx.signal, ctx._toolAbort);
     if (content && typeof content === 'object' && (content.isError || typeof content.content === 'string')) return content;
     return { content: String(content) };
   } catch (e) {

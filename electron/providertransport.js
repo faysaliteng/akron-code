@@ -1171,8 +1171,17 @@ function toGeminiContents(messages, model) {
 
   const pushPart = (role, part) => {
     const last = contents[contents.length - 1];
-    if (last && last.role === role) last.parts.push(part);
-    else contents.push({ role, parts: [part] });
+    if (last && last.role === role) {
+      const prev = last.parts[last.parts.length - 1];
+      if (prev && typeof prev.text === 'string' && !prev.thought && part && typeof part.text === 'string' && !part.thought && Object.keys(prev).length === 1 && Object.keys(part).length === 1) {
+        const sep = /\s$/.test(prev.text) || /^\s/.test(part.text) ? '' : '\n\n';
+        prev.text = prev.text + sep + part.text;
+        return;
+      }
+      last.parts.push(part);
+    } else {
+      contents.push({ role, parts: [part] });
+    }
   };
   for (const m of messages || []) {
     if (!m || typeof m !== 'object') continue;
@@ -1241,7 +1250,9 @@ function toGeminiContents(messages, model) {
 function geminiFinish(reason) {
   if (!reason) return 'stop';
   if (reason === 'MAX_TOKENS') return 'length';
-  if (reason === 'SAFETY' || reason === 'RECITATION' || reason === 'PROHIBITED_CONTENT') return 'content_filter';
+  if (/^(?:SAFETY|RECITATION|PROHIBITED_CONTENT|BLOCKLIST|SPII|IMAGE_SAFETY|MODEL_ARMOR)$/i.test(String(reason))) {
+    return 'content_filter';
+  }
   return 'stop';
 }
 
@@ -1556,6 +1567,9 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
   const absorb = (resp) => {
     if (!resp) return;
     if (resp.modelVersion) message.model = String(resp.modelVersion);
+    if (resp.promptFeedback && resp.promptFeedback.blockReason) {
+      message.finish_reason = 'content_filter';
+    }
     const cand = (resp.candidates || [])[0];
     if (cand) {
       for (const part of (cand.content && cand.content.parts) || []) {
@@ -1601,6 +1615,8 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
   const settle = () => {
     if (message.tool_calls.length && (!message.finish_reason || message.finish_reason === 'stop')) {
       message.finish_reason = 'tool_calls';
+    } else if (!message.tool_calls.length && /^(?:This request was blocked by (?:Gemini's|Google's) (?:filters|safety)|I cannot fulfill this request due to safety)/i.test(String(message.content || '').trim())) {
+      message.finish_reason = 'content_filter';
     } else if (!message.finish_reason) {
       message.finish_reason = 'stop';
     }
@@ -1809,12 +1825,13 @@ function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOve
  * @returns {Promise<Array<{id:string,label:string,contextWindow:number,thinking:boolean}>>}
  */
 async function listModels(provider, signal) {
+  const effSignal = signal || AbortSignal.timeout(15000);
   const transport = String((provider && provider.transport) || '');
   const token = (provider && (provider.accessToken || provider.apiKey)) || '';
 
   if (transport === 'google') {
     // Antigravity advertises `maxTokens` per model — the authoritative source.
-    return googleModels(provider, signal);
+    return googleModels(provider, effSignal);
   }
 
   if (transport === 'anthropic') {
@@ -1822,7 +1839,7 @@ async function listModels(provider, signal) {
     const { headers } = anthropicAuth(provider);
     const res = await fetch(base + '/v1/models?limit=100', {
       headers: Object.assign({}, headers, { accept: 'application/json' }),
-      signal,
+      signal: effSignal,
     });
     const text = await res.text().catch(() => '');
     if (!res.ok) throw httpError('anthropic', res, text);
@@ -1868,7 +1885,7 @@ async function listModels(provider, signal) {
     // Field-verified: `/codex/models` without `client_version` answers
     // 400 `missing query param client_version`; with the shipped CLI's own
     // version it returns the models this account is actually entitled to.
-    const res = await fetch(base + '/models?client_version=' + encodeURIComponent(clientVersions.codex), { headers, signal });
+    const res = await fetch(base + '/models?client_version=' + encodeURIComponent(clientVersions.codex), { headers, signal: effSignal });
     const text = await res.text().catch(() => '');
     if (!res.ok) throw httpError('codex', res, text);
     let json = null;
@@ -1896,7 +1913,7 @@ async function listModels(provider, signal) {
   if (transport === 'grok') {
     const res = await fetch('https://cli-chat-proxy.grok.com/v1/models', {
       headers: Object.assign({}, grokHeaders(provider), { accept: 'application/json' }),
-      signal,
+      signal: effSignal,
     });
     const text = await res.text().catch(() => '');
     if (!res.ok) throw httpError('grok', res, text);

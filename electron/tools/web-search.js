@@ -12,15 +12,27 @@ function isPrivateIpAddress(ip) {
   const s = String(ip || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
   if (!s) return true;
   if (s === '::1' || s === '::' || s.startsWith('fe80:') || s.startsWith('fc') || s.startsWith('fd')) return true;
-  if (s.startsWith('::ffff:')) return isPrivateIpAddress(s.slice(7));
+  if (s.startsWith('::ffff:')) {
+    const tail = s.slice(7);
+    const hexPair = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(tail);
+    if (hexPair) {
+      const hi = parseInt(hexPair[1], 16);
+      const lo = parseInt(hexPair[2], 16);
+      const dotted = `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+      return isPrivateIpAddress(dotted);
+    }
+    return isPrivateIpAddress(tail);
+  }
   if (!net.isIPv4(s)) return net.isIPv6(s) ? false : true;
   const parts = s.split('.').map(Number);
   if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
   const [a, b] = parts;
-  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 0 || a === 10 || a === 127 || a >= 224) return true;
   if (a === 169 && b === 254) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
+  if (a === 192 && b === 0 && parts[2] === 0) return true;
+  if (a === 198 && (b === 18 || b === 19)) return true;
   if (a === 100 && b >= 64 && b <= 127) return true;
   return false;
 }
@@ -333,23 +345,22 @@ async function webSearch({ query, allowed_domains, blocked_domains } = {}) {
   const q = String(query || '').trim();
   if (!q) return 'Error: query required';
   try {
-    let rawHits = (await searchBraveOrTavily(q)) || [];
-    if (!rawHits.length) {
+    const applyDomain = (arr) => (arr || []).filter((h) => h && h.url && hostMatchesFilter(h.url, allowed_domains, blocked_domains));
+    let filtered = applyDomain((await searchBraveOrTavily(q)) || []);
+    if (!filtered.length) {
       const [ddgH, ddgL, bing] = await Promise.all([
         searchDuckDuckGoHtml(q).catch(() => []),
         searchDuckDuckGoLite(q).catch(() => []),
         searchBingRss(q).catch(() => []),
       ]);
-      rawHits = rankAndFilterHits([...ddgH, ...ddgL, ...bing], q, { minScore: 0.2 });
+      filtered = applyDomain(rankAndFilterHits([...ddgH, ...ddgL, ...bing], q, { minScore: 0.2 }));
     }
-    if (!rawHits.length) {
-      const jsonHits = await searchFallbackJsonApis(q);
-      rawHits = rankAndFilterHits(jsonHits, q, { minScore: 0.2 });
-      if (!rawHits.length && jsonHits.length) rawHits = jsonHits;
+    if (!filtered.length) {
+      const jsonHits = applyDomain(await searchFallbackJsonApis(q));
+      const kws = queryKeywords(q);
+      filtered = rankAndFilterHits(jsonHits, q, { minScore: kws.length >= 2 ? 0.34 : 0.2 });
     }
-    const filtered = rawHits
-      .filter((h) => h && h.url && hostMatchesFilter(h.url, allowed_domains, blocked_domains))
-      .slice(0, 8);
+    filtered = filtered.slice(0, 8);
     if (!filtered.length) return '(no results)';
     const text = filtered
       .map((h, i) => `${i + 1}. ${h.title}\n   URL: ${h.url}${h.snippet ? `\n   ${h.snippet}` : ''}`)

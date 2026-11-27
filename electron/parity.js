@@ -304,7 +304,7 @@ function sendMessage(args, ctx) {
   const liveDelivered = typeof tasks.signalLiveMember === 'function'
     ? tasks.signalLiveMember(team, to, { shutdown, wake: !shutdown, from, message })
     : false;
-  return `Message queued for "${to}" in team "${team}"${args.summary ? ' — ' + args.summary : ''}${liveDelivered ? ' (delivered to active in-process teammate)' : ''}.`;
+  return `Message queued for "${to}" in team "${team}"${args.summary ? ' — ' + args.summary : ''}${liveDelivered ? ' (delivered to active in-process teammate)' : ` (teammate is currently offline — queued in inbox until "${to}" is spawned or resumed)`}.`;
 }
 
 // ────────────────────────────────────────────────────────────
@@ -349,6 +349,11 @@ async function workflowAgent(a, ctx) {
       sub.orchestrator = { enabled: true, providers: [sub.provider].concat(ctx.agentRoster.filter((r) => r !== base)), activeIndex: 0, role: 'pinned' };
     }
   }
+  const wfLabel = a.name || a.role || a.tier || 'workflow-agent';
+  sub.emit = (evt) => {
+    if (!evt || evt.type === 'done' || evt.type === 'complete') return;
+    if (typeof ctx.emit === 'function') ctx.emit({ ...evt, subagent: wfLabel });
+  };
   const out = await ctx.runAgent(sub);
   const list = Array.isArray(out) ? out : [];
   const last = [...list].reverse().find((m) => m && m.role === 'assistant' && m.content);
@@ -657,6 +662,7 @@ async function fireTrigger(def) {
     method,
     headers: { 'content-type': 'application/json', ...(def.headers || {}) },
     body: method === 'GET' || method === 'HEAD' ? undefined : body,
+    signal: AbortSignal.timeout(30000),
   });
   const text = await res.text();
   return `Remote trigger ${method} ${url} -> ${res.status} ${res.statusText}\n${truncate(text)}`;

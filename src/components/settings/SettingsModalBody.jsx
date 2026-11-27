@@ -34,7 +34,7 @@ export function SettingsModalBody({
   const [section, setSection] = useState(initialSection || 'providers');
   const [navFilter, setNavFilter] = useState('');
   const [orchPaidProviders, setOrchPaidProviders] = useState([]);
-  const [appVer, setAppVer] = useState('1.5.7');
+  const [appVer, setAppVer] = useState('1.5.8');
   useEffect(() => {
     if (window.autobot && typeof window.autobot.getVersion === 'function') {
       window.autobot.getVersion().then((v) => {

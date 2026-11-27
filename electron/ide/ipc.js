@@ -30,31 +30,53 @@ function register({ ipcMain, normalizeProvider, hydrateProvider, hydrateOrchestr
   };
 
   // ---- File Tree & File CRUD + Watcher ----
+  const guardIdeFile = (e, targetPath) => {
+    const winSec = require('../window-security');
+    if (!winSec.isTrustedRendererEvent(e)) return { ok: false, error: 'Untrusted renderer origin' };
+    if (targetPath && winSec.isBlockedCredentialTarget(targetPath, require('../sandbox'))) {
+      return { ok: false, error: 'Access to Akron credential store is blocked' };
+    }
+    return null;
+  };
   ipcMain.handle('ide:readTree', (e, payload) => {
+    const blocked = guardIdeFile(e);
+    if (blocked) return blocked;
     if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'readTree', payload || {});
     return fsWatcher.readTree(payload && payload.cwd, payload || {});
   });
   ipcMain.handle('ide:readFile', (e, payload) => {
+    const blocked = guardIdeFile(e, payload && payload.path);
+    if (blocked) return blocked;
     if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'readFile', payload || {});
     return fsWatcher.readFile(payload && payload.path, payload || {});
   });
   ipcMain.handle('ide:writeFile', (e, payload) => {
+    const blocked = guardIdeFile(e, payload && payload.path);
+    if (blocked) return blocked;
     if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'writeFile', payload || {});
     return fsWatcher.writeFile(payload && payload.path, payload && payload.content);
   });
   ipcMain.handle('ide:createEntry', (e, payload) => {
+    const blocked = guardIdeFile(e, payload && payload.path);
+    if (blocked) return blocked;
     if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'createEntry', payload || {});
     return fsWatcher.createEntry(payload && payload.path, payload && payload.kind);
   });
   ipcMain.handle('ide:renameEntry', (e, payload) => {
+    const blocked = guardIdeFile(e, (payload && payload.oldPath) || (payload && payload.newPath));
+    if (blocked) return blocked;
     if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'renameEntry', payload || {});
     return fsWatcher.renameEntry(payload && payload.oldPath, payload && payload.newPath);
   });
   ipcMain.handle('ide:duplicateEntry', (e, payload) => {
+    const blocked = guardIdeFile(e, payload && payload.path);
+    if (blocked) return blocked;
     if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'duplicateEntry', payload || {});
     return fsWatcher.duplicateEntry(payload && payload.path);
   });
   ipcMain.handle('ide:deleteEntry', (e, payload) => {
+    const blocked = guardIdeFile(e, payload && payload.path);
+    if (blocked) return blocked;
     if (environments.isRemoteActive()) return environments.dispatchIde('fs', 'deleteEntry', payload || {});
     return fsWatcher.deleteEntry(payload && payload.path);
   });

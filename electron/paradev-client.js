@@ -161,19 +161,107 @@ function saveConfig({ apiKey, organizationId, baseURL } = {}, { secretstore = nu
   return resolveCredentials({ secretstore: ss });
 }
 
-function buildAuthHeaders(apiKey, extra = {}) {
+function buildAuthHeaders(apiKeyOrCreds, extra = {}) {
+  const isObj = apiKeyOrCreds && typeof apiKeyOrCreds === 'object';
+  const key = String(isObj ? (apiKeyOrCreds.apiKey || '') : (apiKeyOrCreds || '')).trim();
+  const orgId = String(isObj ? (apiKeyOrCreds.organizationId || '') : '').trim();
   const headers = {
     'content-type': 'application/json',
     'user-agent': 'Akron-Code-Paradev-Bridge/1.0',
+    ...(orgId ? { 'x-organization-id': orgId } : {}),
     ...extra,
   };
-  const key = String(apiKey || '').trim();
   if (/^sk_(?:live|test)_/i.test(key)) {
     headers['x-api-key'] = key;
   } else if (key) {
     headers.authorization = `Bearer ${key}`;
   }
   return headers;
+}
+
+function parseMcpWirePayload(text, targetId = 1) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  if (/^data:/m.test(raw) || /\nevent:/m.test(raw)) {
+    const frames = [];
+    for (const block of raw.split(/\r?\n\r?\n/)) {
+      const dataLines = [];
+      for (const line of block.split(/\r?\n/)) {
+        const t = line.trim();
+        if (t.startsWith('data:')) dataLines.push(t.slice(5).trim());
+      }
+      const joined = dataLines.filter(Boolean).join('\n');
+      if (!joined || joined === '[DONE]') continue;
+      try { frames.push(JSON.parse(joined)); } catch (_) {}
+    }
+    if (!frames.length) return null;
+    const byId = frames.find((f) => f && f.id === targetId && (f.result !== undefined || f.error !== undefined));
+    return byId || frames.find((f) => f && (f.result !== undefined || f.error !== undefined)) || frames[frames.length - 1];
+  }
+  try { return JSON.parse(raw); } catch (_) { return null; }
+}
+
+async function callMcpTool(toolName, args = {}, {
+  apiKey = '',
+  organizationId = '',
+  baseURL = '',
+  explicit = null,
+  fetchImpl = global.fetch,
+  timeoutMs = 25000,
+  signal = null,
+} = {}) {
+  const creds = resolveCredentials({
+    explicit: explicit || (apiKey || baseURL ? { apiKey, organizationId, baseURL } : null),
+  });
+  if (!creds.configured) {
+    return { ok: false, status: 401, error: 'Paradev API key not configured. Create a Personal API Key (sk_live_…) in Paradev Settings and paste it here.' };
+  }
+  if (typeof fetchImpl !== 'function') {
+    return { ok: false, error: 'fetch unavailable' };
+  }
+  const url = `${creds.baseURL}/mcp`;
+  const rpcBody = {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'tools/call',
+    params: { name: String(toolName || '').trim(), arguments: args && typeof args === 'object' ? args : {} },
+  };
+  try {
+    const res = await fetchImpl(url, {
+      method: 'POST',
+      headers: buildAuthHeaders(creds, { accept: 'application/json, text/event-stream' }),
+      body: JSON.stringify(rpcBody),
+      signal: signal || AbortSignal.timeout(Math.max(1000, Number(timeoutMs) || 25000)),
+    });
+    const text = await res.text().catch(() => '');
+    const msg = parseMcpWirePayload(text, 1);
+    if (!res.ok) {
+      const errMsg = (msg && msg.error && msg.error.message) || text.slice(0, 240) || `HTTP ${res.status}`;
+      return { ok: false, status: res.status, tool: toolName, error: String(errMsg) };
+    }
+    if (!msg || typeof msg !== 'object' || (msg.result === undefined && msg.error === undefined)) {
+      return { ok: false, notMcp: true, tool: toolName, error: 'Non-MCP response' };
+    }
+    if (msg.error) {
+      return { ok: false, tool: toolName, error: String(msg.error.message || JSON.stringify(msg.error)) };
+    }
+    const result = msg.result;
+    if (!result || !Array.isArray(result.content)) {
+      return { ok: false, notMcp: true, tool: toolName, error: 'Malformed MCP tool result' };
+    }
+    const textParts = result.content.filter((c) => c && c.type === 'text' && typeof c.text === 'string').map((c) => c.text);
+    const joinedText = textParts.join('\n').trim();
+    if (result.isError) {
+      return { ok: false, tool: toolName, error: joinedText || 'Paradev MCP tool error' };
+    }
+    let data = joinedText;
+    if (/^\s*[\[{]/.test(joinedText)) {
+      try { data = JSON.parse(joinedText); } catch (_) {}
+    }
+    return { ok: true, via: 'mcp', tool: toolName, data, rawText: joinedText };
+  } catch (e) {
+    return { ok: false, tool: toolName, error: e && e.message ? e.message : String(e) };
+  }
 }
 
 async function callTrpc(procedure, {
@@ -249,13 +337,22 @@ async function getStatus({ probeNetwork = false, fetchImpl = global.fetch } = {}
     network: null,
   };
   if (probeNetwork && creds.configured) {
-    const [planRes, modelRes] = await Promise.all([
+    const [planRes, modelRes, orgRes] = await Promise.all([
       callTrpc('billing.activePlan', { method: 'GET', ...creds, fetchImpl, timeoutMs: 8000 }),
       callTrpc('chat.getModels', { method: 'GET', ...creds, fetchImpl, timeoutMs: 8000 }),
+      callTrpc('organization.list', { method: 'GET', ...creds, fetchImpl, timeoutMs: 8000 }).catch(() => ({ ok: false })),
     ]);
+    let discoveredOrg = null;
+    if (orgRes && orgRes.ok && Array.isArray(orgRes.data) && orgRes.data.length) {
+      discoveredOrg = orgRes.data[0];
+      if (!creds.organizationId && discoveredOrg.id) {
+        try { saveConfig({ organizationId: discoveredOrg.id }); out.organizationId = discoveredOrg.id; } catch (_) {}
+      }
+    }
     out.network = {
-      reachable: Boolean(planRes.ok || modelRes.ok),
+      reachable: Boolean(planRes.ok || modelRes.ok || (orgRes && orgRes.ok)),
       plan: planRes.ok ? planRes.data : null,
+      organization: discoveredOrg ? { id: discoveredOrg.id, name: discoveredOrg.name, slug: discoveredOrg.slug } : null,
       modelsCount: (modelRes.ok && modelRes.data && Array.isArray(modelRes.data.models)) ? modelRes.data.models.length : 0,
       error: (!planRes.ok && !modelRes.ok) ? (planRes.error || modelRes.error || 'Connection failed') : '',
     };
@@ -282,15 +379,33 @@ async function transcribeAudio({ audioBase64, mimeType = 'audio/wav', explicit =
     : { ok: false, error: 'Empty transcription from Paradev' };
 }
 
-async function listWorkspaces({ organizationId, explicit = null, fetchImpl = global.fetch } = {}) {
+async function listWorkspaces({ organizationId, hostId, explicit = null, fetchImpl = global.fetch } = {}) {
   const creds = resolveCredentials({ explicit });
   const orgId = String(organizationId || creds.organizationId || '').trim();
-  return callTrpc('cloudWorkspace.list', {
+  const cloudRes = await callTrpc('cloudWorkspace.list', {
     method: 'GET',
     input: orgId ? { organizationId: orgId } : {},
     ...creds,
     fetchImpl,
   });
+  if (cloudRes && cloudRes.ok) return cloudRes;
+  // On Free plan or personal API keys, cloudWorkspace.list returns 403 — query host/local workspaces via Paradev MCP.
+  const [hostsRes, wsRes] = await Promise.all([
+    callMcpTool('hosts_list', {}, { explicit, ...creds, fetchImpl }),
+    callMcpTool('workspaces_list', hostId ? { hostId } : {}, { explicit, ...creds, fetchImpl }),
+  ]);
+  if (wsRes.ok || hostsRes.ok) {
+    return {
+      ok: true,
+      via: 'mcp',
+      data: {
+        workspaces: wsRes.ok ? wsRes.data : [],
+        hosts: hostsRes.ok ? hostsRes.data : [],
+        cloudNote: cloudRes && cloudRes.error ? cloudRes.error : undefined,
+      },
+    };
+  }
+  return cloudRes;
 }
 
 async function createWorkspace({ organizationId, environment, name, agent = 'claude', prompt = '', explicit = null, fetchImpl = global.fetch } = {}) {
@@ -331,53 +446,82 @@ async function deleteWorkspace(workspaceId, { explicit = null, fetchImpl = globa
   });
 }
 
+async function listTaskStatuses(filter = {}, { explicit = null, fetchImpl = global.fetch } = {}) {
+  return callMcpTool('tasks_statuses_list', filter && typeof filter === 'object' ? filter : {}, { explicit, fetchImpl });
+}
+
 async function listTasks(filter = {}, { explicit = null, fetchImpl = global.fetch } = {}) {
   const creds = resolveCredentials({ explicit });
+  const args = filter && typeof filter === 'object' ? { ...filter } : {};
+  const mcpRes = await callMcpTool('tasks_list', args, { explicit, ...creds, fetchImpl });
+  if (mcpRes && mcpRes.ok) return mcpRes;
+  if (mcpRes && !mcpRes.notMcp && mcpRes.status && mcpRes.status !== 404) return mcpRes;
   return callTrpc('task.list', {
     method: 'GET',
-    input: filter && Object.keys(filter).length ? filter : undefined,
+    input: Object.keys(args).length ? args : undefined,
     ...creds,
     fetchImpl,
   });
 }
 
-async function createTask({ title, description, priority, statusId, explicit = null, fetchImpl = global.fetch } = {}) {
+async function createTask({ title, description, priority, statusId, tracker, team, assigneeId, labels, explicit = null, fetchImpl = global.fetch } = {}) {
   const creds = resolveCredentials({ explicit });
   if (!title) return { ok: false, error: 'Task title is required' };
+  const payload = {
+    title: String(title).trim(),
+    ...(description ? { description: String(description) } : {}),
+    ...(priority ? { priority } : {}),
+    ...(statusId ? { statusId } : {}),
+    ...(tracker ? { tracker } : {}),
+    ...(team ? { team } : {}),
+    ...(assigneeId ? { assigneeId } : {}),
+    ...(Array.isArray(labels) ? { labels } : {}),
+  };
+  const mcpRes = await callMcpTool('tasks_create', payload, { explicit, ...creds, fetchImpl });
+  if (mcpRes && mcpRes.ok) return mcpRes;
   return callTrpc('task.create', {
     method: 'POST',
-    input: {
-      title: String(title).trim(),
-      ...(description ? { description: String(description) } : {}),
-      ...(priority ? { priority } : {}),
-      ...(statusId ? { statusId } : {}),
-    },
+    input: payload,
     ...creds,
     fetchImpl,
   });
 }
 
-async function updateTask({ id, title, description, priority, statusId, explicit = null, fetchImpl = global.fetch } = {}) {
+async function updateTask({ id, title, description, priority, statusId, tracker, assigneeId, prUrl, labels, explicit = null, fetchImpl = global.fetch } = {}) {
   const creds = resolveCredentials({ explicit });
   if (!id) return { ok: false, error: 'Task id is required' };
+  const payload = {
+    id: String(id).trim(),
+    ...(title !== undefined ? { title } : {}),
+    ...(description !== undefined ? { description } : {}),
+    ...(priority !== undefined ? { priority } : {}),
+    ...(statusId !== undefined ? { statusId } : {}),
+    ...(tracker !== undefined ? { tracker } : {}),
+    ...(assigneeId !== undefined ? { assigneeId } : {}),
+    ...(prUrl !== undefined ? { prUrl } : {}),
+    ...(labels !== undefined ? { labels } : {}),
+  };
+  const mcpRes = await callMcpTool('tasks_update', payload, { explicit, ...creds, fetchImpl });
+  if (mcpRes && mcpRes.ok) return mcpRes;
   return callTrpc('task.update', {
     method: 'POST',
-    input: {
-      id: String(id).trim(),
-      ...(title !== undefined ? { title } : {}),
-      ...(description !== undefined ? { description } : {}),
-      ...(priority !== undefined ? { priority } : {}),
-      ...(statusId !== undefined ? { statusId } : {}),
-    },
+    input: payload,
     ...creds,
     fetchImpl,
   });
+}
+
+async function deleteTask({ id, tracker, explicit = null, fetchImpl = global.fetch } = {}) {
+  const creds = resolveCredentials({ explicit });
+  if (!id) return { ok: false, error: 'Task id is required' };
+  return callMcpTool('tasks_delete', { id: String(id).trim(), ...(tracker ? { tracker } : {}) }, { explicit, ...creds, fetchImpl });
 }
 
 function getMcpServerPresets({ explicit = null } = {}) {
   const creds = resolveCredentials({ explicit });
   const list = [
     {
+      serverId: 'paradev_docs',
       name: 'paradev-docs',
       transport: 'http',
       url: DOCS_MCP_URL,
@@ -387,14 +531,37 @@ function getMcpServerPresets({ explicit = null } = {}) {
   ];
   if (creds.configured) {
     list.push({
+      serverId: 'paradev',
       name: 'paradev',
       transport: 'http',
       url: `${creds.baseURL}/mcp`,
-      headers: buildAuthHeaders(creds.apiKey),
+      headers: buildAuthHeaders(creds),
       enabled: true,
     });
   }
   return list;
+}
+
+const _mcpAttempted = new Set();
+async function ensureParadevMcpConnected(mcpClient, { force = false, explicit = null } = {}) {
+  if (!mcpClient || typeof mcpClient.connect !== 'function' || !mcpClient.servers) return { connected: [] };
+  const creds = resolveCredentials({ explicit });
+  if (!creds.configured && !force) return { connected: [] };
+  const presets = getMcpServerPresets({ explicit });
+  const connected = [];
+  for (const srv of presets) {
+    const sid = srv.serverId || srv.name;
+    if (!force && mcpClient.servers.has(sid)) { connected.push(sid); continue; }
+    if (!force && _mcpAttempted.has(sid)) continue;
+    _mcpAttempted.add(sid);
+    try {
+      const info = await mcpClient.connect(srv);
+      const entry = mcpClient.servers.get(info.serverId);
+      if (entry) entry.fullTools = info.tools || [];
+      connected.push(info.serverId || sid);
+    } catch (_) {}
+  }
+  return { connected };
 }
 
 module.exports = {
@@ -411,14 +578,18 @@ module.exports = {
   saveConfig,
   buildAuthHeaders,
   callTrpc,
+  callMcpTool,
   getStatus,
   transcribeAudio,
   listWorkspaces,
   createWorkspace,
   getWorkspace,
   deleteWorkspace,
+  listTaskStatuses,
   listTasks,
   createTask,
   updateTask,
+  deleteTask,
   getMcpServerPresets,
+  ensureParadevMcpConnected,
 };

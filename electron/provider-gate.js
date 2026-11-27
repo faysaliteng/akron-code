@@ -79,18 +79,23 @@ function keyFor(p) { return keyOf(p); }
 // Mark a row rate-limited. `retryAfterMs` (from Retry-After / the gateway's
 // own reset estimate) wins; otherwise back off exponentially per strike.
 function rateLimited(p, retryAfterMs) {
+  const t = now();
   const x = s(p);
-  x.strikes = Math.min(x.strikes + 1, 8);
-  const guess = Math.min(10000 * Math.pow(2, x.strikes - 1), 300000);
   const ra = Number(retryAfterMs) > 0 ? Math.min(Number(retryAfterMs), 15 * 60000) : 0;
-  x.until = Math.max(x.until, now() + (ra || guess));
+  // Do not escalate strikes if this row is already inside an active cooldown window.
+  const rowFreshOrExplicit = x.until <= t || ra > 0;
+  if (rowFreshOrExplicit) {
+    x.strikes = Math.min(x.strikes + 1, 8);
+  }
+  const guess = Math.min(10000 * Math.pow(2, Math.max(1, x.strikes) - 1), 300000);
+  x.until = Math.max(x.until, t + (ra || guess));
   const a = acct(p);
   if (a) {
-    // Account-wide strikes so the backoff keeps growing even when callers
-    // alternate between sibling models on the same login.
-    a.strikes = Math.min(a.strikes + 1, 8);
-    const ag = Math.min(10000 * Math.pow(2, a.strikes - 1), 300000);
-    a.until = Math.max(a.until, now() + (ra || ag));
+    if (rowFreshOrExplicit) {
+      a.strikes = Math.min(a.strikes + 1, 8);
+    }
+    const ag = Math.min(10000 * Math.pow(2, Math.max(1, a.strikes) - 1), 300000);
+    a.until = Math.max(a.until, t + (ra || ag));
     x.until = Math.max(x.until, a.until);
   }
   return x.until;

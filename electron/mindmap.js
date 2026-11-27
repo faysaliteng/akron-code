@@ -13,15 +13,21 @@ const FILENAME = 'MINDMAP.md';
 
 function fileFor(cwd) {
   if (!cwd) return null;
+  return path.join(String(cwd), '.autobot', FILENAME);
+}
+
+function legacyFileFor(cwd) {
+  if (!cwd) return null;
   return path.join(String(cwd), FILENAME);
 }
 
 function read(cwd) {
-  const f = fileFor(cwd);
-  if (!f) return null;
-  try {
-    if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8');
-  } catch (_) {}
+  for (const f of [fileFor(cwd), legacyFileFor(cwd)]) {
+    if (!f) continue;
+    try {
+      if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8');
+    } catch (_) {}
+  }
   return null;
 }
 
@@ -126,7 +132,10 @@ function listFiles(cwd) {
 }
 
 function oneLine(s, n) {
-  return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, n || 140);
+  const clean = String(s == null ? '' : s)
+    .replace(/<untrusted\b[^>]*>[\s\S]*?(?:<\/untrusted>|$)/gi, '[external output redacted]')
+    .replace(/<\/?untrusted\b[^>]*>/gi, '');
+  return clean.replace(/\s+/g, ' ').trim().slice(0, n || 140);
 }
 
 // Condense the run's tool calls into a human/model readable activity log so a

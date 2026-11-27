@@ -68,18 +68,21 @@ const workers = new Map();
 function workerProvider(opts = {}) {
   const hasOverride = !!(opts.baseURL || opts.model || opts.apiKey || opts.oauthProvider || opts.transport);
   if (!hasOverride) return null;
+  const pOauth = opts.oauthProvider !== undefined ? opts.oauthProvider : ((opts.provider && opts.provider.oauthProvider) || '');
+  const pTransport = opts.transport !== undefined ? opts.transport : ((opts.provider && opts.provider.transport) || '');
+  const isOauth = !!opts.oauth || !!pOauth || !!pTransport || !!(opts.provider && opts.provider.oauth);
   return {
-    baseURL: opts.baseURL || (opts.provider && opts.provider.baseURL) || (opts.transport ? '' : 'http://localhost:11434/v1'),
+    baseURL: opts.baseURL || (opts.provider && opts.provider.baseURL) || (isOauth ? '' : 'http://localhost:11434/v1'),
     apiKey: opts.apiKey != null ? opts.apiKey : ((opts.provider && opts.provider.apiKey) || ''),
     model: opts.model || (opts.provider && opts.provider.model) || 'llama3.1',
     temperature: opts.temperature != null ? Number(opts.temperature) : (opts.provider ? opts.provider.temperature : 0.7),
     maxTokens: opts.maxTokens != null ? Number(opts.maxTokens) : (opts.provider ? opts.provider.maxTokens : 4096),
     supportsTools: opts.supportsTools !== false,
-    oauthProvider: opts.oauthProvider || '',
-    transport: opts.transport || '',
-    oauth: !!opts.oauth || !!opts.oauthProvider,
-    accessToken: opts.accessToken || '',
-    contextWindow: Number(opts.contextWindow) || 0,
+    oauthProvider: pOauth,
+    transport: pTransport,
+    oauth: isOauth,
+    accessToken: opts.accessToken || (opts.provider && opts.provider.accessToken) || '',
+    contextWindow: Number(opts.contextWindow) || (opts.provider && opts.provider.contextWindow) || 0,
   };
 }
 
@@ -161,11 +164,15 @@ async function runWorker(name, goal, opts) {
     const msgs = sys
       ? [{ role: 'system', content: sys }, { role: 'user', content: userContent }]
       : [{ role: 'user', content: userContent }];
+    const parentEmit = opts && typeof opts.emit === 'function' ? opts.emit : null;
     const out = await w.runAgent({
       provider,
       messages: msgs,
-      maxSteps: opts.maxSteps || 0,
-      emit: opts.emit,
+      maxSteps: opts.maxSteps || 45,
+      emit: parentEmit ? (evt) => {
+        if (!evt || evt.type === 'done' || evt.type === 'complete') return;
+        parentEmit({ ...evt, subagent: `cowork:${name}` });
+      } : undefined,
       signal: opts && opts.signal,
       cwd: opts && opts.cwd,
     });
@@ -178,7 +185,7 @@ async function runWorker(name, goal, opts) {
       provider: provider ? { baseURL: provider.baseURL, model: provider.model } : null,
       tier: (raw && raw.tier) || w.tier || null,
       ms: Date.now() - started,
-      result: last ? last.content : '(done)',
+      result: last ? last.content : '(worker completed with no text output)',
     };
   } catch (e) {
     w.status = 'error';

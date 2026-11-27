@@ -1,7 +1,7 @@
 {
   "name": "akronbot",
   "productName": "Akron Code",
-  "version": "1.5.7",
+  "version": "1.5.8",
   "description": "Akron Code — multi-agent desktop coding IDE by Akronlogic.com",
   "main": "electron/main.js",
   "bin": {
@@ -46,6 +46,7 @@
     "@xterm/xterm": "^6.0.0",
     "adm-zip": "^0.6.1",
     "docx": "^9.16.1",
+    "esbuild": "^0.21.5",
     "gifenc": "^1.0.3",
     "jpeg-js": "^0.4.4",
     "jszip": "^3.10.2",
@@ -91,7 +92,9 @@
       "**/node_modules/@parcel/watcher-*/**/*",
       "**/node_modules/sql.js/dist/*.wasm",
       "**/node_modules/@ffmpeg-installer/**/*",
-      "**/node_modules/@ffprobe-installer/**/*"
+      "**/node_modules/@ffprobe-installer/**/*",
+      "**/node_modules/esbuild/**/*",
+      "**/node_modules/@esbuild/**/*"
     ],
     "compression": "maximum",
     "npmRebuild": false,

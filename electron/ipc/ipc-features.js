@@ -1745,8 +1745,11 @@ ipcMain.handle('autobot:saveFile', async (event, { defaultName, content, filters
 // conversation's project folder (or an absolute/`~`/relative path) with no dialog.
 ipcMain.handle('autobot:writeFile', async (event, { file, content, cwd }) => {
   try {
+    const winSec = require('../window-security');
+    if (!winSec.isTrustedRendererEvent(event)) return { ok: false, error: 'Untrusted renderer origin' };
     if (!file) return { ok: false, error: 'filename required' };
     const target = paths.resolvePath(file, cwd || workspace.scratch());
+    if (winSec.isBlockedCredentialTarget(target, sandbox)) return { ok: false, error: 'modification of Akron credential store is blocked' };
     const dir = path.dirname(target);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(target, String(content ?? ''), 'utf8');
@@ -1973,8 +1976,13 @@ ipcMain.handle('autobot:updateApply', (e, stagedPath) => updater.applyUpdate(sta
 ipcMain.handle('autobot:paradevStatus', async (e, opts = {}) => {
   try { return await require('../paradev-client').getStatus(opts || {}); } catch (err) { return { ok: false, error: oneLine(err) }; }
 });
-ipcMain.handle('autobot:paradevSaveConfig', (e, payload = {}) => {
-  try { return require('../paradev-client').saveConfig(payload || {}); } catch (err) { return { ok: false, error: oneLine(err) }; }
+ipcMain.handle('autobot:paradevSaveConfig', async (e, payload = {}) => {
+  try {
+    const pv = require('../paradev-client');
+    const saved = pv.saveConfig(payload || {});
+    if (saved && saved.configured) pv.ensureParadevMcpConnected(mcp, { force: true }).catch(() => {});
+    return saved;
+  } catch (err) { return { ok: false, error: oneLine(err) }; }
 });
 ipcMain.handle('autobot:paradevTranscribe', async (e, payload = {}) => {
   try { return await require('../paradev-client').transcribeAudio(payload || {}); } catch (err) { return { ok: false, error: oneLine(err) }; }
@@ -1995,6 +2003,8 @@ ipcMain.handle('autobot:paradevTasks', async (e, payload = {}) => {
     const act = String((payload && payload.action) || 'list').toLowerCase();
     if (act === 'create') return await pv.createTask(payload);
     if (act === 'update') return await pv.updateTask(payload);
+    if (act === 'delete') return await pv.deleteTask(payload);
+    if (act === 'statuses') return await pv.listTaskStatuses(payload || {});
     return await pv.listTasks(payload || {});
   } catch (err) { return { ok: false, error: oneLine(err) }; }
 });

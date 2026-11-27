@@ -30,7 +30,7 @@ class ShellManager {
     const args = process.platform === 'win32' ? ['-NoLogo', '-NoProfile', '-Command', '-'] : ['-i', '-s'];
     const proc = spawn(shell, args, {
       cwd: cwd || process.cwd(),
-      env: { ...process.env, TERM: 'xterm-256color', PS1: '', PS2: '', PROMPT: '', PROMPT2: '', RPROMPT: '' },
+      env: { ...process.env, TERM: 'xterm-256color', PS1: '', PS2: '', PROMPT: '', PROMPT2: '', RPROMPT: '', PROMPT_EOL_MARK: '', ZDOTDIR: '/dev/null' },
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
       windowsHide: true,
@@ -93,7 +93,11 @@ class ShellManager {
           clearInterval(poll);
           clearTimeout(timer);
           entry.listeners = entry.listeners.filter((l) => l !== onData);
-          const out = stripAnsi(entry.buffer.replace(marker, '')).replace(/^(?:dquote>\s*)+/gm, '').trim();
+          const cleanOut = (raw) => stripAnsi(raw)
+            .replace(/^(?:dquote>\s*)+/gm, '')
+            .replace(/(?:\r?\n|^)\s*[%]\s*$/g, '')
+            .trim();
+          const out = cleanOut(entry.buffer.replace(marker, ''));
           entry.buffer = out; // strip marker from raw buffer so read() is clean
           resolve(out || '(no output)');
         } else if (entry.exited) {
@@ -124,7 +128,7 @@ class ShellManager {
 
   read(id) {
     const entry = this.shells.get(id);
-    return entry ? stripAnsi(entry.buffer).replace(/^(?:dquote>\s*)+/gm, '') : '';
+    return entry ? stripAnsi(entry.buffer).replace(/^(?:dquote>\s*)+/gm, '').replace(/(?:\r?\n|^)\s*[%]\s*$/g, '') : '';
   }
 
   async list() {
@@ -139,7 +143,16 @@ class ShellManager {
   kill(id) {
     const entry = this.shells.get(id);
     if (!entry) return false;
-    try { entry.proc.kill('SIGKILL'); } catch (_) {}
+    try {
+      if (process.platform !== 'win32' && entry.proc && entry.proc.pid) {
+        try { process.kill(-entry.proc.pid, 'SIGTERM'); } catch (_) {}
+        const pid = entry.proc.pid;
+        const tk = setTimeout(() => { try { process.kill(-pid, 'SIGKILL'); } catch (_) {} }, 800);
+        if (tk && typeof tk.unref === 'function') tk.unref();
+      } else {
+        entry.proc.kill('SIGKILL');
+      }
+    } catch (_) {}
     this.shells.delete(id);
     return true;
   }

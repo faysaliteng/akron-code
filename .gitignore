@@ -25,4 +25,6 @@ MainWindowPage-*.css
 /MINDMAP.md
 /.claude/scheduled_tasks.json
 /.akron-studio/
+/.akron/
+/.autobot/
 /screenshots/

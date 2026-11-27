@@ -29,6 +29,7 @@ export function ProjectsSidebar({
   panel,
   streaming,
   streamingConvId,
+  streamingConvIds,
   sessionHealthMap = {},
   waitingPermissionConvIds = new Set(),
   pinnedProjectCwds = [],
@@ -162,7 +163,10 @@ export function ProjectsSidebar({
             </div>
 
             {!isCollapsed && grp.convs.map((c) => {
-              const isWorking = !!(streaming && (streamingConvId === c.id || (!streamingConvId && c.id === activeId)));
+              const isWorking = !!(
+                (streamingConvIds && typeof streamingConvIds.has === 'function' && streamingConvIds.has(c.id))
+                || (streaming && (streamingConvId === c.id || (!streamingConvId && c.id === activeId)))
+              );
               const sh = sessionHealthMap[c.id];
               const hStatus = sh && (sh.status === 'bad' || sh.status === 'warn' || sh.status === 'ok') ? sh.status : 'ok';
               const lastMsg = Array.isArray(c.messages) && c.messages.length ? c.messages[c.messages.length - 1] : null;

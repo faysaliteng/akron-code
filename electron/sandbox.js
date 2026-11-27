@@ -142,12 +142,34 @@ function anyMatch(list, target) {
 const PROTECTED_CREDENTIAL_FILES = [
   path.resolve(path.join(os.homedir(), '.autobot', 'secrets.json')),
   path.resolve(path.join(os.homedir(), '.autobot', 'oauth.json')),
+  path.resolve(path.join(os.homedir(), '.autobot', 'oauth-mirror.json')),
 ];
+
+function realpathOrResolved(targetPath) {
+  const expanded = path.resolve(expandPath(targetPath));
+  try {
+    return fs.realpathSync(expanded);
+  } catch (_) {
+    try {
+      return path.join(fs.realpathSync(path.dirname(expanded)), path.basename(expanded));
+    } catch (_2) {
+      return expanded;
+    }
+  }
+}
 
 function isProtectedCredentialPath(p) {
   try {
     const resolved = path.resolve(expandPath(p));
-    return PROTECTED_CREDENTIAL_FILES.includes(resolved);
+    const real = realpathOrResolved(p);
+    for (const target of [resolved, real]) {
+      if (PROTECTED_CREDENTIAL_FILES.includes(target)) return true;
+      const sshDir = realpathOrResolved(path.join(os.homedir(), '.ssh'));
+      const awsCreds = realpathOrResolved(path.join(os.homedir(), '.aws', 'credentials'));
+      if (target === awsCreds) return true;
+      if (target.startsWith(sshDir + path.sep) && /^id_/i.test(path.basename(target))) return true;
+    }
+    return false;
   } catch (_) {
     return false;
   }

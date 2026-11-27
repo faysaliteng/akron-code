@@ -997,8 +997,30 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
         }
       }
     }
+    // Also surface live signed-in subscription account models so Orchestrator pairs work out of the box.
+    if (provOauth && Array.isArray(provOauth.providers)) {
+      for (const pv of provOauth.providers) {
+        const accts = pv.accounts || [];
+        if (!accts.length) continue;
+        const firstAcct = accts[0];
+        const live = provModels[pv.id + ':' + firstAcct.account] || provModels[pv.id];
+        const list = (live && live.models && live.models.length ? live.models : (pv.models || []));
+        for (const m of list) {
+          if (!m || !m.id) continue;
+          add({
+            model: m.id,
+            oauthProvider: firstAcct.id,
+            transport: pv.transport,
+            oauth: true,
+            baseURL: '',
+            apiKey: '',
+            role: /opus|fable|high/i.test(m.id) ? 'planner' : (/haiku|low|fast/i.test(m.id) ? 'fast' : 'coder'),
+          }, pv.label || pv.id);
+        }
+      }
+    }
     return out;
-  }, [orchestrator, provider.baseURL, provider.apiKey]);
+  }, [orchestrator, provider.baseURL, provider.apiKey, provOauth, provModels]);
   // Short window chip ("1M", "200K") next to the model name so the user can see
   // the effective context length without opening the picker. Backed by the
   // live per-model window cached from `autobot:providerModels`.
@@ -1505,6 +1527,22 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                           );
                         }) : (
                           <div className="prov-none">No Orchestrator pool models yet — click Configure…</div>
+                        )}
+                        {orchModelChoices.length > 1 && setOrchestrator && (
+                          <div className="orch-executor-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 8px 2px', borderTop: '1px solid rgba(255,255,255,0.06)', marginTop: 4 }}>
+                            <span style={{ fontSize: 11, opacity: 0.72 }}>Executor</span>
+                            <select
+                              aria-label="Orchestrator Executor Model"
+                              value={(orchestrator && orchestrator.executorModel) || ''}
+                              onChange={(e) => setOrchestrator({ ...(orchestrator || { enabled: true, providers: [] }), executorModel: e.target.value || '' })}
+                              style={{ maxWidth: 165, fontSize: 11, background: 'rgba(255,255,255,0.06)', color: 'inherit', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 6, padding: '2px 6px' }}
+                            >
+                              <option value="">Auto · Best Coder</option>
+                              {orchModelChoices.map((r) => (
+                                <option key={'ex:' + r.model} value={r.model}>{r.model.split('/').pop()}</option>
+                              ))}
+                            </select>
+                          </div>
                         )}
                       </div>
                     )}

@@ -16,19 +16,20 @@ const taskRouter = require('./task-router');
 const spill = require('./spill');
 const contextPipeline = require('./context-pipeline');
 const loopGuardMod = require('./loop-guard');
+const modeCollab = require('./mode-collab');
 
 const LEAN_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'Bash', 'LS', 'TodoWrite', 'WebFetch', 'WebSearch', 'ToolSearch']);
 const STANDARD_TOOLS = new Set([
   'Bash', 'Read', 'Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'ShadowCheck', 'CodebaseSearch', 'RunToolScript',
   'Glob', 'Grep', 'LS', 'Search', 'TodoWrite', 'WebFetch', 'WebSearch',
   'Task', 'Agent', 'TaskOutput', 'TaskStop', 'ListAgents', 'Swarm', 'Workflow', 'ToolSearch', 'find_mcp_tools', 'Skill', 'list_skills',
-  'TeamCreate', 'TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate', 'SendMessage',
+  'TeamCreate', 'TeamDelete', 'TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate', 'SendMessage', 'Mcp',
   'CreateCustomTool', 'ListCustomTools', 'DeleteCustomTool', 'ExtractSkill', 'ext_browser', 'rea',
   'GenerateImage', 'create_image', 'EditImage', 'edit_image', 'GenerateVideo', 'generate_video', 'EditVideo', 'edit_video', 'ReadDocument', 'read_document', 'GenerateDocument', 'generate_document',
   'EnterWorktree', 'ExitWorktree', 'EnterPlanMode',
   'AskUserQuestion', 'ExitPlanMode', 'KillShell', 'Artifact', 'Cd',
   'memory_add', 'memory_list', 'mcp__visualize__visualize',
-  'browser_open', 'browser_navigate', 'browser_read', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_screenshot',
+  'browser_open', 'browser_navigate', 'browser_read', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_js', 'browser_hover', 'browser_select', 'browser_scroll', 'browser_wait_for', 'browser_tabs', 'browser_screenshot',
 ]);
 
 // Sub-agents may delegate one more level (Antigravity helpers); deeper
@@ -692,9 +693,12 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
           try { reader.cancel(); } catch (_) {}
           throw e;
         }
-        // Keep whatever the model already emitted; only a totally silent stall
-        // is worth retrying from scratch.
-        if (message.content || message.tool_calls.length) {
+        // Mid-stream stall with partial prose and zero tool calls: retry instead of committing a truncated sentence.
+        if (message.content && !message.tool_calls.length) {
+          try { reader.cancel(); } catch (_) {}
+          throw Object.assign(new Error('LLM stream stalled mid-response'), { transient: true });
+        }
+        if (message.tool_calls.length) {
           message.stalled = true;
           return { done: true, value: undefined };
         }
@@ -1078,6 +1082,14 @@ async function chatWithFailover(opts) {
           reqMessages = [{ ...messages[0], content: updatedSys }, ...messages.slice(1)];
         }
         const out = await chatCompletion(p, reqMessages, tools, onDelta, signal, reqMax, opts.onToolDelta);
+        if (out && out.finish_reason === 'content_filter' && !(out.tool_calls && out.tool_calls.length) && n > 1) {
+          const nx = nextRow();
+          if (nx) {
+            gate.rateLimited(p, 60000);
+            emit({ type: 'orchestrator', from: label(p), to: label(nx), reason: 'content_filter refusal — trying alternate model' });
+            continue;
+          }
+        }
         const winAfter = modelCatalog.contextWindowFor(p.model, winPid, p.contextWindow);
         if (winAfter && winBefore && winAfter < winBefore) {
           emit({ type: 'notice', text: `${p.model} advertises ${modelCatalog.fmtWindow(winBefore)} but this account is not entitled to it — this session budgets ${modelCatalog.fmtWindow(winAfter)} and compacts to fit.` });
@@ -1657,6 +1669,12 @@ async function runAgent(opts) {
   let poolMode = false;
   let effectiveOrch = orch;
   let autoRoutedMeta = opts.autoRouted || null;
+  const collab = modeCollab.resolveCollaborationMode({
+    provider: rawProv,
+    orchestrator: orch,
+    swarm: opts.swarm === true,
+    autoRoutedMeta,
+  });
 
   if (routingMode === 'direct') {
     providerList = [normalizeProvider({ ...rawProv, routingMode: 'direct' })];
@@ -1788,7 +1806,8 @@ async function runAgent(opts) {
       }
     } catch (_) { /* routing hint only */ }
   }
-  if (opts.role === 'supervisor' || opts.role === 'planner' || opts.swarm === true || (autoRoutedMeta && autoRoutedMeta.role === 'planner')) {
+  const depth = Number(opts.depth) || 0;
+  if ((depth === 0 && opts.swarm === true) || opts.role === 'supervisor' || opts.role === 'planner' || (autoRoutedMeta && autoRoutedMeta.role === 'planner')) {
     for (let pi = 0; pi < providerList.length; pi++) {
       if (providerList[pi] && !providerList[pi]._disableThinking) {
         providerList[pi] = { ...providerList[pi], reasoningLevel: 'high' };
@@ -1799,7 +1818,6 @@ async function runAgent(opts) {
   const getIndex = () => activeIndex % providerList.length;
   const setIndex = (i) => { activeIndex = i % providerList.length; };
   const provider = providerList[getIndex()];
-  const depth = Number(opts.depth) || 0;
 
   // ── Oversized single input → sequential chunks ──────────────────────────
   // sanitizeHistory only drops *earlier* turns, so one pasted document larger
@@ -2066,7 +2084,22 @@ async function runAgent(opts) {
     const routingState = routingMode
       ? `Mode ${routingMode.toUpperCase()} · Orchestrator ${effectiveOrch && effectiveOrch.enabled ? `ON (${providerList.length} models in failover pool)` : 'OFF'} · Swarm ${opts.swarm === true ? 'ON' : 'OFF'}`
       : `Orchestrator ${orch && orch.enabled ? `ON (${providerList.length} models in failover pool)` : 'OFF'} · Swarm ${opts.swarm === true ? 'ON' : 'OFF'}`;
-    messages[0].content += `\n\n<runtime_identity>\nAgent identity: Akron Code (Akron Agent by AkronLogic)\nActive model on this turn: ${provider.model || 'auto'}\nActive provider / transport: ${providerVendorLabel}${autoLine}\nRouting state: ${routingState}\nWhen asked who you are or which model is running, identify yourself as Akron Code (the Akron Agent by AkronLogic) powered on this turn by ${provider.model || 'auto'} (${providerVendorLabel}) — never guess or claim you cannot see the active model.\n</runtime_identity>`;
+    let collabLine = '';
+    if ((Number(opts.depth) || 0) === 0) {
+      try {
+        const pairForNote = collab.mode === 'orchestrator'
+          ? modeCollab.resolvePlannerExecutorPair({
+            supervisor: provider,
+            roster: swarm.buildRoster({ orchestrator: effectiveOrch, provider }),
+            orchestrator: effectiveOrch,
+            gate,
+          })
+          : null;
+        const noteTxt = modeCollab.formatCollaborationRuntimeNote({ collab, pair: pairForNote, provider });
+        if (noteTxt) collabLine = `\n${noteTxt}`;
+      } catch (_) {}
+    }
+    messages[0].content += `\n\n<runtime_identity>\nAgent identity: Akron Code (Akron Agent by AkronLogic)\nActive model on this turn: ${provider.model || 'auto'}\nActive provider / transport: ${providerVendorLabel}${autoLine}\nRouting state: ${routingState}${collabLine}\nWhen asked who you are or which model is running, identify yourself as Akron Code (the Akron Agent by AkronLogic) powered on this turn by ${provider.model || 'auto'} (${providerVendorLabel}) — never guess or claim you cannot see the active model.\n</runtime_identity>`;
   }
 
   // 5. Per-turn renderer directives (style / web-search / context notes).
@@ -2123,11 +2156,12 @@ async function runAgent(opts) {
   // message. Sub-agents and workflow agents inherit the SAME pool, so the target
   // really is a ceiling for everything this turn spends — exactly Example's
   // contract. Sub-runs never reset it (they would erase the parent's spend).
+  const turnBudgetPool = opts._budgetPool || (opts.turnStart ? budgetPool.createPool() : budgetPool);
   if (opts.turnStart) {
-    budgetPool.reset();
+    turnBudgetPool.reset();
     const firstUser = messages.find((m) => m.role === 'user');
     const budgetText = typeof (firstUser && firstUser.content) === 'string' ? firstUser.content : '';
-    const target = budgetPool.applyDirective(budgetText);
+    const target = turnBudgetPool.applyDirective(budgetText);
     if (target != null) emit({ type: 'notice', text: `Token budget for this turn: ${target.toLocaleString()} output tokens.` });
   }
 
@@ -2301,8 +2335,40 @@ async function runAgent(opts) {
   let ranSwarmInTurn = false;
   let subSpawnCount = 0;
 
+  const ARTIFACT_DEFAULT_FILE = {
+    html: 'index.html', htm: 'index.html',
+    svg: 'artifact.svg',
+    css: 'styles.css',
+    js: 'app.js', javascript: 'app.js',
+    jsx: 'App.jsx', tsx: 'App.tsx',
+    ts: 'app.ts', typescript: 'app.ts',
+    json: 'data.json', md: 'README.md', markdown: 'README.md',
+    python: 'main.py', py: 'main.py', sh: 'script.sh', bash: 'script.sh',
+    sql: 'query.sql', yaml: 'config.yaml', yml: 'config.yml',
+    design: 'design.json', canvas: 'design.json', artboard: 'design.json',
+    slides: 'slides.json', deck: 'slides.json', presentation: 'slides.json',
+  };
   // Snapshot a file before a mutating tool touches it, so /rewind can restore
   // the working tree to any earlier turn. Best-effort: never blocks the tool.
+  const resolveArtifactTarget = (a = {}) => {
+    const language = String(a.language || '').toLowerCase().trim();
+    let name = String(a.name || '').trim();
+    const ext = ARTIFACT_DEFAULT_FILE[language] || '';
+    if (!name) name = ext || 'artifact.txt';
+    else if (!/\.[a-z0-9]{1,8}$/i.test(name) && ext) name = `${name}${path.extname(ext) || '.txt'}`;
+    name = name.replace(/\\/g, '/').replace(/^\/+/, '');
+    const dir = path.resolve(currentCwd || process.cwd());
+    let filePath = path.resolve(dir, name);
+    const rel = path.relative(dir, filePath);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      filePath = path.join(dir, '.autobot', 'artifacts', path.basename(name));
+    }
+    const forceArtifactDir = permissionMode === 'plan' || (a.overwrite !== true && fs.existsSync(filePath) && !/^\.autobot[\\/]artifacts[\\/]/i.test(name));
+    if (forceArtifactDir) {
+      filePath = path.join(dir, '.autobot', 'artifacts', path.basename(name));
+    }
+    return { language, filePath, storedRelName: path.relative(dir, filePath).replace(/\\/g, '/') };
+  };
   const checkpointTargets = (name, a) => {
     if (!a) return [];
     const out = [];
@@ -2312,9 +2378,7 @@ async function runAgent(opts) {
     } else if (name === 'mcp__workspace__write_file' || name === 'mcp__workspace__edit_file') {
       push(a.path || a.file_path);
     } else if (name === 'Artifact') {
-      // Artifact writes a file derived from name+language; snapshot it too.
-      const nm = a.name ? String(a.name) : 'artifact.txt';
-      push(nm);
+      push(resolveArtifactTarget(a).filePath);
     }
     return out;
   };
@@ -2343,7 +2407,7 @@ async function runAgent(opts) {
   const PLAN_SAFE = new Set([
     'Read', 'ReadDocument', 'read_document', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles',
     'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion', 'ExitPlanMode',
-    'EnterPlanMode', 'Artifact', 'StructuredOutput', 'Monitor', 'TaskOutput',
+    'EnterPlanMode', 'Artifact', 'StructuredOutput', 'TaskOutput',
     'TaskList', 'TaskGet', 'TeamCreate', 'SendMessage', 'ListAgents', 'Skill',
     'ListMcpResources', 'ReadMcpResource', 'Brief', 'SendUserFile',
     'PushNotification', 'CronList', 'NotebookRead', 'Task', 'Agent', 'Swarm',
@@ -2619,7 +2683,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         // A discarded token-limit attempt still cost tokens, so it counts too.
         if (effectiveUsage) {
           const out = Number(effectiveUsage.completion_tokens != null ? effectiveUsage.completion_tokens : effectiveUsage.output_tokens);
-          if (Number.isFinite(out) && out > 0) budgetPool.addOutput(out);
+          if (Number.isFinite(out) && out > 0) turnBudgetPool.addOutput(out);
         }
         addUsage(effectiveUsage, stepModel);
         if (process.env.AUTOBOT_TRACE) {
@@ -2859,7 +2923,14 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       const afterToolMsg = prevTurn && (prevTurn.role === 'tool' || prevTurn._syntheticImageRead || (prevTurn.role === 'user' && /^TOOL RESULT\b/i.test(String(prevTurn.content || ''))));
       if (depth === 0 && step >= 1 && !String(message.content || '').trim() && afterToolMsg && blankPostToolRetries < 2) {
         blankPostToolRetries++;
-        emit({ type: 'thinking', text: ' (continuing after tool results…)' });
+        if (blankPostToolRetries === 2 && providerList.length > 1) {
+          const prevIdx = getIndex();
+          setIndex((prevIdx + 1) % providerList.length);
+          emit({ type: 'orchestrator', from: providerList[prevIdx]?.model, to: providerList[getIndex()]?.model, reason: 'blank reply after tool results — trying alternate model' });
+          messages.push({ role: 'user', content: '[continue] Provide your completed response summarizing the tool results above.' });
+        } else {
+          emit({ type: 'thinking', text: ' (continuing after tool results…)' });
+        }
         continue;
       }
       // Safety net: if this turn produced visible code but never touched a file
@@ -3081,10 +3152,12 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       const parentProvider = providerList[getIndex()];
       let subProvider = parentProvider;
       // Dynamically evaluate poolMode against the CURRENT active parentProvider (post-failover).
-      const poolsOn = Boolean(poolMode && effectiveOrch && router.poolsConfig(effectiveOrch) && router.poolsActive(effectiveOrch, parentProvider));
+      const poolsOn = Boolean(collab.allowPoolDelegation && poolMode && effectiveOrch && router.poolsConfig(effectiveOrch) && router.poolsActive(effectiveOrch, parentProvider));
       // Unpinned: inherit the parent's whole failover chain (pool or list).
-      let subOrch = poolsOn && effectiveOrch && effectiveOrch.role ? effectiveOrch
-        : (poolsOn ? { enabled: true, providers: providerList, activeIndex: getIndex(), pools: effectiveOrch && effectiveOrch.pools, role: 'inherit' } : (delegationOrch || effectiveOrch));
+      let subOrch = (!collab.allowPoolDelegation && collab.mode === 'direct')
+        ? null
+        : (poolsOn && effectiveOrch && effectiveOrch.role ? effectiveOrch
+          : (poolsOn ? { enabled: true, providers: providerList, activeIndex: getIndex(), pools: effectiveOrch && effectiveOrch.pools, role: 'inherit' } : (delegationOrch || effectiveOrch)));
       let tier = null;
       let role = null;
       let reservedModelKey = '';
@@ -3121,6 +3194,12 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         const rest = agentRoster.filter((r) => r !== rosterMatch);
         const chain = [subProvider].concat(rest.filter((r) => r.tier === tier), rest.filter((r) => r.tier !== tier));
         subOrch = chain.length > 1 ? { enabled: true, providers: chain, activeIndex: 0, role: 'pinned' } : null;
+      } else if (collab.mode === 'direct' && !collab.allowPoolDelegation && !wantModel) {
+        // Strict Direct mode: unpinned subagents inherit the user-selected single model.
+        subProvider = parentProvider;
+        tier = (parentProvider && parentProvider.tier) || 'heavy';
+        role = wantRole || null;
+        subOrch = null;
       } else if (poolsOn && (wantRole || wantModel || !(effectiveOrch && effectiveOrch.role))) {
         role = wantRole || (effectiveOrch && effectiveOrch.role && effectiveOrch.role !== 'inherit' ? effectiveOrch.role : 'coder');
         const scoped = router.orchestratorFor(effectiveOrch, role, parentProvider, { index: subSpawnCount, preferModel: wantModel });
@@ -3155,7 +3234,24 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             || gate.inflight(r) > 0
             || !gate.usable(r);
           let base = null;
-          if (wantRole) {
+          if (collab.mode === 'orchestrator' && agentRoster.length) {
+            const pair = modeCollab.resolvePlannerExecutorPair({
+              supervisor: parentProvider,
+              roster: agentRoster,
+              orchestrator: effectiveOrch,
+              gate,
+            });
+            if (wantRole === 'fast' && pair.fastExplorer && !isBusyCand(pair.fastExplorer)) {
+              base = pair.fastExplorer;
+            } else if ((!wantRole || wantRole === 'coder') && pair.executor && !isBusyCand(pair.executor)) {
+              if ((effectiveOrch && effectiveOrch.executorModel) || pair.hasDistinctExecutor) {
+                base = pair.executor;
+              }
+            } else if (wantRole === 'planner' && pair.verifier && !isBusyCand(pair.verifier)) {
+              base = pair.verifier;
+            }
+          }
+          if (!base && wantRole) {
             const idleRoleHits = agentRoster.filter((r) => r.jobRole === wantRole && !isBusyCand(r));
             if (idleRoleHits.length) base = idleRoleHits[subSpawnCount % idleRoleHits.length];
             if (!base) {
@@ -3276,13 +3372,16 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             ? [{ role: 'system', content: defPrompt }, { role: 'user', content: userPrompt }]
             : [{ role: 'user', content: userPrompt }];
         }
+        const subTypeName = String((def && def.name) || wantSubType || '');
+        const defSubCap = /^(Explore|CodebaseInvestigator)$/i.test(subTypeName) ? 25 : 60;
         const subMaxSteps = Number(args.max_turns) > 0
           ? Math.min(1000, Math.floor(Number(args.max_turns)))
-          : (opts.subagentMaxSteps || 0);
+          : (opts.subagentMaxSteps || defSubCap);
         const subResult = await runAgent({
           provider: subProvider,
           orchestrator: subOrch,
           delegationOrchestrator: delegationOrch,
+          _budgetPool: turnBudgetPool,
           hydrateProvider: opts.hydrateProvider,
           oauthAccounts: opts.oauthAccounts,
           store: opts.store,
@@ -3392,12 +3491,21 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
 
     const listAgents = () => {
       const entries = [...subagentControllers.entries()];
-      if (!entries.length) return '(no agents running)';
-      return 'RUNNING AGENTS:\n' + entries.map(([n, s]) => `- ${n} [${s.status}]${s.model ? ' · ' + s.model : ''}${s.role ? ' · ' + s.role : (s.tier ? ' · ' + s.tier : '')} (${Math.round((Date.now() - s.started) / 1000)}s)`).join('\n');
+      let bgJobs = [];
+      try { bgJobs = require('./bg').listJobs() || []; } catch (_) {}
+      const lines = entries.map(([n, s]) => `- ${n} (${s.agentId || n}) [${s.status}]${s.model ? ' · ' + s.model : ''}${s.role ? ' · ' + s.role : (s.tier ? ' · ' + s.tier : '')} (${Math.round((Date.now() - s.started) / 1000)}s)`);
+      for (const j of bgJobs) {
+        if (j && j.status === 'running') lines.push(`- ${j.label || j.id} (${j.id}) [bg:${j.kind || 'job'}]`);
+      }
+      if (!lines.length) return '(no agents running)';
+      return 'RUNNING AGENTS:\n' + lines.join('\n');
     };
     const stopTask = (name) => {
       const all = [...subagentControllers.entries()];
-      const match = all.find(([n]) => n === name) || all.find(([n]) => n.toLowerCase() === String(name || '').toLowerCase()) || (name ? all.find(([n]) => n.includes(name)) : null);
+      const want = String(name || '');
+      const match = all.find(([n, s]) => n === want || (s && s.agentId === want))
+        || all.find(([n]) => n.toLowerCase() === want.toLowerCase())
+        || (want ? all.find(([n]) => n.includes(want)) : null);
       if (!match) return `No running agent matches "${name}".`;
       match[1].controller.abort();
       match[1].status = 'stopped';
@@ -3408,41 +3516,12 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     // An artifact is a FILE, not just a chat decoration: write it into the
     // conversation's project folder so the deliverable exists on disk (and the
     // browser pane can open it) even when the model never calls Write.
-    const ARTIFACT_DEFAULT_FILE = {
-      html: 'index.html', htm: 'index.html',
-      svg: 'artifact.svg',
-      css: 'styles.css',
-      js: 'app.js', javascript: 'app.js',
-      jsx: 'App.jsx', tsx: 'App.tsx',
-      ts: 'app.ts', typescript: 'app.ts',
-      json: 'data.json', md: 'README.md', markdown: 'README.md',
-      python: 'main.py', py: 'main.py', sh: 'script.sh', bash: 'script.sh',
-      sql: 'query.sql', yaml: 'config.yaml', yml: 'config.yml',
-      design: 'design.json', canvas: 'design.json', artboard: 'design.json',
-      slides: 'slides.json', deck: 'slides.json', presentation: 'slides.json',
-    };
     const createArtifact = (args) => {
-      const language = String(args.language || '').toLowerCase().trim();
       const content = args.content == null ? '' : String(args.content);
-      let name = String(args.name || '').trim();
-      const ext = ARTIFACT_DEFAULT_FILE[language] || '';
-      if (!name) name = ext || 'artifact.txt';
-      else if (!/\.[a-z0-9]{1,8}$/i.test(name) && ext) name = `${name}${path.extname(ext) || '.txt'}`;
-      // Never escape the project folder.
-      name = name.replace(/\\/g, '/').replace(/^\/+/, '');
-      let filePath = null;
-      let storedRelName = name;
+      const target = resolveArtifactTarget(args);
+      let filePath = target.filePath;
+      const { language, storedRelName } = target;
       try {
-        const dir = currentCwd || process.cwd();
-        filePath = path.resolve(dir, name);
-        if (!filePath.startsWith(path.resolve(dir))) filePath = path.join(dir, path.basename(name));
-        // Guard against silently clobbering an existing workspace file when
-        // overwrite is not explicitly requested (P2 #18).
-        if (args.overwrite !== true && fs.existsSync(filePath) && !/^\.autobot[\\/]artifacts[\\/]/i.test(name)) {
-          const safeArt = path.join(dir, '.autobot', 'artifacts', path.basename(name));
-          filePath = safeArt;
-          storedRelName = path.relative(dir, safeArt).replace(/\\/g, '/');
-        }
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
         fs.writeFileSync(filePath, content, 'utf8');
       } catch (e) {
@@ -3483,6 +3562,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         // parent's orchestrator list, or the pin would be silently replaced.
         orchestrator: subOpts && subOpts.provider ? null : (delegationOrch || effectiveOrch),
         delegationOrchestrator: delegationOrch,
+        _budgetPool: turnBudgetPool,
         hydrateProvider: opts.hydrateProvider,
         oauthAccounts: opts.oauthAccounts,
         store: opts.store,
@@ -3503,14 +3583,22 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         ...subOpts,
       }),
       mcpClient: opts.mcpClient || null,
+      callTool: opts.callMcpTool || null,
+      mcpCallTool: opts.callMcpTool
+        ? (srv, tl, a) => opts.callMcpTool(srv ? `mcp__${srv}__${tl}` : tl, a || {})
+        : null,
       get provider() { return providerList[getIndex()]; },
-      orchestrator: (poolMode && effectiveOrch && router.poolsActive(effectiveOrch, providerList[getIndex()]))
-        ? effectiveOrch
-        : (delegationOrch || effectiveOrch || null),
+      orchestrator: (collab.mode === 'direct' && !collab.allowPoolDelegation)
+        ? null
+        : ((poolMode && effectiveOrch && router.poolsActive(effectiveOrch, providerList[getIndex()]))
+          ? effectiveOrch
+          : (delegationOrch || effectiveOrch || null)),
       // The un-scoped pool config (role pools) for Swarm/Workflow routing.
       poolOrchestrator: (poolMode && effectiveOrch && router.poolsActive(effectiveOrch, providerList[getIndex()]))
         ? effectiveOrch
         : null,
+      swarmSupervisor: collab.pinSwarmSupervisor ? providerList[getIndex()] : null,
+      permissionMode,
       emit,
       agentRoster,
       askUser: opts.askUser,
@@ -3748,10 +3836,21 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             isError = true;
           } else {
             let to = null;
+            let onAb = null;
             const r = await Promise.race([
               Promise.resolve(opts.callMcpTool(name, args)),
-              new Promise((resolve) => { to = setTimeout(() => resolve({ content: `Tool error: ${name} did not respond within 300s and was abandoned.`, isError: true }), 300000); }),
-            ]).finally(() => clearTimeout(to));
+              new Promise((resolve, reject) => {
+                to = setTimeout(() => resolve({ content: `Tool error: ${name} did not respond within 300s and was abandoned.`, isError: true }), 300000);
+                if (opts.signal) {
+                  if (opts.signal.aborted) return reject(new Error('aborted'));
+                  onAb = () => reject(new Error('aborted'));
+                  opts.signal.addEventListener('abort', onAb, { once: true });
+                }
+              }),
+            ]).finally(() => {
+              clearTimeout(to);
+              if (opts.signal && onAb) opts.signal.removeEventListener('abort', onAb);
+            });
             if (r && typeof r === 'object' && !Array.isArray(r) && 'content' in r && typeof r.content === 'string') {
               result = r.content;
               isError = !!r.isError;
@@ -3838,16 +3937,25 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       if (opts.signal && opts.signal.aborted) throw new Error('aborted');
       if (pauseCtrl) await pauseCtrl.waitIfPaused(opts.signal);
       if (opts.signal && opts.signal.aborted) throw new Error('aborted');
-      if (wave.parallel) {
+        if (wave.parallel) {
         const batch = wave.items.map((tc) => ({ tc, name: tc.function.name, args: parseArgs(tc.function.arguments) }));
         batch.forEach((p) => emit({ type: 'tool', id: p.tc.id, name: p.name, args: p.args }));
         let waveSig;
         try { waveSig = 'WAVE|' + JSON.stringify(batch.map((b) => [b.name, b.args])); } catch { waveSig = 'WAVE|?'; }
         if (waveSig === lastSig) repeatCount++; else { lastSig = waveSig; repeatCount = 1; }
         const results = await Promise.all(batch.map(async (p) => {
+          const lgPre = loopGuard.beforeCall(p.name, p.args);
+          if (lgPre.blocked) return { content: lgPre.reason, isError: true };
           const isAgent = PARALLEL_AGENT.has(p.name);
           if (isAgent) await agentSlot();
-          try { return await runOneParallel(p); } finally { if (isAgent) agentFree(); }
+          try {
+            const res = await runOneParallel(p);
+            const lgPost = loopGuard.afterCall(p.name, p.args, { isError: !!res.isError });
+            if (lgPost && lgPost.level && (lgPost.level === 'advisory' || lgPost.level === 'strong')) {
+              return { ...res, content: res.content + `\n\n[SYSTEM NOTE: ${lgPost.note}]` };
+            }
+            return res;
+          } finally { if (isAgent) agentFree(); }
         }));
         if (opts.signal && opts.signal.aborted) throw new Error('aborted');
         batch.forEach((p, i) => {
@@ -3878,12 +3986,39 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     }
   }
 
-  // Reached only when the runaway guard trips — the model kept calling tools for
-  // 1000 turns without producing a final answer. Say so instead of ending the
-  // turn silently, and leave the partial transcript intact so "continue" works.
+  // Reached only when the runaway guard or sub-agent step cap trips — run one
+  // final tool-free summary turn (when maxSteps >= 4) so completed findings are
+  // never discarded, then append stopNote so the caller can continue cleanly.
   const stopNote = `(Paused after ${maxSteps} tool turns — that is the runaway safety valve, not a step limit. Say "continue" and I'll carry on from here.)`;
-  messages.push({ role: 'assistant', content: stopNote });
-  emit({ type: 'delta', text: '\n\n' + stopNote });
+  let summaryPrefix = '';
+  if (maxSteps >= 4 && messages.some((m) => m && m.role === 'tool') && !(opts.signal && opts.signal.aborted)) {
+    try {
+      const sumMessages = [
+        ...messages,
+        {
+          role: 'user',
+          content: '[Turn limit reached] Do not call any tools. Summarize in concise bullet points what you investigated/changed, exact findings and file paths, and what remains if unfinished.',
+        },
+      ];
+      const sumRes = await chatWithFailover({
+        list: providerList,
+        getIndex,
+        getHome: () => homeIndex,
+        setIndex,
+        messages: contextPipeline.maskOlderToolOutputs(sumMessages, { keepRecentSteps: 8, minChars: 2000 }),
+        tools: undefined,
+        onDelta: () => {},
+        emit,
+        signal: opts.signal,
+        maxTokens: 2048,
+      }).catch(() => null);
+      const sumTxt = String((sumRes && sumRes.content) || '').trim();
+      if (sumTxt) summaryPrefix = sumTxt + '\n\n';
+    } catch (_) {}
+  }
+  const finalStopContent = summaryPrefix + stopNote;
+  messages.push({ role: 'assistant', content: finalStopContent });
+  emit({ type: 'delta', text: '\n\n' + finalStopContent });
   emit({ type: 'limit', steps: maxSteps });
   emit({ type: 'done', messages, stopped: true, usage: { ...usageTotals } });
   return messages;

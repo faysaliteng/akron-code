@@ -269,6 +269,7 @@ async function autoConnectMcp(cwd) {
       await rea.ensureConnected(mcp, { userDataDir: app.getPath('userData') }).catch(() => {});
     }
   } catch (_) {}
+  try { await require('./paradev-client').ensureParadevMcpConnected(mcp).catch(() => {}); } catch (_) {}
   let cfg;
   try { cfg = require('./claudeconfig').loadMcpServers(cwd); } catch (_) { return; }
   const entries = Object.entries((cfg && cfg.servers) || {});
@@ -556,7 +557,7 @@ function createWindow() {
   if (!primaryWindow || primaryWindow.isDestroyed()) primaryWindow = win;
   windows.add(win);
   windowstate.track(win, { onRestore: true });
-  // A deep link that arrived during boot is delivered once the page can hear it.
+  try { require('./window-security').attachWindowHardening(win, { workspace }); } catch (_) {}
   attachContextMenu(win.webContents);
   const consoleErrors = [];
   win.webContents.on('console-message', (_e, level, message) => {
@@ -776,6 +777,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     if (owner && !owner.isDestroyed()) {
       owner.webContents.send('autobot:event', {
         runId,
+        convId,
         type: 'error',
         message: e.message,
         needsSignIn,
@@ -790,15 +792,15 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   const owner = winFor(event); // route streaming events back to the originating window
   const turnId = 't' + Date.now();
   const runStartedMs = Date.now();
-  // Event-sourced run log (DeepSeek-harness style): every structural event of
-  // the turn is appended to ~/.autobot/sessions/<conv>/<turn>.jsonl so a run
-  // can be inspected and replayed after the fact.
   const slog = sessionlog.open(convId || 'scratch', turnId, { title });
+  const runEntry = { ac, pauseCtrl, send: null, convId, cancelled: false };
   const send = (evt) => {
-    if (owner && !owner.isDestroyed()) owner.webContents.send('autobot:event', { runId, ...evt });
+    if (runEntry.cancelled && evt && evt.type !== 'cancelled') return;
+    if (owner && !owner.isDestroyed()) owner.webContents.send('autobot:event', { runId, convId, ...evt });
     slog.append(evt);
   };
-  runs.set(runId, { ac, pauseCtrl, send });
+  runEntry.send = send;
+  runs.set(runId, runEntry);
   const emit = (evt) => send(evt);
 
   const deadNotice = poolDead.length ? poolDeadNotice(poolDead) : '';
@@ -1085,7 +1087,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     // transport ("aborted", "This operation was aborted", AbortError, …).
     const aborted = ac.signal.aborted || e.name === 'AbortError' || /abort/i.test(String(e.message || ''));
     if (aborted) {
-      send({ type: 'cancelled' });
+      if (!runEntry.cancelled) send({ type: 'cancelled' });
       // Keep a partial mindmap (goal + "stopped mid-stream") so the next model
       // still has the project goal even though this turn was interrupted.
       try { mindmap.updateFromRun(runCwd, { title, messages, lastExchange: '(previous turn was stopped mid-stream by the user)' }); } catch (_) {}
@@ -1131,14 +1133,14 @@ ipcMain.handle('autobot:resume', async (event, runId, steeringNote) => {
 });
 
 ipcMain.handle('autobot:cancel', async (event, runId) => {
-  permGate.clearRun(runId, 'cancelled');
-  questionGate.clearRun(runId, broadcast);
-  const entry = runs.get(runId);
-  if (entry) {
-    const ac = entry.ac || entry;
-    if (ac && typeof ac.abort === 'function') ac.abort();
+  const targets = (!runId || runId === '__all__') ? [...runs.entries()] : (runs.has(runId) ? [[runId, runs.get(runId)]] : []);
+  for (const [rid, entry] of targets) {
+    permGate.clearRun(rid, 'cancelled'); questionGate.clearRun(rid, broadcast);
+    if (entry && !entry.cancelled && typeof entry.send === 'function') entry.send({ type: 'cancelled', immediate: true });
+    if (entry) { entry.cancelled = true; const ac = entry.ac || entry; if (ac && typeof ac.abort === 'function') ac.abort(); }
   }
-  return { ok: true };
+  if (!targets.length && runId) { permGate.clearRun(runId, 'cancelled'); questionGate.clearRun(runId, broadcast); }
+  return { ok: true, cancelledCount: targets.length };
 });
 
 // Model-picker status: one cheap authenticated GET /models per provider endpoint.
@@ -1568,6 +1570,9 @@ app.on('before-quit', (e) => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  for (const [, entry] of runs) { try { (entry.ac || entry).abort(); } catch (_) {} }
+  try { require('./bg').reset(); } catch (_) {}
+  try { shells.killAll(); } catch (_) {}
   try { ideIpc.cleanup(); } catch (_) {}
   try { environments.toggleHostServer(false).catch(() => {}); } catch (_) {}
   try { scheduler.stop(); } catch (_) {}

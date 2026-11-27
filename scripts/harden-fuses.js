@@ -102,6 +102,15 @@ exports.default = async function afterPackHardenFuses(context) {
     const signAs = haveIdent ? ident : '-';
     const entPath = path.resolve(__dirname, '..', 'build', 'entitlements.mac.plist');
     console.log(`[harden-fuses] Re-signing macOS bundle (${haveIdent ? ident : 'ad-hoc'}): ${targetPath}`);
+    const unpackedEsbuild = path.join(targetPath, 'Contents', 'Resources', 'app.asar.unpacked', 'node_modules', '@esbuild');
+    if (fs.existsSync(unpackedEsbuild)) {
+      for (const archDir of fs.readdirSync(unpackedEsbuild)) {
+        const binPath = path.join(unpackedEsbuild, archDir, 'bin', 'esbuild');
+        if (fs.existsSync(binPath)) {
+          try { execFileSync('codesign', ['--force', '--sign', signAs, binPath], { stdio: 'inherit' }); } catch (_) {}
+        }
+      }
+    }
     execFileSync('codesign', ['--force', '--deep', '--sign', signAs, targetPath], { stdio: 'inherit' });
     if (fs.existsSync(entPath)) {
       const fwDir = path.join(targetPath, 'Contents', 'Frameworks');

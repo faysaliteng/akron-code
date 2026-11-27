@@ -12,10 +12,15 @@
 // Nothing here imports llm.js. The caller injects `runAgent`, which keeps this
 // module pure and testable, and avoids a require cycle.
 
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { execFileSync } = require('child_process');
 const TIER_RANK = { small: 0, heavy: 1, critical: 2 };
 const router = require('./orch-router');
 const gate = require('./provider-gate');
 const usageEstimator = require('./usage-estimator');
+const modeCollab = require('./mode-collab');
 
 function ensureHighThinkingSupervisor(sup, roster = []) {
   if (!sup || typeof sup !== 'object') return sup;
@@ -320,11 +325,14 @@ function normalizePlan(raw, opts = {}) {
       role: router.normalizeRole(t.role || t.job) || null,
       model: t.model ? String(t.model) : null,
       owns: Array.isArray(t.owns) ? t.owns.map(String).slice(0, 20) : [],
+      isolation: t.isolation === 'worktree' ? 'worktree' : null,
+      worktree: Boolean(t.worktree || t.isolation === 'worktree'),
     });
   });
   if (!tasks.length) return null;
   return {
     subtasks: tasks,
+    threads: modeCollab.normalizeThreads(raw, tasks),
     synthesis: typeof raw.synthesis === 'string' ? raw.synthesis
       : typeof raw.merge === 'string' ? raw.merge : '',
     notes: typeof raw.notes === 'string' ? raw.notes : '',
@@ -827,11 +835,26 @@ async function swarm(goal, opts = {}) {
     };
   });
 
+  const planThreads = modeCollab.normalizeThreads(plan, tasks);
+  const autoIso = opts.worktreeIsolation === 'auto' || opts.worktreeIsolation === 'worktree';
+  const overlapWorktrees = opts.worktreeIsolation === 'auto'
+    ? modeCollab.detectOverlappingTasks(tasks)
+    : (opts.worktreeIsolation === 'worktree' ? new Set(tasks.map((t) => t.id)) : new Set());
+  for (const t of tasks) {
+    if (overlapWorktrees.has(t.id) || t.isolation === 'worktree') {
+      t.worktree = true;
+      t.isolation = 'worktree';
+    } else if (autoIso && !t.isolation) {
+      t.worktree = Boolean(t.worktree);
+    }
+  }
+
   emit({
     type: 'swarm',
     phase: 'planned',
     source,
-    tasks: tasks.map((t) => ({ id: t.id, title: t.title, tier: t.tier, role: t.jobRole || undefined, model: t.model })),
+    threads: planThreads,
+    tasks: tasks.map((t) => ({ id: t.id, title: t.title, tier: t.tier, role: t.jobRole || undefined, model: t.model, isolation: t.isolation || undefined })),
   });
 
   // ---- 2. Dispatch ----
@@ -1022,15 +1045,45 @@ async function swarm(goal, opts = {}) {
     board.setMember(workerName, { state: 'working', role: 'worker', tier: task.tier, model: p ? p.model : null });
     const t0 = Date.now();
     let servedBy = p ? p.model : null;
-    emit({ type: 'subagent', id: agentId, name, status: 'running', role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, round });
+    let subCwd = opts.cwd;
+    let worktreeInfo = null;
+    const workerTimeoutMs = Math.max(1000, Number(opts.workerTimeoutMs) || 10 * 60 * 1000);
+    let workerTimer = null;
+    let workerTimedOut = false;
+    const armWorkerTimer = () => {
+      if (workerTimer) clearTimeout(workerTimer);
+      workerTimer = setTimeout(() => {
+        workerTimedOut = true;
+        try { workerAc.abort(); } catch (_) {}
+      }, workerTimeoutMs);
+      if (workerTimer.unref) workerTimer.unref();
+    };
+    const clearWorkerTimer = () => {
+      if (workerTimer) { clearTimeout(workerTimer); workerTimer = null; }
+    };
+    if ((task.isolation === 'worktree' || task.worktree === true) && subCwd && opts.permissionMode !== 'plan') {
+      try {
+        const gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: subCwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+        const baseHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: gitRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+        const slug = String(workerName || 'worker').replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 28) || 'worker';
+        const wtBranch = `swm-${slug}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`;
+        const wtDir = path.join(os.tmpdir(), `akron-${wtBranch}`);
+        execFileSync('git', ['worktree', 'add', '-b', wtBranch, wtDir, 'HEAD'], { cwd: gitRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+        const relSub = path.relative(gitRoot, subCwd);
+        subCwd = relSub && !relSub.startsWith('..') ? path.join(wtDir, relSub) : wtDir;
+        worktreeInfo = { gitRoot, wtDir, wtBranch, baseHead };
+      } catch (_) { worktreeInfo = null; }
+    }
+    emit({ type: 'subagent', id: agentId, name, status: 'running', role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, round, worktree: worktreeInfo ? worktreeInfo.wtBranch : undefined });
     try {
       if (workerAc.signal.aborted) throw new Error('aborted');
+      armWorkerTimer();
       const out = await trackedRunAgent({
         provider: p,
         orchestrator: task.chain || null,
         messages: [{ role: 'user', content: workerPrompt(String(goal), task, { me: workerName, channel }) + (briefing ? '\n\n' + briefing : '') }],
         maxSteps: opts.maxSteps || 0,
-        cwd: opts.cwd,
+        cwd: subCwd,
         signal: workerAc.signal,
         useMemory: opts.useMemory,
         extraTools: bus.defs,
@@ -1045,22 +1098,52 @@ async function swarm(goal, opts = {}) {
         },
       });
       const last = [...(out || [])].reverse().find((m) => m.role === 'assistant' && m.content);
-      const result = last ? last.content : '(worker finished with no text)';
+      let result = last ? last.content : '(worker finished with no text)';
+      let preservedWorktree = null;
+      if (worktreeInfo) {
+        let dirtyOrCommitted = false;
+        try {
+          const st = execFileSync('git', ['status', '--porcelain'], { cwd: worktreeInfo.wtDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+          const headCount = Number(execFileSync('git', ['rev-list', '--count', `${worktreeInfo.baseHead}..HEAD`], { cwd: worktreeInfo.wtDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()) || 0;
+          dirtyOrCommitted = Boolean(st) || headCount > 0;
+        } catch (_) { dirtyOrCommitted = true; }
+        if (dirtyOrCommitted) {
+          preservedWorktree = { path: worktreeInfo.wtDir, branch: worktreeInfo.wtBranch };
+          result += `\n\n[Worktree preserved: path=${worktreeInfo.wtDir}, branch=${worktreeInfo.wtBranch}]`;
+          worktreeInfo = null;
+        }
+      }
       const ms = Date.now() - t0;
       board.setMember(workerName, { state: 'done', lastSeen: Date.now() });
       emit({ type: 'subagent', id: agentId, name, status: 'done', role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, ms, round });
       return { id: agentId, name: workerName, title: task.title, tier: task.tier, role: task.jobRole, model: servedBy,
-        baseURL: p ? p.baseURL : null, status: 'done', ms, result, round };
+        baseURL: p ? p.baseURL : null, status: 'done', ms, result, round, ...(preservedWorktree ? { worktree: preservedWorktree } : {}) };
     } catch (e) {
       const ms = Date.now() - t0;
       const killed = !!task.__killed;
       const aborted = !killed && ((workerAc.signal.aborted) || /abort/i.test(String(e && e.message)));
-      const st = killed ? 'killed' : (aborted ? 'stopped' : 'error');
+      const st = workerTimedOut ? 'error' : (killed ? 'killed' : (aborted ? 'stopped' : 'error'));
+      const errText = workerTimedOut ? `Error: worker timed out after ${Math.round(workerTimeoutMs / 1000)}s` : (killed ? '(killed)' : ('Error: ' + (e && e.message)));
       board.setMember(workerName, { state: st, lastSeen: Date.now() });
       emit({ type: 'subagent', id: agentId, name, status: st, role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, ms, round, error: String((e && e.message) || e).slice(0, 300) });
       return { id: agentId, name: workerName, title: task.title, tier: task.tier, role: task.jobRole, model: servedBy,
-        baseURL: p ? p.baseURL : null, status: st, ms, result: killed ? '(killed)' : ('Error: ' + (e && e.message)), round };
+        baseURL: p ? p.baseURL : null, status: st, ms, result: errText, round, ...(workerTimedOut ? { timedOut: true } : {}) };
     } finally {
+      clearWorkerTimer();
+      if (worktreeInfo) {
+        let dirtyOrCommitted = false;
+        try {
+          const st = execFileSync('git', ['status', '--porcelain'], { cwd: worktreeInfo.wtDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+          const headCount = Number(execFileSync('git', ['rev-list', '--count', `${worktreeInfo.baseHead}..HEAD`], { cwd: worktreeInfo.wtDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()) || 0;
+          dirtyOrCommitted = Boolean(st) || headCount > 0;
+        } catch (_) {}
+        if (!dirtyOrCommitted) {
+          try { execFileSync('git', ['worktree', 'remove', '--force', worktreeInfo.wtDir], { cwd: worktreeInfo.gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+          try { fs.rmSync(worktreeInfo.wtDir, { recursive: true, force: true }); } catch (_) {}
+          try { execFileSync('git', ['worktree', 'prune'], { cwd: worktreeInfo.gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+          try { execFileSync('git', ['branch', '-D', worktreeInfo.wtBranch], { cwd: worktreeInfo.gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+        }
+      }
       if (p && p.model) activeSwarmModels.delete(String(p.model).toLowerCase());
       workerControllers.delete(workerName);
       if (opts.signal) opts.signal.removeEventListener('abort', onParentAbort);
@@ -1112,6 +1195,7 @@ async function swarm(goal, opts = {}) {
           const rest = roster.filter((c) => c !== altBase);
           retryTask.provider = altBase;
           retryTask.chain = { enabled: true, providers: [altBase].concat(rest), activeIndex: 0, role: 'retry' };
+          board.setMember(memberNameFor(task), { model: altBase.model });
         }
         const recoveryBrief = `PREVIOUS ATTEMPT FAILED ON "${(results[i] && results[i].model) || 'unknown'}" WITH:\n${String((results[i] && results[i].result) || '').slice(0, 600)}\n\nRecover cleanly and complete the full subtask cleanly using tools.`;
         const retried = await runOne(retryTask, (rounds.get(memberNameFor(task)) || 1) + 1, recoveryBrief);
@@ -1190,8 +1274,17 @@ async function swarm(goal, opts = {}) {
     const report = done.map((r) => `### ${r.title} — ${r.role || r.tier} — ${r.model || 'model'} — ${r.status} (${r.ms}ms)\n${r.result}`).join('\n\n');
     const feed = board.messages.length ? board.transcript({ limit: 200 }) : '';
     const boardBlock = feed ? `\n\nSWARM BOARD (workers' own messages, oldest first):\n${feed}\n` : '';
-    const files = done.filter((r) => /\.(html?|css|js|jsx|tsx|ts|json|md|py)\b/i.test(r.result)).length
-      ? '\nThe team reported creating files. Verify the key files exist (Read/Glob, or run the tests with Bash) and make sure the final answer names the entry file.\n' : '';
+    const envelopes = done.map((r) => ({ r, env: modeCollab.parseWorkerEnvelope(r.result) }));
+    const touchedSet = new Set();
+    const checksList = [];
+    const wtBranches = [];
+    for (const { r, env } of envelopes) {
+      for (const f of env.files) touchedSet.add(f);
+      for (const c of env.checks) checksList.push(`${r.name}: ${c}`);
+      if (r.worktree && r.worktree.branch) wtBranches.push(`${r.name} -> ${r.worktree.branch} (${r.worktree.path})`);
+    }
+    const files = touchedSet.size || done.some((r) => /\.(html?|css|js|jsx|tsx|ts|json|md|py)\b/i.test(r.result))
+      ? `\nThe team reported creating/updating files${touchedSet.size ? ' (' + [...touchedSet].slice(0, 12).join(', ') + ')' : ''}.${wtBranches.length ? ' Preserved worker branches: ' + wtBranches.join('; ') + '.' : ''}${checksList.length ? ' Reported checks: ' + checksList.slice(0, 6).join('; ') + '.' : ''} Verify the key files exist (Read/Glob, or run the tests with Bash) and make sure the final answer names the entry file.\n` : '';
     try {
         const hasWorkerErrors = done.some((r) => r && r.status === 'error');
         const effectiveReviewTools = (opts.readOnly === true || opts.permissionMode === 'plan')
@@ -1233,6 +1326,7 @@ async function swarm(goal, opts = {}) {
     supervisor: { model: supervisor.model, baseURL: supervisor.baseURL, reasoningLevel: supervisor.reasoningLevel || 'high' },
     planSource: source,
     pools: !!poolOrch,
+    threads: planThreads,
     tasks: tasks.map(({ chain, provider, ...t }) => ({ ...t, model: t.model })),
     results: done,
     board: board.messages.map((m) => ({ ...m })),

@@ -69,11 +69,11 @@ function checkStaleRead(readMtimes, fp) {
 function esbuildLoaderFor(ext) {
   switch (ext) {
     case '.js':
-    case '.mjs':
-    case '.cjs':
-      return 'jsx';
     case '.jsx':
       return 'jsx';
+    case '.mjs':
+    case '.cjs':
+      return 'js';
     case '.ts':
       return 'ts';
     case '.tsx':
@@ -123,12 +123,25 @@ function collectPostEditDiagnostics(fp, _cwd = null) {
               issues.push(`[Syntax error] ${e && e.message ? e.message.split('\n')[0] : String(e)}`);
             }
           }
-        } else if ((ext === '.js' || ext === '.cjs') && !/^\s*(?:import|export)\b/m.test(raw)) {
-          try {
-            const vm = require('vm');
-            new vm.Script(raw, { filename: fp });
-          } catch (e) {
-            issues.push(`[Syntax error] ${e && e.message ? e.message.split('\n')[0] : String(e)}`);
+        } else if (ext === '.js' || ext === '.cjs' || ext === '.mjs') {
+          const isEsmSyntax = ext === '.mjs' || /^\s*(?:import|export)\b/m.test(raw);
+          if (!isEsmSyntax) {
+            try {
+              const vm = require('vm');
+              new vm.Script(raw, { filename: fp });
+            } catch (e) {
+              issues.push(`[Syntax error] ${e && e.message ? e.message.split('\n')[0] : String(e)}`);
+            }
+          } else {
+            try {
+              const nodeBin = require('../paths').resolveNodeBinary();
+              if (nodeBin) {
+                require('child_process').execFileSync(nodeBin, ['--check', fp], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+              }
+            } catch (e) {
+              const msg = String((e && (e.stderr || e.message)) || e).trim().split('\n').slice(0, 3).join(' ');
+              issues.push(`[Syntax error] ${msg}`);
+            }
           }
         }
       }
@@ -147,6 +160,34 @@ function collectPostEditDiagnostics(fp, _cwd = null) {
 
   if (!issues.length) return '';
   return `\n\nDiagnostics for ${fp}:\n` + issues.map((x) => `  - ${x}`).join('\n');
+}
+
+function collectSourceFilesRecursive(dir, limit = 250) {
+  const out = [];
+  const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'vendor', '.autobot', '.akron', '.next', '.nuxt']);
+  const EXTS = new Set(['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.json']);
+  const walk = (cur) => {
+    if (out.length >= limit) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(cur, { withFileTypes: true });
+    } catch (_) {
+      return;
+    }
+    for (const e of entries) {
+      if (out.length >= limit) break;
+      if (!e || !e.name) continue;
+      if (e.isDirectory()) {
+        if (SKIP_DIRS.has(e.name) || /^release/i.test(e.name)) continue;
+        walk(path.join(cur, e.name));
+      } else if (e.isFile()) {
+        const ext = path.extname(e.name).toLowerCase();
+        if (EXTS.has(ext)) out.push(path.join(cur, e.name));
+      }
+    }
+  };
+  walk(dir);
+  return out;
 }
 
 function execAsync(file, args, cwd, timeoutMs = 30000) {
@@ -174,14 +215,17 @@ async function runShadowCheck(cwd, { timeoutMs = 30000 } = {}) {
   const pkgPath = path.join(dir, 'package.json');
   const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const npxBin = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  let hasTypecheck = false;
 
   if (fs.existsSync(pkgPath)) {
     let pkg = {};
     try { pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')); } catch (_) {}
     const scripts = (pkg && pkg.scripts) || {};
     if (scripts.typecheck) {
+      hasTypecheck = true;
       checks.push({ name: 'npm run typecheck', res: await execAsync(npmBin, ['run', 'typecheck'], dir, timeoutMs) });
     } else if (fs.existsSync(path.join(dir, 'tsconfig.json'))) {
+      hasTypecheck = true;
       checks.push({ name: 'tsc --noEmit', res: await execAsync(npxBin, ['--no-install', 'tsc', '--noEmit'], dir, timeoutMs) });
     }
     if (scripts.lint) {
@@ -189,20 +233,21 @@ async function runShadowCheck(cwd, { timeoutMs = 30000 } = {}) {
     }
   }
 
-  // Fallback lightweight JS/JSON syntax scan across top source files if no scripts configured
-  if (!checks.length) {
+  // Run recursive JS/MJS/CJS/JSX/TS/JSON syntax scan when no project typecheck ran
+  if (!hasTypecheck) {
     const errors = [];
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile()).slice(0, 20);
-      for (const e of entries) {
-        const fp = path.join(dir, e.name);
-        const diag = collectPostEditDiagnostics(fp, dir);
-        if (diag) errors.push(diag.trim());
-      }
-    } catch (_) {}
+    const scanned = collectSourceFilesRecursive(dir, 250);
+    for (const fp of scanned) {
+      const diag = collectPostEditDiagnostics(fp, dir);
+      if (diag) errors.push(diag.trim());
+    }
     checks.push({
       name: 'syntax-scan',
-      res: { ok: errors.length === 0, code: errors.length ? 1 : 0, output: errors.join('\n') || 'No syntax errors detected.' },
+      res: {
+        ok: errors.length === 0,
+        code: errors.length ? 1 : 0,
+        output: errors.join('\n') || `Checked ${scanned.length} file${scanned.length === 1 ? '' : 's'} — no syntax errors detected.`,
+      },
     });
   }
 

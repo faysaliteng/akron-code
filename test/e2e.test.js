@@ -782,8 +782,9 @@ async function main() {
     // send() must queue when streaming instead of bailing out
     assert.ok(!/streamingRef\.current\) return;/.test(src), 'send() must not bail silently while streaming');
     assert.ok(/setQueued\(\(q\) => \[\.\.\.q, \{ id: uid\(\), text, atts/.test(src), 'send() must push into the queue');
-    // and the queue must flush the moment the run settles
-    assert.ok(/if \(streaming \|\| !queued\.length\) return;/.test(src), 'flush effect must wait for a settled run');
+    // and each idle conversation's queued messages flush independently
+    assert.ok(/if \(!queued\.length\) return;/.test(src), 'flush effect must wait for queued items');
+    assert.ok(/pickNextRunnableQueued\(queued,\s*queuePausedByConv,\s*streamingConvIds\)/.test(src), 'flush must check per-conversation streaming status');
     assert.ok(/send\(next\.text, next\.atts, next\.convId\)/.test(src), 'flush must dispatch the queued message into its own conversation');
     // arrow must stay available next to Stop while text is present
     assert.ok(/streaming && <button className="send stop"/.test(src), 'Stop button must render while streaming');

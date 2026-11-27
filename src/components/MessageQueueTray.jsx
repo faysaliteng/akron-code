@@ -5,14 +5,18 @@ export function filterQueueForConv(queue, convId) {
   return queue.filter((item) => item && item.convId === convId);
 }
 
-export function pickNextRunnableQueued(queue, pausedByConv = {}) {
+export function pickNextRunnableQueued(queue, pausedByConv = {}, streamingConvIds = null) {
   if (!Array.isArray(queue) || queue.length === 0) {
     return { next: null, rest: [] };
   }
   const map = pausedByConv && typeof pausedByConv === 'object' ? pausedByConv : {};
+  const busySet = streamingConvIds instanceof Set
+    ? streamingConvIds
+    : (Array.isArray(streamingConvIds) ? new Set(streamingConvIds) : null);
   const idx = queue.findIndex((item) => {
     if (!item || item.paused) return false;
     if (item.convId && map[item.convId]) return false;
+    if (busySet && busySet.has(item.convId || '__new__')) return false;
     return true;
   });
   if (idx === -1) return { next: null, rest: queue };
