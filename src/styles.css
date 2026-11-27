@@ -2125,6 +2125,31 @@ button { font-family: inherit; letter-spacing: inherit; }
 .orch-pool .orch-radio { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; margin: 0; }
 .orch-pool .orch-radio input[type="radio"] { width: auto; margin: 0; padding: 0; flex: 0 0 auto; }
 
+/* Orchestrator Paid & Custom API Providers Panel */
+.orch-paid-box { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-000); padding: 10px 12px; margin: 8px 0 12px; display: flex; flex-direction: column; gap: 10px; }
+.orch-paid-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.orch-paid-title { font-size: 12.5px; font-weight: 600; color: var(--text-000); }
+.orch-paid-sub { font-size: 11px; color: var(--text-400); line-height: 1.45; margin-top: 2px; }
+.orch-paid-badge { flex: 0 0 auto; font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); background: var(--accent-soft); }
+.orch-paid-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.orch-paid-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-100); color: var(--text-200); cursor: pointer; }
+.orch-paid-pill:hover { border-color: var(--border-strong); color: var(--text-000); }
+.orch-paid-pill.sel { border-color: var(--accent); background: var(--accent-soft); color: var(--text-000); font-weight: 600; }
+.orch-paid-pill.ready:not(.sel) { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.orch-paid-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-400); opacity: 0.45; }
+.orch-paid-dot.ok { background: #10b981; opacity: 1; }
+.orch-paid-editor { display: flex; flex-direction: column; gap: 8px; padding-top: 6px; border-top: 1px solid var(--border); }
+.orch-paid-grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 8px; }
+.orch-paid-box .orch-paid-field { display: flex; flex-direction: column; gap: 3px; margin: 0; font-size: 11px; color: var(--text-400); }
+.orch-paid-box .orch-paid-field input { width: 100%; margin: 0; padding: 5px 8px; font-size: 11.5px; }
+.orch-paid-addmodel { display: flex; gap: 6px; align-items: center; }
+.orch-paid-addmodel input { flex: 1 1 auto; width: auto; margin: 0; padding: 5px 8px; font-size: 11px; }
+.orch-paid-addmodel select { flex: 0 0 auto; width: auto; margin: 0; padding: 4px 6px; font-size: 11px; }
+.orch-paid-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.orch-paid-msg { margin: 0; font-size: 11px; }
+.orch-paid-msg.err { color: var(--red); }
+.orch-paid-msg.ok { color: #10b981; }
+
 /* Staged preset (keyless model picked in the composer) */
 .modal .stage-key { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius-md); padding: 10px 12px 4px; margin-bottom: 12px; }
 .modal .stage-key-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--fs-footnote); color: var(--text-000); margin-bottom: 8px; }

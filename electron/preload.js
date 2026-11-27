@@ -473,6 +473,10 @@ contextBridge.exposeInMainWorld('autobot', {
   generateDiagnostics: (payload) => ipcRenderer.invoke('autobot:generateDiagnostics', payload),
   migrationScan: (payload) => ipcRenderer.invoke('autobot:migrationScan', payload),
   migrationApply: (payload) => ipcRenderer.invoke('autobot:migrationApply', payload),
+  orchPaidProvidersGet: () => ipcRenderer.invoke('autobot:orchPaidProvidersGet'),
+  orchPaidProviderSave: (payload) => ipcRenderer.invoke('autobot:orchPaidProviderSave', payload),
+  orchPaidProviderDelete: (payload) => ipcRenderer.invoke('autobot:orchPaidProviderDelete', payload),
+  orchPaidProviderFetchModels: (payload) => ipcRenderer.invoke('autobot:orchPaidProviderFetchModels', payload),
   onEnvChanged: (cb) => {
     const h = (e, state) => cb(state);
     ipcRenderer.on('autobot:envChanged', h);

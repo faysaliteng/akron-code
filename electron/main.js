@@ -658,7 +658,7 @@ function applyFeatures(features) {
   registerQuickShortcuts(!!features.quickEntry);
 }
 
-oauthCtrl = registerOauthModelIpc({ ipcMain, store, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast, poolNoticeDeduper, bundledRuntimeDir: () => (runtimesCtrl ? runtimesCtrl.bundledRuntimeDir() : ''), getRuntimes: () => (runtimesCtrl ? runtimesCtrl.getRuntimes() : null) });
+oauthCtrl = registerOauthModelIpc({ ipcMain, store, secretstore, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast, poolNoticeDeduper, bundledRuntimeDir: () => (runtimesCtrl ? runtimesCtrl.bundledRuntimeDir() : ''), getRuntimes: () => (runtimesCtrl ? runtimesCtrl.getRuntimes() : null) });
 const { freellmFallbackApiKey, hydrateLocalFreeLlmProvider, hydrateProvider, validateOrchestrator, oneLine, fetchProviderModels, warmModelCatalogs, replayClaudeRotation } = oauthCtrl;
 
 runtimesCtrl = createRuntimesController({ app, ipcMain, store, workspace, shells, freellm, createRuntimes, providertransport, runAgent, hydrateProvider, hydrateOrchestrator, validateOrchestrator, freellmFallbackApiKey, oneLine, broadcast });
@@ -676,6 +676,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     || (provider && String(provider.model || '').trim().toLowerCase() === 'auto' ? 'auto' : '');
   const orchActive = isOrchestratorActiveForTurn(orchSource, swarm, provider);
   let poolDead = [];
+  let delegationOrchestrator = null;
   // Resolve subscription accounts into a live bearer token before the turn.
   try {
     if (routingMode === 'auto') {
@@ -687,7 +688,6 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     } else {
       provider = await hydrateProvider(provider);
     }
-    let delegationOrchestrator = null;
     if (orchActive && orchSource) {
       const hy = await hydrateOrchestrator(orchSource, hydrateProvider);
       orchestrator = hy.orch;

@@ -1622,7 +1622,7 @@ async function runAgent(opts) {
     }
     providerList = [supervisor, ...tail];
     activeIndex = 0;
-    poolMode = Boolean(orch && router.poolsConfig(orch) && (router.poolsActive(orch, supervisor) || (orch.pools && orch.pools.enabled)));
+    poolMode = Boolean(orch && router.poolsConfig(orch) && router.poolsActive(orch, supervisor));
     effectiveOrch = { ...(orch || {}), enabled: true, providers: providerList, activeIndex: 0 };
   } else if (routingMode === 'auto' && opts._chunked !== true) {
     const autoRes = await taskRouter.classifyAndSelect({
@@ -3030,7 +3030,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           subOrch = chain.length > 1 ? { enabled: true, providers: chain, activeIndex: 0, role: 'pinned' } : null;
         }
       }
-      if (subProvider && subProvider.oauthProvider && !subProvider.accessToken && typeof opts.hydrateProvider === 'function') {
+      if (subProvider && ((subProvider.oauthProvider && !subProvider.accessToken) || (subProvider.baseURL && !subProvider.apiKey && !subProvider.oauthProvider)) && typeof opts.hydrateProvider === 'function') {
         try {
           subProvider = await opts.hydrateProvider(subProvider);
           if (subOrch && Array.isArray(subOrch.providers) && subOrch.providers.length) {

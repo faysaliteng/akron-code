@@ -326,6 +326,8 @@ export const PRESETS = [
   { name: 'ModelScope', baseURL: 'https://api-inference.modelscope.cn/v1', model: 'Qwen/Qwen3-32B', apiKey: '', supportsTools: true },
 
   // --- Paid (any key) ---
+  { name: 'OpenRouter (Paid & Frontier)', baseURL: 'https://openrouter.ai/api/v1', model: 'anthropic/claude-sonnet-4.6', apiKey: '', supportsTools: true },
+  { name: 'GhostMetal API', baseURL: 'https://api.ghostmetal.ai/v1', model: 'ghostmetal-pro', apiKey: '', supportsTools: true },
   { name: 'OpenAI', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o-mini', apiKey: '', supportsTools: true },
 
   // --- Any OpenAI-compatible endpoint ---

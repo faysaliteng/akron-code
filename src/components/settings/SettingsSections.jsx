@@ -970,7 +970,7 @@ export function orchId(row) {
     : 'gw|' + normBase(row.baseURL) + '|' + row.model;
 }
 
-export function OrchModelChecklist({ orchestrator, provider, localModels, localBase, saveOrch }) {
+export function OrchModelChecklist({ orchestrator, provider, localModels, localBase, paidProviders = [], saveOrch }) {
   const [cat, setCat] = useState({ status: null, models: {}, busy: false, error: '' });
   const [q, setQ] = useState('');
 
@@ -1040,6 +1040,37 @@ export function OrchModelChecklist({ orchestrator, provider, localModels, localB
         }
       }
     }
+    // Paid & Custom API-key providers: strictly ONLY providers whose API key is configured.
+    for (const pp of Array.isArray(paidProviders) ? paidProviders : []) {
+      if (!pp || !pp.hasKey || !pp.baseURL) continue;
+      const rows = (Array.isArray(pp.models) ? pp.models : []).map((m) => {
+        const mid = String(m.id || m.model || m).trim();
+        const win = Number(m.contextWindow) || contextWindowFor(mid);
+        const winLabel = win >= 1000000 ? (Math.round(win / 100000) / 10 + 'M') : (win ? (Math.round(win / 1000) + 'K') : '');
+        const row = {
+          oauthProvider: '',
+          transport: '',
+          oauth: false,
+          orchProviderId: pp.id,
+          baseURL: pp.baseURL,
+          apiKey: '',
+          model: mid,
+          label: m.label || mid,
+          defaultTier: m.tier || 'heavy',
+          window: winLabel,
+          contextWindow: win,
+          name: pp.name + ' · ' + (m.label || mid),
+        };
+        return { ...row, id: orchId(row) };
+      }).filter((r) => r.model);
+      if (rows.length) {
+        out.push({
+          key: 'paid:' + pp.id,
+          title: pp.name + ' · Paid API',
+          rows,
+        });
+      }
+    }
     // Gateway + local models: whatever the composer is currently pointed at,
     // plus the models this machine's Ollama actually has pulled.
     const gw = [];
@@ -1068,7 +1099,7 @@ export function OrchModelChecklist({ orchestrator, provider, localModels, localB
     }
     if (gw.length) out.push({ key: 'gateway', title: 'Local / API gateway', rows: gw });
     return out;
-  }, [cat, provider, localModels, localBase]);
+  }, [cat, provider, localModels, localBase, paidProviders]);
 
   // Rows saved before ids existed get a derived one, so they key, toggle and
   // re-tier individually (an undefined id used to match — and remove — them all).
@@ -1089,8 +1120,9 @@ export function OrchModelChecklist({ orchestrator, provider, localModels, localB
         name: row.name,
         baseURL: row.baseURL || '',
         apiKey: row.apiKey || '',
+        orchProviderId: row.orchProviderId || '',
         model: row.model,
-        tier: 'heavy',
+        tier: row.defaultTier || 'heavy',
         oauth: !!row.oauth,
         oauthProvider: row.oauthProvider || '',
         transport: row.transport || '',

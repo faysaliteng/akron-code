@@ -941,13 +941,15 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
     for (const r of ((orchestrator && orchestrator.providers) || [])) {
       if (r && r.enabled !== false) add(r);
     }
-    const gw = (orchestrator && orchestrator.pools && orchestrator.pools.gateway) || {};
-    const roles = (orchestrator && orchestrator.pools && orchestrator.pools.roles) || {};
-    for (const [roleName, def] of Object.entries(roles)) {
-      if (!def || !Array.isArray(def.models)) continue;
-      for (const raw of def.models) {
-        const m = typeof raw === 'string' ? raw.replace(/@\d+$/, '').trim() : (raw && raw.model);
-        if (m) add({ model: m, baseURL: gw.baseURL || provider.baseURL || '', apiKey: gw.apiKey || provider.apiKey || '', role: roleName }, roleName);
+    if (orchestrator && orchestrator.pools && orchestrator.pools.enabled) {
+      const gw = orchestrator.pools.gateway || {};
+      const roles = orchestrator.pools.roles || {};
+      for (const [roleName, def] of Object.entries(roles)) {
+        if (!def || !Array.isArray(def.models)) continue;
+        for (const raw of def.models) {
+          const m = typeof raw === 'string' ? raw.replace(/@\d+$/, '').trim() : (raw && raw.model);
+          if (m) add({ model: m, baseURL: gw.baseURL || provider.baseURL || '', apiKey: gw.apiKey || provider.apiKey || '', role: roleName }, roleName);
+        }
       }
     }
     return out;

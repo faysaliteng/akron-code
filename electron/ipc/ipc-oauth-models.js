@@ -4,9 +4,10 @@ const fs = require('fs');
 const net = require('net');
 const { spawn, execFile } = require('child_process');
 const { dialog, shell } = require('electron');
+const orchRouter = require('../orch-router');
 
 module.exports = function registerOauthModelIpc(ctx) {
-  const { ipcMain, store, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast, poolNoticeDeduper, bundledRuntimeDir, getRuntimes } = ctx;
+  const { ipcMain, store, secretstore, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast, poolNoticeDeduper, bundledRuntimeDir, getRuntimes } = ctx;
 
 function freellmFallbackApiKey() {
   try {
@@ -42,7 +43,17 @@ function hydrateLocalFreeLlmProvider(provider) {
 
 async function hydrateProvider(provider) {
   provider = hydrateLocalFreeLlmProvider(provider);
-  if (!provider || typeof provider !== 'object' || !provider.oauthProvider) return provider;
+  if (!provider || typeof provider !== 'object') return provider;
+  if (!provider.oauthProvider) {
+    if (!String(provider.apiKey || '').trim() && provider.baseURL) {
+      const paidKey = orchRouter.resolvePaidProviderApiKey(provider, {
+        settings: store && store.getSettings ? store.getSettings() : null,
+        secretstore: secretstore || null,
+      });
+      if (paidKey) return { ...provider, apiKey: paidKey };
+    }
+    return provider;
+  }
   const targetId = String(provider.oauthProvider);
   let r;
   try {

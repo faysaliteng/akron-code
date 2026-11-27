@@ -757,6 +757,206 @@ function listMediaStudioCatalog(opts = {}) {
   };
 }
 
+const ORCH_PAID_API_PRESETS = [
+  {
+    id: 'openrouter',
+    name: 'OpenRouter (Paid & Frontier)',
+    baseURL: 'https://openrouter.ai/api/v1',
+    docsUrl: 'https://openrouter.ai/keys',
+    editableBaseUrl: true,
+    models: [
+      { id: 'anthropic/claude-opus-4.6', label: 'Claude Opus 4.6 (OpenRouter)', tier: 'critical', contextWindow: 200000 },
+      { id: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6 (OpenRouter)', tier: 'heavy', contextWindow: 200000 },
+      { id: 'anthropic/claude-haiku-4.5', label: 'Claude Haiku 4.5 (OpenRouter)', tier: 'small', contextWindow: 200000 },
+      { id: 'deepseek/deepseek-r1', label: 'DeepSeek R1 (OpenRouter)', tier: 'critical', contextWindow: 128000 },
+      { id: 'deepseek/deepseek-chat-v3-0324', label: 'DeepSeek V3 (OpenRouter)', tier: 'heavy', contextWindow: 128000 },
+      { id: 'qwen/qwen3-coder', label: 'Qwen3 Coder (OpenRouter)', tier: 'heavy', contextWindow: 128000 },
+      { id: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro (OpenRouter)', tier: 'critical', contextWindow: 1048576 },
+      { id: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash (OpenRouter)', tier: 'small', contextWindow: 1048576 },
+      { id: 'openai/gpt-5', label: 'GPT-5 (OpenRouter)', tier: 'critical', contextWindow: 400000 },
+    ],
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek Official API',
+    baseURL: 'https://api.deepseek.com/v1',
+    docsUrl: 'https://platform.deepseek.com/api_keys',
+    editableBaseUrl: true,
+    models: [
+      { id: 'deepseek-reasoner', label: 'DeepSeek Reasoner (R1/V4)', tier: 'critical', contextWindow: 128000 },
+      { id: 'deepseek-chat', label: 'DeepSeek Chat (V3/V4)', tier: 'heavy', contextWindow: 128000 },
+    ],
+  },
+  {
+    id: 'glm',
+    name: 'GLM / Z.ai (Zhipu API)',
+    baseURL: 'https://api.z.ai/api/paas/v4',
+    docsUrl: 'https://z.ai/manage-apikey/apikey-list',
+    editableBaseUrl: true,
+    models: [
+      { id: 'glm-5', label: 'GLM-5', tier: 'critical', contextWindow: 200000 },
+      { id: 'glm-4-plus', label: 'GLM-4 Plus', tier: 'heavy', contextWindow: 128000 },
+      { id: 'glm-4.7', label: 'GLM-4.7', tier: 'heavy', contextWindow: 200000 },
+      { id: 'glm-4-air', label: 'GLM-4 Air', tier: 'small', contextWindow: 128000 },
+      { id: 'glm-4.6v', label: 'GLM-4.6V Vision', tier: 'heavy', contextWindow: 128000 },
+    ],
+  },
+  {
+    id: 'ghostmetal',
+    name: 'GhostMetal API',
+    baseURL: 'https://api.ghostmetal.ai/v1',
+    docsUrl: 'https://ghostmetal.ai',
+    editableBaseUrl: true,
+    models: [
+      { id: 'ghostmetal-pro', label: 'GhostMetal Pro', tier: 'critical', contextWindow: 200000 },
+      { id: 'ghostmetal-coder', label: 'GhostMetal Coder', tier: 'heavy', contextWindow: 200000 },
+      { id: 'ghostmetal-fast', label: 'GhostMetal Fast', tier: 'small', contextWindow: 128000 },
+    ],
+  },
+  {
+    id: 'openai',
+    name: 'OpenAI API',
+    baseURL: 'https://api.openai.com/v1',
+    docsUrl: 'https://platform.openai.com/api-keys',
+    editableBaseUrl: true,
+    models: [
+      { id: 'o3', label: 'OpenAI o3', tier: 'critical', contextWindow: 200000 },
+      { id: 'gpt-5', label: 'OpenAI GPT-5', tier: 'critical', contextWindow: 400000 },
+      { id: 'gpt-4.1', label: 'OpenAI GPT-4.1', tier: 'heavy', contextWindow: 1000000 },
+      { id: 'gpt-4.1-mini', label: 'OpenAI GPT-4.1 Mini', tier: 'small', contextWindow: 1000000 },
+      { id: 'gpt-4o-mini', label: 'OpenAI GPT-4o Mini', tier: 'small', contextWindow: 128000 },
+    ],
+  },
+  {
+    id: 'anthropic_api',
+    name: 'Anthropic API',
+    baseURL: 'https://api.anthropic.com/v1',
+    docsUrl: 'https://console.anthropic.com/settings/keys',
+    editableBaseUrl: true,
+    models: [
+      { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', tier: 'critical', contextWindow: 200000 },
+      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', tier: 'heavy', contextWindow: 200000 },
+      { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', tier: 'small', contextWindow: 200000 },
+    ],
+  },
+  {
+    id: 'gemini_api',
+    name: 'Google Gemini API',
+    baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    docsUrl: 'https://aistudio.google.com/apikey',
+    editableBaseUrl: true,
+    models: [
+      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', tier: 'critical', contextWindow: 1048576 },
+      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', tier: 'heavy', contextWindow: 1048576 },
+      { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', tier: 'small', contextWindow: 1048576 },
+    ],
+  },
+  {
+    id: 'xai_api',
+    name: 'xAI Grok API',
+    baseURL: 'https://api.x.ai/v1',
+    docsUrl: 'https://console.x.ai',
+    editableBaseUrl: true,
+    models: [
+      { id: 'grok-4', label: 'Grok 4', tier: 'critical', contextWindow: 256000 },
+      { id: 'grok-3', label: 'Grok 3', tier: 'heavy', contextWindow: 131072 },
+      { id: 'grok-code-fast-1', label: 'Grok Code Fast 1', tier: 'heavy', contextWindow: 131072 },
+      { id: 'grok-3-mini', label: 'Grok 3 Mini', tier: 'small', contextWindow: 131072 },
+    ],
+  },
+  {
+    id: 'together',
+    name: 'Together AI',
+    baseURL: 'https://api.together.xyz/v1',
+    docsUrl: 'https://api.together.xyz/settings/api-keys',
+    editableBaseUrl: true,
+    models: [
+      { id: 'Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8', label: 'Qwen3 Coder 480B', tier: 'critical', contextWindow: 262144 },
+      { id: 'deepseek-ai/DeepSeek-R1', label: 'DeepSeek R1 (Together)', tier: 'critical', contextWindow: 128000 },
+      { id: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', label: 'Llama 3.3 70B Turbo', tier: 'heavy', contextWindow: 131072 },
+    ],
+  },
+  {
+    id: 'mistral',
+    name: 'Mistral AI',
+    baseURL: 'https://api.mistral.ai/v1',
+    docsUrl: 'https://console.mistral.ai/api-keys',
+    editableBaseUrl: true,
+    models: [
+      { id: 'mistral-large-latest', label: 'Mistral Large', tier: 'critical', contextWindow: 128000 },
+      { id: 'codestral-latest', label: 'Codestral', tier: 'heavy', contextWindow: 256000 },
+      { id: 'mistral-small-latest', label: 'Mistral Small', tier: 'small', contextWindow: 128000 },
+    ],
+  },
+  {
+    id: 'nvidia',
+    name: 'NVIDIA NIM',
+    baseURL: 'https://integrate.api.nvidia.com/v1',
+    docsUrl: 'https://build.nvidia.com',
+    editableBaseUrl: true,
+    models: [
+      { id: 'nvidia/llama-3.1-nemotron-ultra-253b-v1', label: 'Nemotron Ultra 253B', tier: 'critical', contextWindow: 128000 },
+      { id: 'deepseek-ai/deepseek-r1', label: 'DeepSeek R1 (NVIDIA)', tier: 'critical', contextWindow: 128000 },
+      { id: 'qwen/qwen2.5-coder-32b-instruct', label: 'Qwen 2.5 Coder 32B', tier: 'heavy', contextWindow: 32768 },
+    ],
+  },
+  {
+    id: 'groq',
+    name: 'Groq Cloud',
+    baseURL: 'https://api.groq.com/openai/v1',
+    docsUrl: 'https://console.groq.com/keys',
+    editableBaseUrl: true,
+    models: [
+      { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B Versatile', tier: 'heavy', contextWindow: 131072 },
+      { id: 'qwen-qwq-32b', label: 'Qwen QwQ 32B', tier: 'heavy', contextWindow: 131072 },
+      { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B Instant', tier: 'small', contextWindow: 131072 },
+    ],
+  },
+  {
+    id: 'tokenrouter',
+    name: 'TokenRouter',
+    baseURL: 'https://api.tokenrouter.com/v1',
+    docsUrl: 'https://tokenrouter.com',
+    editableBaseUrl: true,
+    models: [
+      { id: 'moonshotai/kimi-k3.1-pro', label: 'Kimi K3.1 Pro', tier: 'critical', contextWindow: 256000 },
+      { id: 'deepseek/deepseek-v4.1-flash-1017', label: 'DeepSeek V4.1 Flash', tier: 'small', contextWindow: 128000 },
+    ],
+  },
+];
+
+function resolvePaidProviderApiKey(providerOrRow, { settings = null, secretstore = null } = {}) {
+  if (!providerOrRow || typeof providerOrRow !== 'object') return '';
+  const direct = String(providerOrRow.apiKey || '').trim();
+  if (direct) return direct;
+  if (providerOrRow.oauthProvider) return '';
+  const base = normBase(providerOrRow.baseURL || '');
+  const isLoopback = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(base);
+  const provId = String(providerOrRow.orchProviderId || '').trim();
+  if (secretstore && typeof secretstore.get === 'function') {
+    if (provId) {
+      try {
+        const k = String(secretstore.get('autobot.orch_api_key.' + provId) || '').trim();
+        if (k) return k;
+      } catch (_) {}
+    }
+    if (base && !isLoopback) {
+      try {
+        const k = String(secretstore.get('autobot.orch_base_key.' + base) || '').trim();
+        if (k) return k;
+      } catch (_) {}
+    }
+  }
+  if (base && !isLoopback && settings && settings.providerKeys && typeof settings.providerKeys === 'object') {
+    for (const [rawKey, val] of Object.entries(settings.providerKeys)) {
+      if (normBase(rawKey) === base && val && String(val).trim()) {
+        return String(val).trim();
+      }
+    }
+  }
+  return '';
+}
+
 function summary(orch, provider) {
   if (!poolsActive(orch, provider)) return '';
   return ROLES.map((r) => {
@@ -770,4 +970,5 @@ module.exports = {
   poolsConfig, poolsActive, isGatewayCredentialReady, resolve, roleLimit, orchestratorFor, chainFor, hasImages,
   freellmPreset, summary, modelEntry, normBase, rotate,
   resolveMediaChain, resolveMediaProvider, isTextOnlyModelId, listMediaStudioCatalog, MEDIA_PROVIDER_KEYS,
+  ORCH_PAID_API_PRESETS, resolvePaidProviderApiKey,
 };

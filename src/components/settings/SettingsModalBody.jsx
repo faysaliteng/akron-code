@@ -8,6 +8,7 @@ import { PRESETS, PRESET_KEYS, useDismiss, SOUND_PRESETS, playUiSound, sendDeskt
 import { ProjectSettingsPanel } from './ProjectSettingsPanel.jsx';
 import { MigrationWizard } from './MigrationWizard.jsx';
 import { AutoSwitchBrainSection, FreeLLMAPISection, ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection, MediaStudioApiKeysSection } from './ExtendedSettingsPanels.jsx';
+import { OrchPaidProvidersPanel } from './OrchPaidProvidersPanel.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from '../../features/WorkspacePanels.jsx';
 import { SkillsViewBody, PluginsViewBody } from '../chat/WorkspaceViews.jsx';
 import {
@@ -30,6 +31,7 @@ export function SettingsModalBody({
 }) {
   const [section, setSection] = useState(initialSection || 'providers');
   const [navFilter, setNavFilter] = useState('');
+  const [orchPaidProviders, setOrchPaidProviders] = useState([]);
   useEffect(() => {
     if (initialSection) setSection(initialSection);
   }, [initialSection]);
@@ -485,11 +487,16 @@ export function SettingsModalBody({
                 <div className="settings-card">
                   <h3><Icon name="Settings" size={14} /> {T('settings.orchestrator')}</h3>
                   <label className="check"><input type="checkbox" checked={!!orchestrator.enabled} onChange={(e) => saveOrch({ ...orchestrator, enabled: e.target.checked })} /> Enable — multi-model pool for failover AND swarm tier routing</label>
+                  <OrchPaidProvidersPanel
+                    orchestrator={orchestrator}
+                    saveOrch={saveOrch}
+                    onProvidersLoaded={setOrchPaidProviders}
+                  />
                   {orchestrator.enabled && (
                     <>
                       <p className="muted" style={{ marginTop: -4 }}>
                         Tick the models this pool may use — the list is everything this machine has loaded
-                        (signed-in subscription accounts and the local/API gateway). <b>Tier</b> decides which
+                        (signed-in subscription accounts, Paid API providers, and local/API gateways). <b>Tier</b> decides which
                         model a supervisor-assigned subtask runs on: <b>small</b> = cheap/mechanical work,
                         <b> heavy</b> = real implementation, <b>critical</b> = architecture/security/review
                         (also the supervisor's own model). <b>start</b> marks the first model failover tries.
@@ -499,6 +506,7 @@ export function SettingsModalBody({
                         provider={provider}
                         localModels={ollama.ok ? ollama.models : []}
                         localBase={ollama.base}
+                        paidProviders={orchPaidProviders}
                         saveOrch={saveOrch}
                       />
                     </>

@@ -822,10 +822,21 @@ function collectCandidateModels({
   }
 
   // 2. Credential-valid Frontier / Keyed API orchestrator rows (excluding local Ollama :11434)
+  let _lazySettings = null;
+  let _lazySecretStore = null;
+  if (store !== false) {
+    try { _lazySettings = store && typeof store.getSettings === 'function' ? store.getSettings() : require('./store').getSettings(); } catch (_) {}
+    try { _lazySecretStore = require('./secretstore'); } catch (_) {}
+  }
   for (const row of orchRows) {
     if (row.oauthProvider || row.oauth || row.accessToken) continue;
     if (/:11434\b/i.test(String(row.baseURL || ''))) continue;
-    pushCandidate(row, { _source: 'orch' });
+    let resolvedRow = row;
+    if (!String(row.apiKey || '').trim() && row.baseURL && typeof orchRouter.resolvePaidProviderApiKey === 'function') {
+      const k = orchRouter.resolvePaidProviderApiKey(row, { settings: _lazySettings, secretstore: _lazySecretStore });
+      if (k) resolvedRow = { ...row, apiKey: k };
+    }
+    pushCandidate(resolvedRow, { _source: 'orch' });
   }
 
   // 3. Authenticated FreeLLMAPI / Orchestrator role pools (ONLY when gateway credentials are ready)
@@ -925,7 +936,7 @@ function buildAvailableRoster({
       ? catalog.contextWindowFor(cand.model, pid, cand.contextWindow)
       : (Number(cand.contextWindow) || 128000);
     const entry = { ...cand, contextWindow: ctxWin };
-    const normRole = orchRouter.normalizeRole(cand.role);
+    const normRole = orchRouter.normalizeRole(cand.role) || (cand.tier ? orchRouter.tierToRole(cand.tier) : null);
 
     const isFast = normRole === 'fast' || tierSets.fast.has(ml) || /haiku|hydrogen|grok-4-fast|flash|(?:^|[-_/.])mini(?=$|[-_/.])|nano|lite|gemma|27b/i.test(ml);
     const isCoder = normRole === 'coder' || tierSets.coder.has(ml) || /sonnet|terra|carbon-medium|code-fast|coder|codex|deepseek-chat/i.test(ml);

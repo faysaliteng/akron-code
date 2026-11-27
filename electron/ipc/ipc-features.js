@@ -2128,4 +2128,301 @@ ipcMain.handle('autobot:autoRouterTest', async (e, payload = {}) => {
   }
 });
 
+// ---- Orchestrator Paid & Custom API-Key Providers Manager ----
+function buildOrchPaidProvidersSnapshot() {
+  const orchRouter = require('../orch-router');
+  const settings = store.getSettings ? (store.getSettings() || {}) : {};
+  const savedList = Array.isArray(settings.orchPaidProviders) ? settings.orchPaidProviders : [];
+  const savedById = new Map();
+  for (const item of savedList) {
+    if (item && item.id) savedById.set(String(item.id), item);
+  }
+  const merged = [];
+  const seen = new Set();
+  for (const preset of orchRouter.ORCH_PAID_API_PRESETS) {
+    seen.add(preset.id);
+    const saved = savedById.get(preset.id);
+    const baseURL = String((saved && saved.baseURL) || preset.baseURL || '').trim();
+    const models = (saved && Array.isArray(saved.models) && saved.models.length)
+      ? saved.models
+      : preset.models;
+    const key = orchRouter.resolvePaidProviderApiKey({ orchProviderId: preset.id, baseURL }, { settings, secretstore });
+    merged.push({
+      id: preset.id,
+      name: (saved && saved.name) || preset.name,
+      baseURL,
+      docsUrl: preset.docsUrl || '',
+      editableBaseUrl: true,
+      custom: false,
+      models: models.map((m) => ({
+        id: String(m.id || m.model || m).trim(),
+        label: String(m.label || m.id || m.model || m).trim(),
+        tier: m.tier || 'heavy',
+        contextWindow: Number(m.contextWindow) || 0,
+      })).filter((m) => m.id),
+      hasKey: Boolean(key),
+      keyHint: key ? '••••' + String(key).slice(-4) : '',
+    });
+  }
+  for (const saved of savedList) {
+    if (!saved || !saved.id || seen.has(saved.id)) continue;
+    const baseURL = String(saved.baseURL || '').trim();
+    const key = orchRouter.resolvePaidProviderApiKey({ orchProviderId: saved.id, baseURL }, { settings, secretstore });
+    merged.push({
+      id: String(saved.id),
+      name: String(saved.name || saved.id),
+      baseURL,
+      docsUrl: saved.docsUrl || '',
+      editableBaseUrl: true,
+      custom: true,
+      models: (Array.isArray(saved.models) ? saved.models : []).map((m) => ({
+        id: String(m.id || m.model || m).trim(),
+        label: String(m.label || m.id || m.model || m).trim(),
+        tier: m.tier || 'heavy',
+        contextWindow: Number(m.contextWindow) || 0,
+      })).filter((m) => m.id),
+      hasKey: Boolean(key),
+      keyHint: key ? '••••' + String(key).slice(-4) : '',
+    });
+  }
+  return { ok: true, providers: merged };
+}
+
+function makeOrchRowId(baseURL, model) {
+  const nb = require('../orch-router').normBase(baseURL);
+  return 'gw|' + nb + '|' + String(model || '').trim();
+}
+
+ipcMain.handle('autobot:orchPaidProvidersGet', () => {
+  try {
+    return buildOrchPaidProvidersSnapshot();
+  } catch (err) {
+    return { ok: false, providers: [], error: oneLine(err) };
+  }
+});
+
+ipcMain.handle('autobot:orchPaidProviderSave', (e, payload = {}) => {
+  try {
+    const orchRouter = require('../orch-router');
+    const idRaw = String(payload.id || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
+    const id = idRaw || ('custom-' + Date.now().toString(36));
+    const preset = orchRouter.ORCH_PAID_API_PRESETS.find((p) => p.id === id);
+    const settings = store.getSettings ? (store.getSettings() || {}) : {};
+    const savedList = Array.isArray(settings.orchPaidProviders) ? settings.orchPaidProviders.slice() : [];
+    const existingIdx = savedList.findIndex((p) => p && p.id === id);
+    const existing = existingIdx >= 0 ? savedList[existingIdx] : null;
+
+    const name = String(payload.name || (existing && existing.name) || (preset && preset.name) || id).trim();
+    const baseURL = String(payload.baseURL || (existing && existing.baseURL) || (preset && preset.baseURL) || '').trim().replace(/\/+$/, '');
+    if (!baseURL || !/^https?:\/\//i.test(baseURL)) {
+      return { ok: false, error: 'Valid Base URL starting with http:// or https:// is required' };
+    }
+    const nb = orchRouter.normBase(baseURL);
+
+    let models = Array.isArray(payload.models)
+      ? payload.models
+      : ((existing && Array.isArray(existing.models) && existing.models.length) ? existing.models : (preset ? preset.models : []));
+    models = models.map((m) => ({
+      id: String(m.id || m.model || m).trim(),
+      label: String(m.label || m.id || m.model || m).trim(),
+      tier: ['small', 'heavy', 'critical'].includes(m.tier) ? m.tier : 'heavy',
+      contextWindow: Number(m.contextWindow) || 0,
+    })).filter((m) => m.id);
+
+    const nextKeysMap = { ...(settings.providerKeys || {}) };
+    if (payload.clearKey) {
+      try { secretstore.del('autobot.orch_api_key.' + id); } catch (_) {}
+      try { secretstore.del('autobot.orch_base_key.' + nb); } catch (_) {}
+      for (const k of Object.keys(nextKeysMap)) {
+        if (orchRouter.normBase(k) === nb) delete nextKeysMap[k];
+      }
+      if (existing && existing.baseURL) {
+        const oldNb = orchRouter.normBase(existing.baseURL);
+        if (oldNb && oldNb !== nb) {
+          try { secretstore.del('autobot.orch_base_key.' + oldNb); } catch (_) {}
+        }
+      }
+    } else if (typeof payload.apiKey === 'string') {
+      const k = payload.apiKey.trim();
+      if (k && !k.startsWith('••••')) {
+        secretstore.set('autobot.orch_api_key.' + id, k);
+        secretstore.set('autobot.orch_base_key.' + nb, k);
+        nextKeysMap[nb] = k;
+      }
+    }
+
+    const record = {
+      id,
+      name,
+      baseURL,
+      custom: !preset,
+      models,
+    };
+    if (existingIdx >= 0) savedList[existingIdx] = record;
+    else savedList.push(record);
+    store.setSettings({ orchPaidProviders: savedList, providerKeys: nextKeysMap });
+
+    let orchestrator = store.getOrchestrator ? (store.getOrchestrator() || { enabled: false, providers: [], activeIndex: -1 }) : null;
+    if (orchestrator && payload.clearKey) {
+      const filtered = (orchestrator.providers || []).filter((r) => !(r && !r.oauthProvider && (r.orchProviderId === id || orchRouter.normBase(r.baseURL) === nb)));
+      let ai = Number(orchestrator.activeIndex);
+      if (!filtered.length) ai = -1;
+      else if (!Number.isFinite(ai) || ai < 0 || ai >= filtered.length) ai = 0;
+      orchestrator = store.setOrchestrator({ ...orchestrator, providers: filtered, activeIndex: ai });
+      poolNoticeDeduper.reset();
+    } else if (orchestrator && Array.isArray(payload.autoAddModels) && payload.autoAddModels.length) {
+      const cur = Array.isArray(orchestrator.providers) ? orchestrator.providers.slice() : [];
+      for (const m of payload.autoAddModels) {
+        const mid = String(m.id || m.model || m).trim();
+        if (!mid) continue;
+        const rowId = makeOrchRowId(baseURL, mid);
+        if (cur.some((r) => r && (r.id === rowId || (!r.oauthProvider && orchRouter.normBase(r.baseURL) === nb && r.model === mid)))) {
+          continue;
+        }
+        cur.push({
+          id: rowId,
+          name: name + ' · ' + (m.label || mid),
+          baseURL,
+          apiKey: '',
+          orchProviderId: id,
+          model: mid,
+          tier: ['small', 'heavy', 'critical'].includes(m.tier) ? m.tier : 'heavy',
+          oauth: false,
+          oauthProvider: '',
+          transport: '',
+          contextWindow: Number(m.contextWindow) || 0,
+        });
+      }
+      const ai = Number(orchestrator.activeIndex) >= 0 && Number(orchestrator.activeIndex) < cur.length ? orchestrator.activeIndex : (cur.length ? 0 : -1);
+      orchestrator = store.setOrchestrator({ ...orchestrator, enabled: true, providers: cur, activeIndex: ai });
+      poolNoticeDeduper.reset();
+    }
+
+    const snap = buildOrchPaidProvidersSnapshot();
+    return { ...snap, orchestrator, savedId: id };
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+
+ipcMain.handle('autobot:orchPaidProviderDelete', (e, payload = {}) => {
+  try {
+    const orchRouter = require('../orch-router');
+    const id = String(payload.id || '').trim();
+    if (!id) return { ok: false, error: 'Provider id is required' };
+    const settings = store.getSettings ? (store.getSettings() || {}) : {};
+    const savedList = Array.isArray(settings.orchPaidProviders) ? settings.orchPaidProviders : [];
+    const target = savedList.find((p) => p && p.id === id);
+    const nb = target && target.baseURL ? orchRouter.normBase(target.baseURL) : '';
+    try { secretstore.del('autobot.orch_api_key.' + id); } catch (_) {}
+    if (nb) try { secretstore.del('autobot.orch_base_key.' + nb); } catch (_) {}
+    const nextList = savedList.filter((p) => p && p.id !== id);
+    const nextKeysMap = { ...(settings.providerKeys || {}) };
+    if (nb) {
+      for (const k of Object.keys(nextKeysMap)) {
+        if (orchRouter.normBase(k) === nb) delete nextKeysMap[k];
+      }
+    }
+    store.setSettings({ orchPaidProviders: nextList, providerKeys: nextKeysMap });
+
+    let orchestrator = store.getOrchestrator ? (store.getOrchestrator() || { enabled: false, providers: [], activeIndex: -1 }) : null;
+    if (orchestrator) {
+      const filtered = (orchestrator.providers || []).filter((r) => !(r && !r.oauthProvider && (r.orchProviderId === id || (nb && orchRouter.normBase(r.baseURL) === nb))));
+      let ai = Number(orchestrator.activeIndex);
+      if (!filtered.length) ai = -1;
+      else if (!Number.isFinite(ai) || ai < 0 || ai >= filtered.length) ai = 0;
+      orchestrator = store.setOrchestrator({ ...orchestrator, providers: filtered, activeIndex: ai });
+      poolNoticeDeduper.reset();
+    }
+    return { ...buildOrchPaidProvidersSnapshot(), orchestrator };
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+
+ipcMain.handle('autobot:orchPaidProviderFetchModels', async (e, payload = {}) => {
+  try {
+    const orchRouter = require('../orch-router');
+    const id = String(payload.id || '').trim();
+    const settings = store.getSettings ? (store.getSettings() || {}) : {};
+    const savedList = Array.isArray(settings.orchPaidProviders) ? settings.orchPaidProviders : [];
+    const existing = savedList.find((p) => p && p.id === id);
+    const preset = orchRouter.ORCH_PAID_API_PRESETS.find((p) => p.id === id);
+    const baseURL = String(payload.baseURL || (existing && existing.baseURL) || (preset && preset.baseURL) || '').trim().replace(/\/+$/, '');
+    if (!baseURL || !/^https?:\/\//i.test(baseURL)) {
+      return { ok: false, error: 'Valid Base URL is required before fetching models' };
+    }
+    const draftKey = (typeof payload.apiKey === 'string' && !payload.apiKey.startsWith('••••')) ? payload.apiKey.trim() : '';
+    const apiKey = draftKey || orchRouter.resolvePaidProviderApiKey({ orchProviderId: id, baseURL }, { settings, secretstore });
+    if (!apiKey && !/^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(baseURL)) {
+      return { ok: false, error: 'Enter or save an API key first to fetch models' };
+    }
+    const headers = { Accept: 'application/json' };
+    if (apiKey) {
+      if (/anthropic\.com/i.test(baseURL)) {
+        headers['x-api-key'] = apiKey;
+        headers['anthropic-version'] = '2023-06-01';
+      } else {
+        headers.Authorization = 'Bearer ' + apiKey;
+      }
+    }
+    if (/openrouter\.ai/i.test(baseURL)) {
+      headers['HTTP-Referer'] = 'https://akronlogic.com';
+      headers['X-Title'] = 'Akron Code';
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    let data = null;
+    try {
+      const resp = await fetch(baseURL + '/models', { headers, signal: ctrl.signal });
+      const text = await resp.text();
+      if (!resp.ok) {
+        return { ok: false, error: `HTTP ${resp.status}: ${text.slice(0, 160)}` };
+      }
+      data = JSON.parse(text);
+    } finally {
+      clearTimeout(timer);
+    }
+    const rawArr = Array.isArray(data && data.data) ? data.data : (Array.isArray(data && data.models) ? data.models : []);
+    const inferTier = (mid) => {
+      const s = String(mid || '').toLowerCase();
+      if (/(haiku|flash|mini|nano|8b|7b|air|instant|lite)/.test(s)) return 'small';
+      if (/(opus|reasoner|r1\b|o[134]\b|pro|ultra|480b|glm-5|gpt-5|grok-4|large)/.test(s)) return 'critical';
+      return 'heavy';
+    };
+    const seenM = new Set();
+    const models = [];
+    for (const item of rawArr) {
+      const mid = String((item && (item.id || item.name || item.model)) || item || '').trim();
+      if (!mid || seenM.has(mid)) continue;
+      if (/(embed|embedding|whisper|tts|moderation|rerank)/i.test(mid)) continue;
+      seenM.add(mid);
+      models.push({
+        id: mid,
+        label: String((item && (item.display_name || item.name)) || mid).trim(),
+        tier: inferTier(mid),
+        contextWindow: Number(item && (item.context_length || item.contextWindow || item.max_context_length)) || 0,
+      });
+      if (models.length >= 200) break;
+    }
+    if (models.length && id) {
+      const nextList = savedList.slice();
+      const rec = {
+        id,
+        name: String(payload.name || (existing && existing.name) || (preset && preset.name) || id),
+        baseURL,
+        custom: !preset,
+        models,
+      };
+      const idx = nextList.findIndex((p) => p && p.id === id);
+      if (idx >= 0) nextList[idx] = rec;
+      else nextList.push(rec);
+      store.setSettings({ orchPaidProviders: nextList });
+    }
+    return { ...buildOrchPaidProvidersSnapshot(), models, fetchedCount: models.length };
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+
 };

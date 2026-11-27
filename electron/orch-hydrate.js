@@ -29,6 +29,17 @@
  * @param {(p: object) => Promise<object>} hydrate  resolves one row (main.js: hydrateProvider)
  * @returns {Promise<{orch: object|null, dead: Array<{entry: object, error: Error}>}>}
  */
+function isRemoteUnkeyedRow(entry, resolved) {
+  if (!entry || typeof entry !== 'object') return false;
+  if (entry.oauthProvider || entry.oauth) return false;
+  const base = String((resolved && resolved.baseURL) || entry.baseURL || '').trim();
+  if (!base) return false;
+  const isLocalNoKey = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(base)
+    && !/(localhost|127\.0\.0\.1):(3001|31415)\b/i.test(base);
+  if (isLocalNoKey) return false;
+  return !String((resolved && resolved.apiKey) || (resolved && resolved.accessToken) || '').trim();
+}
+
 async function hydrateOrchestrator(orch, hydrate) {
   const hasPoolGw = Boolean(
     orch && orch.pools && orch.pools.gateway
@@ -47,7 +58,14 @@ async function hydrateOrchestrator(orch, hydrate) {
   const dead = [];
   for (const entry of srcProviders) {
     try {
-      providers.push(await hydrate(entry));
+      const h = await hydrate(entry);
+      if (isRemoteUnkeyedRow(entry, h)) {
+        const err = new Error('needs an API key in Settings');
+        err.code = 'provider_needs_key';
+        dead.push({ entry, error: err });
+        continue;
+      }
+      providers.push(h);
       kept.push(entry);
     } catch (error) {
       dead.push({ entry, error });
@@ -92,9 +110,11 @@ function poolDeadNotice(dead) {
   const names = list
     .map((d) => (d && d.entry && (d.entry.name || d.entry.model)) || 'a model')
     .join(', ');
+  const anyOauth = list.some((d) => d && d.entry && (d.entry.oauthProvider || d.entry.oauth));
+  const reason = anyOauth ? 'needs to be signed in again' : 'needs an API key in Settings';
+  const hint = anyOauth ? 'The saved row is untouched; sign in again in Settings.' : 'The saved row is untouched; set its API key in Settings.';
   return 'Left ' + n + ' orchestrator ' + (n === 1 ? 'model' : 'models') +
-    ' out of this turn — ' + names + ' needs to be signed in again. ' +
-    'The saved row is untouched; sign in again in Settings.';
+    ' out of this turn — ' + names + ' ' + reason + '. ' + hint;
 }
 
 /**
