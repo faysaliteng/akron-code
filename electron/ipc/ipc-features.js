@@ -1578,4 +1578,13 @@ const devserver = require('../devserver');
 ipcMain.handle('autobot:devServerDetect', (e, cwd) => devserver.detect(cwd));
 ipcMain.handle('autobot:devServerStart', (e, cwd) => devserver.start(cwd));
 
+ipcMain.handle('autobot:migrationScan', (e, payload = {}) => {
+  try { return require('../importer').scanExternalConfigs({ cwd: cwdFor(payload.cwd) }); }
+  catch (err) { return { ok: false, error: err.message, items: [] }; }
+});
+ipcMain.handle('autobot:migrationApply', (e, payload = {}) => {
+  try { return require('../importer').importExternalConfigs(payload || {}); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
 };

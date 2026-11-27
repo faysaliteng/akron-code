@@ -443,6 +443,8 @@ contextBridge.exposeInMainWorld('autobot', {
   setPreventSleep: (enabled) => ipcRenderer.invoke('autobot:setPreventSleep', enabled),
   browserRulesCheck: (payload) => ipcRenderer.invoke('autobot:browserRulesCheck', payload),
   generateDiagnostics: (payload) => ipcRenderer.invoke('autobot:generateDiagnostics', payload),
+  migrationScan: (payload) => ipcRenderer.invoke('autobot:migrationScan', payload),
+  migrationApply: (payload) => ipcRenderer.invoke('autobot:migrationApply', payload),
   onEnvChanged: (cb) => {
     const h = (e, state) => cb(state);
     ipcRenderer.on('autobot:envChanged', h);

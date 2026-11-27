@@ -4,6 +4,7 @@ import { LOCALES } from '../../i18n.js';
 import { normBase, LOCAL_BASE } from '../../providerstatus-ui.mjs';
 import { PRESETS, PRESET_KEYS, useDismiss } from '../../utils/appHelpers.jsx';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel.jsx';
+import { MigrationWizard } from './MigrationWizard.jsx';
 import { ApplicationSettingsSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection } from './ExtendedSettingsPanels.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from '../../features/WorkspacePanels.jsx';
 import { SkillsViewBody, PluginsViewBody } from '../chat/WorkspaceViews.jsx';
@@ -997,6 +998,10 @@ export function SettingsModalBody({
                 mcpServers={mcpServers}
                 setNotice={setNotice}
               />
+            )}
+
+            {section === 'migrate' && (
+              <MigrationWizard cwd={cwd} setNotice={setNotice} />
             )}
 
             {section === 'about' && (
