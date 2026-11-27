@@ -1278,7 +1278,21 @@ ipcMain.handle('autobot:studioInspect', async (_event, payload) => {
     const p = payload || {};
     const targetRaw = String(p.path || '').trim();
     if (!targetRaw) return { ok: false, error: 'path required' };
-    const absPath = path.isAbsolute(targetRaw) ? path.normalize(targetRaw) : path.resolve(p.cwd || workspace.scratch(), targetRaw);
+    let absPath = path.isAbsolute(targetRaw) ? path.normalize(targetRaw) : path.resolve(p.cwd || workspace.scratch(), targetRaw);
+    if (!fs.existsSync(absPath)) {
+      if (p.cachePath && fs.existsSync(p.cachePath)) {
+        absPath = p.cachePath;
+      } else {
+        try {
+          const cacheDir = path.join(os.homedir(), '.autobot', 'media-cache');
+          const leaf = path.basename(targetRaw);
+          if (leaf && fs.existsSync(cacheDir)) {
+            const match = fs.readdirSync(cacheDir).filter((f) => f.endsWith('-' + leaf)).sort().pop();
+            if (match) absPath = path.join(cacheDir, match);
+          }
+        } catch (_) {}
+      }
+    }
     if (!fs.existsSync(absPath)) return { ok: false, error: `File not found: ${absPath}` };
     const stat = fs.statSync(absPath);
     const ext = path.extname(absPath).toLowerCase().slice(1);
@@ -1311,7 +1325,10 @@ ipcMain.handle('autobot:studioAction', async (event, payload) => {
   try {
     const p = payload || {};
     const action = String(p.action || '');
-    const srcPath = String(p.path || '').trim();
+    let srcPath = String(p.path || '').trim();
+    if (srcPath && !fs.existsSync(srcPath) && p.cachePath && fs.existsSync(p.cachePath)) {
+      srcPath = p.cachePath;
+    }
     const cwd = p.cwd || (srcPath ? path.dirname(srcPath) : workspace.scratch());
     const mediaGen = require('../media-gen');
     const docStudio = require('../doc-studio');
@@ -1741,6 +1758,144 @@ ipcMain.handle('autobot:migrationScan', (e, payload = {}) => {
 ipcMain.handle('autobot:migrationApply', (e, payload = {}) => {
   try { return require('../importer').importExternalConfigs(payload || {}); }
   catch (err) { return { ok: false, error: err.message }; }
+});
+
+// Dedicated DeepSeek V4.1 Flash Auto-Switch Dispatcher Brain config (3 Sources + Telemetry)
+function buildAutoRouterSnapshot(tr, settings) {
+  const s = settings || {};
+  const sw = s.autoSwitch || {};
+  const ar = s.autoRouter || {};
+  const source = tr.AUTO_SWITCH_SOURCES[sw.source] ? sw.source : 'openrouter_free';
+  const orKey = secretstore.get('autobot.autoswitch.openrouter_key') || '';
+  const dsKey = secretstore.get('autobot.autoswitch.deepseek_key') || secretstore.get('deepseek-router:apiKey') || '';
+  const flKey = secretstore.get('autobot.autoswitch.freellm_key') || '';
+  const hint = (k) => (k ? '••••' + String(k).slice(-4) : '');
+  const activeKey = source === 'openrouter_free' ? orKey : (source === 'deepseek_api' ? dsKey : flKey);
+  const spec = tr.AUTO_SWITCH_SOURCES[source];
+  const hasKey = Boolean(activeKey || (source === 'freellmapi'));
+  return {
+    ok: true,
+    source,
+    defaultForNewSessions: Boolean(sw.defaultForNewSessions),
+    hasKey,
+    keyHint: hint(activeKey),
+    model: (source === 'deepseek_api' ? (ar.model || spec.model) : spec.model),
+    baseURL: (source === 'deepseek_api' ? (ar.baseURL || spec.baseURL) : spec.baseURL),
+    sources: {
+      openrouter_free: { hasKey: Boolean(orKey), keyHint: hint(orKey), model: tr.AUTO_SWITCH_SOURCES.openrouter_free.model, baseURL: tr.AUTO_SWITCH_SOURCES.openrouter_free.baseURL },
+      deepseek_api: { hasKey: Boolean(dsKey), keyHint: hint(dsKey), model: ar.model || tr.AUTO_SWITCH_SOURCES.deepseek_api.model, baseURL: ar.baseURL || tr.AUTO_SWITCH_SOURCES.deepseek_api.baseURL },
+      freellmapi: { hasKey: true, customKeySet: Boolean(flKey), keyHint: hint(flKey), model: tr.AUTO_SWITCH_SOURCES.freellmapi.model, baseURL: tr.AUTO_SWITCH_SOURCES.freellmapi.baseURL },
+    },
+    telemetry: tr.getDispatcherTelemetry(),
+  };
+}
+
+ipcMain.handle('autobot:autoRouterGet', () => {
+  try {
+    const tr = require('../task-router');
+    const settings = store.getSettings ? store.getSettings() : {};
+    return buildAutoRouterSnapshot(tr, settings);
+  } catch (err) {
+    return { ok: false, source: 'openrouter_free', hasKey: false, keyHint: '', model: 'deepseek/deepseek-v4.1-flash:free', baseURL: 'https://openrouter.ai/api/v1', error: err.message };
+  }
+});
+
+ipcMain.handle('autobot:autoRouterSave', (e, payload = {}) => {
+  try {
+    const tr = require('../task-router');
+    const settings = store.getSettings ? store.getSettings() : {};
+    const prevSw = (settings && settings.autoSwitch) || {};
+    const prevAr = (settings && settings.autoRouter) || {};
+    const source = tr.AUTO_SWITCH_SOURCES[payload.source] ? payload.source : (prevSw.source || 'openrouter_free');
+    const spec = tr.AUTO_SWITCH_SOURCES[source];
+
+    if (typeof payload.apiKey === 'string') {
+      const k = payload.apiKey.trim();
+      if (k && !k.startsWith('••••')) {
+        secretstore.set(spec.secretKey, k);
+        if (source === 'deepseek_api') secretstore.set('deepseek-router:apiKey', k);
+      }
+    }
+
+    const defaultForNewSessions = payload.defaultForNewSessions !== undefined
+      ? Boolean(payload.defaultForNewSessions)
+      : Boolean(prevSw.defaultForNewSessions);
+
+    const dsModel = source === 'deepseek_api'
+      ? (String(payload.model || prevAr.model || 'deepseek-v4-flash').trim() || 'deepseek-v4-flash')
+      : (prevAr.model || 'deepseek-v4-flash');
+    const dsBase = source === 'deepseek_api'
+      ? (String(payload.baseURL || prevAr.baseURL || 'https://api.deepseek.com/v1').trim().replace(/\/+$/, '') || 'https://api.deepseek.com/v1')
+      : (prevAr.baseURL || 'https://api.deepseek.com/v1');
+
+    const dsKeyNow = secretstore.get('autobot.autoswitch.deepseek_key') || secretstore.get('deepseek-router:apiKey') || '';
+    const autoSwitch = { source, defaultForNewSessions };
+    const nextSettings = store.setSettings({
+      autoSwitch,
+      autoRouter: {
+        hasKey: Boolean(dsKeyNow),
+        keyHint: dsKeyNow ? '••••' + String(dsKeyNow).slice(-4) : '',
+        model: dsModel,
+        baseURL: dsBase,
+      },
+    });
+    return buildAutoRouterSnapshot(tr, nextSettings);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('autobot:autoRouterClear', (e, payload = {}) => {
+  try {
+    const tr = require('../task-router');
+    const settings = store.getSettings ? store.getSettings() : {};
+    const prevSw = (settings && settings.autoSwitch) || {};
+    const prevAr = (settings && settings.autoRouter) || {};
+    const source = tr.AUTO_SWITCH_SOURCES[payload.source] ? payload.source : (prevSw.source || 'openrouter_free');
+    const spec = tr.AUTO_SWITCH_SOURCES[source];
+
+    secretstore.del(spec.secretKey);
+    if (source === 'deepseek_api' || !payload.source) {
+      secretstore.del('deepseek-router:apiKey');
+    }
+    const dsKeyNow = secretstore.get('autobot.autoswitch.deepseek_key') || secretstore.get('deepseek-router:apiKey') || '';
+    const nextSettings = store.setSettings({
+      autoSwitch: { source, defaultForNewSessions: Boolean(prevSw.defaultForNewSessions) },
+      autoRouter: {
+        hasKey: Boolean(dsKeyNow),
+        keyHint: dsKeyNow ? '••••' + String(dsKeyNow).slice(-4) : '',
+        model: prevAr.model || 'deepseek-v4-flash',
+        baseURL: prevAr.baseURL || 'https://api.deepseek.com/v1',
+      },
+    });
+    return buildAutoRouterSnapshot(tr, nextSettings);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('autobot:autoRouterTest', async (e, payload = {}) => {
+  try {
+    const tr = require('../task-router');
+    const settings = store.getSettings ? store.getSettings() : {};
+    const prevSw = (settings && settings.autoSwitch) || {};
+    const prevAr = (settings && settings.autoRouter) || {};
+    const source = tr.AUTO_SWITCH_SOURCES[payload.source] ? payload.source : (prevSw.source || 'openrouter_free');
+    const spec = tr.AUTO_SWITCH_SOURCES[source];
+
+    const passedKey = (typeof payload.apiKey === 'string' && !payload.apiKey.startsWith('••••')) ? payload.apiKey.trim() : '';
+    const storedKey = secretstore.get(spec.secretKey) || (spec.legacySecretKey ? secretstore.get(spec.legacySecretKey) : '') || '';
+    const apiKey = passedKey || storedKey || '';
+    const model = source === 'deepseek_api'
+      ? (String(payload.model || prevAr.model || spec.model).trim() || spec.model)
+      : spec.model;
+    const baseURL = source === 'deepseek_api'
+      ? (String(payload.baseURL || prevAr.baseURL || spec.baseURL).trim() || spec.baseURL)
+      : spec.baseURL;
+    return await tr.pingDeepSeekDispatcher({ apiKey, source, baseURL, model });
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 };

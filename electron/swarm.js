@@ -44,6 +44,14 @@ function normalizeTier(t, fallback) {
 // Cheap/local models never enter a swarm roster (they remain fair game for the
 // automatic Task/Agent multi-agent path).
 const FRONTIER_RE = /(kimi|moonshot|deepseek|glm|zhipu|chatgpt|gpt-?[3-9]|codex|\bo[1-4]\b|anthropic|claude|fable|sonnet|opus|haiku|gemini[- ]?(pro|ultra)|qwen.*(max|235b)|grok|command-r-plus|mistral-large|frontier|terra|luna|reserve)/i;
+function inferModelTier(model, fallback) {
+  const m = String(model || '').toLowerCase();
+  if (!m) return fallback || 'heavy';
+  if (/(haiku|flash|mini|nano|lite|small|\b[1-9]b\b)/i.test(m)) return 'small';
+  if (/(opus|ultra|carbon|\bo3\b|\bgpt-6\b|pro-max)/i.test(m)) return 'critical';
+  return fallback || 'heavy';
+}
+
 function isFrontier(p) {
   if (!p) return false;
   if (p.frontier === true) return true;
@@ -74,6 +82,7 @@ function buildRoster(opts = {}) {
       : String(p.baseURL) + '|' + String(p.model || '');
     if (seen.has(key)) return;
     seen.add(key);
+    const inferredTier = inferModelTier(p.model || p.name, fallbackTier);
     roster.push({
       id: p.id || key,
       name: p.name || p.model || 'model',
@@ -100,7 +109,7 @@ function buildRoster(opts = {}) {
       maxConcurrent: Number(p.maxConcurrent) > 0 ? Number(p.maxConcurrent) : undefined,
       contextWindow: Number(p.contextWindow) || 0,
       frontier: isFrontier(p),
-      tier: normalizeTier(p.tier, fallbackTier),
+      tier: normalizeTier(p.tier, inferredTier),
       role,
     });
   };
@@ -672,7 +681,7 @@ async function swarm(goal, opts = {}) {
       provider,
       chain,
       model: provider ? provider.model : null,
-      tier: provider && provider.tier ? provider.tier : t.tier,
+      tier: normalizeTier(t.tier, (provider && provider.tier) || 'heavy'),
       jobRole: poolOrch ? roleKey : null,
     };
   });
@@ -766,7 +775,7 @@ async function swarm(goal, opts = {}) {
       id: 'h' + dynamicCount,
       title,
       prompt,
-      tier: provider && provider.tier ? provider.tier : normalizeTier(a.tier, 'heavy'),
+      tier: normalizeTier(a.tier, (provider && provider.tier) || 'heavy'),
       role: a.role ? router.normalizeRole(a.role) : null,
       jobRole: poolOrch ? roleKey : null,
       model: provider ? provider.model : null,

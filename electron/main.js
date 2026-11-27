@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, globalShortcut, nativeImage, protocol, session, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, globalShortcut, nativeImage, protocol, session, screen, clipboard } = require('electron');
 const secretstore = require('./secretstore');
 if (process.platform !== 'darwin' || !secretstore.hasLegacySafeStorage()) {
   try {
@@ -10,7 +10,7 @@ if (process.platform !== 'darwin' || !secretstore.hasLegacySafeStorage()) {
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, spawnSync } = require('child_process');
 const net = require('net');
 const { runAgent, createPauseController, normalizeProvider, humanizeLLMError } = require('./llm');
 const store = require('./store');
@@ -365,6 +365,179 @@ const broadcastArtifactSaved = (...args) => winExtCtrl && winExtCtrl.broadcastAr
 const createQuickWindow = (...args) => winExtCtrl && winExtCtrl.createQuickWindow(...args);
 const hideQuickWin = () => winExtCtrl && winExtCtrl.hideQuickWin();
 
+let __lastClipWriteText = '';
+let __lastClipWriteAt = 0;
+
+function writeNativeClipboard(text, html = '') {
+  const str = String(text == null ? '' : text);
+  if (!str) return false;
+  const now = Date.now();
+  if (str === __lastClipWriteText && (now - __lastClipWriteAt) < 200) {
+    return true;
+  }
+  __lastClipWriteText = str;
+  __lastClipWriteAt = now;
+  let ok = false;
+  try {
+    if (html) clipboard.write({ text: str, html: String(html) });
+    else clipboard.writeText(str);
+    if (clipboard.readText() === str) ok = true;
+  } catch (_) {}
+  if (!ok || process.platform === 'darwin') {
+    if (process.platform === 'darwin') {
+      try {
+        const r = spawnSync('/usr/bin/pbcopy', [], {
+          input: str,
+          encoding: 'utf8',
+          env: { ...process.env, LANG: process.env.LANG || 'en_US.UTF-8', LC_ALL: process.env.LC_ALL || 'en_US.UTF-8' },
+          timeout: 2000,
+        });
+        if (r && r.status === 0) ok = true;
+      } catch (_) {}
+    } else if (process.platform === 'win32') {
+      try {
+        const r = spawnSync('clip', [], { input: str, encoding: 'utf8', timeout: 2000 });
+        if (r && r.status === 0) ok = true;
+      } catch (_) {}
+    }
+  }
+  return ok;
+}
+
+function readNativeClipboard() {
+  try {
+    const t = clipboard.readText();
+    if (t) return t;
+  } catch (_) {}
+  if (process.platform === 'darwin') {
+    try {
+      const r = spawnSync('/usr/bin/pbpaste', [], {
+        encoding: 'utf8',
+        env: { ...process.env, LANG: process.env.LANG || 'en_US.UTF-8', LC_ALL: process.env.LC_ALL || 'en_US.UTF-8' },
+        timeout: 2000,
+      });
+      if (r && r.status === 0 && r.stdout) return r.stdout;
+    } catch (_) {}
+  }
+  return '';
+}
+
+function attachContextMenu(wc) {
+  if (!wc || wc.__akronCtxMenuAttached) return;
+  wc.__akronCtxMenuAttached = true;
+
+  if (app.isPackaged) {
+    wc.on('before-input-event', (event, input) => {
+      if (!input || input.type !== 'keyDown') return;
+      const key = String(input.key || '').toLowerCase();
+      const isInspect = key === 'f12' || ((input.control || input.meta) && (input.shift || input.alt) && key === 'i');
+      if (isInspect) event.preventDefault();
+    });
+  }
+
+  wc.on('context-menu', async (_event, params) => {
+    const template = [];
+    let selText = String((params && params.selectionText) || '');
+    if (!selText) {
+      try {
+        selText = await wc.executeJavaScript(
+          '(function(){try{return window.__akronGetSelectedText ? window.__akronGetSelectedText() : (window.getSelection ? window.getSelection().toString() : "");}catch(_){return "";}})()',
+          true
+        ) || '';
+      } catch (_) {}
+    }
+    const flags = (params && params.editFlags) || {};
+    if (params && params.isEditable) {
+      if (flags.canUndo) template.push({ role: 'undo' });
+      if (flags.canRedo) template.push({ role: 'redo' });
+      if (template.length) template.push({ type: 'separator' });
+      template.push(
+        { role: 'cut', enabled: !!flags.canCut || Boolean(selText) },
+        {
+          label: 'Copy',
+          accelerator: 'CmdOrCtrl+C',
+          enabled: !!flags.canCopy || Boolean(selText),
+          click: () => {
+            if (selText) writeNativeClipboard(selText);
+            else { try { wc.copy(); } catch (_) {} }
+          },
+        },
+        { role: 'paste', enabled: !!flags.canPaste },
+        { role: 'pasteAndMatchStyle', enabled: !!flags.canPaste },
+        { type: 'separator' },
+        { role: 'selectAll', enabled: flags.canSelectAll !== false }
+      );
+    } else {
+      template.push({
+        label: 'Copy',
+        accelerator: 'CmdOrCtrl+C',
+        enabled: Boolean(selText) || !!flags.canCopy,
+        click: async () => {
+          let toCopy = selText;
+          if (!toCopy) {
+            try {
+              toCopy = await wc.executeJavaScript(
+                '(function(){try{return window.__akronGetSelectedText ? window.__akronGetSelectedText() : (window.getSelection ? window.getSelection().toString() : "");}catch(_){return "";}})()',
+                true
+              ) || '';
+            } catch (_) {}
+          }
+          if (toCopy) {
+            writeNativeClipboard(toCopy);
+          } else {
+            try { wc.copy(); } catch (_) {}
+          }
+        },
+      });
+      if (params && params.linkURL) {
+        template.push({
+          label: 'Copy Link Address',
+          click: () => {
+            writeNativeClipboard(String(params.linkURL));
+          },
+        });
+      }
+      template.push({
+        label: 'Select All',
+        accelerator: 'CmdOrCtrl+A',
+        click: () => {
+          try { wc.selectAll(); } catch (_) {}
+        },
+      });
+    }
+    if (!template.length) return;
+    const targetWin = BrowserWindow.fromWebContents(wc) || BrowserWindow.getFocusedWindow();
+    Menu.buildFromTemplate(template).popup(targetWin ? { window: targetWin } : undefined);
+  });
+}
+
+ipcMain.handle('autobot:clipboardWrite', (_e, payload) => {
+  try {
+    const isObj = payload && typeof payload === 'object';
+    const str = String(isObj ? (payload.text == null ? '' : payload.text) : (payload == null ? '' : payload));
+    const html = isObj && payload.html ? String(payload.html) : '';
+    const ok = writeNativeClipboard(str, html);
+    return { ok, verified: ok && clipboard.readText() === str };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+});
+
+ipcMain.handle('autobot:clipboardRead', () => {
+  return readNativeClipboard();
+});
+
+ipcMain.handle('autobot:clipboardReadImage', () => {
+  try {
+    const img = clipboard.readImage();
+    if (!img || img.isEmpty()) return { ok: true, hasImage: false };
+    const size = img.getSize();
+    return { ok: true, hasImage: true, dataUrl: img.toDataURL(), width: size.width, height: size.height };
+  } catch (err) {
+    return { ok: false, hasImage: false, error: err && err.message ? err.message : String(err) };
+  }
+});
+
 function createWindow() {
   // Restore the last size/position (Desktop mainWindow.js). Bounds that no
   // longer intersect a display are dropped rather than restoring off-screen.
@@ -403,18 +576,11 @@ function createWindow() {
   windows.add(win);
   windowstate.track(win, { onRestore: true });
   // A deep link that arrived during boot is delivered once the page can hear it.
+  attachContextMenu(win.webContents);
   const consoleErrors = [];
   win.webContents.on('console-message', (_e, level, message) => {
     if (level >= 3) consoleErrors.push(String(message || ''));
   });
-  if (app.isPackaged) {
-    win.webContents.on('before-input-event', (event, input) => {
-      if (input.type !== 'keyDown') return;
-      const key = String(input.key || '').toLowerCase();
-      const isInspect = key === 'f12' || ((input.control || input.meta) && (input.shift || input.alt) && key === 'i');
-      if (isInspect) event.preventDefault();
-    });
-  }
   win.webContents.once('did-finish-load', async () => {
     flushDeepLink(win);
     try {
@@ -557,12 +723,22 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   // The pool this turn will actually run against: the renderer's when it sent
   // one, otherwise the persisted one. Both need the same token resolution.
   const orchSource = orchestrator || store.getOrchestrator();
-  const orchActive = isOrchestratorActiveForTurn(orchSource, swarm);
+  const routingMode = (provider && provider.routingMode)
+    || (provider && String(provider.model || '').trim().toLowerCase() === 'auto' ? 'auto' : '');
+  const orchActive = isOrchestratorActiveForTurn(orchSource, swarm, provider);
   let poolDead = [];
   // Resolve subscription accounts into a live bearer token before the turn.
   try {
-    provider = await hydrateProvider(provider);
-    if (orchActive) {
+    if (routingMode === 'auto') {
+      try {
+        provider = await hydrateProvider(provider);
+      } catch (_) {
+        provider = { ...(provider || {}), oauthProvider: '', oauth: false, accessToken: '', transport: '' };
+      }
+    } else {
+      provider = await hydrateProvider(provider);
+    }
+    if (orchActive && orchSource) {
       const hy = await hydrateOrchestrator(orchSource, hydrateProvider);
       orchestrator = hy.orch;
       poolDead = hy.dead;
@@ -610,8 +786,11 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   }
 
   // Kick off pool validation now so its network wait overlaps MCP discovery.
-  const orchInput = orchestrator || orchSource;
-  const orchReady = orchActive
+  const baseOrchInput = orchestrator || orchSource;
+  const orchInput = routingMode === 'orchestrator'
+    ? { ...(baseOrchInput || {}), enabled: true }
+    : (routingMode === 'direct' && !swarm ? { ...(baseOrchInput || {}), enabled: false } : baseOrchInput);
+  const orchReady = (orchActive && routingMode !== 'direct')
     ? validateOrchestrator(orchInput, emit).catch(() => orchInput)
     : Promise.resolve(orchInput);
 
@@ -845,6 +1024,20 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       // `Swarm` tool is not offered to the model at all (multi-agent Task/Agent
       // still is). The roster it may use is frontier-only.
       swarm: swarm === true,
+      hydrateProvider,
+      oauthAccounts: (() => { try { return providerOauth.listAccounts(); } catch (_) { return []; } })(),
+      autoRouterConfig: (() => {
+        try {
+          return require('./task-router').resolveAutoRouterConfig({
+            settings: store.getSettings(),
+            secretstore,
+            orchestrator: orchRaw,
+            provider,
+          });
+        } catch (_) {
+          return null;
+        }
+      })(),
     });
     send({ type: 'complete', messages: finalMessages });
     // Persist the project mindmap so a later model switch continues seamlessly.
@@ -1288,6 +1481,9 @@ app.whenReady().then(() => {
     }, 1200);
     if (tRea && typeof tRea.unref === 'function') tRea.unref();
   }
+  app.on('web-contents-created', (_e, contents) => {
+    try { attachContextMenu(contents); } catch (_) {}
+  });
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

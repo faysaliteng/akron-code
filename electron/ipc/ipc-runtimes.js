@@ -189,6 +189,118 @@ ipcMain.handle('autobot:freellmSave', (event, patch) => {
   }
 });
 
+ipcMain.handle('autobot:freellmCatalog', (event, opts = {}) => {
+  try {
+    const cat = require('../freellmapi-catalog');
+    return {
+      ...cat.getCatalogSummary(),
+      chatModels: cat.listChatModels({ platform: opts.platform || '', search: opts.search || '', limit: opts.limit || 200 }),
+      mediaModels: cat.listMediaModels({ modality: opts.modality || '', platform: opts.platform || '', search: opts.search || '' }),
+      embeddingModels: cat.listEmbeddingModels({ platform: opts.platform || '', search: opts.search || '' }),
+      webBotProviders: cat.getWebBotQuickProviders(),
+    };
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
+ipcMain.handle('autobot:freellmDetect', async () => {
+  try {
+    const localRt = require('../local-runtime');
+    const info = localRt.detectFreeLLMAPIRuntime();
+    const st = await freellmStatus();
+    const cfg = freellm.loadConfig(freellm.CONFIG_FILE);
+    const unifiedKey = cfg.token || localRt.ensureUnifiedToken(cfg);
+    if (!cfg.token) {
+      try { freellm.saveConfig({ ...cfg, token: unifiedKey }, freellm.CONFIG_FILE); } catch (_) {}
+    }
+    return { ok: true, ...info, status: st, unifiedKey };
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
+ipcMain.handle('autobot:freellmImportKeys', async (event, input) => {
+  try {
+    const localRt = require('../local-runtime');
+    let payload = input;
+    if (!payload && process.versions && process.versions.electron) {
+      const { dialog } = require('electron');
+      const res = await dialog.showOpenDialog({
+        title: 'Import freellmapi-keys.json',
+        properties: ['openFile'],
+        filters: [{ name: 'JSON Keys', extensions: ['json'] }],
+      });
+      if (res.canceled || !res.filePaths || !res.filePaths[0]) return { ok: false, canceled: true };
+      payload = res.filePaths[0];
+    }
+    const r = localRt.importFreeLLMKeys(payload);
+    if (freellmHandle) freellmHandle.stop().then(startFreeLLM, startFreeLLM);
+    else startFreeLLM();
+    return r;
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
+ipcMain.handle('autobot:freellmExportKeys', async () => {
+  try {
+    const localRt = require('../local-runtime');
+    const exp = localRt.exportFreeLLMKeys();
+    if (process.versions && process.versions.electron) {
+      const { dialog } = require('electron');
+      const res = await dialog.showSaveDialog({
+        title: 'Export freellmapi-keys.json',
+        defaultPath: 'freellmapi-keys.json',
+        filters: [{ name: 'JSON Keys', extensions: ['json'] }],
+      });
+      if (!res.canceled && res.filePath) {
+        fs.writeFileSync(res.filePath, JSON.stringify(exp.payload, null, 2) + '\n', { mode: 0o600 });
+        return { ...exp, savedPath: res.filePath };
+      }
+    }
+    return exp;
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
+ipcMain.handle('autobot:freellmLaunchDesktop', () => {
+  try {
+    const localRt = require('../local-runtime');
+    const { shell } = (process.versions && process.versions.electron) ? require('electron') : { shell: null };
+    return localRt.launchOrInstallFreeLLMAPI({
+      shellOpenExternal: shell ? (u) => shell.openExternal(u) : null,
+      shellOpenPath: shell ? (p) => shell.openPath(p) : null,
+    });
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
+ipcMain.handle('autobot:freellmSaveSingleKey', (event, payload = {}) => {
+  try {
+    const localRt = require('../local-runtime');
+    const platform = String(payload.platform || '').trim().toLowerCase();
+    const apiKey = String(payload.apiKey || '').trim();
+    if (!platform || !apiKey) return { ok: false, error: 'Platform and API key are required.' };
+    const r = localRt.importFreeLLMKeys({
+      providers: {
+        [platform]: {
+          enabled: true,
+          apiKey,
+          ...(payload.accountId ? { accountId: String(payload.accountId).trim() } : {}),
+        },
+      },
+    });
+    if (freellmHandle) freellmHandle.stop().then(startFreeLLM, startFreeLLM);
+    else startFreeLLM();
+    return r;
+  } catch (e) {
+    return { ok: false, error: oneLine(e) };
+  }
+});
+
 // One-shot completion — used by GUI slash commands (/compact, /btw, /recap,
 
 // ---- Scheduled-task runner -------------------------------------------------
@@ -243,6 +355,7 @@ async function runScheduledPrompt({ task }) {
 // FreeLLMAPI (local OpenAI-compatible router over the free-tier providers)
 // ---------------------------------------------------------------------------
 let freellmHandle = null;
+let freellmCompatHandle = null;
 let freellmError = null;
 
 function startFreeLLM() {
@@ -254,6 +367,15 @@ function startFreeLLM() {
     freellmError = null;
     const live = freellm.PROVIDER_IDS.filter((id) => freellm.isConfigured(id, handle.config));
     console.log('FreeLLMAPI on ' + handle.url + ' (' + (live.join(', ') || 'external router bridge / no internal keys') + ')');
+    // Bind optional :31415 compatibility listener when external FreeLLMAPI desktop is not already running there
+    if (Number(handle.port) !== 31415 && !freellmCompatHandle && process.env.FREELM_DISABLE_COMPAT_PORT !== '1') {
+      freellm.start({ configPath: freellm.CONFIG_FILE, port: 31415 }).then((ch) => {
+        freellmCompatHandle = ch;
+        console.log('FreeLLMAPI compatibility endpoint listening on ' + ch.url);
+      }).catch(() => {
+        // Port 31415 already bound by external FreeLLMAPI.app — expected, leave untouched.
+      });
+    }
   }).catch((err) => {
     freellmHandle = null;
     freellmError = (err && err.message) || 'failed to start';
@@ -289,6 +411,11 @@ async function freellmStatus() {
   return {
     bundledRuntimeDir, getRuntimes, runtimePathPrefix, syncClientVersions, startRuntimes,
     scheduledProvider, runScheduledPrompt, startFreeLLM, freellmStatus,
-    stopFreeLLM: () => { try { if (freellmHandle) freellmHandle.stop(); } catch (_) {} freellmHandle = null; },
+    stopFreeLLM: () => {
+      try { if (freellmHandle) freellmHandle.stop(); } catch (_) {}
+      try { if (freellmCompatHandle) freellmCompatHandle.stop(); } catch (_) {}
+      freellmHandle = null;
+      freellmCompatHandle = null;
+    },
   };
 };

@@ -36,7 +36,7 @@ function getFallbackKey() {
 
 function hasInternalProviders(cfg) {
   if (!cfg || !cfg.providers) return false;
-  return PROVIDER_IDS.some((id) => isConfigured(id, cfg));
+  return Object.keys(cfg.providers).some((id) => getProviderSpec(id) && isConfigured(id, cfg));
 }
 
 function normalizeBase(u) {
@@ -184,6 +184,36 @@ const PROVIDERS = {
 
 const PROVIDER_IDS = Object.keys(PROVIDERS);
 
+function loadCatalogProviders() {
+  try {
+    const cat = require('./freellmapi-catalog').loadCatalog();
+    const out = {};
+    const byPlat = {};
+    for (const m of cat.chatModels || []) {
+      if (!byPlat[m.platform]) byPlat[m.platform] = [];
+      if (byPlat[m.platform].length < 40) byPlat[m.platform].push(m.modelId);
+    }
+    for (const [id, meta] of Object.entries(cat.platforms || {})) {
+      if (PROVIDERS[id] || !meta || !meta.baseUrl) continue;
+      out[id] = {
+        label: meta.name || id,
+        baseURL: meta.baseUrl,
+        defaultModel: (byPlat[id] && byPlat[id][0]) || 'auto',
+        models: byPlat[id] || [],
+        keyless: !!meta.keyless,
+      };
+    }
+    return out;
+  } catch (_) {
+    return {};
+  }
+}
+
+const CATALOG_PROVIDERS = loadCatalogProviders();
+function getProviderSpec(id) {
+  return PROVIDERS[id] || CATALOG_PROVIDERS[id] || null;
+}
+
 // `fast`/`smart` steer the fallback order without pinning a provider.
 const ALIASES = {
   auto: null,
@@ -253,10 +283,11 @@ function normalizeConfig(raw) {
   out.token = String(src.token || '');
   out.timeoutMs = Number(src.timeoutMs) > 0 ? Number(src.timeoutMs) : base.timeoutMs;
   out.order = Array.isArray(src.order) && src.order.length
-    ? src.order.filter((id) => PROVIDERS[id])
+    ? src.order.filter((id) => getProviderSpec(id))
     : base.order.slice();
-  for (const id of PROVIDER_IDS) {
-    const spec = PROVIDERS[id];
+  const extraIds = Object.keys((src && src.providers) || {}).filter((id) => !PROVIDERS[id] && getProviderSpec(id));
+  for (const id of [...PROVIDER_IDS, ...extraIds]) {
+    const spec = getProviderSpec(id);
     const given = (src.providers && src.providers[id]) || {};
     out.providers[id] = {
       enabled: given.enabled !== false,
@@ -266,6 +297,9 @@ function normalizeConfig(raw) {
       defaultModel: String(given.defaultModel || spec.defaultModel),
       ...(Array.isArray(given.models) ? { models: given.models.slice() } : {}),
     };
+    if (!PROVIDERS[id] && !out.order.includes(id) && out.providers[id].apiKey) {
+      out.order.push(id);
+    }
   }
   // Env overrides for the listener.
   if (process.env.FREELM_PORT) out.port = Number(process.env.FREELM_PORT) || out.port;
@@ -285,10 +319,7 @@ function loadConfig(file) {
   const cfg = normalizeConfig(raw);
   cfg.configFile = target;
   cfg.exists = raw != null;
-  cfg.configured = PROVIDER_IDS.some((id) => {
-    const p = cfg.providers[id];
-    return p.enabled && !!p.apiKey && (!PROVIDERS[id].needsAccount || !!p.accountId);
-  });
+  cfg.configured = hasInternalProviders(cfg);
   return cfg;
 }
 
@@ -309,7 +340,7 @@ function saveConfig(cfg, file) {
 // Model resolution
 // ---------------------------------------------------------------------------
 function providerBase(id, cfg) {
-  const spec = PROVIDERS[id];
+  const spec = getProviderSpec(id) || {};
   const p = (cfg.providers && cfg.providers[id]) || {};
   let base = String(p.baseURL || spec.baseURL || '').replace(/\/+$/, '');
   base = base.replace('{accountId}', encodeURIComponent(p.accountId || ''));
@@ -317,7 +348,8 @@ function providerBase(id, cfg) {
 }
 
 function isConfigured(id, cfg) {
-  const spec = PROVIDERS[id];
+  const spec = getProviderSpec(id);
+  if (!spec) return false;
   const p = (cfg.providers && cfg.providers[id]) || {};
   if (p.enabled === false) return false;
   if (spec.needsAccount && !p.accountId) return false;
@@ -341,12 +373,13 @@ function resolveModel(input, cfg) {
   }
   if (lower === 'fast' || lower === 'smart') return { mode: 'order', order: ALIASES[lower].slice() };
   // A bare provider id means "that provider's default model".
-  if (PROVIDERS[lower]) {
+  if (getProviderSpec(lower)) {
+    const spec = getProviderSpec(lower);
     const p = cfg.providers[lower];
     return {
       mode: 'explicit',
       provider: lower,
-      model: (p && p.defaultModel) || PROVIDERS[lower].defaultModel,
+      model: (p && p.defaultModel) || spec.defaultModel,
     };
   }
   const sep = raw.indexOf('/');
@@ -356,11 +389,12 @@ function resolveModel(input, cfg) {
   if (colon > 0 && (cut < 0 || colon < cut)) cut = colon;
   if (cut > 0) {
     const head = raw.slice(0, cut).toLowerCase();
-    if (PROVIDERS[head]) {
+    if (getProviderSpec(head)) {
+      const spec = getProviderSpec(head);
       const rest = raw.slice(cut + 1).trim();
       const model = rest && (head !== 'kilo' || !rest.startsWith('/'))
         ? rest
-        : ((cfg.providers[head] && cfg.providers[head].defaultModel) || PROVIDERS[head].defaultModel);
+        : ((cfg.providers[head] && cfg.providers[head].defaultModel) || spec.defaultModel);
       return { mode: 'explicit', provider: head, model };
     }
   }
@@ -372,11 +406,12 @@ function resolveModel(input, cfg) {
 function candidates(cfg, plan) {
   const out = [];
   if (plan.mode === 'explicit') {
+    const spec = getProviderSpec(plan.provider) || {};
     const p = cfg.providers[plan.provider];
     if (!isConfigured(plan.provider, cfg)) {
       const err = new Error(
         'provider "' + plan.provider + '" is not configured (missing key' +
-        (PROVIDERS[plan.provider].needsAccount ? ' or account id' : '') + ')'
+        (spec.needsAccount ? ' or account id' : '') + ')'
       );
       err.status = 400;
       err.expose = true;
@@ -387,9 +422,10 @@ function candidates(cfg, plan) {
   }
   const order = plan.order || cfg.order || PROVIDER_IDS;
   for (const id of order) {
-    if (!PROVIDERS[id] || !isConfigured(id, cfg)) continue;
+    const spec = getProviderSpec(id);
+    if (!spec || !isConfigured(id, cfg)) continue;
     const p = cfg.providers[id];
-    out.push({ provider: id, model: plan.model || p.defaultModel || PROVIDERS[id].defaultModel, cfg: p });
+    out.push({ provider: id, model: plan.model || p.defaultModel || spec.defaultModel, cfg: p });
   }
   return out;
 }
@@ -399,7 +435,7 @@ function candidates(cfg, plan) {
 // ---------------------------------------------------------------------------
 function buildUpstream(candidate, body) {
   const id = candidate.provider;
-  const spec = PROVIDERS[id];
+  const spec = getProviderSpec(id) || {};
   const p = candidate.cfg || {};
   const payload = { model: candidate.model };
   for (const k of FORWARD_FIELDS) {
@@ -707,7 +743,7 @@ function record(provider, info) {
 }
 
 async function discover(provider, cfg, timeoutMs) {
-  const spec = PROVIDERS[provider];
+  const spec = getProviderSpec(provider) || {};
   const p = cfg.providers[provider] || {};
   const cached = discoveryCache.get(provider);
   if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.models;
@@ -745,8 +781,9 @@ async function listModels(cfg, opts) {
   const ids = Object.keys(cfg.providers).filter((id) => isConfigured(id, cfg));
   const discovered = await Promise.all(ids.map((id) => discover(id, cfg, (opts && opts.timeoutMs) || 5000).catch(() => [])));
   ids.forEach((id, i) => {
+    const spec = getProviderSpec(id) || {};
     const p = cfg.providers[id];
-    const defaults = [p.defaultModel, ...(PROVIDERS[id].models || []), ...discovered[i]]
+    const defaults = [p.defaultModel, ...(spec.models || []), ...discovered[i]]
       .filter(Boolean)
       .map(String);
     for (const model of [...new Set(defaults)]) add(id + '/' + model, id);
@@ -855,6 +892,14 @@ function createRouter(config, opts) {
       }
       if (req.method === 'GET' && (route === '/v1/providers' || route === '/providers')) {
         sendJson(res, 200, health(cfg));
+        return;
+      }
+      if (req.method === 'GET' && (route === '/v1/catalog' || route === '/catalog')) {
+        try {
+          sendJson(res, 200, require('./freellmapi-catalog').getCatalogSummary());
+        } catch (err) {
+          sendJson(res, 500, { ok: false, error: String((err && err.message) || err) });
+        }
         return;
       }
       if (req.method === 'GET' && (route === '/v1/models' || route === '/models')) {

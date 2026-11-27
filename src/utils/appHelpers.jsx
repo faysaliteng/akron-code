@@ -505,7 +505,7 @@ export const buildDirectives = (styleId, reasoningLevel, opts = {}) => {
 // Never ship a credential in the renderer bundle. The default is the keyless
 // local FreeLLMAPI router; a real key is only ever typed by the user (and then
 // persisted per endpoint in `autobot:providerKeys` / main's settings file).
-export const DEFAULT_PROVIDER = { baseURL: 'http://localhost:3001/v1', apiKey: '', model: 'auto', temperature: 0.7, maxTokens: 8192, reasoningLevel: 'auto', supportsTools: true };
+export const DEFAULT_PROVIDER = { baseURL: 'http://localhost:3001/v1', apiKey: '', model: 'auto', routingMode: 'direct', temperature: 0.7, maxTokens: 8192, reasoningLevel: 'auto', supportsTools: true };
 
 // ---------- persistence helpers ----------
 export function loadJSON(key, fallback) {
@@ -635,6 +635,294 @@ export function fmtElapsed(ms) {
   return m + 'm ' + (s % 60) + 's';
 }
 
+let __lastCopiedText = '';
+let __lastCopiedAt = 0;
+
+function emitCopiedOnce(text, kind) {
+  const now = Date.now();
+  if (text === __lastCopiedText && (now - __lastCopiedAt) < 350) return;
+  __lastCopiedText = text;
+  __lastCopiedAt = now;
+  try {
+    window.dispatchEvent(new CustomEvent('akron:copied', { detail: { text, kind } }));
+  } catch (_) {}
+}
+
+/**
+ * Copy text to the system clipboard using Electron's native OS clipboard IPC first,
+ * verifying read-back, then falling back to navigator.clipboard and hidden textarea copy.
+ */
+export async function copyTextToClipboard(text) {
+  const str = String(text == null ? '' : text);
+  if (!str) return false;
+  let copied = false;
+  try {
+    if (typeof window !== 'undefined' && window.autobot && typeof window.autobot.clipboardWrite === 'function') {
+      const r = await window.autobot.clipboardWrite(str);
+      if (r && r.ok !== false) {
+        if (r.verified === true || typeof window.autobot.clipboardRead !== 'function') {
+          copied = true;
+        } else {
+          const check = await window.autobot.clipboardRead().catch(() => '');
+          if (check === str) copied = true;
+        }
+      }
+    }
+  } catch (_) {}
+  if (!copied) {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(str);
+        copied = true;
+      }
+    } catch (_) {}
+  }
+  if (!copied && typeof document !== 'undefined') {
+    let ta = null;
+    const sel = typeof window !== 'undefined' && window.getSelection ? window.getSelection() : null;
+    const savedRanges = [];
+    if (sel) {
+      for (let i = 0; i < sel.rangeCount; i++) savedRanges.push(sel.getRangeAt(i));
+    }
+    try {
+      ta = document.createElement('textarea');
+      ta.value = str;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0;';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      copied = document.execCommand('copy');
+    } catch (_) {
+    } finally {
+      if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
+      if (sel) {
+        try {
+          sel.removeAllRanges();
+          for (const r of savedRanges) sel.addRange(r);
+        } catch (_) {}
+      }
+    }
+  }
+  return copied;
+}
+
+export async function readTextFromClipboard() {
+  try {
+    if (typeof window !== 'undefined' && window.autobot && typeof window.autobot.clipboardRead === 'function') {
+      const t = await window.autobot.clipboardRead();
+      if (typeof t === 'string' && t.length > 0) return t;
+    }
+  } catch (_) {}
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+      const t = await navigator.clipboard.readText();
+      if (typeof t === 'string' && t.length > 0) return t;
+    }
+  } catch (_) {}
+  return '';
+}
+
+function insertTextIntoEditable(el, text) {
+  if (!el || text == null) return false;
+  const str = String(text);
+  try {
+    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+      const start = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
+      const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length;
+      const next = el.value.slice(0, start) + str + el.value.slice(end);
+      el.value = next;
+      const caret = start + str.length;
+      try { el.setSelectionRange(caret, caret); } catch (_) {}
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    }
+    if (el.isContentEditable) {
+      document.execCommand('insertText', false, str);
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+export function getActiveSelectedText() {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return '';
+  try {
+    const sel = window.getSelection ? window.getSelection() : null;
+    const domStr = sel ? String(sel.toString() || '') : '';
+    if (domStr && domStr.trim().length > 0) return domStr;
+  } catch (_) {}
+  try {
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT') && typeof ae.selectionStart === 'number' && typeof ae.selectionEnd === 'number' && ae.selectionEnd > ae.selectionStart) {
+      const sub = String(ae.value || '').slice(ae.selectionStart, ae.selectionEnd);
+      if (sub && sub.trim().length > 0) return sub;
+    }
+  } catch (_) {}
+  try {
+    const cached = window.__akronLastSelection;
+    if (cached && cached.text && (Date.now() - (cached.at || 0) < 15000)) {
+      return cached.text;
+    }
+  } catch (_) {}
+  return '';
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined' && !window.__akronClipboardTrackerInstalled) {
+  window.__akronClipboardTrackerInstalled = true;
+  window.__akronLastSelection = { text: '', msgId: '', at: 0 };
+  window.__akronGetSelectedText = getActiveSelectedText;
+
+  const isMac = /mac/i.test(String((navigator && (navigator.platform || navigator.userAgent)) || ''));
+
+  const updateCachedSelection = () => {
+    try {
+      const sel = window.getSelection ? window.getSelection() : null;
+      const s = sel ? String(sel.toString() || '') : '';
+      if (s && s.trim().length > 0) {
+        let msgId = '';
+        const node = sel.anchorNode || sel.focusNode;
+        const el = node && (node.nodeType === 1 ? node : node.parentElement);
+        const msgEl = el && el.closest ? el.closest('.msg[data-msg-id]') : null;
+        if (msgEl) msgId = msgEl.getAttribute('data-msg-id') || '';
+        window.__akronLastSelection = { text: s, msgId, at: Date.now() };
+      }
+    } catch (_) {}
+  };
+
+  document.addEventListener('selectionchange', updateCachedSelection, true);
+  document.addEventListener('mouseup', updateCachedSelection, true);
+  document.addEventListener('keyup', updateCachedSelection, true);
+
+  document.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    const t = e.target && (e.target.nodeType === 1 ? e.target : e.target.parentElement);
+    if (t && t.closest && t.closest('.copy-btn, .response-action-btn, .msg-user-mini-btn, .msg-toolbar, .conv-pop-item, .response-share-menu')) {
+      return;
+    }
+    setTimeout(() => {
+      try {
+        const sel = window.getSelection ? window.getSelection() : null;
+        const s = sel ? String(sel.toString() || '') : '';
+        if (!s || !s.trim()) {
+          window.__akronLastSelection = { text: '', msgId: '', at: 0 };
+        }
+      } catch (_) {}
+    }, 120);
+  }, true);
+
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat) return;
+    const k = String(e.key || '').toLowerCase();
+    const code = e.code;
+    const modOnly = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey;
+    const ae = document.activeElement;
+    const inEditable = !!(ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.isContentEditable));
+    const inMonaco = !!(ae && ae.closest && ae.closest('.monaco-editor'));
+
+    // Ctrl+C / Cmd+C anywhere with active/cached selection (except inside Monaco which manages its own selection)
+    if (modOnly && (k === 'c' || code === 'KeyC') && !inMonaco) {
+      const txt = getActiveSelectedText();
+      if (!txt) return;
+      e.preventDefault();
+      e.stopPropagation();
+      copyTextToClipboard(txt).then((ok) => {
+        if (ok) emitCopiedOnce(txt, 'selection');
+      });
+      return;
+    }
+
+    // On macOS, Cocoa binds Ctrl+V to pageDown, Ctrl+A to lineStart, etc. Make Ctrl+V/Ctrl+X/Ctrl+A work like Windows/Linux too!
+    if (isMac && e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && inEditable && !inMonaco) {
+      if (k === 'v' || code === 'KeyV') {
+        e.preventDefault();
+        e.stopPropagation();
+        readTextFromClipboard().then((txt) => {
+          if (txt) insertTextIntoEditable(ae, txt);
+        });
+        return;
+      }
+      if ((k === 'x' || code === 'KeyX') && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) {
+        const s = ae.selectionStart;
+        const en = ae.selectionEnd;
+        if (typeof s === 'number' && typeof en === 'number' && en > s) {
+          e.preventDefault();
+          e.stopPropagation();
+          const cutText = ae.value.slice(s, en);
+          ae.value = ae.value.slice(0, s) + ae.value.slice(en);
+          try { ae.setSelectionRange(s, s); } catch (_) {}
+          ae.dispatchEvent(new Event('input', { bubbles: true }));
+          copyTextToClipboard(cutText);
+        }
+        return;
+      }
+      if ((k === 'a' || code === 'KeyA') && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) {
+        e.preventDefault();
+        e.stopPropagation();
+        try { ae.select(); } catch (_) {}
+        return;
+      }
+    }
+  }, true);
+
+  window.addEventListener('copy', (e) => {
+    const ae = document.activeElement;
+    if (ae && ae.closest && ae.closest('.monaco-editor')) return;
+    const txt = getActiveSelectedText();
+    if (!txt) return;
+    try {
+      if (e.clipboardData) {
+        e.clipboardData.setData('text/plain', txt);
+        e.preventDefault();
+      }
+    } catch (_) {}
+    copyTextToClipboard(txt).then((ok) => {
+      if (ok) emitCopiedOnce(txt, 'selection');
+    });
+  }, true);
+
+  document.addEventListener('click', (e) => {
+    const t = e.target && (e.target.nodeType === 1 ? e.target : e.target.parentElement);
+    const btn = t && t.closest ? t.closest('.copy-btn') : null;
+    if (!btn) return;
+    let code = '';
+    try {
+      code = btn.dataset && btn.dataset.code ? decodeURIComponent(btn.dataset.code) : '';
+    } catch (_) {
+      code = (btn.dataset && btn.dataset.code) || '';
+    }
+    if (!code) {
+      const cb = btn.closest('.codeblock, .artifact-body');
+      const codeEl = cb ? cb.querySelector('pre code, pre') : null;
+      if (codeEl) code = codeEl.textContent || '';
+    }
+    if (!code) return;
+    e.stopPropagation();
+    copyTextToClipboard(code).then((ok) => {
+      if (!ok) return;
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1200);
+      emitCopiedOnce(code, 'code');
+    });
+  }, true);
+}
+
+/**
+ * Extract plain markdown/text content from a message, reconstructing from segments
+ * when m.content is empty or partial.
+ */
+export function extractMessageText(m) {
+  if (!m) return '';
+  if (m.content != null && String(m.content).length > 0) return String(m.content);
+  if (Array.isArray(m.segments) && m.segments.length > 0) {
+    return m.segments
+      .filter((s) => s && s.type !== 'thinking' && s.text)
+      .map((s) => s.text)
+      .join('\n\n');
+  }
+  return '';
+}
+
 const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 export function fmtMessageFullTimestamp(ts) {
@@ -673,6 +961,10 @@ export function fmtMessageTimestamp(ts, format = 'date-time') {
 
   const now = new Date();
   const time24 = `${pad2(hh)}:${mm}`;
+
+  if (mode === '24h') {
+    return `${day} ${mon} · ${time24}`;
+  }
 
   if (mode === 'relative') {
     const diffSec = Math.max(0, Math.round((now.getTime() - d.getTime()) / 1000));

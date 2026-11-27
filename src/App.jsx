@@ -35,7 +35,7 @@ import { MissionControlPane } from './components/MissionControlPane.jsx';
 import { ProactiveDashboard } from './components/ProactiveDashboard.jsx';
 import { ProjectsSidebar } from './components/sidebar/ProjectsSidebar.jsx';
 import { ProjectSettingsPanel } from './components/settings/ProjectSettingsPanel.jsx';
-import { ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection, DEFAULT_APPEARANCE_SETTINGS, computeAppearanceVars } from './components/settings/ExtendedSettingsPanels.jsx';
+import { ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection, DEFAULT_APPEARANCE_SETTINGS, computeAppearanceVars, UI_DESIGN_PREFS_KEY } from './components/settings/ExtendedSettingsPanels.jsx';
 
 // Icon, iconChar, GoogleDriveIcon imported from ./components/Icon.jsx
 
@@ -60,7 +60,7 @@ import {
 import { BrowserViewBody } from './components/browser/BrowserPaneView.jsx';
 import { InputBarBody } from './components/chat/InputBarView.jsx';
 import { SettingsModalBody } from './components/settings/SettingsModalBody.jsx';
-import { sendDesktopNotification, convToMarkdown, convToHtml, escapeHtml, fmtSize, extractCodeBlocks, filesToAttachments, toggleDictation, useDismiss, priceFor, FREELLM_LOOPBACK_BASES, MODEL_WINDOW_CACHE, HARNESS_PROFILES, SOUND_PRESETS, playUiSound, extractLinks, fetchUnfurl, parseCodeInfo } from './utils/appHelpers.jsx';
+import { sendDesktopNotification, convToMarkdown, convToHtml, escapeHtml, fmtSize, extractCodeBlocks, filesToAttachments, toggleDictation, useDismiss, priceFor, FREELLM_LOOPBACK_BASES, MODEL_WINDOW_CACHE, HARNESS_PROFILES, SOUND_PRESETS, playUiSound, extractLinks, fetchUnfurl, parseCodeInfo, copyTextToClipboard, extractMessageText } from './utils/appHelpers.jsx';
 
 // Compact record of what the assistant actually did with tools last turn.
 // Model switches need this: the new model sees files + mindmap, but without the
@@ -128,9 +128,11 @@ export default function App() {
   const [providerKeys, setProviderKeys] = useState(() => loadJSON('autobot:providerKeys', {}));
   const [settings, setSettings] = useState(() => {
     const base = loadJSON('autobot:settings', { theme: 'dark', useMemory: true, locale: 'en' });
+    const designPrefs = loadJSON(UI_DESIGN_PREFS_KEY, {});
     return {
       ...DEFAULT_APPEARANCE_SETTINGS,
       ...base,
+      ...(designPrefs && typeof designPrefs === 'object' ? designPrefs : {}),
       harnessProfile: base.harnessProfile || 'full',
       typography: normalizeTypography(base.typography),
       notifications: { agent: true, permissions: true, questions: true, errors: false, ...(base.notifications || {}) },
@@ -156,12 +158,21 @@ export default function App() {
     const root = document.documentElement;
     root.setAttribute('data-theme', appAppearance.theme);
     root.setAttribute('data-surface', appAppearance.surface);
+    root.setAttribute('data-pattern', appAppearance.bgPattern || 'carbon-weave');
+    root.setAttribute('data-density', appAppearance.density || 'comfortable');
+    root.setAttribute('data-msg-style', appAppearance.msgStyle || 'editorial');
+    root.setAttribute('data-glow', appAppearance.accentGlow || 'subtle');
+    root.setAttribute('data-blur', appAppearance.glassBlur || 'standard');
     for (const [k, v] of Object.entries(appAppearance.style)) {
       root.style.setProperty(k, v);
     }
   }, [appAppearance]);
   const T = useCallback((k) => _t(settings.locale, k), [settings.locale]);
   const [orchestrator, setOrchestrator] = useState(() => ({ enabled: false, providers: [], activeIndex: -1 }));
+  const saveOrchestrator = useCallback((next) => {
+    setOrchestrator(next);
+    try { if (window.autobot && window.autobot.setOrchestrator) window.autobot.setOrchestrator(next); } catch (_) {}
+  }, []);
   const [features, setFeatures] = useState(() => ({ computerUse: true, chrome: false, bridges: false, quickEntry: true, computerUseTeach: false, buddy: false, remoteControl: false, extensions: false, developerMode: false, trustedFolders: false, chromeHost: '127.0.0.1', chromePort: 9222 }));
   // Single write path for feature toggles: state + main-process mirror. The
   // Environment pane and Settings both call this; before it existed the pane
@@ -568,6 +579,7 @@ export default function App() {
   // composer picker while Orchestrator failover is enabled.
   useEffect(() => {
     if (!settingsAdopted) return;
+    if (provider && (provider.routingMode === 'direct' || provider.routingMode === 'auto')) return;
     if (!orchestrator || !orchestrator.enabled || !Array.isArray(orchestrator.providers) || !orchestrator.providers.length) return;
     const selModel = String((provider && provider.model) || '').trim().toLowerCase();
     const selOauth = String((provider && provider.oauthProvider) || '').trim().toLowerCase();
@@ -840,10 +852,12 @@ export default function App() {
         checkpoints: l.checkpoints || [],
         checkpointId: l.checkpointId || null,
         model: l.model || '',
+        autoRouted: l.autoRouted || undefined,
         modelsUsed: Array.isArray(l.modelsUsed) && l.modelsUsed.length ? l.modelsUsed : undefined,
         subAgents: hasTeam ? subAgentsRef.current : undefined,
         swarmInfo: teamConvRef.current === target && swarmInfoRef.current ? swarmInfoRef.current : undefined,
         ts: Date.now(),
+        completedAt: Date.now(),
         durationMs: startedAt ? Date.now() - startedAt : 0,
       };
       setConvs((cs) => cs.map((c) => (c.id === target ? {
@@ -916,6 +930,7 @@ export default function App() {
       content: text || (atts.length ? '📎 ' + atts.map((a) => a.name).join(', ') : ''),
       attachments: atts.map((a) => ({ name: a.name, size: a.size, isText: a.isText, content: a.content, isImage: a.isImage, dataUrl: a.dataUrl })),
       ts: Date.now(),
+      createdAt: Date.now(),
     };
     const currentMessages = convId ? (convsRef.current.find((c) => c.id === convId)?.messages || []) : [];
     setConvs((cs) => cs.map((c) => (c.id === convId ? { ...c, messages: [...c.messages, userMsg] } : c)));
@@ -941,7 +956,7 @@ export default function App() {
     setStreaming(true);
     setRunStartedAt(Date.now());
     setThinking('');
-    setLiveSync({ content: '', tools: [], model: effProvider.model || provider.model || '' });
+    setLiveSync({ content: '', tools: [], model: effProvider.routingMode === 'auto' ? '' : (effProvider.model || provider.model || '') });
     setSubAgents([]);
     setSwarmInfo(null);
     setSwarmBoard([]);
@@ -1166,7 +1181,16 @@ export default function App() {
 
   // Starting a new chat must not discard an in-flight run's stream — that run is
   // committed to its own conversation and `liveForActive` keeps it off-screen.
-  const newChat = () => { if (!streamingRef.current) setLiveSync(null); setActiveId(null); setError(''); setPanel('chats'); inputRef.current?.focus(); };
+  const newChat = () => {
+    if (!streamingRef.current) setLiveSync(null);
+    setActiveId(null);
+    setError('');
+    setPanel('chats');
+    if (settings && settings.autoSwitch && settings.autoSwitch.defaultForNewSessions) {
+      setProvider((v) => ({ ...(v || {}), routingMode: 'auto' }));
+    }
+    inputRef.current?.focus();
+  };
   const selectConv = (id) => { setActiveId(id); setPanel('chats'); };
   const deleteConv = async (id) => {
     // Compliance gate first — under an HIPAA / ZDR profile Desktop refuses the
@@ -1220,7 +1244,34 @@ export default function App() {
     setPanel('chats');
   };
 
-  const copyMessage = (m) => { navigator.clipboard?.writeText(m.content || '').catch(() => {}); };
+  const copyMessage = (m) => {
+    let selected = '';
+    try {
+      const liveSel = typeof window !== 'undefined' && window.getSelection ? String(window.getSelection().toString() || '') : '';
+      const cached = typeof window !== 'undefined' ? window.__akronLastSelection : null;
+      if (liveSel && liveSel.trim()) {
+        selected = liveSel;
+      } else if (cached && cached.text && (Date.now() - (cached.at || 0) < 15000) && (!cached.msgId || (m && cached.msgId === m.id))) {
+        selected = cached.text;
+      }
+    } catch (_) {}
+    const fullText = extractMessageText(m);
+    const payload = (selected && selected.trim()) ? selected : fullText;
+    copyTextToClipboard(payload).then((ok) => {
+      if (ok) {
+        setNotice(selected && selected.trim() ? '✅ Copied selected text to clipboard.' : '✅ Copied message to clipboard.');
+      }
+    }).catch(() => {});
+  };
+
+  useEffect(() => {
+    const onCopied = (ev) => {
+      const kind = ev && ev.detail && ev.detail.kind;
+      setNotice(kind === 'code' ? '✅ Copied code block to clipboard.' : '✅ Copied selection to clipboard.');
+    };
+    window.addEventListener('akron:copied', onCopied);
+    return () => window.removeEventListener('akron:copied', onCopied);
+  }, []);
 
   // Fork the conversation up to response index `idx` into a new branched chat.
   const forkFromMessage = useCallback((convId, idx) => {
@@ -1251,8 +1302,8 @@ export default function App() {
     const msgs = Array.isArray(src.messages) ? src.messages : [];
     const targetMsg = msgs[idx];
     if (format === 'copy') {
-      const md = targetMsg ? String(targetMsg.content || '') : '';
-      try { await navigator.clipboard?.writeText(md); } catch (_) {}
+      const md = targetMsg ? extractMessageText(targetMsg) : '';
+      try { await copyTextToClipboard(md); } catch (_) {}
       setNotice('✅ Copied response Markdown to clipboard.');
       return;
     }
@@ -1342,7 +1393,7 @@ export default function App() {
     setStreaming(true);
     setRunStartedAt(Date.now());
     setThinking('');
-    setLiveSync({ content: '', tools: [], model: effProvider.model || provider.model || '' });
+    setLiveSync({ content: '', tools: [], model: effProvider.routingMode === 'auto' ? '' : (effProvider.model || provider.model || '') });
     setSubAgents([]);
     setSwarmInfo(null);
     setSwarmBoard([]);
@@ -1369,7 +1420,8 @@ export default function App() {
     const btn = e.target.closest('.copy-btn');
     if (!btn) return;
     const code = decodeURIComponent(btn.dataset.code || '');
-    navigator.clipboard?.writeText(code).then(() => {
+    copyTextToClipboard(code).then((ok) => {
+      if (!ok) return;
       btn.textContent = 'Copied!';
       setTimeout(() => (btn.textContent = 'Copy'), 1200);
     });
@@ -1902,8 +1954,8 @@ export default function App() {
       case 'copy': {
         const last = lastAssistant();
         if (!last) { note('Nothing to copy yet.'); break; }
-        try { await navigator.clipboard.writeText(last.content || ''); note('Copied the last reply to the clipboard.'); }
-        catch (_) { note('Clipboard unavailable.'); }
+        const ok = await copyTextToClipboard(extractMessageText(last));
+        note(ok ? 'Copied the last reply to the clipboard.' : 'Clipboard unavailable.');
         break;
       }
       case 'export': {
@@ -2598,7 +2650,7 @@ export default function App() {
                   onUpdateQueueItemText={updateQueuedText}
                   unqueue={unqueue} sendQueuedNow={sendQueuedNow}
                   settings={settings} onVoiceError={setError}
-                  provider={provider} setProvider={setProvider} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt('providers'); }}
+                  provider={provider} setProvider={setProvider} orchestrator={orchestrator} setOrchestrator={saveOrchestrator} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt((opts && opts.section) || 'providers'); }}
                   providerKeys={providerKeys} setProviderKeys={setProviderKeys}
                   attachments={attachments} setAttachments={setAttachments}
                   reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
@@ -2924,7 +2976,7 @@ export default function App() {
             onUpdateQueueItemText={updateQueuedText}
             unqueue={unqueue} sendQueuedNow={sendQueuedNow}
             settings={settings} onVoiceError={setError}
-            provider={provider} setProvider={setProvider} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt('providers'); }}
+            provider={provider} setProvider={setProvider} orchestrator={orchestrator} setOrchestrator={saveOrchestrator} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt((opts && opts.section) || 'providers'); }}
             providerKeys={providerKeys} setProviderKeys={setProviderKeys}
             attachments={attachments} setAttachments={setAttachments}
             reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
@@ -2970,6 +3022,13 @@ export default function App() {
           envState={envState}
           refreshEnvState={refreshEnvState}
           onSwitchEnvironment={switchEnvironment}
+          onOpenBrowserUrl={(url) => {
+            setShowSettings(false);
+            showSessionPane('browser');
+            if (url && window.autobot && window.autobot.browserLoadURL) {
+              setTimeout(() => { try { window.autobot.browserLoadURL(url); } catch (_) {} }, 120);
+            }
+          }}
           setError={setError}
           setNotice={setNotice}
         />
@@ -3047,14 +3106,17 @@ function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, 
   const doCopy = () => { copyMessage(m); setCopied(true); setTimeout(() => setCopied(false), 1200); };
   const images = (m.attachments || []).filter((a) => a.isImage && a.dataUrl);
   const otherAtts = (m.attachments || []).filter((a) => !(a.isImage && a.dataUrl));
-  const showTimestamps = uiSettings.showTimestamps !== false;
+  const msgTimestampMode = uiSettings.messageTimestamps || (uiSettings.showTimestamps === false ? 'hidden' : 'both');
+  const showTimestamps = msgTimestampMode !== 'hidden';
+  const showUserTs = showTimestamps && msgTimestampMode !== 'output';
   const tsFormat = uiSettings.timestampFormat || 'date-time';
   const actionBarStyle = uiSettings.actionBarStyle || 'compact';
   const showModelBadge = uiSettings.showModelBadge !== false;
   const showAvatars = uiSettings.showAvatars !== false;
   const showFloatingToolbar = !!uiSettings.showFloatingToolbar;
-  const tsLabel = showTimestamps && m.ts ? fmtMessageTimestamp(m.ts, tsFormat) : '';
-  const tsFull = m.ts ? fmtMessageFullTimestamp(m.ts) : '';
+  const effectiveTs = m.ts || (m.role === 'assistant' ? m.completedAt : m.createdAt) || 0;
+  const tsLabel = showTimestamps ? (m.ts ? fmtMessageTimestamp(m.ts, tsFormat) : fmtMessageTimestamp(effectiveTs, tsFormat)) : '';
+  const tsFull = effectiveTs ? fmtMessageFullTimestamp(effectiveTs) : '';
   const hasModel = showModelBadge && !!m.model;
   const hasDuration = showModelBadge && m.durationMs > 800;
   return (
@@ -3106,11 +3168,11 @@ function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, 
         {m.role === 'assistant' && (
           <FilesChangedBar tools={m.tools} checkpoints={m.checkpoints} checkpointId={m.checkpointId} turnLabel={turnLabel} convId={convId} subAgentCount={subAgentCount} taskCount={taskCount} onOpenReview={onOpenReview} onOpenSubagents={onOpenSubagents} onOpenRunLog={onOpenRunLog} streaming={false} Icon={Icon} />
         )}
-        {m.role === 'user' && (tsLabel || editMessage || copyMessage || deleteMessage) && (
-          <div className="msg-user-footer">
-            {tsLabel && <span className="msg-timestamp" title={tsFull}>{tsLabel}</span>}
+        {m.role === 'user' && (showUserTs && tsLabel || editMessage || copyMessage || deleteMessage) && (
+          <div className="msg-user-footer" data-ts-hover={msgTimestampMode === 'hover' ? '1' : undefined}>
+            {showUserTs && tsLabel && <span className="msg-timestamp" title={tsFull}>{tsLabel}</span>}
             <div className="msg-user-actions">
-              <button type="button" className={'msg-user-mini-btn' + (copied ? ' copied' : '')} title={copied ? 'Copied' : 'Copy prompt'} onClick={doCopy}>
+              <button type="button" className={'msg-user-mini-btn' + (copied ? ' copied' : '')} title={copied ? 'Copied' : 'Copy prompt'} onMouseDown={(e) => e.preventDefault()} onClick={doCopy}>
                 <Icon name={copied ? 'Check' : 'Copy'} size={11} /> <span>{copied ? 'Copied' : 'Copy'}</span>
               </button>
               <button type="button" className="msg-user-mini-btn" title="Edit prompt" onClick={() => editMessage && editMessage(m)}>
@@ -3124,7 +3186,7 @@ function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, 
         )}
         {m.role === 'assistant' && (
           <div className={'response-actions style-' + actionBarStyle} data-response-actions>
-            <button type="button" className={'response-action-btn' + (copied ? ' copied' : '')} title="Copy response" onClick={doCopy}>
+            <button type="button" className={'response-action-btn' + (copied ? ' copied' : '')} title="Copy response" onMouseDown={(e) => e.preventDefault()} onClick={doCopy}>
               <Icon name={copied ? 'Check' : 'Copy'} size={11} />
               {actionBarStyle !== 'icons-only' && <span>{copied ? 'Copied' : 'Copy'}</span>}
             </button>
@@ -3164,13 +3226,25 @@ function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, 
             {(hasModel || hasDuration || tsLabel) && (
               <span className="response-actions-meta">
                 {hasModel && (
-                  <span
-                    className="response-model-badge"
-                    title={m.modelsUsed && m.modelsUsed.length > 1 ? `Models used: ${m.modelsUsed.join(' → ')}` : `Model: ${m.model}`}
-                  >
-                    <Icon name="Sparkles" size={11} />
-                    <span className="response-model-name">{m.model}</span>
-                  </span>
+                  m.autoRouted ? (
+                    <span
+                      className="response-model-badge is-auto-routed"
+                      data-testid="auto-routed-badge"
+                      title={`${m.autoRouted.reason || ({ fast: 'Fast tier', coder: 'Coder tier', planner: 'Planner tier', vision: 'Vision tier', longctx: 'Long Context tier' }[m.autoRouted.role] || 'Task complexity')} (tier ${m.autoRouted.tier || m.autoRouted.complexity || 3}) → routed to ${m.model}`}
+                    >
+                      <span className="response-model-name">
+                        {`⚡ Auto (DeepSeek V4.1 Flash) → ★ ${m.model} · tier ${m.autoRouted.tier || m.autoRouted.complexity || 3}`}
+                      </span>
+                    </span>
+                  ) : (
+                    <span
+                      className="response-model-badge"
+                      title={m.modelsUsed && m.modelsUsed.length > 1 ? `Models used: ${m.modelsUsed.join(' → ')}` : `Model: ${m.model}`}
+                    >
+                      <Icon name="Sparkles" size={11} />
+                      <span className="response-model-name">{m.model}</span>
+                    </span>
+                  )
                 )}
                 {hasModel && hasDuration && <span className="response-meta-sep" aria-hidden="true">·</span>}
                 {hasDuration && (
@@ -3185,7 +3259,7 @@ function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, 
       </div>
       {showFloatingToolbar && (
         <div className="msg-toolbar">
-          <button className="icon-btn" title={copied ? 'Copied' : 'Copy'} onClick={doCopy}><Icon name={copied ? 'Check' : 'Copy'} size={15} /></button>
+          <button className="icon-btn" title={copied ? 'Copied' : 'Copy'} onMouseDown={(e) => e.preventDefault()} onClick={doCopy}><Icon name={copied ? 'Check' : 'Copy'} size={15} /></button>
           {m.role === 'user' && <button className="icon-btn" title="Edit" onClick={() => editMessage(m)}><Icon name="Edit" size={15} /></button>}
           {m.role === 'assistant' && <button className="icon-btn" title="Fork from here" onClick={() => forkFromMessage && forkFromMessage(convId, idx)}><Icon name="GitBranch" size={15} /></button>}
           {m.role === 'assistant' && <button className="icon-btn" title="Retry" onClick={() => retryMessage(convId, idx)}><Icon name="History" size={15} /></button>}
@@ -3272,7 +3346,7 @@ const SETTINGS_SECTIONS = [
   { id: 'shortcuts', group: 'system', label: 'Shortcuts', icon: 'Keyboard', sub: 'Keyboard shortcuts for fast navigation and editing.', keys: 'shortcuts hotkeys keybindings keyboard cmd ctrl' },
   { id: 'runtimes', group: 'system', label: 'Runtimes & Updates', icon: 'Refresh', sub: 'Built-in IDE dependencies, optional LSP installers, bundled CLIs & app auto-updater.', keys: 'runtimes updates auto-update github release lsp dependencies repair' },
   { id: 'security', group: 'system', label: 'Permissions & Security', icon: 'LockShield', sub: 'Tool consent rules, Computer Use, Chrome CDP, bridges, and compliance.', keys: 'permission security computer use chrome cdp bridge compliance trusted folders' },
-  { id: 'system', group: 'system', label: 'Appearance & System', icon: 'Palette', sub: 'Theme, surface finish, sleep prevention, tray mode, locale & runtimes.', keys: 'theme dark light emerald carbon tray sleep updater locale language memory runtime' },
+  { id: 'system', group: 'system', label: 'Appearance & System', icon: 'Palette', sub: 'DeepSeek Auto-Switch Brain, theme, surface finish, sleep prevention, tray & locale.', keys: 'general auto switch brain deepseek v4 flash dispatcher router theme dark light emerald carbon tray sleep updater locale language memory runtime' },
   { id: 'about', group: 'system', label: 'About & License', icon: 'Info', sub: 'Akron Code details, AkronLogic brand identity, runtime diagnostics, license & trademarks.', keys: 'about akronlogic logo version license trademarks copyright legal brand seal info' },
   { id: 'feedback', group: 'system', label: 'Give Feedback', icon: 'Bug', sub: 'Report bugs or share ideas with automatic secret & PII scrubbing.', keys: 'feedback bug report diagnostics scrub bundle' },
 ];

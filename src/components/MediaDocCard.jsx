@@ -8,6 +8,7 @@ const STUDIO_TOOLS = new Set([
   'GenerateVideo', 'generate_video',
   'EditVideo', 'edit_video',
   'GenerateDocument', 'generate_document', 'ReadDocument', 'read_document',
+  'browser_screenshot', 'computer_screenshot',
 ]);
 
 function classifyExt(filePath) {
@@ -24,14 +25,39 @@ function classifyExt(filePath) {
 }
 
 export function extractMediaDocTargets({ tools = [], content = '' } = {}) {
-  const seen = new Set();
+  const byKey = new Map();
   const out = [];
-  const pushPath = (p, hintTool = '') => {
+  const normKey = (p) => String(p || '').trim().replace(/^file:\/\//, '').replace(/\\/g, '/').replace(/^\.\//, '');
+  const pushPath = (p, hintTool = '', extra = {}) => {
     const clean = String(p || '').trim().replace(/^file:\/\//, '');
     if (!clean || /^https?:\/\//i.test(clean) || /^data:/i.test(clean)) return;
-    if (seen.has(clean)) return;
-    seen.add(clean);
-    out.push({ path: clean, kind: classifyExt(clean), hintTool });
+    const n = normKey(clean);
+    const leaf = n.split('/').pop() || n;
+    // Deduplicate relative vs. absolute paths pointing to the same file or duplicate result cards
+    const existing = byKey.get(n) || [...byKey.values()].find((item) => item.norm === n || (item.norm.endsWith('/' + n) || n.endsWith('/' + item.norm)) || (item.leaf === leaf && item.hintTool === hintTool));
+    if (existing) {
+      if (clean.length > existing.path.length) existing.path = clean;
+      if (extra.previewDataUrl && !existing.previewDataUrl) existing.previewDataUrl = extra.previewDataUrl;
+      if (extra.cachePath && !existing.cachePath) existing.cachePath = extra.cachePath;
+      if (extra.model && !existing.model) existing.model = extra.model;
+      if (extra.width && !existing.width) existing.width = extra.width;
+      if (extra.height && !existing.height) existing.height = extra.height;
+      return;
+    }
+    const entry = {
+      path: clean,
+      norm: n,
+      leaf,
+      kind: classifyExt(clean),
+      hintTool,
+      previewDataUrl: extra.previewDataUrl || '',
+      cachePath: extra.cachePath || '',
+      model: extra.model || '',
+      width: extra.width || 0,
+      height: extra.height || 0,
+    };
+    byKey.set(n, entry);
+    out.push(entry);
   };
 
   for (const t of tools || []) {
@@ -39,19 +65,34 @@ export function extractMediaDocTargets({ tools = [], content = '' } = {}) {
     const name = String(t.name || '');
     const args = t.args || {};
     if (STUDIO_TOOLS.has(name)) {
-      if (args.output_path) pushPath(args.output_path, name);
-      if (args.path) pushPath(args.path, name);
+      let yieldedFromResult = false;
       if (t.result && typeof t.result === 'string') {
         try {
           const parsed = JSON.parse(t.result);
-          if (parsed && parsed.path) pushPath(parsed.path, name);
-          if (parsed && parsed.contact_sheet) pushPath(parsed.contact_sheet, name);
-          if (Array.isArray(parsed && parsed.files)) parsed.files.forEach((f) => pushPath(f, name));
+          const meta = {
+            previewDataUrl: parsed && parsed.previewDataUrl ? String(parsed.previewDataUrl) : '',
+            cachePath: parsed && parsed.cachePath ? String(parsed.cachePath) : '',
+            model: parsed && parsed.model ? String(parsed.model) : '',
+            width: parsed && parsed.width ? Number(parsed.width) : 0,
+            height: parsed && parsed.height ? Number(parsed.height) : 0,
+          };
+          if (parsed && parsed.path) { pushPath(parsed.path, name, meta); yieldedFromResult = true; }
+          if (parsed && parsed.contact_sheet) { pushPath(parsed.contact_sheet, name, meta); yieldedFromResult = true; }
+          if (Array.isArray(parsed && parsed.files)) {
+            parsed.files.forEach((f, idx) => { pushPath(f, name, idx === 0 ? meta : {}); yieldedFromResult = true; });
+          }
         } catch (_) {
           let m;
           const re = new RegExp(MEDIA_DOC_FILE_RE.source, 'gi');
-          while ((m = re.exec(t.result))) pushPath(m[1], name);
+          while ((m = re.exec(t.result))) {
+            pushPath(m[1], name);
+            yieldedFromResult = true;
+          }
         }
+      }
+      if (!yieldedFromResult) {
+        if (args.output_path) pushPath(args.output_path, name);
+        else if (args.path) pushPath(args.path, name);
       }
     } else if (name === 'Write' && args.path) {
       if (/\.(svg|csv|pdf|docx|xlsx|pptx|zip)$/i.test(args.path)) pushPath(args.path, name);
@@ -81,25 +122,28 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
   const videoRef = useRef(null);
 
   const filePath = typeof target === 'string' ? target : target.path;
+  const cachePath = typeof target === 'object' ? (target.cachePath || '') : '';
+  const initialPreview = typeof target === 'object' ? (target.previewDataUrl || '') : '';
+  const targetModel = typeof target === 'object' ? (target.model || '') : '';
   const kind = (typeof target === 'object' && target.kind) || classifyExt(filePath);
   const fileName = String(filePath || '').split(/[\\/]/).pop() || filePath;
 
   const inspect = () => {
     if (!window.autobot || typeof window.autobot.studioInspect !== 'function') return;
-    window.autobot.studioInspect({ path: filePath, cwd }).then((r) => {
+    window.autobot.studioInspect({ path: filePath, cachePath, cwd }).then((r) => {
       if (r && r.ok) setInfo(r);
     }).catch(() => {});
   };
 
   useEffect(() => {
     inspect();
-  }, [filePath, cwd]);
+  }, [filePath, cachePath, cwd]);
 
   const runAction = async (action, extra = {}) => {
     if (!window.autobot || typeof window.autobot.studioAction !== 'function') return;
     setStatus('Working…');
     try {
-      const r = await window.autobot.studioAction({ action, path: filePath, cwd, ...extra });
+      const r = await window.autobot.studioAction({ action, path: filePath, cachePath, cwd, ...extra });
       if (r && r.canceled) { setStatus(''); return; }
       if (r && r.ok) {
         if (r.copied) {
@@ -120,6 +164,10 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
 
   const extLabel = (fileName.split('.').pop() || kind).toUpperCase();
   const sizeLabel = info && info.size ? `${Math.round(info.size / 1024) || 1} KB` : '';
+  const imgSrc = (info && (info.dataUrl || info.fileUrl)) || initialPreview || (cachePath ? ('file://' + encodeURI(cachePath)) : '');
+  const dimsLabel = (info && info.width && info.height)
+    ? `${info.width}×${info.height} · `
+    : (typeof target === 'object' && target.width && target.height ? `${target.width}×${target.height} · ` : '');
 
   return (
     <div className="media-doc-card" data-media-kind={kind}>
@@ -129,7 +177,8 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
           <span className="media-doc-title" title={filePath}>{fileName}</span>
         </div>
         <span className="media-doc-meta">
-          {info && info.width && info.height ? `${info.width}×${info.height} · ` : ''}
+          {targetModel ? `${targetModel} · ` : ''}
+          {dimsLabel}
           {info && info.pageCount ? `${info.pageCount}p · ` : ''}
           {info && info.slideCount ? `${info.slideCount} slides · ` : ''}
           {info && info.duration ? `${info.duration.toFixed(1)}s · ` : ''}
@@ -137,9 +186,9 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
         </span>
       </div>
 
-      {kind === 'image' && info && (info.dataUrl || info.fileUrl) && (
+      {kind === 'image' && imgSrc && (
         <div className="media-doc-img-wrap" onClick={() => setZoomOpen(true)} title="Click to zoom">
-          <img src={info.dataUrl || info.fileUrl} alt={fileName} />
+          <img src={imgSrc} alt={fileName} />
         </div>
       )}
 
@@ -314,9 +363,9 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
         )}
       </div>
 
-      {zoomOpen && info && (info.dataUrl || info.fileUrl) && (
+      {zoomOpen && imgSrc && (
         <div className="media-doc-lightbox" onClick={() => setZoomOpen(false)}>
-          <img src={info.dataUrl || info.fileUrl} alt={fileName} />
+          <img src={imgSrc} alt={fileName} />
           <div className="media-doc-actions" onClick={(e) => e.stopPropagation()}>
             <button type="button" className="media-doc-btn" onClick={() => runAction('saveAs')}>Save As…</button>
             <button type="button" className="media-doc-btn" onClick={() => setZoomOpen(false)}>Close</button>

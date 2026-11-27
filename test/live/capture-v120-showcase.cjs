@@ -292,8 +292,41 @@ function registerIpcMocks(wsDir, webviewMockUrl) {
       ],
     },
   }));
-  safe('autobot:freellmStatus', () => ({ running: true, port: 4040, keys: 14, healthyKeys: 14 }));
+  safe('autobot:freellmStatus', () => ({ running: true, url: 'http://127.0.0.1:31415/v1', providers: [] }));
   safe('autobot:freellmProviders', () => []);
+  safe('autobot:freellmCatalog', (_e, opts) => {
+    const cat = require(path.join(REPO, 'electron/freellmapi-catalog'));
+    return {
+      ...cat.getCatalogSummary(),
+      chatModels: cat.listChatModels({ limit: (opts && opts.limit) || 120 }),
+      mediaModels: cat.listMediaModels({}),
+      embeddingModels: cat.listEmbeddingModels({}),
+      webBotProviders: cat.getWebBotQuickProviders(),
+    };
+  });
+  safe('autobot:freellmDetect', () => ({
+    ok: true,
+    platform: process.platform,
+    desktopInstalled: true,
+    recommendedEndpoint: 'http://127.0.0.1:31415/v1',
+    unifiedKey: 'flm_akron_demo_unified_key',
+    status: { running: true, url: 'http://127.0.0.1:31415/v1' },
+  }));
+  safe('autobot:autoRouterGet', () => ({
+    ok: true,
+    source: 'openrouter_free',
+    defaultForNewSessions: true,
+    hasKey: true,
+    keyHint: '••••free',
+    model: 'deepseek/deepseek-v4.1-flash:free',
+    baseURL: 'https://openrouter.ai/api/v1',
+    sources: {
+      openrouter_free: { hasKey: true, keyHint: '••••free', model: 'deepseek/deepseek-v4.1-flash:free', baseURL: 'https://openrouter.ai/api/v1' },
+      deepseek_api: { hasKey: true, keyHint: '••••ds41', model: 'deepseek-v4-flash', baseURL: 'https://api.deepseek.com/v1' },
+      freellmapi: { hasKey: true, customKeySet: true, keyHint: '••••flm1', model: 'deepseek-v4-flash', baseURL: 'http://127.0.0.1:31415/v1' },
+    },
+    telemetry: { decisionsCount: 42, estimatedCostUsd: 0, lastLatencyMs: 112, lastSource: 'openrouter_free', lastModelUsed: 'deepseek/deepseek-v4.1-flash:free' },
+  }));
   safe('autobot:listNotebooks', () => []);
   safe('autobot:listScheduledTasks', () => [
     { id: 'st1', name: 'Nightly Regression Sweep', cron: '0 2 * * *', enabled: true, lastResult: '82/82 PASS', runCount: 14 },
@@ -457,7 +490,8 @@ async function run() {
           content: 'Audit `src/app.js` and `electron/context-pipeline.js`, run the verification suite, and summarize shipped capabilities.',
         },
         {
-          id: 'a_a1', role: 'assistant', model: 'claude-opus-4-6', durationMs: 12400, ts: now - 150000,
+          id: 'a_a1', role: 'assistant', model: 'claude-opus-5-5', durationMs: 12400, ts: now - 150000,
+          autoRouted: { via: 'deepseek-v4-flash', source: 'openrouter_free', role: 'planner', complexity: 5, tier: 5, reason: 'Architecture & security release audit' },
           tools: [
             { id: 't1', name: 'Read', args: { path: 'src/app.js' }, status: 'done', result: 'Read 5 lines from src/app.js' },
             { id: 't2', name: 'ShadowCheck', args: { path: 'src/app.js' }, status: 'done', result: '0 syntax or LSP diagnostics' },
@@ -544,6 +578,8 @@ async function run() {
     localStorage.setItem('autobot:openTabs', ${JSON.stringify(JSON.stringify(['conv_v120_agent', 'conv_v120_studio', 'conv_v120_browser']))});
     localStorage.setItem('autobot:activeId', ${JSON.stringify(JSON.stringify('conv_v120_agent'))});
     localStorage.setItem('autobot:settings', ${JSON.stringify(JSON.stringify(baseSettings))});
+    localStorage.setItem('autobot:provider', ${JSON.stringify(JSON.stringify({ model: 'claude-opus-5-5', routingMode: 'auto', baseURL: 'http://127.0.0.1:31415/v1' }))});
+    localStorage.setItem('autobot:lastUsage', ${JSON.stringify(JSON.stringify({ model: 'claude-opus-5-5', prompt_tokens: 1800, completion_tokens: 420 }))});
     localStorage.setItem('autobot:projects', ${JSON.stringify(JSON.stringify([{ name: 'akron-code', path: wsDir }]))});
     location.reload();
   `);
@@ -587,10 +623,26 @@ async function run() {
     await new Promise((r) => setTimeout(r, 450));
   };
 
-  // 1 & 2: Agent Dark & Light
+  // 1 & 2: Agent Dark & Light + 3-Mode Model Picker Popup
   await setTheme('dark');
   await setActiveConv('conv_v120_agent');
   await snap('agent-dark.png');
+  await win.webContents.executeJavaScript(`(() => {
+    const pill = document.querySelector('[data-testid="model-picker-pill"]');
+    if (pill) pill.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 350));
+  await win.webContents.executeJavaScript(`(() => {
+    const toggle = document.querySelector('.orch-picker-toggle');
+    if (toggle && toggle.getAttribute('aria-expanded') !== 'true') toggle.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 250));
+  await snap('model-picker-3modes.png');
+  await win.webContents.executeJavaScript(`(() => {
+    const pill = document.querySelector('[data-testid="model-picker-pill"]');
+    if (pill) pill.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 200));
   await setTheme('light');
   await snap('agent-light.png');
   await setTheme('dark');
@@ -727,34 +779,48 @@ async function run() {
   `);
   await new Promise((r) => setTimeout(r, 400));
 
-  // 13..22: Settings Showcase (UI & Design Customization Studio, Models & Limit Rings Dark/Light, Notifications, Environments, Runtimes, Project, Browser, Migration, Feedback)
+  // 13..22: Settings Showcase (Auto-Switch Brain, UI & Design Studio, FreeLLMAPI Hub & Web Bot, Models & Limit Rings Dark/Light, Notifications, Environments, Runtimes, Project, Browser, Migration, Feedback)
   const settingsShots = [
-    ['system', 'settings-application-updater-dark.png', 'dark'],
-    ['providers', 'settings-models-limit-rings-dark.png', 'dark'],
-    ['providers', 'settings-models-limit-rings-light.png', 'light'],
-    ['notifications', 'notifications-settings.png', 'dark'],
-    ['environments', 'environments.png', 'dark'],
-    ['runtimes', 'runtimes-updates.png', 'dark'],
-    ['project', 'settings-project-token-budget-dark.png', 'dark'],
-    ['browser', 'settings-browser-rules-dark.png', 'dark'],
-    ['migrate', 'settings-migration-wizard-dark.png', 'dark'],
-    ['feedback', 'settings-feedback-diagnostics-dark.png', 'dark'],
+    ['system', 'autoswitch-brain-dark.png', 'dark', 'autoswitch'],
+    ['system', 'ui-design-studio-dark.png', 'dark', 'studio'],
+    ['system', 'settings-application-updater-dark.png', 'dark', 'studio'],
+    ['runtimes', 'freellmapi-hub-dark.png', 'dark', 'freellm'],
+    ['runtimes', 'freellmapi-webbot-setup.png', 'dark', 'webbot'],
+    ['providers', 'settings-models-limit-rings-dark.png', 'dark', 'rings'],
+    ['providers', 'settings-models-limit-rings-light.png', 'light', 'rings'],
+    ['notifications', 'notifications-settings.png', 'dark', 'top'],
+    ['environments', 'environments.png', 'dark', 'top'],
+    ['runtimes', 'runtimes-updates.png', 'dark', 'top'],
+    ['project', 'settings-project-token-budget-dark.png', 'dark', 'top'],
+    ['browser', 'settings-browser-rules-dark.png', 'dark', 'top'],
+    ['migrate', 'settings-migration-wizard-dark.png', 'dark', 'top'],
+    ['feedback', 'settings-feedback-diagnostics-dark.png', 'dark', 'top'],
   ];
-  for (const [sec, fname, th] of settingsShots) {
+  for (const [sec, fname, th, scrollTarget] of settingsShots) {
     await setTheme(th);
     await win.webContents.executeJavaScript(`window.__akronTestHarness && window.__akronTestHarness.openSettings(${JSON.stringify(sec)});`);
     await new Promise((r) => setTimeout(r, 450));
     await win.webContents.executeJavaScript(`(() => {
       const body = document.querySelector('.settings-body');
       if (!body) return;
-      if (${JSON.stringify(sec)} === 'providers') {
+      if (${JSON.stringify(scrollTarget)} === 'rings') {
         const rings = body.querySelector('[data-testid="models-limits-section"]');
         if (rings) rings.scrollIntoView({ block: 'center' });
+      } else if (${JSON.stringify(scrollTarget)} === 'studio') {
+        const st = body.querySelector('[data-testid="appearance-studio-section"]');
+        if (st) st.scrollIntoView({ block: 'start' });
+      } else if (${JSON.stringify(scrollTarget)} === 'freellm' || ${JSON.stringify(scrollTarget)} === 'webbot') {
+        const fh = body.querySelector('[data-testid="freellmapi-catalog-hub"]');
+        if (fh) fh.scrollIntoView({ block: 'start' });
+        if (${JSON.stringify(scrollTarget)} === 'webbot') {
+          const btn = body.querySelector('[data-testid="freellm-webbot-setup-btn"]');
+          if (btn && !body.querySelector('[data-testid="freellm-webbot-drawer"]')) btn.click();
+        }
       } else {
         body.scrollTop = 0;
       }
     })()`);
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 250));
     await snap(fname);
   }
 

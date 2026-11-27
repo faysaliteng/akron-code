@@ -78,9 +78,13 @@ function poolDeadNotice(dead) {
 
 /**
  * Orchestrator pool hydration/pruning only applies when orchestrator failover
- * is enabled OR when Swarm is active with role pools enabled.
+ * is enabled OR when Swarm is active with role pools enabled, respecting
+ * explicit `provider.routingMode` ('direct' | 'orchestrator' | 'auto').
  */
-function isOrchestratorActiveForTurn(orch, swarm) {
+function isOrchestratorActiveForTurn(orch, swarm, provider) {
+  const mode = provider && provider.routingMode;
+  if (mode === 'direct') return Boolean(swarm === true && orch && orch.pools && orch.pools.enabled);
+  if (mode === 'orchestrator' || mode === 'auto') return Boolean(orch && typeof orch === 'object');
   if (!orch || typeof orch !== 'object') return false;
   if (orch.enabled) return true;
   if (swarm === true && orch.pools && orch.pools.enabled) return true;

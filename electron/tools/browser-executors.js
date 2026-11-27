@@ -197,7 +197,35 @@ module.exports = function buildBrowserAndCuExecutors({ truncate }) {
   async browser_screenshot({ fullPage }) {
     const r = await browser.screenshot(!!fullPage);
     if (!r.ok) return 'Browser error: ' + r.error;
-    return `Screenshot saved: ${r.path} (${r.width}x${r.height}${fullPage ? ', full page' : ''}). Use Read to view it.`;
+    let previewDataUrl = '';
+    let cachePath = '';
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const os = require('os');
+      const crypto = require('crypto');
+      if (r.path && fs.existsSync(r.path)) {
+        const cacheDir = path.join(os.homedir(), '.autobot', 'media-cache');
+        fs.mkdirSync(cacheDir, { recursive: true });
+        const hash = crypto.createHash('sha1').update(r.path).digest('hex').slice(0, 8);
+        cachePath = path.join(cacheDir, `${Date.now()}-${hash}-${path.basename(r.path)}`);
+        fs.copyFileSync(r.path, cachePath);
+        const buf = fs.readFileSync(r.path);
+        if (buf.length <= 4 * 1024 * 1024) {
+          previewDataUrl = `data:image/png;base64,${buf.toString('base64')}`;
+        }
+      }
+    } catch (_) {}
+    return JSON.stringify({
+      ok: true,
+      path: r.path,
+      cachePath,
+      previewDataUrl,
+      width: r.width,
+      height: r.height,
+      fullPage: !!fullPage,
+      summary: `Screenshot saved: ${r.path} (${r.width}x${r.height}${fullPage ? ', full page' : ''}).`,
+    }, null, 2);
   },
   async browser_tabs({ action, url, index }) {
     const act = String(action || 'list').toLowerCase();

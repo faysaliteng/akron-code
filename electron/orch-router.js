@@ -409,7 +409,8 @@ function resolveMediaChain({
       if (!row || !row.model) continue;
       const m = String(row.model);
       if (k === 'image' && /(imagen|dall-e|gpt-image|flash-image|grok-2-image|flux|sdxl)/i.test(m)) {
-        push({ source: 'orchestrator', role: roleName, backend: /imagen|gemini/i.test(m) ? 'gemini' : 'openai-compat', model: m, baseURL: row.baseURL || '', apiKey: row.apiKey || '', oauthProvider: row.oauthProvider || '', offline: false });
+        const bkend = /flash-image/i.test(m) ? 'gemini-flash-image' : (/imagen|gemini/i.test(m) ? 'gemini' : 'openai-compat');
+        push({ source: 'orchestrator', role: roleName, backend: bkend, model: m, baseURL: row.baseURL || (/imagen|gemini/i.test(m) ? 'https://generativelanguage.googleapis.com/v1beta' : ''), apiKey: row.apiKey || '', oauthProvider: row.oauthProvider || '', offline: false });
       } else if (k === 'video' && /(veo|sora|runway|luma|kling|wan|hunyuan|cogvideo)/i.test(m)) {
         push({ source: 'orchestrator', role: roleName, backend: /veo/i.test(m) ? 'gemini' : 'openai-compat', model: m, baseURL: row.baseURL || '', apiKey: row.apiKey || '', oauthProvider: row.oauthProvider || '', offline: false });
       } else if (k === 'audio' && /(tts|eleven|speech|audio)/i.test(m)) {
@@ -418,9 +419,42 @@ function resolveMediaChain({
     }
   }
 
+  let freeLlmProviders = {};
+  if (storeArg !== false) {
+    try {
+      const fl = require('./freellm');
+      const cfg = fl && typeof fl.loadConfig === 'function' ? fl.loadConfig() : null;
+      if (cfg && cfg.providers && typeof cfg.providers === 'object') {
+        freeLlmProviders = { ...cfg.providers };
+      }
+    } catch (_) {}
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const os = require('os');
+      const keyFile = path.join(os.homedir(), 'Desktop', 'freellmapi-keys.json');
+      if (fs.existsSync(keyFile)) {
+        const raw = JSON.parse(fs.readFileSync(keyFile, 'utf8'));
+        const map = (raw && raw.providers && typeof raw.providers === 'object') ? raw.providers : raw;
+        if (map && typeof map === 'object') {
+          for (const [id, entry] of Object.entries(map)) {
+            if (!freeLlmProviders[id] && entry) freeLlmProviders[id] = entry;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  const pickFreeKey = (id) => {
+    const e = freeLlmProviders[id];
+    if (!e) return '';
+    if (typeof e === 'string') return e.trim();
+    return String(e.apiKey || e.key || e.token || '').trim();
+  };
+
   const geminiEnvKey = env.GEMINI_API_KEY || env.GOOGLE_API_KEY || '';
   const geminiKeyHit = findKeyInProviderKeys(pKeys, [/generativelanguage\.googleapis\.com/i, /ai\.google/i]);
-  const geminiKey = geminiEnvKey || (geminiKeyHit && geminiKeyHit.apiKey) || '';
+  const geminiKey = geminiEnvKey || (geminiKeyHit && geminiKeyHit.apiKey) || pickFreeKey('google') || '';
   const geminiOauth = oauthAccts.find((a) => a && !a.needsSignIn && !a.expired && /^(gemini|antigravity|google)$/i.test(String(a.provider || '')));
 
   const openaiEnvKey = env.OPENAI_API_KEY || '';
@@ -429,11 +463,15 @@ function resolveMediaChain({
   const chatgptOauth = oauthAccts.find((a) => a && !a.needsSignIn && !a.expired && /^(chatgpt|openai)$/i.test(String(a.provider || '')));
 
   const xaiKey = env.XAI_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.x\.ai/i]) || {}).apiKey || '';
-  const togetherKey = env.TOGETHER_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.together\.xyz/i]) || {}).apiKey || '';
-  const openrouterKey = env.OPENROUTER_API_KEY || (findKeyInProviderKeys(pKeys, [/openrouter\.ai/i]) || {}).apiKey || '';
-  const fireworksKey = env.FIREWORKS_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.fireworks\.ai/i]) || {}).apiKey || '';
+  const togetherKey = env.TOGETHER_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.together\.xyz/i]) || {}).apiKey || pickFreeKey('together') || '';
+  const openrouterKey = env.OPENROUTER_API_KEY || (findKeyInProviderKeys(pKeys, [/openrouter\.ai/i]) || {}).apiKey || pickFreeKey('openrouter') || '';
+  const fireworksKey = env.FIREWORKS_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.fireworks\.ai/i]) || {}).apiKey || pickFreeKey('fireworks') || '';
   const replicateKey = env.REPLICATE_API_TOKEN || env.REPLICATE_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.replicate\.com/i]) || {}).apiKey || '';
   const falKey = env.FAL_KEY || env.FAL_API_KEY || (findKeyInProviderKeys(pKeys, [/fal\.run|fal\.ai/i]) || {}).apiKey || '';
+  const electronHubKey = pickFreeKey('electronhub');
+  const cloudflareEntry = freeLlmProviders.cloudflare;
+  const cloudflareKey = pickFreeKey('cloudflare');
+  const cloudflareAcc = (cloudflareEntry && typeof cloudflareEntry === 'object' && (cloudflareEntry.accountId || cloudflareEntry.account_id)) || env.CLOUDFLARE_ACCOUNT_ID || '';
   const runwayKey = env.RUNWAYML_API_SECRET || env.RUNWAY_API_KEY || (findKeyInProviderKeys(pKeys, [/runwayml\.com/i]) || {}).apiKey || '';
   const lumaKey = env.LUMA_API_KEY || (findKeyInProviderKeys(pKeys, [/lumalabs\.ai/i]) || {}).apiKey || '';
   const klingKey = env.KLING_API_KEY || (findKeyInProviderKeys(pKeys, [/klingai\.com/i]) || {}).apiKey || '';
@@ -442,13 +480,20 @@ function resolveMediaChain({
   if (k === 'image') {
     // 2. Google Gemini / Antigravity
     if (geminiKey || geminiOauth) {
-      push({ source: geminiKey ? 'api_key' : 'oauth', role: roleName, backend: 'gemini', model: 'imagen-3.0-generate-002', baseURL: 'https://generativelanguage.googleapis.com/v1beta', apiKey: geminiKey, oauthProvider: geminiOauth ? geminiOauth.id : '', offline: false });
       push({ source: geminiKey ? 'api_key' : 'oauth', role: roleName, backend: 'gemini-flash-image', model: 'gemini-2.5-flash-image', baseURL: 'https://generativelanguage.googleapis.com/v1beta', apiKey: geminiKey, oauthProvider: geminiOauth ? geminiOauth.id : '', responseModalities: ['TEXT', 'IMAGE'], offline: false });
+      push({ source: geminiKey ? 'api_key' : 'oauth', role: roleName, backend: 'gemini', model: 'imagen-3.0-generate-002', baseURL: 'https://generativelanguage.googleapis.com/v1beta', apiKey: geminiKey, oauthProvider: geminiOauth ? geminiOauth.id : '', offline: false });
     }
     // 3. OpenAI
     if (openaiKey || chatgptOauth) {
       push({ source: openaiKey ? 'api_key' : 'oauth', role: roleName, backend: 'openai-images', model: 'gpt-image-1', baseURL: 'https://api.openai.com/v1', apiKey: openaiKey, oauthProvider: chatgptOauth ? chatgptOauth.id : '', offline: false });
       push({ source: openaiKey ? 'api_key' : 'oauth', role: roleName, backend: 'openai-images', model: 'dall-e-3', baseURL: 'https://api.openai.com/v1', apiKey: openaiKey, oauthProvider: chatgptOauth ? chatgptOauth.id : '', offline: false });
+    }
+    // 3b. FreeLLMAPI configured image backends (ElectronHub / Cloudflare Flux)
+    if (electronHubKey) {
+      push({ source: 'freellmapi', role: roleName, backend: 'openai-compat', model: 'flux-1.1-pro', baseURL: 'https://api.electronhub.ai/v1', apiKey: electronHubKey, offline: false });
+    }
+    if (cloudflareKey && cloudflareAcc) {
+      push({ source: 'freellmapi', role: roleName, backend: 'cloudflare-flux', model: '@cf/black-forest-labs/flux-1-schnell', baseURL: `https://api.cloudflare.com/client/v4/accounts/${cloudflareAcc}`, apiKey: cloudflareKey, offline: false });
     }
     // 4. xAI / Together / OpenRouter / Fireworks / Replicate / fal.ai
     if (xaiKey) push({ source: 'api_key', role: roleName, backend: 'xai-images', model: 'grok-2-image', baseURL: 'https://api.x.ai/v1', apiKey: xaiKey, offline: false });
@@ -461,6 +506,10 @@ function resolveMediaChain({
     if (localEndpoints && localEndpoints.comfyui) push({ source: 'local', role: roleName, backend: 'comfyui', model: 'comfyui-flux-sdxl', baseURL: typeof localEndpoints.comfyui === 'string' ? localEndpoints.comfyui : 'http://127.0.0.1:8188', apiKey: '', offline: true });
     if (localEndpoints && localEndpoints.a1111) push({ source: 'local', role: roleName, backend: 'a1111', model: 'automatic1111-sd', baseURL: typeof localEndpoints.a1111 === 'string' ? localEndpoints.a1111 : 'http://127.0.0.1:7860', apiKey: '', offline: true });
     if (localEndpoints && localEndpoints.drawthings) push({ source: 'local', role: roleName, backend: 'drawthings', model: 'drawthings-local', baseURL: typeof localEndpoints.drawthings === 'string' ? localEndpoints.drawthings : 'http://127.0.0.1:7888', apiKey: '', offline: true });
+    // 5b. Zero-key real AI Flux generation (unless disabled for pure offline tests)
+    if (storeArg !== false && env.AKRON_DISABLE_REMOTE_MEDIA !== '1') {
+      push({ source: 'free_ai', role: roleName, backend: 'pollinations-flux', model: 'flux-1-schnell', baseURL: 'https://image.pollinations.ai', apiKey: '', offline: false });
+    }
     // 6. Guaranteed Offline Fallback
     push({ source: 'offline_fallback', role: roleName, backend: 'offline-image-studio', model: 'akron-svg-canvas-studio', baseURL: '', apiKey: '', offline: true });
   } else if (k === 'video') {

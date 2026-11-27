@@ -7,7 +7,7 @@ import { useVoiceDictation } from '../../voice';
 import { PRESETS, PRESET_KEYS, useDismiss, SOUND_PRESETS, playUiSound, sendDesktopNotification, HARNESS_PROFILES } from '../../utils/appHelpers.jsx';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel.jsx';
 import { MigrationWizard } from './MigrationWizard.jsx';
-import { ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection } from './ExtendedSettingsPanels.jsx';
+import { AutoSwitchBrainSection, FreeLLMAPISection, ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection } from './ExtendedSettingsPanels.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from '../../features/WorkspacePanels.jsx';
 import { SkillsViewBody, PluginsViewBody } from '../chat/WorkspaceViews.jsx';
 import {
@@ -26,7 +26,7 @@ export function SettingsModalBody({
   notebooks = [], activeNotebook, notebookCells = [], setNotebookCells, openNotebook, newNotebook, saveActiveNotebook, deleteActiveNotebook,
   cwd, setCwd, activeId,
   onOpenGdrive, gdriveState,
-  envState, refreshEnvState, onSwitchEnvironment, setError, setNotice,
+  envState, refreshEnvState, onSwitchEnvironment, setError, setNotice, onOpenBrowserUrl,
 }) {
   const [section, setSection] = useState(initialSection || 'providers');
   const [navFilter, setNavFilter] = useState('');
@@ -211,7 +211,7 @@ export function SettingsModalBody({
     if (id === 'voice') return settings.voiceEngine === 'local' ? 'Whisper' : 'Auto';
     if (id === 'security') return permissions;
     if (id === 'system') return settings.theme || 'dark';
-    if (id === 'about') return 'v1.0';
+    if (id === 'about') return 'v1.2';
     return '';
   };
 
@@ -353,6 +353,8 @@ export function SettingsModalBody({
                 </div>
 
                 <ModelsAndLimitsSection settings={settings} setSettings={setSettings} convs={convs} />
+
+                <FreeLLMAPISection settings={settings} setSettings={setSettings} orchestrator={orchestrator} saveOrch={saveOrch} setNotice={setNotice} onOpenBrowserUrl={onOpenBrowserUrl} />
 
                 <div className="settings-card">
                   <AccountSection T={T} provider={provider} setProvider={setProvider} />
@@ -947,6 +949,7 @@ export function SettingsModalBody({
 
             {section === 'runtimes' && (
               <>
+                <FreeLLMAPISection settings={settings} setSettings={setSettings} orchestrator={orchestrator} saveOrch={saveOrch} setNotice={setNotice} onOpenBrowserUrl={onOpenBrowserUrl} />
                 <DependenciesAndUpdaterSection setNotice={setNotice} />
                 <div className="settings-card">
                   <RuntimesSection />
@@ -956,6 +959,8 @@ export function SettingsModalBody({
 
             {section === 'system' && (
               <>
+                <AutoSwitchBrainSection settings={settings} setSettings={setSettings} provider={provider} setProvider={setProvider} setNotice={setNotice} onOpenBrowserUrl={onOpenBrowserUrl} />
+
                 <AppearanceStudioSection settings={settings} setSettings={setSettings} setNotice={setNotice} />
 
                 <div className="settings-card">

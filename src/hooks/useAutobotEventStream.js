@@ -320,11 +320,13 @@ export function useAutobotEventStream({
           setLiveSync((l) => (l ? { ...l, failover: { from: evt.from, to: evt.to, reason: evt.reason }, model: evt.to || l.model } : l));
           break;
         case 'model':
+          if (evt.model) setLastUsage((u) => ({ ...(u || {}), model: evt.model, at: Date.now() }));
           setLiveSync((l) => {
             if (!l) return l;
             return {
               ...l,
               model: evt.model || l.model || '',
+              autoRouted: evt.autoRouted || l.autoRouted || null,
               modelsUsed: Array.isArray(evt.modelsUsed) && evt.modelsUsed.length ? evt.modelsUsed : l.modelsUsed,
             };
           });

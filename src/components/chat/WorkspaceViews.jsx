@@ -16,7 +16,7 @@ import { shortcutLabels } from '../../ide/shortcuts';
 import {
   renderMarkdown, extractCodeBlocks, cleanErr, contextWindowFor, usedTokens,
   useTicker, fmtElapsed, shortPath, describeTool, Logo, LinkPreviews, useDismiss,
-  convToMarkdown, convToHtml, loadJSON, fmtInt, timeGreeting,
+  convToMarkdown, convToHtml, loadJSON, fmtInt, timeGreeting, copyTextToClipboard,
 } from '../../utils/appHelpers.jsx';
 
 export function RunActivity({ live, thinking, startedAt }) {
@@ -776,7 +776,7 @@ function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, t
                   onClick={() => {
                     setMoreOpen(false);
                     const payload = conv ? convToMarkdown(conv) : (cwd || '');
-                    navigator.clipboard?.writeText(payload).catch(() => {});
+                    copyTextToClipboard(payload).catch(() => {});
                     setError && setError('✅ Copied to clipboard.');
                   }}
                 >
@@ -1619,7 +1619,7 @@ export function ArtifactsView({ blocks, tools = [], cwd = '', onPromptAction, on
                 <div className="artifact-toggle">
                   <button className={mode === 'preview' ? 'on' : ''} onClick={() => setMode('preview')} disabled={!canPreview}>Preview</button>
                   <button className={mode === 'code' ? 'on' : ''} onClick={() => setMode('code')}>Code</button>
-                  <button className="copy-btn" data-code={encodeURIComponent(block.code)} onClick={(e) => { const btn = e.currentTarget; const c = decodeURIComponent(btn.dataset.code || ''); navigator.clipboard?.writeText(c).then(() => { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1200); }); }}>Copy</button>
+                  <button className="copy-btn" data-code={encodeURIComponent(block.code)} onMouseDown={(e) => e.preventDefault()} onClick={(e) => { const btn = e.currentTarget; const c = decodeURIComponent(btn.dataset.code || ''); copyTextToClipboard(c).then((ok) => { if (!ok) return; btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1200); }); }}>Copy</button>
                   <button onClick={() => window.autobot.openArtifactWindow({ name: block.label || '', language: block.lang, content: block.code })}>Open</button>
                   <button onClick={() => window.autobot.printToPdf({ defaultName: (block.label || 'artifact').replace(/[^\w.-]+/g, '_') + '.pdf', language: (block.lang || '').toLowerCase(), html: ['html', 'htm', 'svg'].includes((block.lang || '').toLowerCase()) ? block.code : undefined, content: block.code })}>PDF</button>
                 </div>

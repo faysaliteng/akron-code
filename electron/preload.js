@@ -91,6 +91,12 @@ contextBridge.exposeInMainWorld('autobot', {
   freellmStatus: () => ipcRenderer.invoke('autobot:freellmStatus'),
   freellmProviders: () => ipcRenderer.invoke('autobot:freellmProviders'),
   freellmSave: (patch) => ipcRenderer.invoke('autobot:freellmSave', patch),
+  freellmCatalog: (opts) => ipcRenderer.invoke('autobot:freellmCatalog', opts),
+  freellmDetect: () => ipcRenderer.invoke('autobot:freellmDetect'),
+  freellmImportKeys: (input) => ipcRenderer.invoke('autobot:freellmImportKeys', input),
+  freellmExportKeys: () => ipcRenderer.invoke('autobot:freellmExportKeys'),
+  freellmLaunchDesktop: () => ipcRenderer.invoke('autobot:freellmLaunchDesktop'),
+  freellmSaveSingleKey: (payload) => ipcRenderer.invoke('autobot:freellmSaveSingleKey', payload),
 
   // Bundled agent runtimes (Claude Code / Codex / Grok CLI). `runtimes` returns
   // non-secret status only: version, latest version, source, update availability.
@@ -194,6 +200,10 @@ contextBridge.exposeInMainWorld('autobot', {
   transcribeAudio: (payload) => ipcRenderer.invoke('autobot:transcribeAudio', payload),
   getOrchestrator: () => ipcRenderer.invoke('autobot:getOrchestrator'),
   setOrchestrator: (patch) => ipcRenderer.invoke('autobot:setOrchestrator', patch),
+  autoRouterGet: () => ipcRenderer.invoke('autobot:autoRouterGet'),
+  autoRouterSave: (payload) => ipcRenderer.invoke('autobot:autoRouterSave', payload),
+  autoRouterClear: () => ipcRenderer.invoke('autobot:autoRouterClear'),
+  autoRouterTest: (payload) => ipcRenderer.invoke('autobot:autoRouterTest', payload),
   // FreeLLMAPI role-pool preset ({ enabled, gateway, roles }) for Settings → Role pools.
   poolsPreset: () => ipcRenderer.invoke('autobot:poolsPreset'),
   poolStatus: () => ipcRenderer.invoke('autobot:poolStatus'),
@@ -214,6 +224,9 @@ contextBridge.exposeInMainWorld('autobot', {
   saveFile: (opts) => ipcRenderer.invoke('autobot:saveFile', opts),
   writeFile: (opts) => ipcRenderer.invoke('autobot:writeFile', opts),
   openExternal: (url) => ipcRenderer.invoke('autobot:openExternal', url),
+  clipboardWrite: (text) => ipcRenderer.invoke('autobot:clipboardWrite', text),
+  clipboardRead: () => ipcRenderer.invoke('autobot:clipboardRead'),
+  clipboardReadImage: () => ipcRenderer.invoke('autobot:clipboardReadImage'),
   speak: (text) => ipcRenderer.invoke('autobot:speak', text),
   stopSpeak: () => ipcRenderer.invoke('autobot:stopSpeak'),
 

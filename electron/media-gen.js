@@ -143,6 +143,27 @@ function runBin(bin, args, opts = {}) {
   });
 }
 
+function cacheMediaArtifact(filePath) {
+  const out = { cachePath: '', previewDataUrl: '' };
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return out;
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size <= 0) return out;
+    const cacheDir = path.join(os.homedir(), '.autobot', 'media-cache');
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const hash = crypto.createHash('sha1').update(filePath + ':' + stat.mtimeMs).digest('hex').slice(0, 8);
+    const cachePath = path.join(cacheDir, `${Date.now()}-${hash}-${path.basename(filePath)}`);
+    fs.copyFileSync(filePath, cachePath);
+    out.cachePath = cachePath;
+    const ext = path.extname(filePath).toLowerCase().slice(1);
+    if (/^(png|jpe?g|webp|gif|svg|ico|bmp)$/.test(ext) && stat.size <= 4 * 1024 * 1024) {
+      const mime = ext === 'svg' ? 'image/svg+xml' : (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/' + ext);
+      out.previewDataUrl = `data:${mime};base64,${fs.readFileSync(filePath).toString('base64')}`;
+    }
+  } catch (_) {}
+  return out;
+}
+
 function resolveOutputPath(cwd, outputPath, prefix, ext) {
   const baseDir = cwd || os.tmpdir();
   if (outputPath && String(outputPath).trim()) {
@@ -446,6 +467,31 @@ async function encodeImageBuffer({ width, height, data }, format, outPath) {
     return outPath;
   }
   if (fmt === 'webp') {
+    const pngTmp = outPath + '.tmp.png';
+    const cleanup = () => { try { fs.unlinkSync(pngTmp); } catch (_) {} };
+    const ensurePngTmp = () => {
+      if (fs.existsSync(pngTmp)) return;
+      const png = new PNG({ width, height });
+      data.copy(png.data);
+      fs.writeFileSync(pngTmp, PNG.sync.write(png));
+    };
+    const cwebpBin = resolveBinary('__nonexistent__', ['cwebp']);
+    if (cwebpBin) {
+      try {
+        ensurePngTmp();
+        await runBin(cwebpBin, ['-quiet', '-q', '82', pngTmp, '-o', outPath]);
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 0) { cleanup(); return outPath; }
+      } catch (_) {}
+    }
+    const ff = resolveFfmpeg();
+    if (ff) {
+      try {
+        ensurePngTmp();
+        await runBin(ff, ['-y', '-i', pngTmp, '-vcodec', 'libwebp', '-lossless', '0', '-compression_level', '6', '-q:v', '82', outPath]);
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 0) { cleanup(); return outPath; }
+      } catch (_) {}
+    }
+    cleanup();
     fs.writeFileSync(outPath, encodeLosslessWebpVP8L(width, height, data));
     return outPath;
   }
@@ -570,16 +616,73 @@ function resizeRgbaBilinear(src, dstW, dstH) {
   return { width: dstW, height: dstH, data: out };
 }
 
-async function tryRemoteImageGenerate(candidate, { prompt, aspect_ratio, style }) {
+async function resolveCandidateCredential(candidate) {
+  let apiKey = (candidate && candidate.apiKey) || '';
+  let oauthToken = '';
+  if (!apiKey && candidate && candidate.oauthProvider) {
+    try {
+      const po = require('./provider-oauth');
+      const res = await po.resolve(candidate.oauthProvider);
+      if (res && res.accessToken) oauthToken = res.accessToken;
+    } catch (_) {}
+  }
+  return { apiKey, oauthToken, bearer: apiKey || oauthToken };
+}
+
+async function tryRemoteImageGenerate(candidate, { prompt, aspect_ratio, style, dims }) {
   if (!candidate || candidate.offline) return null;
+  if (candidate.backend === 'pollinations-flux') {
+    const w = (dims && dims.width) || 1024;
+    const h = (dims && dims.height) || 1024;
+    const fullPrompt = style ? `${prompt}, ${style}` : prompt;
+    const seed = crypto.randomInt(1, 999999);
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=${w}&height=${h}&model=flux&nologo=true&seed=${seed}`;
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 14000);
+    try {
+      const res = await fetch(url, { signal: ac.signal, headers: { accept: 'image/*' } });
+      if (!res.ok) return null;
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 512) return null;
+      const isPng = buf[0] === 0x89 && buf[1] === 0x50;
+      const isJpg = buf[0] === 0xff && buf[1] === 0xd8;
+      const isWebp = buf.slice(0, 4).toString('ascii') === 'RIFF';
+      return (isPng || isJpg || isWebp) ? buf : null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  if (candidate.backend === 'cloudflare-flux') {
+    const cred = await resolveCandidateCredential(candidate);
+    if (!cred.bearer || !candidate.baseURL) return null;
+    const url = `${candidate.baseURL.replace(/\/+$/, '')}/ai/run/${candidate.model}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + cred.bearer },
+      body: JSON.stringify({ prompt: style ? `${prompt}, ${style}` : prompt }),
+    });
+    if (!res.ok) return null;
+    const ct = String(res.headers.get('content-type') || '');
+    if (ct.includes('application/json')) {
+      const j = await res.json();
+      const b64 = j && j.result && (j.result.image || j.result.b64_json);
+      return b64 ? Buffer.from(b64, 'base64') : null;
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    return buf.length > 512 ? buf : null;
+  }
   if (candidate.backend === 'gemini' || candidate.backend === 'gemini-flash-image') {
-    const key = candidate.apiKey;
-    if (!key) return null;
+    const cred = await resolveCandidateCredential(candidate);
+    if (!cred.bearer) return null;
+    const authHeaders = cred.apiKey
+      ? { 'content-type': 'application/json' }
+      : { 'content-type': 'application/json', authorization: 'Bearer ' + cred.oauthToken };
+    const keyQs = cred.apiKey ? `?key=${encodeURIComponent(cred.apiKey)}` : '';
     if (candidate.backend === 'gemini') {
-      const url = `${candidate.baseURL}/models/${encodeURIComponent(candidate.model)}:predict?key=${encodeURIComponent(key)}`;
+      const url = `${candidate.baseURL}/models/${encodeURIComponent(candidate.model)}:predict${keyQs}`;
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({ instances: [{ prompt: style ? `${prompt} (${style})` : prompt }], parameters: { sampleCount: 1, aspectRatio: aspect_ratio || '1:1' } }),
       });
       if (!res.ok) return null;
@@ -587,10 +690,10 @@ async function tryRemoteImageGenerate(candidate, { prompt, aspect_ratio, style }
       const b64 = j && j.predictions && j.predictions[0] && j.predictions[0].bytesBase64Encoded;
       return b64 ? Buffer.from(b64, 'base64') : null;
     }
-    const url = `${candidate.baseURL}/models/${encodeURIComponent(candidate.model)}:generateContent?key=${encodeURIComponent(key)}`;
+    const url = `${candidate.baseURL}/models/${encodeURIComponent(candidate.model)}:generateContent${keyQs}`;
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: authHeaders,
       body: JSON.stringify({
         contents: [{ parts: [{ text: style ? `${prompt}. Style: ${style}` : prompt }] }],
         generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
@@ -603,12 +706,13 @@ async function tryRemoteImageGenerate(candidate, { prompt, aspect_ratio, style }
     return inline ? Buffer.from(inline.inlineData.data, 'base64') : null;
   }
   if (['openai-images', 'xai-images', 'together-images', 'openrouter-images', 'fireworks-images', 'openai-compat'].includes(candidate.backend)) {
-    if (!candidate.apiKey || !candidate.baseURL) return null;
+    const cred = await resolveCandidateCredential(candidate);
+    if (!cred.bearer || !candidate.baseURL) return null;
     const size = aspect_ratio === '16:9' ? '1536x1024' : (aspect_ratio === '9:16' ? '1024x1536' : '1024x1024');
     const url = candidate.baseURL.replace(/\/+$/, '') + '/images/generations';
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + candidate.apiKey },
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + cred.bearer },
       body: JSON.stringify({ model: candidate.model, prompt: style ? `${prompt}, ${style}` : prompt, size, response_format: 'b64_json' }),
     });
     if (!res.ok) return null;
@@ -660,7 +764,7 @@ async function generateImage(args = {}, ctx = {}) {
       for (const cand of routed.candidates || []) {
         if (cand.offline) break;
         try {
-          remoteBuf = await tryRemoteImageGenerate(cand, { prompt, aspect_ratio: aspect, style: args.style });
+          remoteBuf = await tryRemoteImageGenerate(cand, { prompt, aspect_ratio: aspect, style: args.style, dims });
           if (remoteBuf) {
             usedModel = cand.model;
             usedBackend = cand.backend;
@@ -701,13 +805,16 @@ async function generateImage(args = {}, ctx = {}) {
     files.push(outFile);
   }
 
+  const primaryCache = cacheMediaArtifact(files[0]);
   if (typeof ctx.emit === 'function') {
-    ctx.emit({ type: 'mediaArtifact', kind: 'image', files, model: usedModel, backend: usedBackend, width: dims.width, height: dims.height, format });
+    ctx.emit({ type: 'mediaArtifact', kind: 'image', files, cachePath: primaryCache.cachePath, previewDataUrl: primaryCache.previewDataUrl, model: usedModel, backend: usedBackend, width: dims.width, height: dims.height, format });
   }
   return {
     ok: true,
     files,
     path: files[0],
+    cachePath: primaryCache.cachePath,
+    previewDataUrl: primaryCache.previewDataUrl,
     width: dims.width,
     height: dims.height,
     aspect_ratio: aspect,
@@ -866,8 +973,9 @@ async function editImage(args = {}, ctx = {}) {
 
   const outFile = resolveOutputPath(args.cwd || ctx.cwd, args.output_path, `edited-${op}`, targetFormat);
   await encodeImageBuffer(img, targetFormat, outFile);
+  const editCache = cacheMediaArtifact(outFile);
   if (typeof ctx.emit === 'function') {
-    ctx.emit({ type: 'mediaArtifact', kind: 'image', files: [outFile], operation: op, width: img.width, height: img.height, format: targetFormat });
+    ctx.emit({ type: 'mediaArtifact', kind: 'image', files: [outFile], cachePath: editCache.cachePath, previewDataUrl: editCache.previewDataUrl, operation: op, width: img.width, height: img.height, format: targetFormat });
   }
   return {
     ok: true,
@@ -875,6 +983,8 @@ async function editImage(args = {}, ctx = {}) {
     input_path: inputPath,
     path: outFile,
     files: [outFile],
+    cachePath: editCache.cachePath,
+    previewDataUrl: editCache.previewDataUrl,
     width: img.width,
     height: img.height,
     format: targetFormat,
@@ -964,10 +1074,12 @@ async function generateVideo(args = {}, ctx = {}) {
   if (typeof ctx.emit === 'function') {
     ctx.emit({ type: 'mediaArtifact', kind: 'video', files: [outFile], model: usedModel, width: dims.width, height: dims.height, durationSec, fps, format });
   }
+  const vidCache = cacheMediaArtifact(outFile);
   return {
     ok: true,
     path: outFile,
     files: [outFile],
+    cachePath: vidCache.cachePath,
     width: dims.width,
     height: dims.height,
     duration_sec: durationSec,
@@ -1190,14 +1302,16 @@ async function editVideo(args = {}, ctx = {}) {
   }
 
   const outMeta = await probeVideo(outFile).catch(() => ({}));
+  const vidEditCache = cacheMediaArtifact(outFile);
   if (typeof ctx.emit === 'function') {
-    ctx.emit({ type: 'mediaArtifact', kind: 'video', files: [outFile], operation: op, ...outMeta });
+    ctx.emit({ type: 'mediaArtifact', kind: 'video', files: [outFile], cachePath: vidEditCache.cachePath, operation: op, ...outMeta });
   }
   return {
     ok: true,
     operation: op,
     path: outFile,
     files: [outFile],
+    cachePath: vidEditCache.cachePath,
     ...outMeta,
     summary: `Edited video (${op}) → ${outFile}`,
   };

@@ -8,12 +8,13 @@ import { ClaudeReconnectPanel, useClaudeReconnect } from '../settings/SettingsSe
 import { SessionModelList, EnvironmentPicker, PERM_MODES, PERM_SHORT, BUILTIN_MENTION_AGENTS, ContextMeter, ProvModelList } from './WorkspaceViews.jsx';
 import { PRESETS, PRESET_KEYS, resolveLoopbackKey, STYLES, REASON_LEVELS, REASON_LABELS, contextWindowFor, loadJSON, saveJSON, useDismiss, toggleDictation, filesToAttachments, uid, ProvNotice, fmtInt, MODEL_WINDOW_CACHE, usedTokens } from '../../utils/appHelpers.jsx';
 
-export function InputBarBody({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, customStyles = [], customAgents = [], onOpenCustomizations, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, queuePaused, onToggleQueuePaused, onClearQueue, onToggleQueueItemPaused, onReorderQueue, onStepQueueItem, onUpdateQueueItemText, unqueue, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, T }) {
+export function InputBarBody({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, orchestrator, setOrchestrator, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, customStyles = [], customAgents = [], onOpenCustomizations, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, queuePaused, onToggleQueuePaused, onClearQueue, onToggleQueueItemPaused, onReorderQueue, onStepQueueItem, onUpdateQueueItemText, unqueue, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [permOpen, setPermOpen] = useState(false);
   const [addCtxOpen, setAddCtxOpen] = useState(false);
+  const [orchExpanded, setOrchExpanded] = useState(false);
   const [inputText, setInputText] = useState(() => (inputRef.current && inputRef.current.value) || '');
   const [slashActions, setSlashActions] = useState([]);
   const [slashIdx, setSlashIdx] = useState(0);
@@ -106,12 +107,28 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   const mentionOpen = mentionQuery !== null && !mentionDismissed && mentionItems.length > 0;
   useEffect(() => { setMentionIdx(0); }, [mentionQuery]);
 
+  const resizeTextarea = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    try {
+      el.style.height = 'auto';
+      const next = Math.min(200, Math.max(24, el.scrollHeight || 24));
+      el.style.height = next + 'px';
+      el.style.overflowY = el.scrollHeight > 200 ? 'auto' : 'hidden';
+    } catch (_) {}
+  }, [inputRef]);
+
   const syncInputState = useCallback((val) => {
     setInputText(val);
     setHasText(!!String(val || '').trim());
     setSlashDismissed(false);
     setMentionDismissed(false);
-  }, []);
+    resizeTextarea();
+  }, [resizeTextarea]);
+
+  useEffect(() => {
+    resizeTextarea();
+  }, [inputText, resizeTextarea]);
 
   const applySlashItem = useCallback((item, mode = 'enter') => {
     if (!item || !inputRef.current) return;
@@ -308,6 +325,18 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
     if (modelMenuOpen) loadProvOauth();
   }, [modelMenuOpen, loadProvOauth]);
 
+  const [autoRouterInfo, setAutoRouterInfo] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    if (window.autobot && typeof window.autobot.autoRouterGet === 'function') {
+      window.autobot.autoRouterGet().then((res) => {
+        if (alive && res && res.ok) setAutoRouterInfo(res);
+      }).catch(() => {});
+    }
+    return () => { alive = false; };
+  }, [modelMenuOpen]);
+  const hasDeepSeekKey = Boolean((settings && settings.autoRouter && settings.autoRouter.hasKey) || (autoRouterInfo && autoRouterInfo.hasKey));
+
   // Warm the per-provider model lists as soon as the menu opens so the picker
   // shows every model (and its window) without a second click. The account the
   // conversation is actually using is fetched first — that is the one whose
@@ -467,7 +496,10 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
       const scan = (r && r.ok ? r : null) || found[base] || null;
       const first = scan && scan.models && scan.models[0];
       if (first) {
-        setProvider((v) => ({ ...v, baseURL: base, model: first.name, apiKey: '', supportsTools: true }));
+        setProvider((v) => ({ ...v, baseURL: base, model: first.name, apiKey: '', supportsTools: true, routingMode: 'direct', oauthProvider: '', transport: '', accessToken: '', oauth: false }));
+        if (setOrchestrator && orchestrator && orchestrator.enabled) {
+          setOrchestrator({ ...orchestrator, enabled: false });
+        }
         setModelMenuOpen(false);
       }
       return { ok: !!first, detail: (r && r.detail) || (scan && scan.detail) || '' };
@@ -652,16 +684,39 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   };
   const onPasteFiles = async (e) => {
     const items = e.clipboardData?.items;
-    if (!items) return;
     const files = [];
-    for (const it of items) {
-      if (it.kind === 'file') { const f = it.getAsFile(); if (f) files.push(f); }
+    if (items) {
+      for (const it of items) {
+        if (it.kind === 'file') { const f = it.getAsFile(); if (f) files.push(f); }
+      }
     }
     if (files.length) {
       e.preventDefault();
       const atts = await filesToAttachments(files);
       setAttachments((a) => [...a, ...atts]);
+      return;
     }
+    // Check if clipboardData holds plain text; sync React state & auto-expand composer height.
+    const plain = e.clipboardData && typeof e.clipboardData.getData === 'function'
+      ? e.clipboardData.getData('text/plain')
+      : '';
+    if (!plain && window.autobot && typeof window.autobot.clipboardReadImage === 'function') {
+      const imgRes = await window.autobot.clipboardReadImage().catch(() => null);
+      if (imgRes && imgRes.ok && imgRes.hasImage && imgRes.dataUrl) {
+        e.preventDefault();
+        setAttachments((a) => [...a, {
+          id: uid(),
+          name: `clipboard-image-${Date.now()}.png`,
+          size: imgRes.dataUrl.length,
+          isImage: true,
+          dataUrl: imgRes.dataUrl,
+        }]);
+        return;
+      }
+    }
+    setTimeout(() => {
+      if (inputRef.current) syncInputState(inputRef.current.value);
+    }, 0);
   };
 
   const onKey = (e) => {
@@ -739,11 +794,18 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
     }
   };
 
+  const disableOrchestrator = useCallback(() => {
+    if (setOrchestrator && orchestrator && orchestrator.enabled) {
+      setOrchestrator({ ...orchestrator, enabled: false });
+    }
+  }, [setOrchestrator, orchestrator]);
+
   const pickModel = (p, model) => {
     const base = normBase(p.baseURL);
     const key = keyFor(p);
-    setProvider((v) => ({ ...v, baseURL: p.baseURL, model: model || p.model, apiKey: key, supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto', oauthProvider: '', transport: '', accessToken: '', oauth: false }));
+    setProvider((v) => ({ ...v, baseURL: p.baseURL, model: model || p.model, apiKey: key, supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto', oauthProvider: '', transport: '', accessToken: '', oauth: false, routingMode: 'direct' }));
     if (key && base) setProviderKeys((m) => ({ ...(m || {}), [base]: key }));
+    disableOrchestrator();
     setModelMenuOpen(false);
   };
 
@@ -767,11 +829,46 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
       transport: prov.transport,
       oauth: true,
       accessToken: '',
+      routingMode: 'direct',
     }));
+    disableOrchestrator();
     // Loaded per account, so two accounts of the same vendor never show each
     // other's catalogs (plan tiers expose different model sets).
     if (!provModels[key]) loadProvModels(prov.id, account);
     if (model) setModelMenuOpen(false);
+  };
+
+  const selectAutoMode = () => {
+    setProvider((v) => ({ ...v, routingMode: 'auto' }));
+    setModelMenuOpen(false);
+  };
+
+  const activateOrchestratorSupervisor = (row = null) => {
+    const baseRows = (orchestrator && Array.isArray(orchestrator.providers)) ? orchestrator.providers : [];
+    if (row && row.model) {
+      const idx = baseRows.findIndex((p) => p && p.model === row.model && String(p.oauthProvider || '') === String(row.oauthProvider || ''));
+      setProvider((v) => ({
+        ...v,
+        baseURL: row.baseURL != null ? row.baseURL : (row.oauthProvider ? '' : v.baseURL),
+        apiKey: row.apiKey != null ? row.apiKey : (row.oauthProvider ? '' : v.apiKey),
+        model: row.model,
+        supportsTools: row.supportsTools !== false,
+        oauthProvider: row.oauthProvider || '',
+        transport: row.transport || '',
+        oauth: !!row.oauth || !!row.oauthProvider,
+        accessToken: '',
+        routingMode: 'orchestrator',
+      }));
+      if (setOrchestrator) {
+        setOrchestrator({ ...(orchestrator || { providers: [] }), enabled: true, activeIndex: idx >= 0 ? idx : 0 });
+      }
+    } else {
+      setProvider((v) => ({ ...v, routingMode: 'orchestrator' }));
+      if (setOrchestrator) {
+        setOrchestrator({ ...(orchestrator || { providers: [] }), enabled: true, activeIndex: 0 });
+      }
+    }
+    setModelMenuOpen(false);
   };
 
   // Unconfigured preset → open Settings with that preset staged. The session
@@ -788,7 +885,43 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   };
   const removeAttachment = (i) => setAttachments((a) => a.filter((_, j) => j !== i));
 
+  const effectiveRoutingMode = provider.routingMode
+    || (String(provider.model || '').trim().toLowerCase() === 'auto'
+      ? 'auto'
+      : (orchestrator && orchestrator.enabled ? 'orchestrator' : 'direct'));
   const modelLabel = (provider.model || '').split('/').pop() || 'Select model';
+  const lastRoutedModel = (lastUsage && lastUsage.model && String(lastUsage.model).trim().toLowerCase() !== 'auto')
+    ? String(lastUsage.model).split('/').pop()
+    : '';
+  const pillDisplayLabel = effectiveRoutingMode === 'auto'
+    ? (lastRoutedModel ? `⚡ Auto · DeepSeek V4.1 Flash → ${lastRoutedModel}` : '⚡ Auto · DeepSeek V4.1 Flash')
+    : (effectiveRoutingMode === 'orchestrator' ? `🛰️ Orch · ${modelLabel}` : modelLabel);
+  const orchModelChoices = useMemo(() => {
+    const out = [];
+    const seen = new Set();
+    const add = (row, roleHint = '') => {
+      if (!row || !row.model) return;
+      const m = String(row.model).trim();
+      if (!m) return;
+      const sig = `${m.toLowerCase()}|${String(row.oauthProvider || '').toLowerCase()}`;
+      if (seen.has(sig)) return;
+      seen.add(sig);
+      out.push({ ...row, model: m, roleHint: roleHint || row.role || '' });
+    };
+    for (const r of ((orchestrator && orchestrator.providers) || [])) {
+      if (r && r.enabled !== false) add(r);
+    }
+    const gw = (orchestrator && orchestrator.pools && orchestrator.pools.gateway) || {};
+    const roles = (orchestrator && orchestrator.pools && orchestrator.pools.roles) || {};
+    for (const [roleName, def] of Object.entries(roles)) {
+      if (!def || !Array.isArray(def.models)) continue;
+      for (const raw of def.models) {
+        const m = typeof raw === 'string' ? raw.replace(/@\d+$/, '').trim() : (raw && raw.model);
+        if (m) add({ model: m, baseURL: gw.baseURL || provider.baseURL || '', apiKey: gw.apiKey || provider.apiKey || '', role: roleName }, roleName);
+      }
+    }
+    return out;
+  }, [orchestrator, provider.baseURL, provider.apiKey]);
   // Short window chip ("1M", "200K") next to the model name so the user can see
   // the effective context length without opening the picker. Backed by the
   // live per-model window cached from `autobot:providerModels`.
@@ -1127,21 +1260,117 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
               <ContextMeter used={usedTokens(lastUsage)} win={ctxWindow} size={26} />
             </button>
             <div className="model-pill-wrap" ref={modelWrapRef}>
-              <button className={'model-pill' + (modelMenuOpen ? ' open' : '')} onClick={() => setModelMenuOpen(!modelMenuOpen)} title="Change model">
-                <Icon name="Agent" size={14} className="model-ico" />
-                <span className="model-name">{modelLabel}</span>
-                {modelWindowLabel && <span className="model-win" title={'Context window: ' + modelWindowLabel + ' tokens'}>{modelWindowLabel}</span>}
-                {activeDot && <span className={'model-dot ' + activeDot} title={activeKeyState.detail || ''} />}
+              <button
+                className={'model-pill' + (modelMenuOpen ? ' open' : '') + (effectiveRoutingMode === 'auto' ? ' mode-auto' : effectiveRoutingMode === 'orchestrator' ? ' mode-orchestrator' : '')}
+                data-testid="model-picker-pill"
+                data-routing-mode={effectiveRoutingMode}
+                onClick={() => setModelMenuOpen(!modelMenuOpen)}
+                title={effectiveRoutingMode === 'auto'
+                  ? 'Smart AI Complexity Router active — click to switch routing mode or model'
+                  : effectiveRoutingMode === 'orchestrator'
+                    ? 'Orchestrator Supervisor + Pool active — click to switch routing mode or model'
+                    : 'Change model'}
+              >
+                {effectiveRoutingMode === 'direct' && <Icon name="Agent" size={14} className="model-ico" />}
+                <span className="model-name">{pillDisplayLabel}</span>
+                {effectiveRoutingMode !== 'auto' && modelWindowLabel && <span className="model-win" title={'Context window: ' + modelWindowLabel + ' tokens'}>{modelWindowLabel}</span>}
+                {effectiveRoutingMode === 'direct' && activeDot && <span className={'model-dot ' + activeDot} title={activeKeyState.detail || ''} />}
                 <Icon name={modelMenuOpen ? 'CaretUp' : 'CaretDown'} size={12} className="model-caret" />
               </button>
               {modelMenuOpen && (
                 <div className="model-menu" ref={modelMenuRef}>
+                  <div className="model-menu-head">Routing mode</div>
+                  <div className={'routing-mode-wrap' + (effectiveRoutingMode === 'auto' ? ' on' : '')}>
+                    <button
+                      type="button"
+                      data-testid="routing-mode-auto"
+                      className={'model-opt routing-mode-card' + (effectiveRoutingMode === 'auto' ? ' on' : '')}
+                      onClick={selectAutoMode}
+                    >
+                      <div className="routing-mode-main">
+                        <span className="model-opt-name">⚡ Auto (DeepSeek V4.1 Flash)</span>
+                        <span className="routing-mode-sub">
+                          {hasDeepSeekKey
+                            ? 'DeepSeek Dispatcher active — picks Fast, Coder, Frontier, Vision, or 1M model per prompt'
+                            : 'Offline heuristic fallback ready — configure a DeepSeek key for ~150ms AI task dispatch'}
+                        </span>
+                      </div>
+                      {effectiveRoutingMode === 'auto' && <Icon name="Check" size={13} className="model-check" />}
+                    </button>
+                    {!hasDeepSeekKey && (
+                      <div className="routing-mode-config-bar">
+                        <button
+                          type="button"
+                          data-testid="configure-deepseek-key-btn"
+                          className="configure-deepseek-pill"
+                          onClick={() => { setModelMenuOpen(false); openSettings({ section: 'system', focus: 'deepseek-router' }); }}
+                        >
+                          Setup Free Key →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className={'orch-picker-box' + (effectiveRoutingMode === 'orchestrator' ? ' on' : '')} data-testid="routing-mode-orchestrator">
+                    <div className="orch-picker-head">
+                      <button
+                        type="button"
+                        className="orch-picker-toggle"
+                        onClick={() => setOrchExpanded((v) => !v)}
+                        aria-expanded={orchExpanded}
+                      >
+                        <span className="model-opt-name">🛰️ Orchestrator Models</span>
+                        {effectiveRoutingMode === 'orchestrator' && <span className="orch-active-tag">On</span>}
+                        <Icon name={orchExpanded ? 'CaretUp' : 'CaretDown'} size={11} />
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="orch-configure-btn"
+                        className="orch-config-link"
+                        onClick={() => { setModelMenuOpen(false); openSettings({ section: 'orchestrator' }); }}
+                      >
+                        Configure…
+                      </button>
+                    </div>
+                    {(orchExpanded || effectiveRoutingMode === 'orchestrator') && (
+                      <div className="orch-picker-body">
+                        <button
+                          type="button"
+                          data-testid="orch-use-supervisor"
+                          className={'model-opt orch-supervisor-btn' + (effectiveRoutingMode === 'orchestrator' ? ' on' : '')}
+                          onClick={() => activateOrchestratorSupervisor(null)}
+                        >
+                          <Icon name="Orbit" size={13} />
+                          <span className="model-opt-name">Activate Orchestrator (Use Selected Model as Supervisor)</span>
+                          {effectiveRoutingMode === 'orchestrator' && <Icon name="Check" size={13} className="model-check" />}
+                        </button>
+                        {orchModelChoices.length > 0 ? orchModelChoices.map((row) => {
+                          const rowActive = effectiveRoutingMode === 'orchestrator' && provider.model === row.model && String(provider.oauthProvider || '') === String(row.oauthProvider || '');
+                          return (
+                            <button
+                              key={`${row.model}|${row.oauthProvider || row.baseURL || ''}`}
+                              type="button"
+                              className={'model-opt' + (rowActive ? ' on' : '')}
+                              onClick={() => activateOrchestratorSupervisor(row)}
+                            >
+                              <span className="model-dot ok" />
+                              <span className="model-opt-name">{row.model.split('/').pop()}</span>
+                              <span className="model-opt-prov">{row.roleHint || row.name || 'Orchestrator'}</span>
+                              {rowActive && <Icon name="Check" size={13} className="model-check" />}
+                            </button>
+                          );
+                        }) : (
+                          <div className="prov-none">No Orchestrator pool models yet — click Configure…</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="model-menu-divider" />
                   <div className="model-menu-head">Model · this session{keyProbing ? ' · checking keys…' : ''}</div>
                   <SessionModelList
                     rows={pickerRows}
-                    isActive={(r) => provider.baseURL === r.preset.baseURL && provider.model === r.model}
+                    isActive={(r) => effectiveRoutingMode === 'direct' && provider.baseURL === r.preset.baseURL && provider.model === r.model}
                     renderRow={(r) => {
-                      const active = provider.baseURL === r.preset.baseURL && provider.model === r.model;
+                      const active = effectiveRoutingMode === 'direct' && provider.baseURL === r.preset.baseURL && provider.model === r.model;
                       const st = presetStatus(r.preset, { keyFor, status: keyStatus, probing: keyProbing });
                       const rowBase = normBase(r.preset.baseURL);
                       const isOllama = /:11434\b/.test(rowBase);
@@ -1249,7 +1478,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                                       )}
                                       <ProvModelList
                                         list={list}
-                                        picked={provider.model}
+                                        picked={effectiveRoutingMode === 'direct' ? provider.model : ''}
                                         onPick={(mid) => pickOauthAccount(pv, a.account, mid)}
                                       />
                                     </>

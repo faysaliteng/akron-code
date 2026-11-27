@@ -12,6 +12,7 @@ const providertransport = require('./providertransport');
 const mcpSchema = require('./mcp-schema');
 const gate = require('./provider-gate');
 const router = require('./orch-router');
+const taskRouter = require('./task-router');
 const spill = require('./spill');
 const contextPipeline = require('./context-pipeline');
 const loopGuardMod = require('./loop-guard');
@@ -427,6 +428,8 @@ function normalizeProvider(p) {
     // it — dropping it here silently reverted every model to the 128k default.
     oauthProvider: p.oauthProvider || '',
     project: p.project || '',
+    routingMode: ['auto', 'orchestrator', 'direct'].includes(p.routingMode) ? p.routingMode : '',
+    ...(p.tier ? { tier: p.tier } : {}),
     // Pool/gate metadata: per-row concurrency cap and the job it serves.
     maxConcurrent: Number(p.maxConcurrent) > 0 ? Number(p.maxConcurrent) : undefined,
     role: p.role || '',
@@ -1533,15 +1536,82 @@ async function runAgent(opts) {
     }
   };
 
-  // Orchestrator: build the provider failover list. When enabled, iterate over
-  // the user-selected providers; otherwise use the single active provider.
+  // Session routing modes:
+  //   - 'direct'       : strictly use only the user-selected single model
+  //   - 'orchestrator' : selected model is Supervisor (index 0) + pool workers/failover
+  //   - 'auto'         : small AI complexity classifier + heuristics select tier model
+  //   - '' (default)   : preserve legacy opts.orchestrator / pool behavior
   const orch = opts.orchestrator || null;
-  let providerList = [normalizeProvider(opts.provider)];
+  const rawProv = opts.provider || {};
+  const routingMode = rawProv.routingMode
+    || (!rawProv.baseURL && !rawProv.oauthProvider && String(rawProv.model || '').trim().toLowerCase() === 'auto' ? 'auto' : '');
+  let providerList = [normalizeProvider(rawProv)];
   let activeIndex = 0;
-  if (orch && orch.enabled && Array.isArray(orch.providers) && orch.providers.length) {
-    // Preserve native-transport fields too: an orchestrator pool may mix
-    // gateways with subscription accounts, and dropping `transport`/tokens here
-    // would silently send a subscription model down the OpenAI-compatible path.
+  let poolMode = false;
+  let effectiveOrch = orch;
+  let autoRoutedMeta = opts.autoRouted || null;
+
+  if (routingMode === 'direct') {
+    providerList = [normalizeProvider({ ...rawProv, routingMode: 'direct' })];
+    activeIndex = 0;
+    poolMode = Boolean(opts.swarm === true && orch && router.poolsConfig(orch) && router.poolsActive(orch, providerList[0]));
+    effectiveOrch = opts.swarm === true && orch && router.poolsConfig(orch) ? orch : null;
+  } else if (routingMode === 'orchestrator') {
+    const supervisor = normalizeProvider({ ...rawProv, routingMode: 'orchestrator' });
+    const supSig = [
+      String(supervisor.model || '').trim().toLowerCase(),
+      String(supervisor.oauthProvider || '').trim().toLowerCase(),
+      String(supervisor.baseURL || '').trim().replace(/\/+$/, '').toLowerCase(),
+    ].join('|');
+    const rawRows = (orch && Array.isArray(orch.providers) ? orch.providers : [])
+      .filter((p) => p && p.enabled !== false)
+      .map((p) => normalizeProvider(p));
+    const poolTail = (orch && router.poolsActive(orch, supervisor))
+      ? router.chainFor(orch, supervisor).map((p) => normalizeProvider(p))
+      : [];
+    const seen = new Set([supSig]);
+    const tail = [];
+    for (const r of [...rawRows, ...poolTail]) {
+      const sig = [
+        String(r.model || '').trim().toLowerCase(),
+        String(r.oauthProvider || '').trim().toLowerCase(),
+        String(r.baseURL || '').trim().replace(/\/+$/, '').toLowerCase(),
+      ].join('|');
+      if (seen.has(sig)) continue;
+      seen.add(sig);
+      tail.push(r);
+    }
+    providerList = [supervisor, ...tail];
+    activeIndex = 0;
+    poolMode = Boolean(orch && router.poolsConfig(orch) && (router.poolsActive(orch, supervisor) || (orch.pools && orch.pools.enabled)));
+    effectiveOrch = { ...(orch || {}), enabled: true, providers: providerList, activeIndex: 0 };
+  } else if (routingMode === 'auto' && opts._chunked !== true) {
+    const autoRes = await taskRouter.classifyAndSelect({
+      messages,
+      attachments: opts.attachments,
+      provider: rawProv,
+      orchestrator: orch,
+      oauthAccounts: opts.oauthAccounts,
+      ollamaModels: opts.ollamaModels,
+      autoRouterConfig: opts.autoRouterConfig,
+      fetchImpl: opts.routerFetch,
+      modelCatalog,
+      hydrateProvider: opts.hydrateProvider,
+      gate,
+      store: opts.store,
+      callClassifier: opts.callClassifier || ((cp, cMsgs, maxTok, sig) => chatOnce({ provider: cp, messages: cMsgs, maxTokens: maxTok, signal: sig })),
+      signal: opts.signal,
+    });
+    const head = normalizeProvider({ ...autoRes.chosen, routingMode: '' });
+    const tail = (autoRes.failoverChain || []).map((p) => normalizeProvider({ ...p, routingMode: '' }));
+    providerList = [head, ...tail];
+    activeIndex = 0;
+    autoRoutedMeta = autoRes.classification || null;
+    effectiveOrch = providerList.length > 1 ? { ...(orch || {}), enabled: true, providers: providerList, activeIndex: 0 } : null;
+    poolMode = Boolean(orch && router.poolsConfig(orch) && router.poolsActive(orch, head));
+    emit({ type: 'model', model: head.model, ...(autoRoutedMeta ? { autoRouted: autoRoutedMeta } : {}) });
+  } else if (orch && orch.enabled && Array.isArray(orch.providers) && orch.providers.length) {
+    // Legacy unspecified routingMode: preserve exact existing orchestrator/pool behavior.
     const rows = orch.providers.filter((p) => p && p.enabled !== false);
     providerList = (rows.length ? rows : orch.providers).map((p) => normalizeProvider({
       maxConcurrent: p.maxConcurrent, role: p.role, gateKey: p.gateKey, supportsTools: p.supportsTools,
@@ -1551,15 +1621,9 @@ async function runAgent(opts) {
       account: p.account, accountId: p.accountId, sessionId: p.sessionId,
       codexUrl: p.codexUrl, cloudcodeUrl: p.cloudcodeUrl, project: p.project,
       oauthProvider: p.oauthProvider,
-      // A ticked subscription row already knows the window the picker showed;
-      // carry it so budgetForModel/auto-compact use it instead of re-guessing.
       contextWindow: p.contextWindow,
     }));
     activeIndex = Math.max(0, Math.min(Number(orch.activeIndex) || 0, providerList.length - 1));
-    // Honor the composer's actively selected model on a user turn: when the user
-    // picks e.g. `claude-opus-5-5` in the bottom-right model switcher while the
-    // Orchestrator pool is ON, start on that matching row instead of a stale
-    // `orch.activeIndex` that still points at another vendor (e.g. Gemini).
     if (opts.turnStart && opts.provider && opts.provider.model) {
       const sel = normalizeProvider(opts.provider);
       const selModel = String(sel.model || '').trim().toLowerCase();
@@ -1585,13 +1649,7 @@ async function runAgent(opts) {
       }
     }
   }
-  // Role pools (FreeLLMAPI layout). When the session provider is the pool
-  // gateway, the failover chain for this turn comes from the job's pool: the
-  // selected model's own pool (or Coder), Vision when the turn carries images,
-  // or the role a caller asked for. A role-scoped orchestrator (sub-agents,
-  // swarm workers) already IS a pool and is used as-is.
-  let poolMode = false;
-  if (orch && !orch.role && router.poolsActive(orch, opts.provider)) {
+  if (!routingMode && orch && !orch.role && router.poolsActive(orch, opts.provider)) {
     const role = opts.role || (router.hasImages(opts.messages) ? 'vision' : null);
     const chain = router.chainFor(orch, opts.provider, role);
     if (chain.length) {
@@ -1600,12 +1658,12 @@ async function runAgent(opts) {
       poolMode = true;
       if (role === 'vision' && opts.turnStart) emit({ type: 'notice', text: 'This message has images, so it runs on the Vision pool (' + chain.map((p) => p.model).join(' → ') + ').' });
     }
-  } else if (orch && orch.role && orch.pools) {
+  } else if (!routingMode && orch && orch.role && orch.pools) {
     poolMode = true;
   }
   // Long context: when the history is bigger than the head row's window and a
   // Long-context pool exists, move the turn there instead of amputating it.
-  if (poolMode && orch && router.poolsConfig(orch)) {
+  if (poolMode && effectiveOrch && router.poolsConfig(effectiveOrch)) {
     try {
       const head = providerList[activeIndex];
       const pidH = String(head.oauthProvider || '').split(':')[0] || head.transport || '';
@@ -1613,7 +1671,7 @@ async function runAgent(opts) {
       const chars = (opts.messages || []).reduce((n, m) => n + (typeof (m && m.content) === 'string' ? m.content.length : JSON.stringify((m && m.content) || '').length), 0);
       const cap = modelCatalog.budgetFor(winH).maxChars;
       if (cap && chars > cap * 0.85 && head.role !== 'longctx') {
-        const lc = router.resolve(orch, 'longctx', head).filter((r) => r.role === 'longctx');
+        const lc = router.resolve(effectiveOrch, 'longctx', head).filter((r) => r.role === 'longctx');
         if (lc.length) {
           providerList = lc.map((p) => normalizeProvider(p));
           activeIndex = 0;
@@ -1670,7 +1728,16 @@ async function runAgent(opts) {
           role: 'user',
           content: `[Part ${k + 1}/${total} of one long message]\n${parts[k]}\n\n[Work through only this part now. Keep any artifact/file work going; a later part will finish the job.]`,
         });
-        const partMsgs = await runAgent({ ...opts, messages: subMessages, _chunked: true, turnStart: false, emit: partEmit });
+        const partMsgs = await runAgent({
+          ...opts,
+          provider: routingMode === 'auto' ? { ...provider, routingMode: '' } : opts.provider,
+          orchestrator: effectiveOrch,
+          autoRouted: autoRoutedMeta,
+          messages: subMessages,
+          _chunked: true,
+          turnStart: false,
+          emit: partEmit,
+        });
         const last = [...partMsgs].reverse().find((m) => m.role === 'assistant');
         const text = last && typeof last.content === 'string' ? last.content : '';
         if (text.trim()) merged = merged ? `${merged}\n\n${text}` : text;
@@ -1878,8 +1945,13 @@ async function runAgent(opts) {
       grok: 'xAI Grok',
     };
     const providerVendorLabel = vendorMap[pidRaw] || (provider.baseURL ? `OpenAI-compatible endpoint (${provider.baseURL})` : 'Configured LLM provider');
-    const routingState = `Orchestrator ${orch && orch.enabled ? `ON (${providerList.length} models in failover pool)` : 'OFF'} · Swarm ${opts.swarm === true ? 'ON' : 'OFF'}`;
-    messages[0].content += `\n\n<runtime_identity>\nAgent identity: Akron Code (Akron Agent by AkronLogic)\nActive model on this turn: ${provider.model || 'auto'}\nActive provider / transport: ${providerVendorLabel}\nRouting state: ${routingState}\nWhen asked who you are or which model is running, identify yourself as Akron Code (the Akron Agent by AkronLogic) powered on this turn by ${provider.model || 'auto'} (${providerVendorLabel}) — never guess or claim you cannot see the active model.\n</runtime_identity>`;
+    const autoLine = autoRoutedMeta
+      ? `\nAuto-Router dispatch: Selected by Akron Code's ${/openrouter/i.test(String(autoRoutedMeta.source || '')) ? 'DeepSeek V4.1 Flash (OpenRouter Free)' : (/freellm/i.test(String(autoRoutedMeta.source || '')) ? 'DeepSeek V4.1 Flash (FreeLLMAPI)' : (/deepseek/i.test(String(autoRoutedMeta.via || '')) ? 'DeepSeek Auto-Router' : 'Smart Auto-Router'))} (Tier ${autoRoutedMeta.tier || autoRoutedMeta.complexity || 3} · ${autoRoutedMeta.role || 'coder'}${autoRoutedMeta.reason ? ` — ${autoRoutedMeta.reason}` : ''})`
+      : '';
+    const routingState = routingMode
+      ? `Mode ${routingMode.toUpperCase()} · Orchestrator ${effectiveOrch && effectiveOrch.enabled ? `ON (${providerList.length} models in failover pool)` : 'OFF'} · Swarm ${opts.swarm === true ? 'ON' : 'OFF'}`
+      : `Orchestrator ${orch && orch.enabled ? `ON (${providerList.length} models in failover pool)` : 'OFF'} · Swarm ${opts.swarm === true ? 'ON' : 'OFF'}`;
+    messages[0].content += `\n\n<runtime_identity>\nAgent identity: Akron Code (Akron Agent by AkronLogic)\nActive model on this turn: ${provider.model || 'auto'}\nActive provider / transport: ${providerVendorLabel}${autoLine}\nRouting state: ${routingState}\nWhen asked who you are or which model is running, identify yourself as Akron Code (the Akron Agent by AkronLogic) powered on this turn by ${provider.model || 'auto'} (${providerVendorLabel}) — never guess or claim you cannot see the active model.\n</runtime_identity>`;
   }
 
   // 5. Per-turn renderer directives (style / web-search / context notes).
@@ -2410,7 +2482,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         const stepModel = String((m && (m.servedBy || m.model)) || provider.model || '').trim();
         if (stepModel) {
           recordModelUsed(stepModel);
-          emit({ type: 'model', model: stepModel, modelsUsed: modelsUsed.slice() });
+          emit({ type: 'model', model: stepModel, modelsUsed: modelsUsed.slice(), ...(autoRoutedMeta ? { autoRouted: autoRoutedMeta } : {}) });
         }
         // Record the output tokens this attempt produced into the shared pool.
         // A discarded token-limit attempt still cost tokens, so it counts too.
@@ -2730,7 +2802,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         return out ? `\n\n<forked_parent_context>\n${out}\n</forked_parent_context>` : '';
       } catch (_) { return ''; }
     };
-    const agentRoster = swarm.buildRoster({ orchestrator: orch, provider: providerList[getIndex()] });
+    const agentRoster = swarm.buildRoster({ orchestrator: effectiveOrch, provider: providerList[getIndex()] });
     const runSubagent = async (args) => {
       args = args || {};
       if (depth >= MAX_AGENT_DEPTH) {
@@ -2788,14 +2860,14 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       const parentProvider = providerList[getIndex()];
       let subProvider = parentProvider;
       // Unpinned: inherit the parent's whole failover chain (pool or list).
-      let subOrch = poolMode && orch && orch.role ? orch
-        : (poolMode ? { enabled: true, providers: providerList, activeIndex: getIndex(), pools: orch && orch.pools, role: 'inherit' } : opts.orchestrator);
+      let subOrch = poolMode && effectiveOrch && effectiveOrch.role ? effectiveOrch
+        : (poolMode ? { enabled: true, providers: providerList, activeIndex: getIndex(), pools: effectiveOrch && effectiveOrch.pools, role: 'inherit' } : effectiveOrch);
       let tier = null;
       let role = null;
-      const poolsOn = poolMode && orch && router.poolsConfig(orch);
-      if (poolsOn && (wantRole || wantModel || !(orch && orch.role))) {
-        role = wantRole || (orch && orch.role && orch.role !== 'inherit' ? orch.role : 'coder');
-        const scoped = router.orchestratorFor(orch, role, parentProvider, { index: subSpawnCount, preferModel: wantModel });
+      const poolsOn = poolMode && effectiveOrch && router.poolsConfig(effectiveOrch);
+      if (poolsOn && (wantRole || wantModel || !(effectiveOrch && effectiveOrch.role))) {
+        role = wantRole || (effectiveOrch && effectiveOrch.role && effectiveOrch.role !== 'inherit' ? effectiveOrch.role : 'coder');
+        const scoped = router.orchestratorFor(effectiveOrch, role, parentProvider, { index: subSpawnCount, preferModel: wantModel });
         if (scoped) {
           subOrch = scoped;
           subProvider = scoped.providers[0];
@@ -2818,6 +2890,9 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         const rest = agentRoster.filter((r) => r !== base && r !== byModel);
         const chain = [subProvider].concat(rest.filter((r) => r.tier === tier), rest.filter((r) => r.tier !== tier));
         subOrch = chain.length > 1 ? { enabled: true, providers: chain, activeIndex: 0, role: 'pinned' } : null;
+      }
+      if (subProvider && (subProvider.routingMode === 'auto' || wantModel || wantRole)) {
+        subProvider = { ...subProvider, routingMode: '' };
       }
       subSpawnCount++;
       // Tool allowlist from the definition (read-only Explore/Plan types).
@@ -3095,10 +3170,10 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       runSubagent,
       // Agent runner + provider for cowork orchestration / bot bridges.
       runAgent: (subOpts) => runAgent({
-        provider: providerList[getIndex()],
+        provider: routingMode === 'auto' ? { ...providerList[getIndex()], routingMode: '' } : providerList[getIndex()],
         // A sub-run that pins its own provider must NOT re-expand into the
         // parent's orchestrator list, or the pin would be silently replaced.
-        orchestrator: subOpts && subOpts.provider ? null : opts.orchestrator,
+        orchestrator: subOpts && subOpts.provider ? null : effectiveOrch,
         cwd: subOpts.cwd || currentCwd,
         useMemory: opts.useMemory,
         shell: opts.shell,
@@ -3117,9 +3192,9 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       }),
       mcpClient: opts.mcpClient || null,
       get provider() { return providerList[getIndex()]; },
-      orchestrator: opts.orchestrator || null,
+      orchestrator: effectiveOrch || null,
       // The un-scoped pool config (role pools) for Swarm/Workflow routing.
-      poolOrchestrator: poolMode && orch ? orch : null,
+      poolOrchestrator: poolMode && effectiveOrch ? effectiveOrch : null,
       emit,
       agentRoster,
       askUser: opts.askUser,
@@ -3531,4 +3606,4 @@ function createPauseController() {
   };
 }
 
-module.exports = { runAgent, createPauseController, normalizeProvider, chatOnce, chatWithFailover, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, chunkText, humanizeLLMError, isRateLimitError, isContextOverflow, isCreditExhausted };
+module.exports = { runAgent, createPauseController, normalizeProvider, chatOnce, chatWithFailover, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, chunkText, humanizeLLMError, isRateLimitError, isContextOverflow, isCreditExhausted, dispatchWithDeepSeekFlash: taskRouter.dispatchWithDeepSeekFlash, classifyPromptTier: taskRouter.classifyPromptTier, pickFromRolePool: taskRouter.pickFromRolePool, getDispatcherTelemetry: taskRouter.getDispatcherTelemetry };
