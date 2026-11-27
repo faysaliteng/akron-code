@@ -544,13 +544,29 @@ ipcMain.handle('autobot:dbUpsertConv', (e, conv) => sessionDb.upsertConversation
 ipcMain.handle('autobot:dbDeleteConv', (e, id) => sessionDb.deleteConversation(id));
 ipcMain.handle('autobot:dbSearch', (e, query, opts) => sessionDb.searchConversationsDb(query, opts || {}));
 ipcMain.handle('autobot:setSettings', (e, patch) => {
-  const next = store.setSettings(patch);
+  const cur = store.getSettings() || {};
+  const normalized = (patch && typeof patch === 'object') ? { ...patch } : {};
+  if (normalized.uiSettings && typeof normalized.uiSettings === 'object') {
+    normalized.uiSettings = { ...(cur.uiSettings || {}), ...normalized.uiSettings };
+  }
+  if (normalized.uiState && typeof normalized.uiState === 'object') {
+    normalized.uiState = { ...(cur.uiState || {}), ...normalized.uiState };
+  }
+  const next = store.setSettings(normalized);
   // Launch-at-login is an OS setting, not just a stored flag (Desktop parity:
   // its General pane toggles the login item directly).
   if (patch && Object.prototype.hasOwnProperty.call(patch, 'launchAtLogin') && process.env.AKRON_COLD_BOOT_CHECK !== '1') {
     try {
       app.setLoginItemSettings({ openAtLogin: !!patch.launchAtLogin, openAsHidden: false });
     } catch (err) { console.error('login item update failed:', err.message); }
+  }
+  const hasSleep = patch && (Object.prototype.hasOwnProperty.call(patch, 'preventSleep') || (patch.uiSettings && Object.prototype.hasOwnProperty.call(patch.uiSettings, 'preventSleep')));
+  if (hasSleep && process.env.AKRON_COLD_BOOT_CHECK !== '1') {
+    try { require('../app-system').setPreventSleep(Boolean((normalized.uiSettings && normalized.uiSettings.preventSleep !== undefined) ? normalized.uiSettings.preventSleep : next.preventSleep)); } catch (_) {}
+  }
+  const hasTray = patch && (Object.prototype.hasOwnProperty.call(patch, 'keepInTray') || (patch.uiSettings && Object.prototype.hasOwnProperty.call(patch.uiSettings, 'keepInTray')));
+  if (hasTray) {
+    try { require('../app-system').setKeepInTray(Boolean((normalized.uiSettings && normalized.uiSettings.keepInTray !== undefined) ? normalized.uiSettings.keepInTray : next.keepInTray)); } catch (_) {}
   }
   if (process.platform === 'win32' && patch && Object.prototype.hasOwnProperty.call(patch, 'theme')) {
     const overlay = winTitleBarOverlay(next.theme);
@@ -1039,8 +1055,12 @@ ipcMain.handle('autobot:pushCommand', (e, text) => {
 ipcMain.handle('autobot:remoteRelayStatus', () => {
   try {
     const rs = require('../remote-server');
+    const savedRelay = (store.getSettings && store.getSettings().remoteRelay) || {};
+    const liveStatus = activeOutboundRelay ? activeOutboundRelay.status() : { connected: false, relayUrl: savedRelay.relayUrl || '' };
     return {
-      ...(activeOutboundRelay ? activeOutboundRelay.status() : { connected: false, relayUrl: '' }),
+      ...liveStatus,
+      relayUrl: liveStatus.relayUrl || savedRelay.relayUrl || '',
+      savedEnabled: !!savedRelay.enabled,
       killSwitchActive: rs.isKillSwitchActive(),
       killSwitchPath: rs.killSwitchPath(),
     };
@@ -1053,12 +1073,18 @@ ipcMain.handle('autobot:remoteRelayConfigure', (e, { action, relayUrl, token } =
     const rs = require('../remote-server');
     if (action === 'disconnect') {
       if (activeOutboundRelay) activeOutboundRelay.disconnect('user');
-      return { ok: true, ...(activeOutboundRelay ? activeOutboundRelay.status() : { connected: false, relayUrl: '' }) };
+      const prevRelay = (store.getSettings && store.getSettings().remoteRelay) || {};
+      if (store.setSettings) store.setSettings({ remoteRelay: { ...prevRelay, enabled: false } });
+      return { ok: true, ...(activeOutboundRelay ? activeOutboundRelay.status() : { connected: false, relayUrl: prevRelay.relayUrl || '' }) };
     }
+    const resolvedUrl = String(relayUrl || (store.getSettings && store.getSettings().remoteRelay && store.getSettings().remoteRelay.relayUrl) || '').trim();
+    const resolvedToken = String(token || (secretstore && secretstore.get && secretstore.get('REMOTE_RELAY_TOKEN')) || '');
+    if (store.setSettings) store.setSettings({ remoteRelay: { enabled: true, relayUrl: resolvedUrl } });
+    if (token && secretstore && secretstore.set) secretstore.set('REMOTE_RELAY_TOKEN', String(token));
     if (activeOutboundRelay) activeOutboundRelay.disconnect('reconfigure');
     activeOutboundRelay = rs.createOutboundRelay({
-      relayUrl: relayUrl || '',
-      token: token || '',
+      relayUrl: resolvedUrl,
+      token: resolvedToken,
       onCommand: async (msg) => {
         if (msg && msg.action === 'ping') return { pong: true, ts: Date.now() };
         if (msg && (msg.action === 'approve' || msg.action === 'deny')) {
@@ -1183,7 +1209,11 @@ ipcMain.handle('autobot:transcribeAudio', async (e, payload = {}) => {
 ipcMain.handle('autobot:getOrchestrator', () => store.getOrchestrator());
 ipcMain.handle('autobot:setOrchestrator', (e, patch) => {
   poolNoticeDeduper.reset();
-  return store.setOrchestrator(patch);
+  const next = store.setOrchestrator(patch);
+  if (typeof broadcast === 'function') {
+    try { broadcast({ type: 'orchestrator', orchestrator: next }); } catch (_) {}
+  }
+  return next;
 });
 // Live model health for the Role pools editor: per-row cooldown / dead / inflight
 // from the shared provider gate, plus the configured pools.

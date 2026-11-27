@@ -64,6 +64,7 @@ import { InputBarBody } from './components/chat/InputBarView.jsx';
 import { SettingsModalBody } from './components/settings/SettingsModalBody.jsx';
 import { resolveAgainstCwd, isHtmlPath, attachDocumentLinkRouter } from './utils/linkAndFileHelpers.js';
 import { sendDesktopNotification, convToMarkdown, convToHtml, escapeHtml, fmtSize, extractCodeBlocks, filesToAttachments, toggleDictation, useDismiss, priceFor, FREELLM_LOOPBACK_BASES, MODEL_WINDOW_CACHE, HARNESS_PROFILES, SOUND_PRESETS, playUiSound, extractLinks, fetchUnfurl, parseCodeInfo, copyTextToClipboard, extractMessageText } from './utils/appHelpers.jsx';
+import { extractPersistedSettings, mergeBootSettings, reconcileBootProvider, syncProviderForOrchestratorToggle, mergeBootUiState } from './utils/settingsPersistence.js';
 
 // Compact record of what the assistant actually did with tools last turn.
 // Model switches need this: the new model sees files + mindmap, but without the
@@ -130,17 +131,15 @@ export default function App() {
   const [provider, setProvider] = useState(() => hydrateProvider(loadJSON('autobot:provider', {}), DEFAULT_PROVIDER, PRESETS));
   const [providerKeys, setProviderKeys] = useState(() => loadJSON('autobot:providerKeys', {}));
   const [settings, setSettings] = useState(() => {
-    const base = loadJSON('autobot:settings', { theme: 'dark', useMemory: true, locale: 'en' });
+    const base = loadJSON('autobot:settings', null);
     const designPrefs = loadJSON(UI_DESIGN_PREFS_KEY, {});
-    return {
-      ...DEFAULT_APPEARANCE_SETTINGS,
-      ...base,
-      ...(designPrefs && typeof designPrefs === 'object' ? designPrefs : {}),
-      harnessProfile: base.harnessProfile || 'full',
-      typography: normalizeTypography(base.typography),
-      notifications: { agent: true, permissions: true, questions: true, errors: false, ...(base.notifications || {}) },
-      sounds: { agent: 'staplebops-01', permissions: 'staplebops-02', questions: 'staplebops-05', errors: 'none', ...(base.sounds || {}) },
-    };
+    return mergeBootSettings({
+      localSettings: base,
+      hasLocalSettings: Boolean(base),
+      designPrefs,
+      defaultAppearance: DEFAULT_APPEARANCE_SETTINGS,
+      normalizeTypography,
+    });
   });
   const [systemPrefersLight, setSystemPrefersLight] = useState(() => (
     typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)').matches : false
@@ -172,17 +171,31 @@ export default function App() {
     }
   }, [appAppearance]);
   const T = useCallback((k) => _t(settings.locale, k), [settings.locale]);
-  const [orchestrator, setOrchestrator] = useState(() => ({ enabled: false, providers: [], activeIndex: -1 }));
-  const saveOrchestrator = useCallback((next) => {
+  const [orchestrator, setOrchestrator] = useState(() => loadJSON('autobot:orchestrator', { enabled: false, providers: [], activeIndex: -1 }));
+  const orchRef = useRef(orchestrator);
+  orchRef.current = orchestrator;
+  const saveOrchestrator = useCallback((nextOrFn) => {
+    const prev = orchRef.current;
+    const next = typeof nextOrFn === 'function' ? nextOrFn(prev) : nextOrFn;
+    if (!next || typeof next !== 'object') return;
+    orchRef.current = next;
     setOrchestrator(next);
+    saveJSON('autobot:orchestrator', next);
     try { if (window.autobot && window.autobot.setOrchestrator) window.autobot.setOrchestrator(next); } catch (_) {}
+    if (Boolean(next.enabled) !== Boolean(prev && prev.enabled)) {
+      setProvider((p) => syncProviderForOrchestratorToggle(p, next, prev));
+    }
   }, []);
-  const [features, setFeatures] = useState(() => ({ computerUse: true, chrome: false, bridges: false, quickEntry: true, computerUseTeach: false, buddy: false, remoteControl: false, extensions: false, developerMode: false, trustedFolders: false, chromeHost: '127.0.0.1', chromePort: 9222 }));
-  // Single write path for feature toggles: state + main-process mirror. The
-  // Environment pane and Settings both call this; before it existed the pane
-  // threw `ReferenceError: saveFeat is not defined` and blanked the window.
-  const saveFeat = useCallback((next) => {
+  const [features, setFeatures] = useState(() => loadJSON('autobot:features', { computerUse: true, chrome: false, bridges: false, quickEntry: true, computerUseTeach: false, buddy: false, remoteControl: false, extensions: false, developerMode: false, trustedFolders: false, chromeHost: '127.0.0.1', chromePort: 9222 }));
+  const featRef = useRef(features);
+  featRef.current = features;
+  const saveFeat = useCallback((nextOrFn) => {
+    const prev = featRef.current;
+    const next = typeof nextOrFn === 'function' ? nextOrFn(prev) : nextOrFn;
+    if (!next || typeof next !== 'object') return;
+    featRef.current = next;
     setFeatures(next);
+    saveJSON('autobot:features', next);
     try { window.autobot.setFeatures(next); } catch (_) { /* main may be older */ }
   }, []);
   const [account, setAccount] = useState(() => loadJSON('autobot:account', {
@@ -195,7 +208,7 @@ export default function App() {
   }));
   const [panel, setPanel] = useState('chats'); // chats | memory | skills | notebooks | mcp | artifacts | media | terminal | projects | search | plugins | scheduled
   const [mediaStudioFocusPath, setMediaStudioFocusPath] = useState('');
-  const [workbenchMode, setWorkbenchMode] = useState('agent'); // 'agent' | 'ide'
+  const [workbenchMode, setWorkbenchMode] = useState(() => loadJSON('autobot:workbenchMode', 'agent')); // 'agent' | 'ide'
   const [ideExternalOpenFile, setIdeExternalOpenFile] = useState(null);
   const editorContextXmlRef = useRef('');
   // Jump-to-message target set by the global search panel; cleared once scrolled.
@@ -204,7 +217,7 @@ export default function App() {
   // A keyless preset clicked in the model picker: Settings opens with it staged
   // and the session provider only switches once a key is saved.
   const [pendingPreset, setPendingPreset] = useState(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => !!loadJSON('autobot:sidebarCollapsed', false));
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -288,20 +301,19 @@ export default function App() {
   // the prompt directive and (b) is sent to the API as `reasoning_effort`.
   const reasoningLevel = provider.reasoningLevel || 'auto';
   const setReasoningLevel = (lv) => setProvider((p) => ({ ...p, reasoningLevel: lv }));
-  const [styleId, setStyleId] = useState('default');
+  const [styleId, setStyleId] = useState(() => loadJSON('autobot:styleId', 'default'));
   const [customAgents, setCustomAgents] = useState([]);
   const [customStyles, setCustomStyles] = useState([]);
   const [defaultCustomStyleId, setDefaultCustomStyleId] = useState('default');
   const [showPalette, setShowPalette] = useState(false); // Command Palette (⌘K)
   const [showFind, setShowFind] = useState(false);       // in-chat Find (⌘F)
   const [findQuery, setFindQuery] = useState('');
-  const [webSearch, setWebSearch] = useState(false);
+  const [webSearch, setWebSearch] = useState(() => !!loadJSON('autobot:webSearch', false));
   // Swarm is an OPT-IN escalation the user chooses, not something the model
   // decides on its own: multi-agent (Task/Agent) is the automatic default, and
   // `Swarm` only becomes visible to the model when this pill is on. The roster
   // it uses is restricted to frontier models (see electron/swarm.js).
   const [swarmEnabled, setSwarmEnabled] = useState(() => !!loadJSON('autobot:swarmEnabled', false));
-  useEffect(() => { saveJSON('autobot:swarmEnabled', swarmEnabled); }, [swarmEnabled]);
   const [dictating, setDictating] = useState(false);
   const [projects, setProjects] = useState(() => loadJSON('autobot:projects', [])); // { id, name, instructions }
   const [activeProject, setActiveProject] = useState(() => loadJSON('autobot:activeProject', null));
@@ -511,86 +523,90 @@ export default function App() {
     return () => clearTimeout(t);
   }, [convs, activeId]);
   useEffect(() => { saveJSON('autobot:activeId', activeId); }, [activeId]);
-  useEffect(() => { saveJSON('autobot:provider', provider); }, [provider]);
-  useEffect(() => { saveJSON('autobot:providerKeys', providerKeys); }, [providerKeys]);
-  // Credentials live in the main process file (~/.autobot/settings.json, 0600)
-  // because headless/scheduled runs read them from there. A renderer profile
-  // with no stored provider starts on the built-in default, so adopt the saved
-  // endpoint + key once — and hold the mirror below until that decision is made,
-  // otherwise the empty default overwrote the user's keyed configuration on
-  // every launch. Never overwrites a key the user already has.
+  // Credentials & persistent app state live in `~/.autobot/settings.json` (0600)
+  // AND `orchestrator.json` / `features.json`. Hold all mirror writes until
+  // main-process state is hydrated once, so a fresh or upgrading renderer
+  // profile can never overwrite saved user configuration with boot defaults.
   const [settingsAdopted, setSettingsAdopted] = useState(false);
-  // Snapshot what the profile held *before* any effect ran. The persist effects
-  // above fire on mount and replace an absent profile with the built-in default,
-  // so reading localStorage inside the adoption effect would always see the
-  // default's key and never adopt the saved one.
+  useEffect(() => { if (settingsAdopted) saveJSON('autobot:provider', { ...provider, _updatedAt: Date.now() }); }, [provider, settingsAdopted]);
+  useEffect(() => { if (settingsAdopted) saveJSON('autobot:providerKeys', providerKeys); }, [providerKeys, settingsAdopted]);
   const bootRef = useRef(null);
   if (bootRef.current === null) {
+    const hasKey = (k) => { try { return typeof localStorage !== 'undefined' && localStorage.getItem(k) !== null; } catch (_) { return false; } };
     const bootSettings = loadJSON('autobot:settings', null);
     bootRef.current = {
       own: loadJSON('autobot:provider', null),
+      hasOwn: hasKey('autobot:provider'),
       keys: loadJSON('autobot:providerKeys', {}),
-      hasTypography: !!(bootSettings && bootSettings.typography),
+      rawSettings: bootSettings,
+      hasSettings: hasKey('autobot:settings'),
+      designPrefs: loadJSON(UI_DESIGN_PREFS_KEY, {}),
+      uiTimestamps: loadJSON('autobot:uiTimestamps', {}),
+      hasUi: { permissions: hasKey('autobot:permissions'), swarmEnabled: hasKey('autobot:swarmEnabled'), webSearch: hasKey('autobot:webSearch'), styleId: hasKey('autobot:styleId'), sidebarCollapsed: hasKey('autobot:sidebarCollapsed'), workbenchMode: hasKey('autobot:workbenchMode'), projects: hasKey('autobot:projects'), activeProject: hasKey('autobot:activeProject') },
     };
   }
-  // Main's saved provider, remembered so the mirror below can never overwrite a
-  // real credential with a renderer profile that merely echoes the built-in
-  // default (that clobber cost the user's stored gateway key twice).
-  const savedProvRef = useRef(null);
+  const hydrateAckRef = useRef(0);
   useEffect(() => {
     let cancelled = false;
-    Promise.resolve(window.autobot.getSettings()).then((s) => {
-      if (cancelled || !s) return;
-      if (s.typography && !(bootRef.current && bootRef.current.hasTypography)) {
-        setSettings((prev) => ({ ...prev, typography: normalizeTypography(s.typography) }));
+    Promise.all([
+      Promise.resolve(window.autobot.getSettings?.()).catch(() => null),
+      Promise.resolve(window.autobot.getOrchestrator?.()).catch(() => null),
+      Promise.resolve(window.autobot.getFeatures?.()).catch(() => null),
+    ]).then(([s, diskOrch, diskFeat]) => {
+      if (cancelled) return;
+      if (diskOrch && typeof diskOrch === 'object') {
+        orchRef.current = diskOrch;
+        setOrchestrator(diskOrch);
+        saveJSON('autobot:orchestrator', diskOrch);
       }
-      const saved = (s.provider) || {};
-      if (saved.baseURL) savedProvRef.current = saved;
-      const base = normBase(saved.baseURL);
-      if (!base || !saved.apiKey) return;
+      if (diskFeat && typeof diskFeat === 'object') {
+        featRef.current = diskFeat;
+        setFeatures(diskFeat);
+        saveJSON('autobot:features', diskFeat);
+      }
       const boot = bootRef.current || {};
-      const own = boot.own;
-      const keys = boot.keys || {};
-      const ownBase = endpointKey((own && own.baseURL) || '');
-      const ownKey = (own && own.apiKey) || keys[base] || '';
-      if (ownKey) {
-        // The key is already here, but the *model* can be a stale fallback: the
-        // picker only re-inserts an alias the catalog omits while it is the
-        // active model, so a reload that starts from an older profile demoted
-        // `auto:fast` to the preset's `auto` and the mirror then persisted it.
-        // Same endpoint means the saved model is the last one the user chose.
-        const sameEndpoint = !ownBase || ownBase === endpointKey(base);
-        if (sameEndpoint && saved.model && (own && own.model) !== saved.model) {
-          setProvider((v) => ({ ...v, model: saved.model }));
+      if (s && typeof s === 'object') {
+        const nextSet = mergeBootSettings({ localSettings: boot.rawSettings, hasLocalSettings: boot.hasSettings, designPrefs: boot.designPrefs, diskSettings: s, defaultAppearance: DEFAULT_APPEARANCE_SETTINGS, normalizeTypography });
+        setSettings(nextSet);
+        const provRes = reconcileBootProvider({ localProvider: boot.own, hasLocalProvider: boot.hasOwn, localKeys: boot.keys, diskProvider: s.provider || null, diskKeys: s.providerKeys || {}, diskOrchestrator: diskOrch, defaultProvider: DEFAULT_PROVIDER, presets: PRESETS, hydrateProviderFn: hydrateProvider });
+        if (provRes.adoptedFromDisk || provRes.healedRoutingMode) {
+          setProvider(provRes.provider);
+          saveJSON('autobot:provider', provRes.provider);
+          if (provRes.healedRoutingMode) {
+            try { window.autobot.setSettings?.({ provider: { ...provRes.provider, _updatedAt: Date.now() } }); } catch (_) {}
+          }
         }
-        return;                                            // the user's own key wins
+        if (provRes.providerKeys && Object.keys(provRes.providerKeys).length) {
+          setProviderKeys(provRes.providerKeys);
+          saveJSON('autobot:providerKeys', provRes.providerKeys);
+        }
+        const ui = mergeBootUiState({
+          localUiState: { permissions, swarmEnabled, webSearch, styleId, sidebarCollapsed, workbenchMode, projects, activeProject, _timestamps: boot.uiTimestamps },
+          hasLocalKeyMap: boot.hasUi,
+          diskUiState: s.uiState || null,
+        });
+        if (ui.permissions !== undefined && ui.permissions !== permissions) setPermissions(ui.permissions);
+        if (ui.swarmEnabled !== undefined && Boolean(ui.swarmEnabled) !== Boolean(swarmEnabled)) setSwarmEnabled(Boolean(ui.swarmEnabled));
+        if (ui.webSearch !== undefined && Boolean(ui.webSearch) !== Boolean(webSearch)) setWebSearch(Boolean(ui.webSearch));
+        if (ui.styleId !== undefined && ui.styleId !== styleId) setStyleId(ui.styleId);
+        if (ui.sidebarCollapsed !== undefined && Boolean(ui.sidebarCollapsed) !== Boolean(sidebarCollapsed)) setSidebarCollapsed(Boolean(ui.sidebarCollapsed));
+        if (ui.workbenchMode !== undefined && ui.workbenchMode !== workbenchMode) setWorkbenchMode(ui.workbenchMode);
+        if (Array.isArray(ui.projects)) setProjects(ui.projects);
+        if (ui.activeProject !== undefined) setActiveProject(ui.activeProject);
+      } else if (diskOrch && diskOrch.enabled === true && (!boot.own?.routingMode || boot.own?.routingMode === 'direct')) {
+        setProvider((v) => ({ ...v, routingMode: 'orchestrator' }));
       }
-      if (ownBase && ownBase !== endpointKey(base)) return; // a different endpoint was chosen
-      savedProvRef.current = saved;
-      setProvider((v) => hydrateProvider({ ...v, ...saved }, v, PRESETS));
-      setProviderKeys((m) => ({ ...(m || {}), [base]: saved.apiKey }));
+      hydrateAckRef.current = 1;
     }).catch(() => {}).finally(() => { if (!cancelled) setSettingsAdopted(true); });
     return () => { cancelled = true; };
-  }, []);
-  // Mirror the active provider into the main-process settings so headless runs
-  // (scheduled tasks) use the same model the user picked.
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Mirror active provider, keys, full settings & session UI preferences to main.
   useEffect(() => {
     if (!settingsAdopted) return;
-    // Never let a profile that is just the built-in default overwrite a real
-    // keyed endpoint in main's settings file — that file is what headless and
-    // scheduled runs read, and the default carries a hardcoded key of its own.
-    const boot = (bootRef.current && bootRef.current.own) || null;
-    const saved = savedProvRef.current;
-    const untouchedDefault = boot
-      && endpointKey(boot.baseURL || '') === endpointKey(DEFAULT_PROVIDER.baseURL || '')
-      && String(boot.apiKey || '') === String(DEFAULT_PROVIDER.apiKey || '');
-    const savedIsOther = saved && saved.apiKey
-      && endpointKey(saved.baseURL || '') !== endpointKey(DEFAULT_PROVIDER.baseURL || '');
-    if (untouchedDefault && savedIsOther) return;
-    try { window.autobot.setSettings({ provider }); } catch (_) {}
-  }, [provider, settingsAdopted]);
-  // Keep orchestrator.activeIndex aligned when the user switches model in the
-  // composer picker while Orchestrator failover is enabled.
+    if (hydrateAckRef.current === 1) { hydrateAckRef.current = 2; return; }
+    try { window.autobot.setSettings?.({ provider: { ...provider, _updatedAt: Date.now() }, providerKeys }); } catch (_) {}
+  }, [provider, providerKeys, settingsAdopted]);
+  // Keep orchestrator.activeIndex aligned when switching models while Orchestrator is on.
   useEffect(() => {
     if (!settingsAdopted) return;
     if (provider && (provider.routingMode === 'direct' || provider.routingMode === 'auto')) return;
@@ -601,50 +617,49 @@ export default function App() {
     if (!selModel) return;
     const idx = orchestrator.providers.findIndex((p) => {
       if (!p) return false;
-      const pm = String(p.model || '').trim().toLowerCase();
-      const po = String(p.oauthProvider || '').trim().toLowerCase();
-      const pb = normBase(p.baseURL || '').toLowerCase();
-      if (pm !== selModel) return false;
-      if (selOauth) return po === selOauth;
-      if (selBase) return pb === selBase;
+      if (String(p.model || '').trim().toLowerCase() !== selModel) return false;
+      if (selOauth) return String(p.oauthProvider || '').trim().toLowerCase() === selOauth;
+      if (selBase) return normBase(p.baseURL || '').toLowerCase() === selBase;
       return true;
     });
     if (idx >= 0 && idx !== orchestrator.activeIndex) {
-      const next = { ...orchestrator, activeIndex: idx };
-      setOrchestrator(next);
-      try { if (window.autobot && window.autobot.setOrchestrator) window.autobot.setOrchestrator(next); } catch (_) {}
+      saveOrchestrator({ ...orchestrator, activeIndex: idx });
     }
   }, [provider.model, provider.oauthProvider, provider.baseURL, settingsAdopted]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    saveJSON('autobot:settings', settings);
     applyTypographyToDocument(settings.typography);
-    // Push OS-level & persistent settings (login item + typography) to main.
-    try {
-      window.autobot.setSettings({
-        launchAtLogin: !!settings.launchAtLogin,
-        typography: settings.typography,
-      });
-    } catch (_) {}
-  }, [settings]);
+    if (!settingsAdopted) return;
+    const ts = Date.now();
+    const persisted = { ...extractPersistedSettings(settings), _updatedAt: ts };
+    saveJSON('autobot:settings', persisted);
+    try { window.autobot.setSettings?.({ theme: persisted.theme, launchAtLogin: !!persisted.launchAtLogin, typography: persisted.typography, preventSleep: !!persisted.preventSleep, keepInTray: !!persisted.keepInTray, uiSettings: persisted }); } catch (_) {}
+  }, [settings, settingsAdopted]);
   useEffect(() => { saveJSON('autobot:account', account); }, [account]);
-  useEffect(() => { saveJSON('autobot:projects', projects); }, [projects]);
-  useEffect(() => { saveJSON('autobot:activeProject', activeProject); }, [activeProject]);
-  useEffect(() => { saveJSON('autobot:permissions', permissions); }, [permissions]);
-
-  // init cwd + memory + skills
   useEffect(() => {
-    // Restore the active conversation's project folder (creates one lazily).
+    if (!settingsAdopted) return;
+    const now = Date.now();
+    const uiState = { permissions, swarmEnabled, webSearch, styleId, sidebarCollapsed, workbenchMode, projects, activeProject, _updatedAt: now };
+    saveJSON('autobot:projects', projects);
+    saveJSON('autobot:activeProject', activeProject);
+    saveJSON('autobot:permissions', permissions);
+    saveJSON('autobot:swarmEnabled', swarmEnabled);
+    saveJSON('autobot:webSearch', webSearch);
+    saveJSON('autobot:styleId', styleId);
+    saveJSON('autobot:sidebarCollapsed', sidebarCollapsed);
+    saveJSON('autobot:workbenchMode', workbenchMode);
+    saveJSON('autobot:uiTimestamps', { permissions: now, swarmEnabled: now, webSearch: now, styleId: now, sidebarCollapsed: now, workbenchMode: now, projects: now, activeProject: now });
+    try { window.autobot.setSettings?.({ uiState }); } catch (_) {}
+  }, [permissions, swarmEnabled, webSearch, styleId, sidebarCollapsed, workbenchMode, projects, activeProject, settingsAdopted]);
+
+  // init cwd + memory + skills + customizations
+  useEffect(() => {
     const id = loadJSON('autobot:activeId', null);
     const ws = loadJSON('autobot:workspace:' + (id || ''), null);
     if (id && ws) window.autobot.getWorkspace(id).then((d) => { if (d) setCwd(d); });
     else if (id) window.autobot.getDefaultCwd(id, '').then(setCwd);
-    // No conversation yet → no project folder. Minting one here created that
-    // stale `untitled-*` folder every launch and the first build landed in it.
     window.autobot.getMemory().then((m) => setMemory(m.entries || []));
     window.autobot.getSkills().then(setSkills);
     window.autobot.listNotebooks().then(setNotebooks);
-    window.autobot.getOrchestrator().then(setOrchestrator);
-    window.autobot.getFeatures().then(setFeatures);
     if (window.autobot.complianceGet) window.autobot.complianceGet().then(setCompliance).catch(() => {});
   }, []);
 
@@ -2544,7 +2559,7 @@ export default function App() {
     setPaused, setPermError, setPermissionQueue, setLastUsage,
     commitLive, setError, setModelMenuOpen, setQuestionQueue,
     setShowSettings, setPanel, setActiveId, setConvs, setCuConsent,
-    setPermissions, setPlanMode, setArtifactsExplicit, setNotice, setFeatures,
+    setPermissions, setPlanMode, setArtifactsExplicit, setNotice, setFeatures: saveFeat, setOrchestrator: saveOrchestrator,
     openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
   });
   return (
@@ -3107,8 +3122,9 @@ export default function App() {
       {showSettings && (
         <SettingsModal
           provider={provider} setProvider={setProvider} providerKeys={providerKeys} setProviderKeys={setProviderKeys}
-          settings={settings} setSettings={setSettings} orchestrator={orchestrator} setOrchestrator={setOrchestrator}
-          features={features} setFeatures={setFeatures} testProvider={testProvider}
+          settings={settings} setSettings={setSettings} orchestrator={orchestrator} setOrchestrator={saveOrchestrator}
+          features={features} setFeatures={saveFeat} testProvider={testProvider}
+          projects={projects} setProjects={setProjects} activeProject={activeProject} setActiveProject={setActiveProject}
           onClose={() => { setShowSettings(false); setPendingPreset(null); }}
           T={T} permissions={permissions} setPermissions={setPermissions}
           compliance={compliance} setCompliance={setCompliance}

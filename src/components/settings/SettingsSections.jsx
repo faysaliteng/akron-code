@@ -1267,9 +1267,50 @@ export function RolePoolsEditor({ orchestrator, saveOrch }) {
   const pools = (orchestrator && orchestrator.pools) || {};
   const roles = pools.roles || {};
   const gateway = pools.gateway || {};
-  // Textareas keep their own text while focused so typing is never reformatted;
-  // they commit (parse → save) on blur.
+  // Textareas & gateway fields flush dirty edits on blur, unmount (Done), or beforeunload.
   const [drafts, setDrafts] = useState({});
+  const draftsRef = useRef({});
+  draftsRef.current = drafts;
+  const gwDraftRef = useRef({ baseURL: gateway.baseURL || '', apiKey: gateway.apiKey || '', dirty: false });
+  const latestRef = useRef({ orchestrator, saveOrch });
+  latestRef.current = { orchestrator, saveOrch };
+  useEffect(() => {
+    if (!gwDraftRef.current.dirty) {
+      gwDraftRef.current = { baseURL: gateway.baseURL || '', apiKey: gateway.apiKey || '', dirty: false };
+    }
+  }, [gateway.baseURL, gateway.apiKey]);
+  useEffect(() => {
+    const flushDirty = () => {
+      const { orchestrator: orchNow, saveOrch: persistOrch } = latestRef.current;
+      if (!persistOrch || !orchNow) return;
+      const curPools = orchNow.pools || {};
+      const curRoles = { ...(curPools.roles || {}) };
+      const curGw = { ...(curPools.gateway || {}) };
+      let changed = false;
+      for (const [id, rawText] of Object.entries(draftsRef.current || {})) {
+        if (rawText === undefined) continue;
+        const def = POOL_ROLES.find((r) => r.id === id);
+        const prevRole = curRoles[id] || { label: def ? def.label : id, models: [] };
+        curRoles[id] = { ...prevRole, models: parsePoolModels(rawText) };
+        changed = true;
+      }
+      if (gwDraftRef.current.dirty) {
+        curGw.baseURL = String(gwDraftRef.current.baseURL || '').trim();
+        curGw.apiKey = String(gwDraftRef.current.apiKey || '').trim();
+        gwDraftRef.current.dirty = false;
+        changed = true;
+      }
+      if (changed) {
+        draftsRef.current = {};
+        persistOrch({ ...orchNow, pools: { enabled: !!curPools.enabled, ...curPools, gateway: curGw, roles: curRoles } });
+      }
+    };
+    window.addEventListener('beforeunload', flushDirty);
+    return () => {
+      window.removeEventListener('beforeunload', flushDirty);
+      flushDirty();
+    };
+  }, []);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const [health, setHealth] = useState(null);
@@ -1353,7 +1394,8 @@ export function RolePoolsEditor({ orchestrator, saveOrch }) {
             defaultValue={gateway.baseURL || ''}
             placeholder="http://127.0.0.1:3001/v1"
             spellCheck={false}
-            onBlur={(e) => { const v = e.target.value.trim(); if (v !== (gateway.baseURL || '')) savePools({ gateway: { ...gateway, baseURL: v } }); }}
+            onChange={(e) => { gwDraftRef.current.baseURL = e.target.value; gwDraftRef.current.dirty = true; }}
+            onBlur={(e) => { const v = e.target.value.trim(); gwDraftRef.current.dirty = false; if (v !== (gateway.baseURL || '')) savePools({ gateway: { ...gateway, baseURL: v } }); }}
           />
         </label>
         <label className="pools-field pools-key">
@@ -1363,7 +1405,8 @@ export function RolePoolsEditor({ orchestrator, saveOrch }) {
             type="password"
             defaultValue={gateway.apiKey || ''}
             placeholder="reuse session key"
-            onBlur={(e) => { const v = e.target.value.trim(); if (v !== (gateway.apiKey || '')) savePools({ gateway: { ...gateway, apiKey: v } }); }}
+            onChange={(e) => { gwDraftRef.current.apiKey = e.target.value; gwDraftRef.current.dirty = true; }}
+            onBlur={(e) => { const v = e.target.value.trim(); gwDraftRef.current.dirty = false; if (v !== (gateway.apiKey || '')) savePools({ gateway: { ...gateway, apiKey: v } }); }}
           />
         </label>
       </div>

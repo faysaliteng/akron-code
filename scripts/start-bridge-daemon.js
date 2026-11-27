@@ -103,8 +103,11 @@ async function getExtraProviders() {
       ? await freellm.probeExternalHealth(cfg || {}, {}).catch(() => null)
       : null;
     const routerBase = extHealth || 'http://127.0.0.1:3001/v1';
-    const routerKey = fbKey || (cfg && cfg.token) || '';
-    if (routerKey && ((cfg && cfg.token) || extHealth)) {
+    const paidKey = orchRouter.resolvePaidProviderApiKey
+      ? orchRouter.resolvePaidProviderApiKey({ baseURL: routerBase }, { settings: store.getSettings(), secretstore })
+      : '';
+    const routerKey = fbKey || (cfg && cfg.token) || paidKey || '';
+    if (routerKey && ((cfg && cfg.token) || extHealth || paidKey)) {
       const aliasKeys = freellm.ALIASES ? Object.keys(freellm.ALIASES) : [];
       const cleanLive = [];
       extras.push({

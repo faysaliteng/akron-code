@@ -1,3 +1,29 @@
+# Akron Code (`v1.5.6`) — Production Release Verification (2026-11-27)
+
+**Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.5.6`)
+
+## v1.5.6 Production Gate Summary
+
+| Gate | Command / Platform | Result |
+|---|---|---|
+| Static Syntax / JSX Check | `npm run typecheck` | ✅ `TYPECHECK_OK: verified 384 JS/JSX/MJS/CJS files with 0 syntax/transform errors.` |
+| Full Unit & Integration Suite | `npm test` (`test/*.test.js`, `--test-concurrency=4`) | ✅ **`148 / 148` passed, `0` failed** (`test/settings-persistence.test.js` + `test/auto-task-router.test.js` + `test/orch-hydrate.test.js`) |
+| Multi-Launch Settings Persistence E2E | `node test/live/settings-persistence-e2e.cjs` | ✅ **`SETTINGS_PERSISTENCE_E2E_OK`** (`STAGE_1..5_OK`: Orchestrator enabled/disabled + all Settings + wiped `userData` `.autobot` recovery) |
+| Benchmark Evals & Audits | `npm run eval:all && node scripts/parity-audit.js && node test/cross-platform-audit.test.js` | ✅ **`EVAL_ALL: 70/70 passed (100%)`**, `parity-audit.js OK`, `CROSS_PLATFORM_AUDIT_ALL_PASS` |
+| Full-App Live DOM Overlap, Overflow & Contrast Audit | `electron test/live/ui-layout-overlap-audit.cjs` | ✅ **`UI_LAYOUT_AUDIT_OK`** — `0` overlaps, `0` clipped placeholders, `0` horizontal overflows |
+| Cryptographic Brand Seal & Line Caps | `npm run brand:check` · `wc -l electron/main.js src/App.jsx` | ✅ `BRAND_SEAL_OK 12` · `1569` (`< 1600`) & `3489` (`< 3500`) |
+| Standalone Akron Browser Bot (`1.6.12`) | `tests/autobot-test.mjs` (options auto-save + `pagehide` flush) | ✅ **`810 / 810` passed**, deterministic CRX3 (`dhihhgdamadggcjnjphidopodnlkakdm`) |
+| Packaged macOS ARM64 Build + Fuses + Codesign + Cold Boot | `npm run dist:mac`, `@electron/fuses`, `/Applications/Akron Code.app` | ✅ **6/6 Electron Fuses** (`RunAsNode=48, CookieEnc=49, NodeOpts=48, NodeInspect=48, AsarInteg=49, OnlyAsar=49`), `0` `.map` files in `dist/` and `app.asar`, `codesign --verify --deep --strict OK`, `COLD_BOOT_OK {"ok":true,"brandOk":true,"domOk":true,"ipcOk":true,"checkedFiles":15,"consoleErrorCount":0,"consoleErrors":[]}` |
+
+### Verified Local macOS Build Checksums (`v1.5.6`)
+
+- `AkronCode-1.5.6-arm64.dmg`: `26c234b3c6f989d469dc3074cd39bc71a1884b8be9de59c79d48c5d270914aec`
+- `AkronCode-1.5.6-arm64.zip`: `ebd6a88ba1054a4a000fa10179957a3d20c219b373861420c631ee735bedca37`
+- `AkronBrowserBot-1.6.12.crx`: `1a389f07e63fa4e386f54d3bd5c3053f6c62a9add278bda2f6dd3d7e4f253355`
+- `AkronBrowserBot-1.6.12.zip`: `70f2e4e516d3a8017d0b316138ed9a61388cd41eb01cd37f8128684e8bec277c`
+
+---
+
 # Akron Code (`v1.5.5`) — Production Release Verification (2026-11-27)
 
 **Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.5.5`)

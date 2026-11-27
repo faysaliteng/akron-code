@@ -629,7 +629,7 @@ const DISPATCH_SOURCE_META = {
   },
 };
 
-export function AutoSwitchBrainSection({ settings, setSettings, provider, setProvider, setNotice, onOpenBrowserUrl }) {
+export function AutoSwitchBrainSection({ settings, setSettings, provider, setProvider, orchestrator = null, setNotice, onOpenBrowserUrl }) {
   const savedSwitch = (settings && settings.autoSwitch) || {};
   const savedCfg = (settings && settings.autoRouter) || {};
   const [source, setSource] = useState(savedSwitch.source || 'openrouter_free');
@@ -758,7 +758,7 @@ export function AutoSwitchBrainSection({ settings, setSettings, provider, setPro
   const autoEnabled = Boolean(provider && provider.routingMode === 'auto');
   const toggleComposerAuto = (checked) => {
     if (!setProvider) return;
-    setProvider((v) => ({ ...(v || {}), routingMode: checked ? 'auto' : 'direct' }));
+    setProvider((v) => ({ ...(v || {}), routingMode: checked ? 'auto' : ((orchestrator && orchestrator.enabled) ? 'orchestrator' : 'direct') }));
     if (setNotice) setNotice(checked ? 'Auto-Switch Mode active in composer' : 'Switched back to Direct model mode');
   };
 

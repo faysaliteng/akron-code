@@ -4,6 +4,23 @@
 
 export const PROVIDER_PRESETS = [
   {
+    key: "akron-desktop",
+    label: "Akron Code Desktop (All Models · Zero Key)",
+    type: "openai-compatible",
+    baseUrl: "http://127.0.0.1:8766/v1",
+    models: [
+      "akron-default",
+      "akron-planner",
+      "akron-coder",
+      "akron-vision",
+      "akron-fast",
+      "akron-longctx",
+    ],
+    keyHint: "not required (auto-shared from Akron Code)",
+    docs: "https://github.com/faysaliteng/akron-code",
+    noKey: true,
+  },
+  {
     key: "anthropic",
     label: "Anthropic (Claude)",
     type: "anthropic",

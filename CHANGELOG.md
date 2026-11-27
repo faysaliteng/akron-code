@@ -2,6 +2,15 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.5.6] - 2026-11-27
+
+### Fixed & Hardened
+- **Durable Settings & Orchestrator Mode Persistence Across Restarts (`src/utils/settingsPersistence.js`, `src/App.jsx`, `SettingsModalBody.jsx`, `SettingsSections.jsx`, `ExtendedSettingsPanels.jsx`, `electron/ipc/ipc-features.js`, `electron/main.js`):**
+  - Synchronized enabling/disabling Orchestrator Mode with `provider.routingMode` (`'orchestrator'` / `'direct'`) across Settings checkboxes, Role Pool presets, Paid Providers, and Auto-Switch toggles, plus boot-time self-healing whenever `~/.autobot/orchestrator.json` has `enabled: true`.
+  - Fixed `App.jsx` boot hydration (removed the `if (!base || !saved.apiKey) return` guard that dropped OAuth, `orchestrator`, `auto`, and keyless endpoints) and gated `localStorage` + `~/.autobot/settings.json` mirror writes behind `settingsAdopted` with `_updatedAt` conflict resolution so fresh or upgraded profiles never clobber saved config.
+  - Added full disk + `localStorage` persistence for all 50+ Appearance, Harness Profile, Notifications, Sounds, System (`preventSleep`, `keepInTray`), Browser, and Composer session UI toggles (`swarmEnabled`, `webSearch`, `styleId`, `sidebarCollapsed`, `workbenchMode`, `permissions`, `projects`), plus startup `preventSleep`/`keepInTray` restoration, `RolePoolsEditor` unmount/`beforeunload` draft flush, and persisted Outbound Relay settings.
+  - Updated bundled **Akron Browser Bot** to **`v1.6.12`** so toggling Orchestrator, pool checkboxes, or Agent/Policy/Tools settings in the extension Options page auto-saves immediately and flushes on `pagehide`.
+
 ## [1.5.5] - 2026-11-27
 
 ### Fixed & Upgraded

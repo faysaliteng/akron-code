@@ -51,6 +51,15 @@ const confirmQueue = createConfirmQueue(); // approvals waiting for the user
 const NEEDS_USER_PREFIX = "autobot_needs_";
 const modelCache = new Map();
 const MODEL_TTL = 5 * 60 * 1000;
+const LOCAL_MODEL_TTL = 5 * 1000;
+const DESKTOP_PROVIDER_ID = "akron-desktop";
+const DESKTOP_BRIDGE_BASE = "http://127.0.0.1:8766/v1";
+let desktopSyncFlight = null;
+let lastDesktopSyncAt = 0;
+
+function isAkronDesktopBase(baseUrl) {
+  return /^https?:\/\/(127\.0\.0\.1|localhost):8766(\/v1)?\/?$/i.test(String(baseUrl || "").trim());
+}
 
 installScheduler();
 
@@ -105,7 +114,116 @@ async function seedLocalProviders() {
     await chrome.storage.local.set({ autobot_local_seed: seed.version || 1 });
   } catch {}
 }
-seedLocalProviders();
+
+async function syncAkronDesktopProvider({ force = false } = {}) {
+  if (!force && Date.now() - lastDesktopSyncAt < 8000) return { synced: false, throttled: true };
+  if (desktopSyncFlight) return desktopSyncFlight;
+
+  desktopSyncFlight = (async () => {
+    try {
+      const [settings, providers] = await Promise.all([
+        getSettings().catch(() => ({})),
+        getProviders().catch(() => []),
+      ]);
+      if (settings.desktopBridge === false) return { synced: false, disabled: true };
+
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 2200);
+      let res;
+      try {
+        res = await fetch(`${DESKTOP_BRIDGE_BASE}/models`, {
+          method: "GET",
+          headers: { authorization: "Bearer akron-local-zero-key" },
+          signal: ctrl.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!res || !res.ok) return { synced: false, status: res?.status || 0 };
+
+      const data = await res.json().catch(() => null);
+      const rawArr = Array.isArray(data) ? data : data?.data || [];
+      const liveModels = [
+        ...new Set(rawArr.map((m) => (typeof m === "string" ? m : m?.id)).map((x) => String(x || "").trim()).filter(Boolean)),
+      ];
+      if (!liveModels.length) return { synced: false, empty: true };
+      lastDesktopSyncAt = Date.now();
+
+      const existingIdx = providers.findIndex(
+        (p) => p && (p.id === DESKTOP_PROVIDER_ID || isAkronDesktopBase(p.baseUrl))
+      );
+      const existing = existingIdx >= 0 ? providers[existingIdx] : null;
+      const targetId = existing?.id || DESKTOP_PROVIDER_ID;
+      const defaultModel =
+        existing?.defaultModel && liveModels.includes(existing.defaultModel)
+          ? existing.defaultModel
+          : liveModels.includes("akron-default")
+          ? "akron-default"
+          : liveModels[0];
+
+      const updatedEntry = {
+        ...(existing || {}),
+        id: targetId,
+        name: existing?.name || "Akron Code Desktop (All Models · Zero Key)",
+        type: "openai-compatible",
+        baseUrl: DESKTOP_BRIDGE_BASE,
+        apiKey: existing?.apiKey || "akron-local-zero-key",
+        noKey: true,
+        models: liveModels,
+        defaultModel,
+      };
+
+      const nextProviders = existingIdx >= 0
+        ? providers.map((p, i) => (i === existingIdx ? updatedEntry : p))
+        : [updatedEntry, ...providers];
+      const providersChanged = JSON.stringify(providers) !== JSON.stringify(nextProviders);
+
+      let nextSettings = { ...settings };
+      let settingsChanged = false;
+      const activeExists = nextProviders.some((p) => p && p.id === nextSettings.activeProviderId);
+      if (!nextSettings.activeProviderId || !activeExists) {
+        nextSettings.activeProviderId = targetId;
+        nextSettings.activeModel = defaultModel;
+        settingsChanged = true;
+      } else if (
+        nextSettings.activeProviderId === targetId &&
+        (!nextSettings.activeModel || !liveModels.includes(nextSettings.activeModel))
+      ) {
+        nextSettings.activeModel = defaultModel;
+        settingsChanged = true;
+      }
+
+      if (providersChanged) await saveProviders(nextProviders);
+      if (settingsChanged) await saveSettings(nextSettings);
+      modelCache.set(targetId, { at: Date.now(), models: liveModels });
+
+      if (providersChanged || settingsChanged) {
+        for (const [openPort, sess] of ports.entries()) {
+          try {
+            openPort.postMessage({
+              type: "config",
+              settings: nextSettings,
+              providers: nextProviders.map(publicProvider),
+              orchestrator: summarizePool(nextProviders, nextSettings),
+              session: publicSession(sess),
+              group: await sessionGroupState(sess),
+            });
+          } catch {}
+        }
+      }
+      return { synced: true, providerId: targetId, count: liveModels.length, changed: providersChanged || settingsChanged };
+    } catch {
+      return { synced: false, offline: true };
+    } finally {
+      desktopSyncFlight = null;
+    }
+  })();
+  return desktopSyncFlight;
+}
+
+seedLocalProviders().finally(() => {
+  syncAkronDesktopProvider({ force: true }).catch(() => {});
+});
 
 const KEEPALIVE_ALARM = "autobot_keepalive";
 const WORKING_FLAG = "autobot_working";
@@ -174,7 +292,7 @@ function syncUpdateBadge(updateState) {
 }
 
 async function getUpdateState() {
-  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.11";
+  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.12";
   try {
     const r = await chrome.storage.local.get(UPDATE_STATE_KEY);
     const saved = r?.[UPDATE_STATE_KEY];
@@ -221,7 +339,7 @@ async function checkForUpdatesNow({ manual = false } = {}) {
     getSettings().catch(() => ({})),
     getUpdateState(),
   ]);
-  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.11";
+  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.12";
   const result = await checkForExtensionUpdate({
     currentVersion,
     repo: GITHUB_REPO,
@@ -992,9 +1110,11 @@ async function discoverModels(providerId) {
   const provider = providers.find((p) => p.id === providerId);
   if (!provider) throw new Error("Provider not found.");
 
+  const ttl = isLocalBaseUrl(provider.baseUrl) ? LOCAL_MODEL_TTL : MODEL_TTL;
   const cached = modelCache.get(providerId);
-  if (cached && Date.now() - cached.at < MODEL_TTL) return cached.models;
+  if (cached && Date.now() - cached.at < ttl) return cached.models;
 
+  const isDesktopBridge = providerId === DESKTOP_PROVIDER_ID || isAkronDesktopBase(provider.baseUrl);
   const keys = providerKeys(provider);
   const attempts = (keys.length ? keys : [""]).slice(0, 8);
   let lastError = null;
@@ -1005,10 +1125,8 @@ async function discoverModels(providerId) {
       if (!models.length) continue;
 
       const existing = Array.isArray(provider.models) ? provider.models : [];
-      // Put freshly discovered models first, but keep any manual/preset names.
-      const merged = [...new Set([...models, ...existing])];
-      const added = models.filter((m) => !existing.includes(m));
-      if (added.length) {
+      const merged = isDesktopBridge ? [...new Set(models)] : [...new Set([...models, ...existing])];
+      if (JSON.stringify(existing) !== JSON.stringify(merged)) {
         const updated = providers.map((p) =>
           p.id === providerId ? { ...p, models: merged } : p
         );
@@ -1580,6 +1698,7 @@ chrome.runtime.onConnect.addListener((port) => {
         }
         case "get_state": {
           const session = sessionForPort(port);
+          await syncAkronDesktopProvider().catch(() => {});
           await ensureLoaded(session);
           port.postMessage(await stateMessage(session));
           break;
@@ -1589,6 +1708,7 @@ chrome.runtime.onConnect.addListener((port) => {
           break;
         case "get_config": {
           const session = sessionForPort(port);
+          await syncAkronDesktopProvider().catch(() => {});
           const [settings, providers] = await Promise.all([
             getSettings(),
             getProviders(),
@@ -2090,9 +2210,10 @@ const bridgeLink = createBridgeLink({
       socket.send(JSON.stringify({
         type: "ext_hello",
         product: "Akron Browser Bot",
-        version: chrome.runtime?.getManifest?.().version || "1.6.11",
+        version: chrome.runtime?.getManifest?.().version || "1.6.12",
       }));
     } catch {}
+    syncAkronDesktopProvider({ force: true }).catch(() => {});
   },
   onMessage: handleBridgeMessage,
 });

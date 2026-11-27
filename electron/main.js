@@ -1398,8 +1398,11 @@ app.whenReady().then(() => {
           ? await freellm.probeExternalHealth(cfg || {}, {}).catch(() => null)
           : null;
         const routerBase = extHealth || 'http://127.0.0.1:3001/v1';
-        const routerKey = fbKey || (cfg && cfg.token) || '';
-        if (routerKey && ((cfg && cfg.token) || extHealth)) {
+        const paidKey = orchRouter.resolvePaidProviderApiKey
+          ? orchRouter.resolvePaidProviderApiKey({ baseURL: routerBase }, { settings: store.getSettings(), secretstore })
+          : '';
+        const routerKey = fbKey || (cfg && cfg.token) || paidKey || '';
+        if (routerKey && ((cfg && cfg.token) || extHealth || paidKey)) {
           const aliasKeys = freellm.ALIASES ? Object.keys(freellm.ALIASES) : [];
           let liveModels = [];
           if (extHealth && typeof freellm.probeExternalModels === 'function') {
@@ -1446,11 +1449,16 @@ app.whenReady().then(() => {
   // Re-assert the login item on boot only when explicitly opted in on a packaged
   // build so dev/cold-boot runs never trigger OS permission noise.
   try {
-    const s = store.getSettings();
-    if (app.isPackaged && process.env.AKRON_COLD_BOOT_CHECK !== '1' && s && s.launchAtLogin === true) {
+    const s = store.getSettings() || {};
+    const sysMod = require('./app-system');
+    const keepTray = Boolean((s.uiSettings && s.uiSettings.keepInTray !== undefined) ? s.uiSettings.keepInTray : s.keepInTray);
+    const keepAwake = Boolean((s.uiSettings && s.uiSettings.preventSleep !== undefined) ? s.uiSettings.preventSleep : s.preventSleep);
+    if (keepTray) sysMod.setKeepInTray(true);
+    if (keepAwake && process.env.AKRON_COLD_BOOT_CHECK !== '1') sysMod.setPreventSleep(true);
+    if (app.isPackaged && process.env.AKRON_COLD_BOOT_CHECK !== '1' && s.launchAtLogin === true) {
       app.setLoginItemSettings({ openAtLogin: true });
     }
-  } catch (err) { console.error('login item restore failed:', err.message); }
+  } catch (err) { console.error('startup system settings restore failed:', err.message); }
   buildMenu();
   createTray();
   registerProtocol();
@@ -1555,5 +1563,7 @@ app.on('will-quit', () => {
 
 app.on('window-all-closed', () => {
   mcp.disconnectAll();
-  if (process.platform !== 'darwin') app.quit();
+  const s = (store.getSettings && store.getSettings()) || {};
+  const keepTray = Boolean((s.uiSettings && s.uiSettings.keepInTray !== undefined) ? s.uiSettings.keepInTray : s.keepInTray);
+  if (process.platform !== 'darwin' && !keepTray) app.quit();
 });

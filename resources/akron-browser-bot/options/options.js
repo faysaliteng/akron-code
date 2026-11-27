@@ -1175,26 +1175,61 @@ function bindEvents() {
 
   $("f-models").addEventListener("input", updateModelDatalist);
 
-  $("s-provider").addEventListener("change", refreshAgentModelList);
+  $("s-provider").addEventListener("change", () => {
+    refreshAgentModelList();
+    if (!sameValue(readAgentForm(), shown.agent)) void saveAgentSettings();
+  });
+  for (const id of [
+    "s-model", "s-temperature", "s-screenshots", "s-streaming", "s-sound",
+    "s-notify", "s-plan-approval", "s-native", "s-bridge", "s-speak",
+    "s-voice-engine", "s-voice-lang", "s-permission-mode", "s-confirm-sites",
+    "s-domain-change", "s-autogroup", "s-group-title", "s-extra",
+  ]) {
+    $(id)?.addEventListener("change", () => {
+      if (!sameValue(readAgentForm(), shown.agent)) void saveAgentSettings();
+    });
+  }
+  for (const id of ["s-allowed", "s-blocked"]) {
+    $(id)?.addEventListener("change", () => {
+      if (!sameValue(readPolicyForm(), shown.policy)) void savePolicySettings();
+    });
+  }
+  $("confirm-tools-list")?.addEventListener("change", () => {
+    if (!sameValue(checkedTools(), shown.tools)) void saveToolSettings();
+  });
 
   $("save-settings").addEventListener("click", saveAgentSettings);
   $("save-policy").addEventListener("click", savePolicySettings);
   $("save-tools").addEventListener("click", saveToolSettings);
   $("save-orchestrator").addEventListener("click", saveOrchestrator);
+  $("s-orchestrator")?.addEventListener("change", () => {
+    updateOrchSummary();
+    if (!sameValue(readOrchestratorForm(), shown.orchestrator)) void saveOrchestrator();
+  });
+  for (const id of ["s-orch-max", "s-orch-cooldown"]) {
+    $(id)?.addEventListener("change", () => {
+      if (!sameValue(readOrchestratorForm(), shown.orchestrator)) void saveOrchestrator();
+    });
+  }
   $("orch-refresh-models").addEventListener("click", refreshAllModelLists);
   $("orch-select-all").addEventListener("click", () => {
     for (const cb of document.querySelectorAll("#orch-pool input[type=checkbox]")) {
       cb.checked = true;
     }
     updateOrchSummary();
+    if (!sameValue(readOrchestratorForm(), shown.orchestrator)) void saveOrchestrator();
   });
   $("orch-clear").addEventListener("click", () => {
     for (const cb of document.querySelectorAll("#orch-pool input[type=checkbox]")) {
       cb.checked = false;
     }
     updateOrchSummary();
+    if (!sameValue(readOrchestratorForm(), shown.orchestrator)) void saveOrchestrator();
   });
-  $("orch-pool").addEventListener("change", updateOrchSummary);
+  $("orch-pool").addEventListener("change", () => {
+    updateOrchSummary();
+    if (!sameValue(readOrchestratorForm(), shown.orchestrator)) void saveOrchestrator();
+  });
   $("add-skill").addEventListener("click", addSkill);
   $("mic-grant")?.addEventListener("click", () => {
     const params = new URLSearchParams(String(location.hash || "").split("?")[1] || "");
@@ -1228,10 +1263,24 @@ function bindEvents() {
     input.type = showing ? "password" : "text";
     $("toggle-gh-token").textContent = showing ? "Show" : "Hide";
   });
+  for (const id of ["s-autoupdate", "s-update-channel", "s-github-token"]) {
+    $(id)?.addEventListener("change", () => {
+      if (!sameValue(readUpdateForm(), shown.updates)) void saveUpdateSettings();
+    });
+  }
   $("save-update-settings")?.addEventListener("click", saveUpdateSettings);
   $("check-updates-btn")?.addEventListener("click", triggerUpdateCheck);
   $("apply-update-btn")?.addEventListener("click", triggerUpdateApply);
 }
+
+function flushUnsavedOptions() {
+  if (!sameValue(readOrchestratorForm(), shown.orchestrator)) void saveOrchestrator();
+  if (!sameValue(readAgentForm(), shown.agent)) void saveAgentSettings();
+  if (!sameValue(readPolicyForm(), shown.policy)) void savePolicySettings();
+  if (!sameValue(checkedTools(), shown.tools)) void saveToolSettings();
+  if (!sameValue(readUpdateForm(), shown.updates)) void saveUpdateSettings();
+}
+window.addEventListener("pagehide", flushUnsavedOptions);
 
 /* ------------------------ updates from github ----------------------- */
 

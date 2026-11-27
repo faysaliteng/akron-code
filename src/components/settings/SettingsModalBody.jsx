@@ -7,7 +7,8 @@ import { useVoiceDictation } from '../../voice';
 import { PRESETS, PRESET_KEYS, useDismiss, SOUND_PRESETS, playUiSound, sendDesktopNotification, HARNESS_PROFILES } from '../../utils/appHelpers.jsx';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel.jsx';
 import { MigrationWizard } from './MigrationWizard.jsx';
-import { AutoSwitchBrainSection, FreeLLMAPISection, ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection, MediaStudioApiKeysSection } from './ExtendedSettingsPanels.jsx';
+import { ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection, MediaStudioApiKeysSection, AutoSwitchBrainSection, FreeLLMAPISection } from './ExtendedSettingsPanels.jsx';
+import { syncProviderForOrchestratorToggle } from '../../utils/settingsPersistence.js';
 import { OrchPaidProvidersPanel } from './OrchPaidProvidersPanel.jsx';
 import { ParadevIntegrationCard } from './ParadevIntegrationCard.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from '../../features/WorkspacePanels.jsx';
@@ -26,14 +27,14 @@ export function SettingsModalBody({
   mcpServers = [], mcpForm, setMcpForm, connectMcp, disconnectMcp,
   memory = [], addMemory, clearMemory, convs = [], onJumpToMessage,
   notebooks = [], activeNotebook, notebookCells = [], setNotebookCells, openNotebook, newNotebook, saveActiveNotebook, deleteActiveNotebook,
-  cwd, setCwd, activeId,
+  cwd, setCwd, activeId, projects = [], setProjects, activeProject = null, setActiveProject,
   onOpenGdrive, gdriveState,
   envState, refreshEnvState, onSwitchEnvironment, setError, setNotice, onOpenBrowserUrl,
 }) {
   const [section, setSection] = useState(initialSection || 'providers');
   const [navFilter, setNavFilter] = useState('');
   const [orchPaidProviders, setOrchPaidProviders] = useState([]);
-  const [appVer, setAppVer] = useState('1.5.5');
+  const [appVer, setAppVer] = useState('1.5.6');
   useEffect(() => {
     if (window.autobot && typeof window.autobot.getVersion === 'function') {
       window.autobot.getVersion().then((v) => {
@@ -548,7 +549,7 @@ export function SettingsModalBody({
 
                 <div className="settings-card">
                   <h3><Icon name="Settings" size={14} /> {T('settings.orchestrator')}</h3>
-                  <label className="check"><input type="checkbox" checked={!!orchestrator.enabled} onChange={(e) => saveOrch({ ...orchestrator, enabled: e.target.checked })} /> Enable — multi-model pool for failover AND swarm tier routing</label>
+                  <label className="check"><input type="checkbox" data-testid="orch-enable-checkbox" checked={!!orchestrator.enabled} onChange={(e) => { const nextOrch = { ...orchestrator, enabled: e.target.checked }; saveOrch(nextOrch); setProvider((v) => syncProviderForOrchestratorToggle(v, nextOrch, orchestrator)); }} /> Enable — multi-model pool for failover AND swarm tier routing</label>
                   <OrchPaidProvidersPanel
                     orchestrator={orchestrator}
                     saveOrch={saveOrch}
@@ -1104,7 +1105,7 @@ export function SettingsModalBody({
 
             {section === 'system' && (
               <>
-                <AutoSwitchBrainSection settings={settings} setSettings={setSettings} provider={provider} setProvider={setProvider} setNotice={setNotice} onOpenBrowserUrl={onOpenBrowserUrl} />
+                <AutoSwitchBrainSection settings={settings} setSettings={setSettings} provider={provider} setProvider={setProvider} orchestrator={orchestrator} setNotice={setNotice} onOpenBrowserUrl={onOpenBrowserUrl} />
 
                 <AppearanceStudioSection settings={settings} setSettings={setSettings} setNotice={setNotice} />
 
@@ -1149,6 +1150,10 @@ export function SettingsModalBody({
               <ProjectSettingsPanel
                 cwd={cwd}
                 setCwd={setCwd}
+                projects={projects}
+                setProjects={setProjects}
+                activeProject={activeProject}
+                setActiveProject={setActiveProject}
                 skills={skills}
                 mcpServers={mcpServers}
                 setNotice={setNotice}

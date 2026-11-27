@@ -8,7 +8,7 @@ export function useAutobotEventStream({
   setPaused, setPermError, setPermissionQueue, setLastUsage,
   commitLive, setError, setModelMenuOpen, setQuestionQueue,
   setShowSettings, setPanel, setActiveId, setConvs, setCuConsent,
-  setPermissions, setPlanMode, setArtifactsExplicit, setNotice, setFeatures,
+  setPermissions, setPlanMode, setArtifactsExplicit, setNotice, setFeatures, setOrchestrator,
   openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
 }) {
   useEffect(() => {
@@ -561,6 +561,13 @@ export function useAutobotEventStream({
         case 'features':
           if (evt.features && typeof setFeatures === 'function') {
             setFeatures(evt.features);
+            try { localStorage.setItem('autobot:features', JSON.stringify(evt.features)); } catch (_) {}
+          }
+          break;
+        case 'orchestrator':
+          if (evt.orchestrator && typeof setOrchestrator === 'function') {
+            setOrchestrator(evt.orchestrator);
+            try { localStorage.setItem('autobot:orchestrator', JSON.stringify(evt.orchestrator)); } catch (_) {}
           }
           break;
         case 'deeplink': {

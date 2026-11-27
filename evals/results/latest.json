@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-11-27T16:27:59.604Z",
+  "generatedAt": "2026-11-27T17:18:01.325Z",
   "nodeVersion": "v24.22.3",
   "platform": "darwin/arm64",
   "totalTasks": 70,
   "totalPassed": 70,
   "totalFailed": 0,
   "overallPassRatePct": 100,
-  "durationMs": 155,
+  "durationMs": 170,
   "suites": {
     "security": {
       "suite": "security",
@@ -16,13 +16,13 @@
       "passRatePct": 100,
       "unauthorizedToolCalls": 0,
       "poisonedMemoriesAccepted": 0,
-      "durationMs": 16,
+      "durationMs": 20,
       "results": [
         {
           "id": "sec-inj-1",
           "category": "prompt-injection",
           "passed": true,
-          "ms": 8
+          "ms": 12
         },
         {
           "id": "sec-inj-2",
@@ -40,7 +40,7 @@
           "id": "sec-inj-4",
           "category": "prompt-injection",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "sec-inj-5",
@@ -52,7 +52,7 @@
           "id": "sec-inj-6",
           "category": "prompt-injection",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "sec-inj-7",
@@ -172,7 +172,7 @@
           "id": "sec-sandbox-2",
           "category": "os-sandbox-deny",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "sec-sandbox-3",
@@ -196,19 +196,19 @@
           "id": "sec-sandbox-6",
           "category": "os-sandbox-deny",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "sec-ledger-verify-7",
           "category": "audit-ledger",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "sec-ledger-tamper-8",
           "category": "audit-ledger-tamper",
           "passed": true,
-          "ms": 1
+          "ms": 0
         }
       ]
     },
@@ -218,37 +218,37 @@
       "passed": 22,
       "failed": 0,
       "passRatePct": 100,
-      "durationMs": 115,
+      "durationMs": 123,
       "results": [
         {
           "id": "code-patch-1",
           "category": "apply-patch",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "code-patch-2",
           "category": "apply-patch",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "code-patch-3",
           "category": "apply-patch",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "code-patch-4",
           "category": "apply-patch",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "code-patch-5",
           "category": "apply-patch",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "code-patch-6",
@@ -260,13 +260,13 @@
           "id": "code-editguard-1",
           "category": "edit-guard",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "code-editguard-2",
           "category": "edit-guard",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "code-editguard-3",
@@ -278,25 +278,25 @@
           "id": "code-editguard-4",
           "category": "edit-guard",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "code-search-1",
           "category": "codebase-index",
           "passed": true,
-          "ms": 25
+          "ms": 26
         },
         {
           "id": "code-search-2",
           "category": "codebase-index",
           "passed": true,
-          "ms": 5
+          "ms": 3
         },
         {
           "id": "code-search-3",
           "category": "codebase-index",
           "passed": true,
-          "ms": 4
+          "ms": 7
         },
         {
           "id": "code-search-4",
@@ -314,7 +314,7 @@
           "id": "code-codemode-2",
           "category": "codemode",
           "passed": true,
-          "ms": 12
+          "ms": 14
         },
         {
           "id": "code-codemode-3",
@@ -326,7 +326,7 @@
           "id": "code-codemode-4",
           "category": "codemode",
           "passed": true,
-          "ms": 12
+          "ms": 13
         },
         {
           "id": "code-spill-1",
@@ -338,7 +338,7 @@
           "id": "code-ctx-mask-2",
           "category": "progressive-masking",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "code-shrink-budgets-3",
@@ -361,13 +361,13 @@
       "failed": 0,
       "passRatePct": 100,
       "avgAxCompressionRatioX": 25,
-      "durationMs": 23,
+      "durationMs": 27,
       "results": [
         {
           "id": "brow-ax-1",
           "category": "ax-snapshot",
           "passed": true,
-          "ms": 15
+          "ms": 16
         },
         {
           "id": "brow-ax-2",
@@ -385,7 +385,7 @@
           "id": "brow-ax-4",
           "category": "ax-snapshot",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "brow-heal-1",
@@ -397,7 +397,7 @@
           "id": "brow-heal-2",
           "category": "self-healing-replay",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "brow-heal-3",
@@ -409,7 +409,7 @@
           "id": "brow-heal-4",
           "category": "self-healing-replay",
           "passed": true,
-          "ms": 1
+          "ms": 2
         },
         {
           "id": "brow-vault-1",

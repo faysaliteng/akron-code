@@ -1,0 +1,88 @@
+name: Build & Release Akron Browser Bot
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Verify & Test Extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Syntax check all extension modules
+        run: npm run check
+
+      - name: Run full extension test suite
+        run: npm test
+
+      - name: Smoke-test release packaging
+        run: node tools/build-release.mjs --ephemeral-key
+
+  release:
+    name: Package & Publish GitHub Release
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build ZIP, CRX3, updates.xml, latest.json & SHA256SUMS.txt
+        env:
+          CRX_PRIVATE_KEY: ${{ secrets.CRX_PRIVATE_KEY }}
+        run: |
+          if [ -n "$CRX_PRIVATE_KEY" ]; then
+            node tools/build-release.mjs
+          else
+            echo "::warning::CRX_PRIVATE_KEY secret not set; packaging CRX3 with an ephemeral key."
+            node tools/build-release.mjs --ephemeral-key
+          fi
+          ls -la release/
+          test -f release/updates.xml
+          test -f release/latest.json
+          test -f release/SHA256SUMS.txt
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            VER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('manifest.json','utf8')).version)")
+            echo "tag=v${VER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Akron Browser Bot ${{ steps.tag.outputs.tag }}"
+          generate_release_notes: true
+          make_latest: true
+          files: |
+            release/AkronBrowserBot-*.zip
+            release/AkronBrowserBot-*.crx
+            release/updates.xml
+            release/latest.json
+            release/SHA256SUMS.txt

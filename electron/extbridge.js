@@ -689,17 +689,45 @@ function start(opts = {}) {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
     });
 
-    const bindPrimary = () => {
-      try { if (state.reclaimTimer) { clearInterval(state.reclaimTimer); state.reclaimTimer = null; } } catch (_) {}
-      server.removeAllListeners('listening');
-      server.listen(listenPort, '127.0.0.1', () => {
+    const listenAsync = () => new Promise((resListen, rejListen) => {
+      const onErr = (e) => {
+        server.removeListener('listening', onOk);
+        rejListen(e);
+      };
+      const onOk = () => {
+        server.removeListener('error', onErr);
         const addr = server.address();
         state.server = server;
         state.wss = wss;
         state.port = (addr && addr.port) || listenPort;
         state.running = true;
         state.shared = false;
-      });
+        resListen(state.port);
+      };
+      server.once('error', onErr);
+      server.once('listening', onOk);
+      try {
+        server.listen(listenPort, '127.0.0.1');
+      } catch (e) {
+        server.removeListener('error', onErr);
+        server.removeListener('listening', onOk);
+        rejListen(e);
+      }
+    });
+
+    const bindWithRetries = async (attempts = 6) => {
+      for (let i = 0; i < attempts; i++) {
+        try {
+          const p = await listenAsync();
+          return { ok: true, port: p };
+        } catch (err) {
+          if (!err || err.code !== 'EADDRINUSE' || i === attempts - 1) {
+            return { ok: false, error: err };
+          }
+          await new Promise((rWait) => setTimeout(rWait, 180));
+        }
+      }
+      return { ok: false, error: new Error('EADDRINUSE') };
     };
 
     const scheduleReclaim = () => {
@@ -716,24 +744,39 @@ function start(opts = {}) {
             const h = await r.json().catch(() => ({}));
             if (h && (h.mode === 'mcp-standalone' || h.yieldable === true)) {
               await fetch(`http://127.0.0.1:${listenPort}/v1/ext/yield`, { method: 'POST', signal: AbortSignal.timeout(1200) }).catch(() => {});
-              await new Promise((rWait) => setTimeout(rWait, 180));
-              bindPrimary();
+              await new Promise((rWait) => setTimeout(rWait, 200));
+              const bound = await bindWithRetries(6);
+              if (bound.ok && state.reclaimTimer) {
+                clearInterval(state.reclaimTimer);
+                state.reclaimTimer = null;
+              }
             } else if (h && h.mode === 'desktop-primary') {
-              // Another healthy Akron Code Desktop instance owns :8766; keep sharing.
               return;
             }
           } else {
-            bindPrimary();
+            const bound = await bindWithRetries(3);
+            if (bound.ok && state.reclaimTimer) {
+              clearInterval(state.reclaimTimer);
+              state.reclaimTimer = null;
+            }
           }
         } catch (_) {
-          // Listener on :8766 disappeared -> reclaim primary role immediately.
-          bindPrimary();
+          const bound = await bindWithRetries(3);
+          if (bound.ok && state.reclaimTimer) {
+            clearInterval(state.reclaimTimer);
+            state.reclaimTimer = null;
+          }
         }
-      }, 10000);
+      }, 8000);
       if (state.reclaimTimer.unref) state.reclaimTimer.unref();
     };
 
-    server.on('error', async (err) => {
+    (async () => {
+      const initial = await bindWithRetries(1);
+      if (initial.ok) {
+        return resolve({ ok: true, port: initial.port });
+      }
+      const err = initial.error;
       if (err && err.code === 'EADDRINUSE') {
         try {
           const r = await fetch(`http://127.0.0.1:${listenPort}/v1/health`, { signal: AbortSignal.timeout(1200) });
@@ -745,20 +788,10 @@ function start(opts = {}) {
                   method: 'POST',
                   signal: AbortSignal.timeout(1500),
                 });
-                await new Promise((rWait) => setTimeout(rWait, 180));
-                if (!server.__yieldRetried) {
-                  server.__yieldRetried = true;
-                  server.removeAllListeners('listening');
-                  server.listen(listenPort, '127.0.0.1', () => {
-                    const addr = server.address();
-                    state.server = server;
-                    state.wss = wss;
-                    state.port = (addr && addr.port) || listenPort;
-                    state.running = true;
-                    state.shared = false;
-                    resolve({ ok: true, running: true, shared: false, reclaimedFromStandalone: true, port: state.port });
-                  });
-                  return;
+                await new Promise((rWait) => setTimeout(rWait, 200));
+                const reclaimed = await bindWithRetries(6);
+                if (reclaimed.ok) {
+                  return resolve({ ok: true, running: true, shared: false, reclaimedFromStandalone: true, port: reclaimed.port });
                 }
               } catch (_) {}
             }
@@ -770,19 +803,10 @@ function start(opts = {}) {
           }
         } catch (_) {}
       }
-      console.error('extbridge listener error:', err.message);
+      console.error('extbridge listener error:', err && err.message ? err.message : String(err));
       state.running = false;
-      resolve({ ok: false, error: err.message });
-    });
-
-    server.listen(listenPort, '127.0.0.1', () => {
-      const addr = server.address();
-      state.server = server;
-      state.wss = wss;
-      state.port = (addr && addr.port) || listenPort;
-      state.running = true;
-      resolve({ ok: true, port: state.port });
-    });
+      resolve({ ok: false, error: err && err.message ? err.message : String(err) });
+    })();
   });
 }
 
