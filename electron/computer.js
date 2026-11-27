@@ -10,7 +10,7 @@
  *   - Linux (`linux`):   xdotool/ydotool + wmctrl + scrot/import/grim + xclip/wl-copy (computer-win-linux.js)
  */
 
-const { exec, execFileSync, spawnSync } = require('child_process');
+const { exec, execFile, execFileSync, spawnSync } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -667,8 +667,8 @@ function lastScreenshot() { return lastShot; }
 
 async function zoom({ x1 = 0, y1 = 0, x2 = 400, y2 = 300, dir } = {}) {
   gate();
-  const rx = Math.round(Math.min(Number(x1) || 0, Number(x2) || 0));
-  const ry = Math.round(Math.min(Number(y1) || 0, Number(y2) || 0));
+  const rx = Math.max(0, Math.round(Math.min(Number(x1) || 0, Number(x2) || 0)));
+  const ry = Math.max(0, Math.round(Math.min(Number(y1) || 0, Number(y2) || 0)));
   const rw = Math.max(16, Math.round(Math.abs((Number(x2) || 0) - (Number(x1) || 0))));
   const rh = Math.max(16, Math.round(Math.abs((Number(y2) || 0) - (Number(y1) || 0))));
   const outDir = sanitizeScreenshotDir(dir);
@@ -763,7 +763,7 @@ async function appScreenshot({ app = '', windowId = null, title = '', dir } = {}
   });
   if (!target) throw new Error(`No visible window matched app="${app}" windowId="${windowId || ''}" title="${title}"`);
 
-  const outDir = dir || path.join(os.tmpdir(), 'autobot-computer');
+  const outDir = sanitizeScreenshotDir(dir);
   fs.mkdirSync(outDir, { recursive: true });
   const file = path.join(outDir, `app-${Date.now()}.png`);
 
@@ -775,7 +775,7 @@ async function appScreenshot({ app = '', windowId = null, title = '', dir } = {}
     // Primary: screencapture window-id capture. Falls back to Electron's
     // desktopCapturer when the CLI subprocess is denied Screen Recording TCC
     // (which inherits a different grant than the Electron main process).
-    const { err } = await execP(`/usr/sbin/screencapture -x -o -l ${target.windowId} "${file}"`, { timeout: 20000 });
+    const { err } = await execFileP('/usr/sbin/screencapture', ['-x', '-o', '-l', String(target.windowId), file], { timeout: 20000 });
     let haveShot = !err && fs.existsSync(file) && fs.statSync(file).size > 0;
     if (haveShot && target.width > 0) {
       try { normalizePngToLogicalWidth(file, target.width); } catch (_) {}
@@ -802,6 +802,56 @@ async function appScreenshot({ app = '', windowId = null, title = '', dir } = {}
 
 // ── Native Desktop Accessibility Tree & Menu Actions ──────────────────────────
 
+let _askedAccessibilityOnce = false;
+
+async function axFindInAkronWindows({ app = '', query = '', role = '', maxResults = 40 } = {}) {
+  let el = null;
+  try { el = require('electron'); } catch (_) { el = null; }
+  if (!el || !el.BrowserWindow) return null;
+  const wins = el.BrowserWindow.getAllWindows().filter((w) => w && !w.isDestroyed() && w.isVisible());
+  if (!wins.length) return null;
+  const wantApp = String(app || '').trim().toLowerCase();
+  if (wantApp && !/akron|electron/.test(wantApp)) {
+    const titleMatch = wins.some((w) => String(w.getTitle() || '').toLowerCase().includes(wantApp));
+    if (!titleMatch) return null;
+  }
+  const win = wins.find((w) => w.isFocused()) || wins[0];
+  const bounds = win.getContentBounds ? win.getContentBounds() : win.getBounds();
+  const qLower = String(query || '').toLowerCase();
+  const rLower = String(role || '').toLowerCase();
+  const cap = Math.min(Math.max(1, Number(maxResults) || 40), 100);
+  try {
+    const items = await win.webContents.executeJavaScript(`(() => {
+      const q = ${JSON.stringify(qLower)};
+      const wantRole = ${JSON.stringify(rLower)};
+      const cap = ${cap};
+      const bx = ${Math.round(bounds.x || 0)};
+      const by = ${Math.round(bounds.y || 0)};
+      const els = Array.from(document.querySelectorAll('button, a, input, textarea, select, [role], [aria-label], [data-testid], h1, h2, h3'));
+      const out = [];
+      for (const node of els) {
+        if (out.length >= cap) break;
+        const rect = node.getBoundingClientRect();
+        if (!rect || rect.width <= 1 || rect.height <= 1) continue;
+        const r = node.getAttribute('role') || node.tagName.toLowerCase();
+        const title = String(node.getAttribute('aria-label') || node.innerText || node.getAttribute('placeholder') || node.getAttribute('title') || node.getAttribute('data-testid') || '').replace(/\\s+/g, ' ').trim().slice(0, 120);
+        const val = String(node.value || '').slice(0, 80);
+        if (wantRole && !r.toLowerCase().includes(wantRole)) continue;
+        if (q && !(title.toLowerCase().includes(q) || val.toLowerCase().includes(q))) continue;
+        const x = Math.round(bx + rect.left);
+        const y = Math.round(by + rect.top);
+        const w = Math.round(rect.width);
+        const h = Math.round(rect.height);
+        out.push({ role: r, title, value: val, x, y, width: w, height: h, centerX: Math.round(x + w / 2), centerY: Math.round(y + h / 2), source: 'akron-dom-ax' });
+      }
+      return out;
+    })()`);
+    return Array.isArray(items) ? items : [];
+  } catch (_) {
+    return null;
+  }
+}
+
 async function axFind({ app = '', query = '', role = '', maxResults = 40 } = {}) {
   gate();
   if (process.platform === 'win32') {
@@ -819,11 +869,29 @@ async function axFind({ app = '', query = '', role = '', maxResults = 40 } = {})
       centerY: Math.round(w.y + w.height / 2),
     }));
   }
+  // If targeting Akron Code itself, read its live DOM/ARIA accessibility tree directly without requiring macOS assistive access.
+  if (app && /akron/i.test(String(app))) {
+    const selfItems = await axFindInAkronWindows({ app, query, role, maxResults });
+    if (selfItems) return selfItems;
+  }
+  if (!_askedAccessibilityOnce && process.env.AKRON_NO_DIALOG !== '1') {
+    try {
+      const el = require('electron');
+      if (el && el.systemPreferences && typeof el.systemPreferences.isTrustedAccessibilityClient === 'function') {
+        if (!el.systemPreferences.isTrustedAccessibilityClient(false)) {
+          _askedAccessibilityOnce = true;
+          el.systemPreferences.isTrustedAccessibilityClient(true);
+        }
+      }
+    } catch (_) {}
+  }
   const appMatch = JSON.stringify(String(app || '').toLowerCase());
   const qMatch = JSON.stringify(String(query || '').toLowerCase());
   const rMatch = JSON.stringify(String(role || '').toLowerCase());
   const cap = Math.min(Math.max(1, Number(maxResults) || 40), 100);
-  const out = await jxa(`
+  try {
+    // Bounded BFS traversal avoids loading huge Accessibility trees (`entireContents()`) in memory.
+    const out = await jxa(`
 const se = Application('System Events');
 const targetApp = ${appMatch};
 const q = ${qMatch};
@@ -841,29 +909,46 @@ const results = [];
 if (proc) {
   const win = proc.windows.length ? proc.windows[0] : null;
   if (win) {
-    const els = win.entireContents();
-    for (let i = 0; i < Math.min(els.length, 280); i++) {
-      const el = els[i];
+    const queue = [{ node: win, depth: 0 }];
+    let inspected = 0;
+    while (queue.length && inspected < 280 && results.length < ${cap}) {
+      const { node, depth } = queue.shift();
+      inspected++;
       try {
-        const r = String(el.role() || '');
-        const title = String(el.title() || el.description() || el.name() || '');
-        const pos = el.position();
-        const sz = el.size();
-        const x = Math.round(pos[0] || 0); const y = Math.round(pos[1] || 0);
-        const w = Math.round(sz[0] || 0); const h = Math.round(sz[1] || 0);
-        if (w <= 0 || h <= 0) continue;
-        if (wantRole && !r.toLowerCase().includes(wantRole)) continue;
-        const val = String(el.value() || '').slice(0, 80);
-        if (q && !(title.toLowerCase().includes(q) || val.toLowerCase().includes(q))) continue;
-        results.push({ role: r, title, value: val, x, y, width: w, height: h, centerX: Math.round(x + w / 2), centerY: Math.round(y + h / 2) });
-        if (results.length >= ${cap}) break;
+        if (depth > 0) {
+          const r = String(node.role() || '');
+          const title = String(node.title() || node.description() || node.name() || '');
+          const pos = node.position();
+          const sz = node.size();
+          const x = Math.round(pos[0] || 0); const y = Math.round(pos[1] || 0);
+          const w = Math.round(sz[0] || 0); const h = Math.round(sz[1] || 0);
+          if (w > 0 && h > 0 && (!wantRole || r.toLowerCase().includes(wantRole))) {
+            const val = String(node.value() || '').slice(0, 80);
+            if (!q || title.toLowerCase().includes(q) || val.toLowerCase().includes(q)) {
+              results.push({ role: r, title, value: val, x, y, width: w, height: h, centerX: Math.round(x + w / 2), centerY: Math.round(y + h / 2) });
+            }
+          }
+        }
+        if (depth < 5) {
+          const kids = node.uiElements ? node.uiElements() : [];
+          for (let k = 0; k < Math.min(kids.length, 60) && queue.length < 320; k++) {
+            queue.push({ node: kids[k], depth: depth + 1 });
+          }
+        }
       } catch (_) {}
     }
   }
 }
 JSON.stringify(results);
 `);
-  return out ? JSON.parse(out) : [];
+    return out ? JSON.parse(out) : [];
+  } catch (e) {
+    if (!app || /akron/i.test(String(app))) {
+      const selfItems = await axFindInAkronWindows({ app, query, role, maxResults });
+      if (selfItems && selfItems.length) return selfItems;
+    }
+    throw e;
+  }
 }
 
 async function appMenu({ app = '', menuPath = [] } = {}) {

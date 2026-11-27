@@ -3,7 +3,61 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { execFile } = require('child_process');
+const { execFile, spawnSync } = require('child_process');
+
+function ensureUnpackedEsbuildBinary() {
+  const cur = String(process.env.ESBUILD_BINARY_PATH || '').trim();
+  if (cur && fs.existsSync(cur) && !/app\.asar(?:[/\\]|$)/i.test(cur)) {
+    return cur;
+  }
+  const pkg = `${process.platform}-${process.arch}`;
+  const binName = process.platform === 'win32' ? 'esbuild.exe' : 'esbuild';
+  const candidates = [];
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', '@esbuild', pkg, 'bin', binName));
+  }
+  if (__dirname.includes('app.asar')) {
+    const unpackedRoot = __dirname.replace(/app\.asar(?:[/\\][^]*)$/, 'app.asar.unpacked');
+    candidates.push(path.join(unpackedRoot, 'node_modules', '@esbuild', pkg, 'bin', binName));
+  }
+  candidates.push(path.join(__dirname, '..', '..', 'node_modules', '@esbuild', pkg, 'bin', binName));
+  for (const c of candidates) {
+    try {
+      if (c && fs.existsSync(c)) {
+        process.env.ESBUILD_BINARY_PATH = c;
+        return c;
+      }
+    } catch (_) {}
+  }
+  return '';
+}
+
+function checkEsmFallback(raw, fp) {
+  let nodeBin = '';
+  try { nodeBin = require('../paths').resolveNodeBinary(); } catch (_) {}
+  if (nodeBin && !/app\.asar(?:[/\\]|$)/i.test(nodeBin)) {
+    try {
+      const r = spawnSync(nodeBin, ['--check', fp], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      if (!r.error) {
+        if (r.status === 0) return { checked: true, error: null };
+        const msg = String(r.stderr || r.stdout || 'syntax error').trim().split('\n').slice(0, 3).join(' ');
+        return { checked: true, error: msg };
+      }
+    } catch (_) {}
+  }
+  try {
+    const vm = require('vm');
+    const stripped = String(raw || '')
+      .replace(/^\s*import\s+[\s\S]*?from\s+['"][^'"]+['"];?/gm, '')
+      .replace(/^\s*import\s+['"][^'"]+['"];?/gm, '')
+      .replace(/^\s*export\s+default\s+/gm, 'void ')
+      .replace(/^\s*export\s+(?=(?:async\s+)?function\b|class\b|const\b|let\b|var\b)/gm, '');
+    new vm.Script(stripped, { filename: fp });
+    return { checked: true, error: null };
+  } catch (e) {
+    return { checked: true, error: e && e.message ? e.message.split('\n')[0] : String(e) };
+  }
+}
 
 function sha256Buffer(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
@@ -103,8 +157,10 @@ function collectPostEditDiagnostics(fp, _cwd = null) {
     } else {
       const loader = esbuildLoaderFor(ext);
       if (loader) {
+        let syntaxChecked = false;
         let esbuild = null;
         try {
+          ensureUnpackedEsbuildBinary();
           esbuild = require('esbuild');
         } catch (_) {
           esbuild = null;
@@ -112,18 +168,19 @@ function collectPostEditDiagnostics(fp, _cwd = null) {
         if (esbuild && typeof esbuild.transformSync === 'function') {
           try {
             esbuild.transformSync(raw, { loader, sourcefile: fp, logLevel: 'silent' });
+            syntaxChecked = true;
           } catch (e) {
             const errs = Array.isArray(e && e.errors) ? e.errors : [];
             if (errs.length) {
+              syntaxChecked = true;
               for (const er of errs.slice(0, 5)) {
                 const loc = er.location ? `L${er.location.line}:${er.location.column}` : '';
                 issues.push(`[Syntax error${loc ? ' ' + loc : ''}] ${er.text}`);
               }
-            } else {
-              issues.push(`[Syntax error] ${e && e.message ? e.message.split('\n')[0] : String(e)}`);
             }
           }
-        } else if (ext === '.js' || ext === '.cjs' || ext === '.mjs') {
+        }
+        if (!syntaxChecked && (ext === '.js' || ext === '.cjs' || ext === '.mjs')) {
           const isEsmSyntax = ext === '.mjs' || /^\s*(?:import|export)\b/m.test(raw);
           if (!isEsmSyntax) {
             try {
@@ -133,15 +190,8 @@ function collectPostEditDiagnostics(fp, _cwd = null) {
               issues.push(`[Syntax error] ${e && e.message ? e.message.split('\n')[0] : String(e)}`);
             }
           } else {
-            try {
-              const nodeBin = require('../paths').resolveNodeBinary();
-              if (nodeBin) {
-                require('child_process').execFileSync(nodeBin, ['--check', fp], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
-              }
-            } catch (e) {
-              const msg = String((e && (e.stderr || e.message)) || e).trim().split('\n').slice(0, 3).join(' ');
-              issues.push(`[Syntax error] ${msg}`);
-            }
+            const fb = checkEsmFallback(raw, fp);
+            if (fb.error) issues.push(`[Syntax error] ${fb.error}`);
           }
         }
       }
@@ -233,11 +283,13 @@ async function runShadowCheck(cwd, { timeoutMs = 30000 } = {}) {
     }
   }
 
-  // Run recursive JS/MJS/CJS/JSX/TS/JSON syntax scan when no project typecheck ran
-  if (!hasTypecheck) {
+  // Always scan JS/MJS/CJS/JSX/TS files recursively (even when package.json typecheck
+  // runs, because workspace sandboxes or standalone .mjs/.js files may sit outside it).
+  const scanned = collectSourceFilesRecursive(dir, 250);
+  const scanTargets = scanned;
+  if (scanTargets.length > 0 || !hasTypecheck) {
     const errors = [];
-    const scanned = collectSourceFilesRecursive(dir, 250);
-    for (const fp of scanned) {
+    for (const fp of scanTargets) {
       const diag = collectPostEditDiagnostics(fp, dir);
       if (diag) errors.push(diag.trim());
     }
@@ -246,7 +298,7 @@ async function runShadowCheck(cwd, { timeoutMs = 30000 } = {}) {
       res: {
         ok: errors.length === 0,
         code: errors.length ? 1 : 0,
-        output: errors.join('\n') || `Checked ${scanned.length} file${scanned.length === 1 ? '' : 's'} — no syntax errors detected.`,
+        output: errors.join('\n') || `Checked ${scanTargets.length} file${scanTargets.length === 1 ? '' : 's'} — no syntax errors detected.`,
       },
     });
   }

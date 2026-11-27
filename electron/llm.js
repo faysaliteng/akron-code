@@ -1135,6 +1135,7 @@ async function chatWithFailover(opts) {
           if (isCreditExhausted(e)) {
             if (nx) {
               gate.markDead(p, 'out of credit', 30 * 60000);
+              try { require('./debug-logger').record('warn', 'llm-failover', 'credit-exhausted', `${label(p)} -> ${label(nx)}`); } catch (_) {}
               emit({ type: 'orchestrator', from: label(p), to: label(nx), reason: humanizeLLMError(e).slice(0, 200) });
               continue;
             }
@@ -1162,6 +1163,7 @@ async function chatWithFailover(opts) {
             else gate.rateLimited(p, e.retryAfterMs);
             rateLimited = true;
             if (nx) {
+              try { require('./debug-logger').record('warn', 'llm-failover', 'rate-limit', `${label(p)} -> ${label(nx)}: ${humanizeLLMError(e).slice(0, 140)}`); } catch (_) {}
               emit({ type: 'orchestrator', from: label(p), to: label(nx), reason: humanizeLLMError(e).slice(0, 200) });
               continue;
             }
@@ -2366,6 +2368,9 @@ async function runAgent(opts) {
     const forceArtifactDir = permissionMode === 'plan' || (a.overwrite !== true && fs.existsSync(filePath) && !/^\.autobot[\\/]artifacts[\\/]/i.test(name));
     if (forceArtifactDir) {
       filePath = path.join(dir, '.autobot', 'artifacts', path.basename(name));
+    }
+    if (/[\\/]\.autobot[\\/]/.test(filePath)) {
+      try { require('./debug-logger').ensureWorkspaceGitignore(dir); } catch (_) {}
     }
     return { language, filePath, storedRelName: path.relative(dir, filePath).replace(/\\/g, '/') };
   };

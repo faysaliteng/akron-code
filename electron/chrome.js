@@ -5,6 +5,9 @@
 
 const WebSocket = require('ws');
 const http = require('http');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const DEFAULT_PORT = 9222;
 const DEFAULT_HOST = '127.0.0.1';
@@ -18,17 +21,64 @@ function configure(opts) {
   return { host, port };
 }
 
-// Fetch the list of debuggable targets (tabs/pages).
-function getTargets() {
+function discoverDevToolsActivePort() {
+  const home = os.homedir();
+  const candidates = process.platform === 'darwin'
+    ? [
+        path.join(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
+        path.join(home, 'Library/Application Support/BraveSoftware/Brave-Browser/DevToolsActivePort'),
+        path.join(home, 'Library/Application Support/Microsoft Edge/DevToolsActivePort'),
+        path.join(home, 'Library/Application Support/Chromium/DevToolsActivePort'),
+      ]
+    : process.platform === 'win32'
+      ? [
+          path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/User Data/DevToolsActivePort'),
+          path.join(process.env.LOCALAPPDATA || '', 'BraveSoftware/Brave-Browser/User Data/DevToolsActivePort'),
+          path.join(process.env.LOCALAPPDATA || '', 'Microsoft/Edge/User Data/DevToolsActivePort'),
+        ]
+      : [
+          path.join(home, '.config/google-chrome/DevToolsActivePort'),
+          path.join(home, '.config/BraveSoftware/Brave-Browser/DevToolsActivePort'),
+          path.join(home, '.config/chromium/DevToolsActivePort'),
+        ];
+  for (const fp of candidates) {
+    try {
+      if (!fp || !fs.existsSync(fp)) continue;
+      const lines = fs.readFileSync(fp, 'utf8').trim().split(/\r?\n/);
+      const p = Number(lines[0]);
+      if (Number.isInteger(p) && p > 0) return { port: p, wsPath: lines[1] || '' };
+    } catch (_) {}
+  }
+  return null;
+}
+
+function fetchTargetsFrom(targetHost, targetPort) {
   return new Promise((resolve, reject) => {
-    http.get({ host, port, path: '/json' }, (res) => {
+    const req = http.get({ host: targetHost, port: targetPort, path: '/json', timeout: 1500 }, (res) => {
       let data = '';
       res.on('data', (c) => (data += c));
       res.on('end', () => {
         try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('Bad /json response')); }
       });
-    }).on('error', (e) => reject(new Error(`Chrome CDP not reachable at ${host}:${port} (start Chrome with --remote-debugging-port=${port}): ${e.message}`)));
+    });
+    req.on('timeout', () => req.destroy(new Error('CDP /json timeout')));
+    req.on('error', reject);
   });
+}
+
+// Fetch the list of debuggable targets (tabs/pages).
+async function getTargets() {
+  try {
+    return await fetchTargetsFrom(host, port);
+  } catch (primaryErr) {
+    const discovered = discoverDevToolsActivePort();
+    if (discovered && discovered.port !== port) {
+      try {
+        return await fetchTargetsFrom('127.0.0.1', discovered.port);
+      } catch (_) {}
+    }
+    throw new Error(`Chrome CDP not reachable at ${host}:${port} (start Chrome with --remote-debugging-port=${port}): ${primaryErr.message}`);
+  }
 }
 
 // Connect to a page's WebSocket and run CDP commands.
@@ -99,4 +149,4 @@ async function evaluate(cdp, expression, awaitPromise = true) {
   return r.result && r.result.value;
 }
 
-module.exports = { configure, getTargets, connectToTarget, evaluate, CDP, DEFAULT_PORT, DEFAULT_HOST };
+module.exports = { configure, getTargets, discoverDevToolsActivePort, connectToTarget, evaluate, CDP, DEFAULT_PORT, DEFAULT_HOST };

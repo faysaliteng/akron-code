@@ -98,12 +98,13 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
   const patchTab = (id, patch) => setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   const nextTabNum = useRef(2);
 
-  const openTab = useCallback((url) => {
+  const openTab = useCallback((url, opts = {}) => {
     const id = 'tab' + nextTabNum.current++;
     const launch = url || 'https://www.google.com';
-    setTabs((ts) => [...ts, { id, launch, url: launch, title: 'New Tab', loading: true }]);
+    setTabs((ts) => [...ts, { id, launch, url: launch, title: opts.isPreview ? 'Preview' : 'New Tab', loading: true, isPreview: Boolean(opts.isPreview) }]);
     setActiveId(id);
     setOmnibox(launch);
+    return id;
   }, []);
 
   const closeTab = (id) => {
@@ -141,10 +142,13 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
     setActiveId(id);
     const t = tabs.find((x) => x.id === id);
     if (t) setOmnibox(t.url);
-    // Re-point the agent's guest at the tab the user just picked.
+    // Re-point the agent's guest at the tab the user just picked (unless it is a local artifact preview while a web tab exists).
     const wv = webviews.current[id];
+    const hasWebTab = tabs.some((x) => !x.isPreview);
     if (wv) {
-      try { const wid = wv.getWebContentsId(); if (wid) window.autobot.browserRegister(wid); } catch {}
+      if (!t || !t.isPreview || !hasWebTab) {
+        try { const wid = wv.getWebContentsId(); if (wid) window.autobot.browserRegister(wid); } catch {}
+      }
       try { const u = wv.getURL(); if (u) { patchTab(id, { url: u }); setOmnibox(u); } } catch {}
     }
   };
@@ -190,6 +194,8 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
     return () => window.removeEventListener('keydown', onEsc, true);
   }, [inspectMode, cropMode, exitInspectMode]);
 
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
   const bindWebview = (id) => (el) => {
     if (!el || webviews.current[id]) return;
     webviews.current[id] = el;
@@ -209,7 +215,12 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
     el.addEventListener('page-title-updated', (e) => patchTab(id, { title: e.title || 'Untitled' }));
     el.addEventListener('did-fail-load', (e) => { if (e.errorCode !== -3) patchTab(id, { loading: false }); });
     el.addEventListener('dom-ready', () => {
-      try { const wid = el.getWebContentsId(); if (wid) window.autobot.browserRegister(wid); } catch {}
+      const curTabs = tabsRef.current || [];
+      const me = curTabs.find((x) => x.id === id);
+      const hasWebTab = curTabs.some((x) => !x.isPreview);
+      if (!me || !me.isPreview || !hasWebTab) {
+        try { const wid = el.getWebContentsId(); if (wid) window.autobot.browserRegister(wid); } catch {}
+      }
       try { const u = el.getURL(); patchTab(id, { url: u }); if (isActive()) setOmnibox(u); } catch {}
     });
     el.addEventListener('console-message', async (e) => {
@@ -327,7 +338,7 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
           setOmnibox(u);
           return;
         }
-        const openedId = openTab(u);
+        const openedId = openTab(u, { isPreview: isArtifactPreview });
         if (isArtifactPreview && openedId) previewTabRef.current = openedId;
         return;
       }

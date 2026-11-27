@@ -122,29 +122,106 @@ module.exports = function buildBrowserAndCuExecutors({ truncate }) {
     return summary;
   },
 
-  // ---- Chrome (CDP) ----
+  // ---- Chrome (CDP -> :8766 Extension Bridge -> Built-in Browser graceful fallback) ----
   async chrome_list_tabs() {
-    const ts = await chrome.getTargets();
-    return ts.length ? untrusted.wrapUntrusted(ts.map((t) => `- ${t.id}: ${t.title} (${t.url})`).join('\n'), { source: 'ChromeCDP' }) : '(no Chrome tabs found)';
+    try {
+      const ts = await chrome.getTargets();
+      return ts.length ? untrusted.wrapUntrusted(ts.map((t) => `- ${t.id}: ${t.title} (${t.url})`).join('\n'), { source: 'ChromeCDP' }) : '(no Chrome tabs found)';
+    } catch (cdpErr) {
+      try {
+        const bridge = require('../extbridge');
+        const st = bridge && typeof bridge.status === 'function' ? bridge.status() : null;
+        if (st && st.connected) {
+          const out = await bridge.callTool('list_tabs', {});
+          const txt = typeof out === 'string' ? out : JSON.stringify(out, null, 2);
+          return untrusted.wrapUntrusted(`[via Akron Browser Bot :8766]\n${txt}`, { source: 'ChromeBridge' });
+        }
+      } catch (_) {}
+      const r = await Promise.resolve(browser.listTabs()).catch(() => null);
+      if (r && r.ok) {
+        const rows = (r.tabs || []).map((t) => `- ${t.id}: ${t.title || 'Tab'} (${t.url || ''})${t.active ? ' [active]' : ''}`);
+        return untrusted.wrapUntrusted(`[via Built-in Chromium — start external Chrome with --remote-debugging-port=9222 for external CDP]\n${rows.join('\n') || '(no open tabs)'}`, { source: 'BrowserTabs' });
+      }
+      throw cdpErr;
+    }
   },
-  async chrome_navigate({ url, targetId }) {
-    const { cdp } = await chrome.connectToTarget(targetId);
-    await cdp.send('Page.enable');
-    await cdp.send('Page.navigate', { url });
-    cdp.close();
-    return `Navigated to ${url}`;
+  async chrome_navigate({ url, targetId, cwd }) {
+    try {
+      const { cdp } = await chrome.connectToTarget(targetId);
+      await cdp.send('Page.enable');
+      await cdp.send('Page.navigate', { url });
+      cdp.close();
+      return `Navigated to ${url}`;
+    } catch (cdpErr) {
+      try {
+        const bridge = require('../extbridge');
+        const st = bridge && typeof bridge.status === 'function' ? bridge.status() : null;
+        if (st && st.connected) {
+          const numId = /^\d+$/.test(String(targetId || '')) ? Number(targetId) : undefined;
+          await bridge.callTool('navigate', { url }, numId);
+          return `Navigated to ${url} [via Akron Browser Bot :8766]`;
+        }
+      } catch (_) {}
+      const r = await Promise.resolve(browser.loadURL(url, cwd)).catch(() => null);
+      if (r && r.ok) return `Navigated to ${r.url} [via Built-in Chromium]`;
+      throw cdpErr;
+    }
   },
   async chrome_evaluate({ expression, targetId }) {
-    const { cdp } = await chrome.connectToTarget(targetId);
-    const v = await chrome.evaluate(cdp, expression);
-    cdp.close();
-    return untrusted.wrapUntrusted(String(v), { source: 'ChromeCDP' });
+    try {
+      const { cdp } = await chrome.connectToTarget(targetId);
+      const v = await chrome.evaluate(cdp, expression);
+      cdp.close();
+      return untrusted.wrapUntrusted(String(v), { source: 'ChromeCDP' });
+    } catch (cdpErr) {
+      try {
+        const bridge = require('../extbridge');
+        const st = bridge && typeof bridge.status === 'function' ? bridge.status() : null;
+        if (st && st.connected) {
+          const numId = /^\d+$/.test(String(targetId || '')) ? Number(targetId) : undefined;
+          const out = await bridge.callTool('execute_javascript', { code: expression, script: expression }, numId);
+          return untrusted.wrapUntrusted(`[via Akron Browser Bot :8766]\n${typeof out === 'string' ? out : JSON.stringify(out)}`, { source: 'ChromeBridge' });
+        }
+      } catch (_) {}
+      const r = await Promise.resolve(browser.executeJS(expression)).catch(() => null);
+      if (r && r.ok) return untrusted.wrapUntrusted(`[via Built-in Chromium]\n${typeof r.result === 'string' ? r.result : JSON.stringify(r.result)}`, { source: 'BrowserJS' });
+      throw cdpErr;
+    }
   },
   async chrome_screenshot({ targetId }) {
-    const { cdp } = await chrome.connectToTarget(targetId);
-    const r = await cdp.send('Page.captureScreenshot', { format: 'png' });
-    cdp.close();
-    return r && r.data ? `base64 PNG (length ${r.data.length})` : '(no screenshot)';
+    const fs = require('fs');
+    const path = require('path');
+    const os = require('os');
+    const saveB64Shot = (b64, label) => {
+      const outPath = path.join(os.homedir(), '.autobot', 'media-cache', `chrome-shot-${Date.now()}.png`);
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, Buffer.from(b64, 'base64'));
+      return {
+        content: `Chrome screenshot saved (${label}): ${outPath} (${Math.round(b64.length * 0.75)} bytes)`,
+        imageDataUrl: `data:image/png;base64,${b64}`,
+      };
+    };
+    try {
+      const { cdp } = await chrome.connectToTarget(targetId);
+      const r = await cdp.send('Page.captureScreenshot', { format: 'png' });
+      cdp.close();
+      return r && r.data ? saveB64Shot(r.data, 'ChromeCDP') : '(no screenshot)';
+    } catch (cdpErr) {
+      try {
+        const bridge = require('../extbridge');
+        const st = bridge && typeof bridge.status === 'function' ? bridge.status() : null;
+        if (st && st.connected) {
+          const numId = /^\d+$/.test(String(targetId || '')) ? Number(targetId) : undefined;
+          const out = await bridge.callTool('screenshot', {}, numId);
+          const raw = (out && (out.image || out.dataUrl || out.screenshot)) || '';
+          const m = /^data:image\/[a-z+.-]+;base64,(.+)$/i.exec(String(raw));
+          if (m) return saveB64Shot(m[1], 'Akron Browser Bot :8766');
+        }
+      } catch (_) {}
+      const r = await Promise.resolve(browser.screenshot()).catch(() => null);
+      if (r && r.ok && r.b64) return saveB64Shot(r.b64, 'Built-in Chromium');
+      throw cdpErr;
+    }
   },
 
   // ---- Built-in Browser (the in-app <webview> pane) ----

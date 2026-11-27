@@ -78,7 +78,7 @@ export function ProjectSettingsPanel({ cwd, projects = [], setProjects, activePr
                   {it.demoted && <span className="token-badge-demoted">demoted → {it.mentionRef}</span>}
                 </div>
                 <span className="muted" style={{ margin: 0, flexShrink: 0 }}>
-                  {it.tokens.toLocaleString()} tok{it.demoted ? ' (16 active)' : ''}
+                  {Number(it.tokens || 0).toLocaleString()} tok{it.demoted ? ' (16 active)' : ''}
                 </span>
               </div>
             ))}

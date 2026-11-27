@@ -2041,6 +2041,7 @@ async function runToolInner(name, args, ctx) {
       const outFp = path.resolve(ctx.cwd, artName);
       fs.mkdirSync(path.dirname(outFp), { recursive: true });
       fs.writeFileSync(outFp, chart.svg, 'utf8');
+      try { require('./debug-logger').ensureWorkspaceGitignore(ctx.cwd); } catch (_) {}
       savedMsg = ` Saved to ${outFp}.`;
     }
     return `Rendered ${chart.type} chart "${chart.title}" as an SVG artifact (${chart.svg.length} chars).${savedMsg}`;
@@ -2150,7 +2151,7 @@ async function runToolInner(name, args, ctx) {
       const tabId = Number.isInteger(rawTab) ? rawTab : undefined;
       const out = await bridge.callTool(action, mergedArgs, tabId);
       if (action === 'screenshot') {
-        const rawDataUrl = (out && typeof out === 'object' && (out.dataUrl || out.imageDataUrl || out.data_url || out.screenshot))
+        const rawDataUrl = (out && typeof out === 'object' && (out.dataUrl || out.imageDataUrl || out.data_url || out.screenshot || out.image))
           || (typeof out === 'string' && out.startsWith('data:image/') ? out : '');
         const rawB64 = !rawDataUrl && out && typeof out === 'object' ? (out.base64 || out.data || '') : '';
         const b64Match = /^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/s.exec(String(rawDataUrl || ''));
@@ -2309,11 +2310,18 @@ async function runToolInner(name, args, ctx) {
       }
     }
     const content = await withTimeout(fn(finalArgs, { signal: ctx.signal, cwd: finalArgs.cwd, emit: ctx.emit, currentToolId: ctx.currentToolId, provider: ctx.provider, orchestrator: ctx.orchestrator }), toolTimeoutMs(name, finalArgs), name, ctx.signal, ctx._toolAbort);
-    if (content && typeof content === 'object' && (content.isError || typeof content.content === 'string')) return content;
+    if (content && typeof content === 'object' && (content.isError || typeof content.content === 'string')) {
+      if (content.isError) {
+        try { require('./debug-logger').record('error', 'tool', name, String(content.content || '').slice(0, 600)); } catch (_) {}
+      }
+      return content;
+    }
     return { content: String(content) };
   } catch (e) {
     if (ctx.signal && ctx.signal.aborted) throw e;
-    return { content: 'Tool error: ' + (e && e.message ? e.message : String(e)), isError: true };
+    const msg = 'Tool error: ' + (e && e.message ? e.message : String(e));
+    try { require('./debug-logger').record('error', 'tool', name, msg.slice(0, 600)); } catch (_) {}
+    return { content: msg, isError: true };
   }
 }
 

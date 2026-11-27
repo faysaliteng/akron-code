@@ -2048,6 +2048,25 @@ ipcMain.handle('autobot:generateDiagnostics', (e, payload = {}) => require('../d
   appVersion: app.getVersion(),
   ...(payload || {}),
 }));
+{
+  const dbg = require('../debug-logger');
+  dbg.setAppVersion(app.getVersion());
+  dbg.record('info', 'app', 'startup', { version: app.getVersion(), platform: process.platform, arch: process.arch });
+  const _tPrune = setTimeout(() => { try { dbg.pruneRuntimeDirs(); } catch (_) {} }, 12000);
+  if (_tPrune && typeof _tPrune.unref === 'function') _tPrune.unref();
+  ipcMain.handle('autobot:debugLogGet', (_e, limit = 120) => ({
+    ok: true,
+    config: dbg.getConfig(),
+    entries: dbg.tail(limit),
+    logPath: dbg.logFilePath(),
+  }));
+  ipcMain.handle('autobot:debugLogSetConfig', (_e, patch = {}) => ({
+    ok: true,
+    config: dbg.setConfig(patch || {}),
+  }));
+  ipcMain.handle('autobot:debugLogClear', () => dbg.clear());
+  ipcMain.handle('autobot:debugLogSendReport', async (_e, payload = {}) => dbg.sendReportNow(payload || {}));
+}
 
 // Built-in Browser (renderer <webview> registers its guest WebContents; the
 // agent tools in tools.js control it through the same controller).

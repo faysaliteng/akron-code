@@ -1065,10 +1065,10 @@ export function FreeLLMAPISection({ settings, setSettings, orchestrator, saveOrc
     <div className="settings-card freellm-hub-card" data-testid="freellmapi-catalog-hub">
       <div className="deepseek-card-head">
         <h3>🔓 FreeLLMAPI · Full Unlocked Cross-Platform Catalog</h3>
-        <span className="deepseek-status-pill ready">{totals.totalModels.toLocaleString()} Models · {totals.totalPlatforms} Platforms</span>
+        <span className="deepseek-status-pill ready">{Number(totals.totalModels || 0).toLocaleString()} Models · {Number(totals.totalPlatforms || 0)} Platforms</span>
       </div>
       <p className="muted" style={{ marginTop: 0 }}>
-        Embedded across macOS, Windows &amp; Linux: <strong>{totals.chatModels.toLocaleString()}</strong> chat models ({totals.chatPlatforms} platforms), <strong>{totals.mediaModels}</strong> multimodal media/search/decision models (7 modalities), and <strong>{totals.embeddingModels}</strong> embeddings ({totals.embeddingPlatforms} platforms). Built-in router runs on <code>http://127.0.0.1:3001/v1</code> and compatibility port <code>:31415/v1</code>.
+        Embedded across macOS, Windows &amp; Linux: <strong>{Number(totals.chatModels || 0).toLocaleString()}</strong> chat models ({Number(totals.chatPlatforms || 0)} platforms), <strong>{Number(totals.mediaModels || 0)}</strong> multimodal media/search/decision models (7 modalities), and <strong>{Number(totals.embeddingModels || 0)}</strong> embeddings ({Number(totals.embeddingPlatforms || 0)} platforms). Built-in router runs on <code>http://127.0.0.1:3001/v1</code> and compatibility port <code>:31415/v1</code>.
       </p>
 
       <div className="freellm-detect-bar">
@@ -1446,6 +1446,52 @@ export function GiveFeedbackSection({ settings, provider, setNotice }) {
   const [summary, setSummary] = useState('');
   const [bundleJson, setBundleJson] = useState('');
   const [busy, setBusy] = useState(false);
+  const [dbgConfig, setDbgConfig] = useState({ autoSend: false, endpointUrl: '', includeToolErrors: true, lastSentAt: null, lastStatus: null, sentCount: 0 });
+  const [dbgEntries, setDbgEntries] = useState([]);
+  const [dbgPath, setDbgPath] = useState('');
+  const [dbgBusy, setDbgBusy] = useState(false);
+
+  const loadDebugLog = React.useCallback(async () => {
+    if (!window.autobot || typeof window.autobot.debugLogGet !== 'function') return;
+    try {
+      const res = await window.autobot.debugLogGet(80);
+      if (res && res.ok) {
+        if (res.config) setDbgConfig(res.config);
+        if (Array.isArray(res.entries)) setDbgEntries(res.entries);
+        if (res.logPath) setDbgPath(res.logPath);
+      }
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => { loadDebugLog(); }, [loadDebugLog]);
+
+  const updateDbgConfig = async (patch) => {
+    const next = { ...dbgConfig, ...patch };
+    setDbgConfig(next);
+    if (window.autobot && typeof window.autobot.debugLogSetConfig === 'function') {
+      try {
+        const res = await window.autobot.debugLogSetConfig(patch);
+        if (res && res.config) setDbgConfig(res.config);
+      } catch (_) {}
+    }
+  };
+
+  const sendDebugReport = async () => {
+    setDbgBusy(true);
+    try {
+      if (window.autobot && typeof window.autobot.debugLogSendReport === 'function') {
+        const res = await window.autobot.debugLogSendReport({ category, summary });
+        await loadDebugLog();
+        if (setNotice) {
+          setNotice(res && res.delivered
+            ? `Delivered scrubbed report ${res.reportId} (${res.entryCount} entries)`
+            : `Saved scrubbed report ${res && res.reportId ? res.reportId : ''} locally (${res && res.error ? res.error : 'no endpoint URL configured'})`);
+        }
+      }
+    } finally {
+      setDbgBusy(false);
+    }
+  };
 
   const generateBundle = async () => {
     setBusy(true);
@@ -1471,54 +1517,121 @@ export function GiveFeedbackSection({ settings, provider, setNotice }) {
   };
 
   return (
-    <div className="settings-card" data-testid="give-feedback-section">
-      <h3><Icon name="Bug" size={14} /> Give Feedback &amp; Scrubbed Diagnostic Bundle</h3>
-      <p className="muted" style={{ marginTop: 0 }}>
-        Generates a privacy-safe diagnostic snapshot with API keys, OAuth tokens, emails, and user home directories automatically redacted.
-      </p>
-      <div className="row">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="settings-card" data-testid="give-feedback-section">
+        <h3><Icon name="Bug" size={14} /> Give Feedback &amp; Scrubbed Diagnostic Bundle</h3>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Generates a privacy-safe diagnostic snapshot with API keys, OAuth tokens, emails, and user home directories automatically redacted.
+        </p>
+        <div className="row">
+          <label>
+            Category
+            <select value={category} onChange={(e) => setCategory(e.target.value)}>
+              <option value="bug">Bug Report</option>
+              <option value="feature">Feature Request</option>
+              <option value="perf">Performance / IDE</option>
+              <option value="browser">Browser Bot Issue</option>
+            </select>
+          </label>
+        </div>
         <label>
-          Category
-          <select value={category} onChange={(e) => setCategory(e.target.value)}>
-            <option value="bug">Bug Report</option>
-            <option value="feature">Feature Request</option>
-            <option value="perf">Performance / IDE</option>
-            <option value="browser">Browser Bot Issue</option>
-          </select>
+          What happened?
+          <textarea
+            rows={3}
+            value={summary}
+            onChange={(e) => setSummary(e.target.value)}
+            placeholder="Describe steps to reproduce or share product feedback…"
+            style={{ width: '100%', marginTop: 4, fontSize: 12.5, padding: 8, background: 'var(--bg-000)', color: 'var(--text-000)', border: '1px solid var(--border-strong)', borderRadius: 8 }}
+          />
         </label>
-      </div>
-      <label>
-        What happened?
-        <textarea
-          rows={3}
-          value={summary}
-          onChange={(e) => setSummary(e.target.value)}
-          placeholder="Describe steps to reproduce or share product feedback…"
-          style={{ width: '100%', marginTop: 4, fontSize: 12.5, padding: 8, background: 'var(--bg-000)', color: 'var(--text-000)', border: '1px solid var(--border-strong)', borderRadius: 8 }}
-        />
-      </label>
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <button type="button" className="btn-mini primary" disabled={busy} onClick={generateBundle} data-testid="generate-diag-btn">
-          <Icon name="ShieldSearch" size={12} /> {busy ? 'Generating…' : 'Generate Scrubbed Diagnostics'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+          <button type="button" className="btn-mini primary" disabled={busy} onClick={generateBundle} data-testid="generate-diag-btn">
+            <Icon name="ShieldSearch" size={12} /> {busy ? 'Generating…' : 'Generate Scrubbed Diagnostics'}
+          </button>
+          <button type="button" className="btn-mini" disabled={dbgBusy} onClick={sendDebugReport} data-testid="send-debug-report-btn">
+            <Icon name="PaperPlane" size={12} /> {dbgBusy ? 'Sending…' : 'Save & Send Scrubbed Log Report'}
+          </button>
+          {bundleJson && (
+            <button
+              type="button"
+              className="btn-mini"
+              onClick={() => {
+                try { navigator.clipboard.writeText(bundleJson); } catch (_) {}
+                if (setNotice) setNotice('Diagnostic JSON copied to clipboard');
+              }}
+            >
+              <Icon name="Copy" size={12} /> Copy JSON
+            </button>
+          )}
+        </div>
         {bundleJson && (
+          <pre className="tool-result" style={{ marginTop: 10, maxHeight: 240, overflow: 'auto' }} data-testid="diag-bundle-preview">
+            {bundleJson}
+          </pre>
+        )}
+      </div>
+
+      <div className="settings-card" data-testid="debug-log-section">
+        <h3><Icon name="Activity" size={14} /> Persistent Debugging Log &amp; Developer Auto-Report</h3>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Keeps a rolling, secret-scrubbed log of tool failures and runtime health at <code>{dbgPath || '~/.autobot/logs/debug.jsonl'}</code>.
+          Auto-sending is <b>opt-in</b> and requires an <code>https://</code> collector endpoint.
+        </p>
+        <label className="check" style={{ marginBottom: 8 }}>
+          <input
+            type="checkbox"
+            checked={Boolean(dbgConfig.autoSend)}
+            onChange={(e) => updateDbgConfig({ autoSend: e.target.checked })}
+            data-testid="debug-autosend-toggle"
+          />
+          <span>Auto-send scrubbed error &amp; self-test reports to developer endpoint</span>
+        </label>
+        <label>
+          Developer Collector URL (optional HTTPS webhook)
+          <input
+            type="url"
+            value={dbgConfig.endpointUrl || ''}
+            onChange={(e) => setDbgConfig((c) => ({ ...c, endpointUrl: e.target.value }))}
+            onBlur={(e) => updateDbgConfig({ endpointUrl: e.target.value })}
+            placeholder="https://collector.akronlogic.com/v1/diagnostics"
+            data-testid="debug-endpoint-input"
+          />
+        </label>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button type="button" className="btn-mini" onClick={loadDebugLog}><Icon name="Refresh" size={12} /> Refresh Log ({dbgEntries.length})</button>
           <button
             type="button"
             className="btn-mini"
             onClick={() => {
-              try { navigator.clipboard.writeText(bundleJson); } catch (_) {}
-              if (setNotice) setNotice('Diagnostic JSON copied to clipboard');
+              try { navigator.clipboard.writeText(dbgEntries.map((x) => JSON.stringify(x)).join('\n')); } catch (_) {}
+              if (setNotice) setNotice('Copied scrubbed debug log');
             }}
           >
-            <Icon name="Copy" size={12} /> Copy JSON
+            <Icon name="Copy" size={12} /> Copy Log
           </button>
-        )}
-      </div>
-      {bundleJson && (
-        <pre className="tool-result" style={{ marginTop: 10, maxHeight: 240, overflow: 'auto' }} data-testid="diag-bundle-preview">
-          {bundleJson}
+          <button
+            type="button"
+            className="btn-mini"
+            onClick={async () => {
+              if (window.autobot && window.autobot.debugLogClear) await window.autobot.debugLogClear();
+              await loadDebugLog();
+              if (setNotice) setNotice('Cleared local debug log');
+            }}
+          >
+            <Icon name="Trash" size={12} /> Clear
+          </button>
+          {dbgConfig.lastStatus && (
+            <span className="muted" style={{ fontSize: 11.5 }}>
+              Last status: <code>{dbgConfig.lastStatus}</code> · Sent: {dbgConfig.sentCount || 0}
+            </span>
+          )}
+        </div>
+        <pre className="tool-result" style={{ marginTop: 10, maxHeight: 200, overflow: 'auto', fontSize: 11 }} data-testid="debug-log-preview">
+          {dbgEntries.length
+            ? dbgEntries.slice(-25).reverse().map((en) => `${en.ts} [${en.level}] ${en.category}/${en.event}: ${typeof en.detail === 'string' ? en.detail : JSON.stringify(en.detail || '')}`).join('\n')
+            : '(no debug log entries recorded yet)'}
         </pre>
-      )}
+      </div>
     </div>
   );
 }
