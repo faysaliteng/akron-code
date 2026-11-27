@@ -5,6 +5,8 @@ const search = require('./search');
 const ptyMod = require('./pty');
 const lspMod = require('./lsp');
 const aiInline = require('./ai-inline');
+const notebookRunner = require('./notebook-runner');
+const debuggerMod = require('./debugger');
 const git = require('../git');
 const { humanizeLLMError } = require('../llm');
 const environments = require('../environments');
@@ -209,6 +211,29 @@ function register({ ipcMain, normalizeProvider, hydrateProvider, hydrateOrchestr
   ipcMain.handle('ide:gitBranches', (e, payload) => environments.isRemoteActive() ? environments.dispatchIde('git', 'branches', payload || {}) : git.listBranches(payload && payload.cwd));
   ipcMain.handle('ide:gitCheckout', (e, payload) => environments.isRemoteActive() ? environments.dispatchIde('git', 'checkout', payload || {}) : git.checkoutBranch(payload && payload.cwd, payload && payload.branch, !!(payload && payload.createNew)));
   ipcMain.handle('ide:gitFileAtHead', (e, payload) => environments.isRemoteActive() ? environments.dispatchIde('git', 'fileAtHead', payload || {}) : git.fileAtHead(payload && payload.cwd, payload && payload.path));
+
+  // ---- Interactive Notebooks (.ipynb) ----
+  ipcMain.handle('ide:notebookStatus', (e, payload) => notebookRunner.kernelStatus(payload && payload.notebookPath));
+  ipcMain.handle('ide:notebookExec', (e, payload) => notebookRunner.executeCell(payload || {}));
+  ipcMain.handle('ide:notebookInterrupt', (e, payload) => notebookRunner.interruptKernel(payload && payload.notebookPath, payload && payload.kernel));
+  ipcMain.handle('ide:notebookRestart', (e, payload) => notebookRunner.restartKernel(payload && payload.notebookPath, payload && payload.kernel));
+
+  // ---- Integrated Debugger (Node CDP & Python pdb) ----
+  ipcMain.handle('ide:debugStart', (e, payload) => debuggerMod.startDebug({
+    ...(payload || {}),
+    onEvent: (evt) => sendToSender(e, 'ide:debugEvent', evt),
+  }));
+  ipcMain.handle('ide:debugCommand', (e, payload) => debuggerMod.debugCommand(payload || {}));
+
+  // ---- Next-Edit Prediction (Tab-to-Jump) ----
+  ipcMain.handle('ide:predictNextEdit', async (e, payload) => {
+    try {
+      const { provider, orchestrator } = await resolveAuth(payload);
+      return await aiInline.predictNextEdit({ ...(payload || {}), provider, orchestrator });
+    } catch (err) {
+      return { ok: false, prediction: null, error: humanizeLLMError(err) };
+    }
+  });
 }
 
 function hasActivePtys() {
@@ -218,6 +243,8 @@ function hasActivePtys() {
 function cleanup() {
   try { fsWatcher.unwatchAll(); } catch (_) {}
   try { lspMod.lspStopAll(); } catch (_) {}
+  try { notebookRunner.shutdownAllKernels(); } catch (_) {}
+  try { debuggerMod.stopAllDebuggers(); } catch (_) {}
   for (const [, ac] of inlineEditControllers) {
     try { ac.abort(); } catch (_) {}
   }

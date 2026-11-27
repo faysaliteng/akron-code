@@ -452,6 +452,18 @@ contextBridge.exposeInMainWorld('autobot', {
   ideGitFileAtHead: (payload) => ipcRenderer.invoke('ide:gitFileAtHead', payload),
   ideLoadLayout: (payload) => ipcRenderer.invoke('ide:loadLayout', payload),
   ideSaveLayout: (payload) => ipcRenderer.invoke('ide:saveLayout', payload),
+  ideNotebookStatus: (payload) => ipcRenderer.invoke('ide:notebookStatus', payload),
+  ideNotebookExec: (payload) => ipcRenderer.invoke('ide:notebookExec', payload),
+  ideNotebookInterrupt: (payload) => ipcRenderer.invoke('ide:notebookInterrupt', payload),
+  ideNotebookRestart: (payload) => ipcRenderer.invoke('ide:notebookRestart', payload),
+  ideDebugStart: (payload) => ipcRenderer.invoke('ide:debugStart', payload),
+  ideDebugCommand: (payload) => ipcRenderer.invoke('ide:debugCommand', payload),
+  idePredictNextEdit: (payload) => ipcRenderer.invoke('ide:predictNextEdit', payload),
+  onIdeDebugEvent: (cb) => {
+    const h = (e, payload) => cb(payload);
+    ipcRenderer.on('ide:debugEvent', h);
+    return () => ipcRenderer.removeListener('ide:debugEvent', h);
+  },
 
   // ---- Execution Environments (This Computer / SSH Host / Remote Server) ----
   envGetState: () => ipcRenderer.invoke('autobot:envGetState'),

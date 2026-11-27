@@ -14,7 +14,7 @@ const installer = require('../electron/browser-ext-installer');
 const ROOT = path.resolve(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const RELEASE_DIR = path.join(ROOT, 'release');
-const VER = pkg.version || '1.2.0';
+const VER = pkg.version || '1.3.0';
 
 function run(cmd, args = [], opts = {}) {
   return execFileSync(cmd, args, { stdio: 'inherit', ...opts });

@@ -11,10 +11,10 @@
 
 <p align="center">
   <a href="https://github.com/faysaliteng/akron-code/releases/latest">
-    <img src="https://img.shields.io/badge/Release-v1.2.0-10b981?style=for-the-badge" alt="Release v1.2.0" />
+    <img src="https://img.shields.io/badge/Release-v1.3.0-10b981?style=for-the-badge" alt="Release v1.3.0" />
   </a>
   <a href="./VERIFICATION.md">
-    <img src="https://img.shields.io/badge/Verified-114%2F114%20Test%20Suites%20%C2%B7%2070%2F70%20Evals-059669?style=for-the-badge" alt="114/114 Test Suites · 70/70 Evals" />
+    <img src="https://img.shields.io/badge/Verified-125%2F125%20Test%20Suites%20%C2%B7%2070%2F70%20Evals-059669?style=for-the-badge" alt="125/125 Test Suites · 70/70 Evals" />
   </a>
   <a href="https://github.com/faysaliteng/akron-code/releases/latest">
     <img src="https://img.shields.io/badge/Platforms-macOS%20%7C%20Windows%20%7C%20Linux-111827?style=for-the-badge" alt="Cross-Platform Desktop" />
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/faysaliteng/akron-code/releases/latest"><strong>⬇️ Download v1.2.0</strong></a>
+  <a href="https://github.com/faysaliteng/akron-code/releases/latest"><strong>⬇️ Download v1.3.0</strong></a>
   ·
   <a href="#how-it-works">How It Works</a>
   ·
@@ -49,18 +49,18 @@
 
 ---
 
-## Downloads (Official Releases `v1.2.0`)
+## Downloads (Official Releases `v1.3.0`)
 
 All desktop installers are hardened with **6/6 Electron Fuses** + cryptographic **SHA-256 Brand Seal** integrity verification, paired with `latest*.yml` auto-updater manifests and `SHA256SUMS.txt` on the [**GitHub Releases Page**](https://github.com/faysaliteng/akron-code/releases/latest).
 
 | Platform / Component | Artifacts | Highlights |
 |---|---|---|
-| **macOS (Apple Silicon)** | `AkronCode-1.2.0-arm64.dmg` · `AkronCode-1.2.0-arm64.zip` | Top-level `Akron Code.app` + standalone `Akron Browser Bot/` folder, ad-hoc signed, `RunAsNode=false` Fuse, ASAR integrity verified |
-| **Windows 11 / 10 (x64 & ARM64)** | `AkronCode-1.2.0-win-setup-x64.exe` · `AkronCode-1.2.0-win-setup-arm64.exe` | NSIS Setup (`NSIS_EXIT=0`, Desktop & Start Menu shortcuts), native dark titlebar overlay (`Ctrl+` shortcuts), ConPTY `node-pty`, Toast XML, AUMID |
-| **Windows Portable (x64)** | `AkronCode-1.2.0-win-portable-x64.exe` | Zero-install single portable executable |
-| **Linux (x64)** | `AkronCode-1.2.0-linux-x86_64.AppImage` · `AkronCode-1.2.0-linux-x64.tar.gz` | Single-file `AppImage` + portable `.tar.gz` archive (`npmRebuild: false`, ASAR + Fuses hardened) |
-| **Standalone Akron Browser Bot (`1.6.7`)** | `AkronBrowserBot-1.6.7.crx` · `AkronBrowserBot-1.6.7.zip` | Deterministic RSA-2048 signed CRX3 (`Cr24`) + unpacked MV3 bundle auto-synced to user-accessible OS folder & `:8766` bridge |
-| **Companion Terminal CLI** | `./bin/akron.js` (`npm link` → `akron`) | Interactive REPL, `akron -p` headless execution, `akron review --adversarial`, `akron remote start`, `akron doctor`, `akron eval` |
+| **macOS (Apple Silicon)** | `AkronCode-1.3.0-arm64.dmg` · `AkronCode-1.3.0-arm64.zip` | Top-level `Akron Code.app` + standalone `Akron Browser Bot/` folder, ad-hoc signed, `RunAsNode=false` Fuse, ASAR integrity verified |
+| **Windows 11 / 10 (x64 & ARM64)** | `AkronCode-1.3.0-win-setup-x64.exe` · `AkronCode-1.3.0-win-setup-arm64.exe` | NSIS Setup (`NSIS_EXIT=0`, Desktop & Start Menu shortcuts), native dark titlebar overlay (`Ctrl+` shortcuts), ConPTY `node-pty`, Toast XML, AUMID |
+| **Windows Portable (x64)** | `AkronCode-1.3.0-win-portable-x64.exe` | Zero-install single portable executable |
+| **Linux (x64)** | `AkronCode-1.3.0-linux-x86_64.AppImage` · `AkronCode-1.3.0-linux-x64.tar.gz` | Single-file `AppImage` + portable `.tar.gz` archive (`npmRebuild: false`, ASAR + Fuses hardened) |
+| **Standalone Akron Browser Bot (`1.6.7`)** | `AkronBrowserBot-1.6.7.crx` · `AkronBrowserBot-1.6.7.zip` | Deterministic RSA-2048 signed CRX3 (`Cr24`) + unpacked MV3 bundle auto-synced to user-accessible OS folder & `:8766` seamless handoff bridge |
+| **Companion Terminal CLI & Daemon** | `./bin/akron.js` (`npm link` → `akron`) | Multi-turn `akron` REPL & `akron -p` coding agent (`--continue`/`--yolo`/`--stream-json`), `akron daemon`, `akron review --adversarial`, `akron doctor`, `akron eval` |
 
 Verify downloaded installers against `SHA256SUMS.txt`:
 
@@ -96,8 +96,8 @@ Every major AI company wants you trapped inside its own **Four Walled Gardens**:
 
 ```mermaid
 flowchart TD
-  UI["Akron Code UI (3-Mode Picker · UI Design Studio · Monaco IDE · xterm.js · Markmap)"] --> Preload["Context-Isolated Preload Bridge"]
-  Preload --> Main["Electron Main Process & Agent Harness (v1.2.0)"]
+  UI["Akron Code UI (3-Mode Picker · UI Design Studio · Monaco IDE · Notebooks · Debugger · Markmap)"] --> Preload["Context-Isolated Preload Bridge"]
+  Preload --> Main["Electron Main Process & Agent Harness (v1.3.0)"]
 
   Main --> Vault["1. OAuth 2.1 PKCE Vault & AES-256-GCM SecretStore"]
   Main --> Brain["2. DeepSeek V4.1 Flash Dispatcher (OpenRouter Free / DeepSeek API / FreeLLMAPI)"]
@@ -118,9 +118,9 @@ flowchart TD
 
 ---
 
-### Why Akron Code (`v1.2.0` Head-to-Head Matrix)
+### Why Akron Code (`v1.3.0` Head-to-Head Matrix)
 
-| Capability | **Akron Code v1.2** | **Claude.app** | **ChatGPT / Codex.app** | **Google Antigravity** | **Cursor** |
+| Capability | **Akron Code v1.3** | **Claude.app** | **ChatGPT / Codex.app** | **Google Antigravity** | **Cursor** |
 |---|---|---|---|---|---|
 | Multi-Vendor Subscriptions (`Claude` + `GPT` + `Gemini` + `Grok` + `Ollama`) | **Native OAuth + Auto-Heal** | Anthropic only | OpenAI only | Google / Partner | Proprietary billing |
 | 8-Role Auto-Routing (`planner`, `coder`, `image_gen`, `video_gen`, `audio_speech`, …) | **Yes + 429 Failover** | No | No | Partial | Partial |
@@ -141,8 +141,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  UI["Akron Code Desktop UI (React 18 · Monaco · xterm.js · Markmap · Appearance Studio)"] --> Preload["Context-Isolated Preload Bridge (contextIsolation: true)"]
-  Preload --> Main["Electron Main Process & Agent Harness (v1.2.0)"]
+  UI["Akron Code Desktop UI (React 18 · Monaco · Notebooks · Debugger · Markmap · Appearance Studio)"] --> Preload["Context-Isolated Preload Bridge (contextIsolation: true)"]
+  Preload --> Main["Electron Main Process & Agent Harness (v1.3.0)"]
 
   Main --> Brand["Brand Guard & 6/6 Electron Fuses (SHA-256 Assets + ASAR Integrity)"]
   Main --> Auth["OAuth Auto-Heal & AES-256-GCM Secret Store (Claude · Codex · Gemini · Grok · Keyring)"]
@@ -539,16 +539,18 @@ Full live visual control (**Theme Mode**, **4 Surface Finishes** — `Emerald Ca
   - **Spill-to-Disk (`electron/spill.js`):** Large tool outputs (`>12 KB`) spill to private `0o600` files (`~/.autobot/spills/`) with clean head/tail slices + 7-day auto-pruning.
   - **Progressive Output Masking (`electron/context-pipeline.js`):** Preserves the newest 4 tool turns verbatim while distilling older verbose outputs and respecting a 20,000-token customizations budget.
   - **Doom-Loop Circuit Breaker (`electron/loop-guard.js`):** Escalates at 3/5/8 identical or cyclical retries, enforces 20s FIFO/named-pipe timeouts, caps hook output at 50 KB, and stops MCP stdout flooding.
-- **Elite Code Editing & Intelligence (`electron/apply-patch.js`, `electron/ide/edit-guard.js`, `electron/ide/codebase-index.js`, `electron/codemode.js`):**
-  - Atomic multi-file **Codex V4A `ApplyPatch`** with 4-tier fuzzy matching, **SHA-256 + mtime stale-read guard** + instant `ShadowCheck` syntax/LSP verification, Merkle-tree **SQLite/BM25 `CodebaseSearch`**, and isolated `worker_threads` **`RunToolScript`** batching.
-- **SQLite WAL/FTS5 Store, Auto-Memory, `/learn` & OS Sandbox:**
-  - Pure-WASM **SQLite WAL + FTS5** store (`~/.autobot/akron.db`), deduplicated categorized memory, `/learn` skill extraction, and **OS Sandbox (`electron/os-sandbox.js`)** across macOS Seatbelt, Linux `bwrap`, and Windows PowerShell policies.
+- **Elite Code Editing & Codebase Indexing 2.0 (`electron/apply-patch.js`, `electron/ide/ast-chunker.js`, `electron/ide/embedder.js`, `electron/ide/codebase-index.js`, `electron/codemode.js`):**
+  - Atomic multi-file **Codex V4A `ApplyPatch`** with 4-tier fuzzy matching, **SHA-256 + mtime stale-read guard** + instant `ShadowCheck` syntax/LSP verification, multi-language AST scope chunking (`1 MB` ceiling) + 384-dim/dense **Reciprocal Rank Fusion (`RRF k=60`) `CodebaseSearch`**, and isolated `worker_threads` **`RunToolScript`** batching.
+- **Storage Engine 2.0: Crash-Safe WAL Sidecar, Okapi BM25 & OS Sandbox:**
+  - Pure-WASM **SQLite + `<db>.wal.jsonl` WAL sidecar + Okapi BM25 (`k1=1.5, b=0.75`) + FTS5** store (`~/.autobot/akron.db`), deduplicated categorized memory, `/learn` skill extraction, and **OS Sandbox (`electron/os-sandbox.js`)** across macOS Seatbelt, Linux `bwrap`, and Windows PowerShell policies.
+- **Background Daemon & GitHub Webhook Bot (`electron/daemon.js`, `electron/scheduler-lock.js`, `electron/remote-server.js`):**
+  - Headless background daemon (`akron daemon start|stop|status|install|uninstall`) with exclusive `scheduler.lock.json` coordination and authenticated `POST /webhooks/github` PR/issue reviews running in isolated detached `git worktree` sandboxes.
 - **Universal Media & Pre-Bundled Office Studio (`electron/media-gen.js`, `electron/doc-studio.js`):**
   - Automatic routing for **`GenerateImage`**, **`EditImage`**, **`GenerateVideo`**, **`EditVideo`**, **`ReadDocument`**, and **`GenerateDocument`** supporting PDF, LaTeX, `.docx`, `.xlsx`/`.csv`, `.pptx`, `.epub`, `.sqlite`, and `.zip`/`.tar.gz` completely offline.
 - **Cross-Platform OAuth Auto-Heal & Portable Encrypted Storage:**
   - AES-256-GCM portable secret store (`~/.autobot/secrets.json`), encrypted `oauth-mirror/`, single-flight `refreshFlights`, and 1-click **Auto-Heal PC Accounts** across macOS, Windows, and Linux.
-- **14-Point Hardened Dual `[Agent | IDE]` Workbench:**
-  - Per-file Monaco models (`monaco.Uri.file`), shared split-editor state, persistent non-leaking PTY lifecycle, `>2 MB` file guard, full LSP `didChange`/`didSave`/`didClose`/hover/definition sync, per-hunk `ideGitStagePatch`, LCS inline diffs, drag-to-chat Explorer files, and offline **Markmap** mind maps.
+- **Hardened Dual `[Agent | IDE]` Workbench, `.ipynb` Notebooks, Debugger & Next-Edit Prediction:**
+  - Per-file Monaco models (`monaco.Uri.file`), shared split-editor state, stateful **`.ipynb` Python/JS Notebooks**, live **Node CDP + Python `pdb` Debugger** (gutter breakpoints, Call Stack, Locals, Watches), **Next-Edit Prediction (`Alt+]`)**, persistent non-leaking PTY lifecycle, full LSP sync, per-hunk `ideGitStagePatch`, and offline **Markmap** mind maps.
 
 ---
 
@@ -583,18 +585,21 @@ node scripts/akron-remote-server.js --port 8770 --workspace /path/to/repo
 
 ---
 
-## Companion CLI (`akron`)
+## Companion CLI (`akron`) & Daemon
 
-Akron Code includes a terminal CLI wired at [`bin/akron.js`](./bin/akron.js):
+Akron Code includes a standalone multi-turn coding agent & daemon CLI wired at [`bin/akron.js`](./bin/akron.js):
 
 ```bash
-npm link                                  # exposes global `akron` command
-akron                                     # interactive multi-provider REPL in cwd
-akron -p "Audit auth boundaries" --json   # headless one-shot execution
-akron review --adversarial                # cross-vendor Duet review on current git diff
-akron remote start --port 8770            # launch authenticated remote WebSocket server
-akron doctor --json                       # verify Node, ripgrep, Brand Seal, SQLite & 428 tools
-akron eval all                            # run reproducible 70-case evaluation suite
+npm link                                               # exposes global `akron` command
+akron                                                  # interactive multi-turn REPL with /model /diff /undo
+akron -p "Audit auth boundaries" --yolo --stream-json  # headless multi-turn tool loop + NDJSON stream
+akron -p "Follow up on findings" --continue            # resume persisted SQLite+WAL session
+akron daemon start                                     # run background scheduler & webhook server
+akron daemon install                                   # install launchd / systemd / Windows Task service
+akron review --adversarial                             # cross-vendor Duet review on current git diff
+akron remote start --port 8770                         # launch authenticated remote WebSocket server
+akron doctor --json                                    # verify AST index v2, WAL+BM25 DB, ripgrep & tools
+akron eval all                                         # run reproducible 70-case evaluation suite
 ```
 
 ---

@@ -4,6 +4,8 @@ import { SearchPanel } from './SearchPanel';
 import { GitPanel } from './GitPanel';
 import { AgentChangesPanel } from './AgentChangesPanel';
 import { MonacoPane, extractSymbolsFromText } from './MonacoPane';
+import { NotebookPane } from './NotebookPane';
+import { DebugPanel } from './DebugPanel';
 import { registerLspBridgeProviders } from './monacoSetup';
 import { TerminalPanel } from './TerminalPanel';
 import { ProblemsPanel } from './ProblemsPanel';
@@ -65,6 +67,20 @@ export function IdeWorkbench({
   const [lspMarkers, setLspMarkers] = useState([]);
   const [lspInfo, setLspInfo] = useState({});
   const [outputLogs, setOutputLogs] = useState([]);
+  const [breakpoints, setBreakpoints] = useState([]); // [{ file, line }]
+  const [watchExpressions, setWatchExpressions] = useState([]);
+  const [debugState, setDebugState] = useState({
+    active: false,
+    paused: false,
+    sessionId: null,
+    adapter: null,
+    filePath: '',
+    pausedLine: null,
+    callStack: [],
+    locals: [],
+    watches: [],
+    logs: [],
+  });
 
   const [cursorCtx, setCursorCtx] = useState(null);
   const [ctxFlags, setCtxFlags] = useState({ file: true, selection: true, problems: false });
@@ -258,6 +274,102 @@ export function IdeWorkbench({
       setTabs((prev) => prev.filter((t) => t.path !== filePath));
     }
   }, []);
+
+  useEffect(() => {
+    if (!window.autobot?.onIdeDebugEvent) return undefined;
+    return window.autobot.onIdeDebugEvent((evt) => {
+      if (!evt) return;
+      setDebugState((prev) => {
+        const logs = evt.type === 'output' && evt.text
+          ? [...(prev.logs || []).slice(-180), String(evt.text)]
+          : (prev.logs || []);
+        if (evt.type === 'paused') {
+          return {
+            ...prev,
+            active: true,
+            paused: true,
+            sessionId: evt.sessionId || prev.sessionId,
+            adapter: evt.language || evt.adapter || prev.adapter,
+            filePath: evt.file || evt.filePath || prev.filePath,
+            pausedLine: evt.line || null,
+            callStack: evt.frames || evt.callStack || [],
+            locals: evt.locals || [],
+            watches: evt.watches || [],
+            logs,
+          };
+        }
+        if (evt.type === 'continued' || evt.type === 'resumed') {
+          return { ...prev, paused: false, pausedLine: null, logs };
+        }
+        if (evt.type === 'stopped' || evt.type === 'terminated') {
+          return { ...prev, active: false, paused: false, sessionId: null, pausedLine: null, logs };
+        }
+        return { ...prev, logs };
+      });
+      const pausedFile = evt.file || evt.filePath;
+      if (evt.type === 'paused' && pausedFile && evt.line) {
+        openFile(pausedFile, evt.line, 1);
+      }
+    });
+  }, [openFile]);
+
+  const toggleBreakpoint = useCallback((file, line) => {
+    if (!file || !line) return;
+    setBreakpoints((prev) => {
+      const exists = prev.some((bp) => bp.file === file && bp.line === line);
+      const next = exists ? prev.filter((bp) => !(bp.file === file && bp.line === line)) : [...prev, { file, line }];
+      if (debugState.active && debugState.sessionId && window.autobot?.ideDebugCommand) {
+        window.autobot.ideDebugCommand({
+          sessionId: debugState.sessionId,
+          action: 'setBreakpoints',
+          breakpoints: next,
+        }).catch(() => {});
+      }
+      return next;
+    });
+  }, [debugState.active, debugState.sessionId]);
+
+  const startDebugSession = useCallback(async (filePath, argsStr = '') => {
+    if (!filePath || !window.autobot?.ideDebugStart) return;
+    setBottomTab('debug');
+    const args = String(argsStr || '').trim() ? String(argsStr).trim().split(/\s+/) : [];
+    const res = await window.autobot.ideDebugStart({
+      cwd,
+      filePath,
+      args,
+      breakpoints,
+      watchExpressions,
+    });
+    if (!res || !res.ok) {
+      setError && setError('❌ ' + (res?.error || 'Could not start debugger'));
+      return;
+    }
+    setDebugState({
+      active: true,
+      paused: false,
+      sessionId: res.sessionId,
+      adapter: res.adapter,
+      filePath,
+      pausedLine: null,
+      callStack: [],
+      locals: [],
+      watches: [],
+      logs: [`Started ${res.adapter} debugger for ${relPathOf(cwd, filePath)}`],
+    });
+  }, [cwd, breakpoints, watchExpressions, setError]);
+
+  const runDebugCommand = useCallback(async (action) => {
+    if (!debugState.sessionId || !window.autobot?.ideDebugCommand) return;
+    await window.autobot.ideDebugCommand({
+      sessionId: debugState.sessionId,
+      action,
+      breakpoints,
+      watchExpressions,
+    });
+    if (action === 'stop') {
+      setDebugState((prev) => ({ ...prev, active: false, paused: false, sessionId: null, pausedLine: null }));
+    }
+  }, [debugState.sessionId, breakpoints, watchExpressions]);
 
   // Auto-reload clean tabs when disk changes (e.g. Agent/Swarm wrote files)
   useEffect(() => {
@@ -528,6 +640,19 @@ export function IdeWorkbench({
           >
             <Icon name="Grid" size={17} />
           </button>
+          <button
+            type="button"
+            className={'ide-act-btn' + (bottomTab === 'debug' ? ' on' : '')}
+            title="Run & Debug"
+            data-testid="ide-debug-btn"
+            onClick={() => setBottomTab((b) => (b === 'debug' ? null : 'debug'))}
+          >
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 7V5a4 4 0 0 1 8 0v2" />
+              <rect x="6" y="7" width="12" height="13" rx="6" />
+              <path d="M6 12H2M22 12h-4M6 17l-3 2M18 17l3 2M6 8 3 6M18 8l3-2M12 10v8" />
+            </svg>
+          </button>
 
           <div className="ide-act-spacer" />
 
@@ -682,6 +807,27 @@ export function IdeWorkbench({
               pendingReveal={pendingReveal}
               viewStates={viewStates}
               onViewStateChange={handleViewStateChange}
+              breakpoints={breakpoints}
+              onToggleBreakpoint={toggleBreakpoint}
+              pausedDebugLine={
+                debugState.active && debugState.paused && debugState.filePath === activeTabPath
+                  ? debugState.pausedLine
+                  : null
+              }
+              renderCustomTabBody={(tab) => (
+                tab && tab.path && tab.path.toLowerCase().endsWith('.ipynb') && !diffState
+                  ? (
+                    <NotebookPane
+                      tab={tab}
+                      cwd={cwd}
+                      onChangeContent={changeTabContent}
+                      onSaveTab={saveTab}
+                      onNotify={(m) => setNotice && setNotice(m)}
+                      Icon={Icon}
+                    />
+                  )
+                  : null
+              )}
               provider={provider}
               orchestrator={orchestrator}
               Icon={Icon}
@@ -701,6 +847,9 @@ export function IdeWorkbench({
                 </button>
                 <button type="button" className={bottomTab === 'output' ? 'on' : ''} onClick={() => setBottomTab('output')}>
                   Output
+                </button>
+                <button type="button" className={bottomTab === 'debug' ? 'on' : ''} onClick={() => setBottomTab('debug')}>
+                  Debug {debugState.active && <span className="ide-prob-pill">{debugState.paused ? 'Paused' : 'Run'}</span>}
                 </button>
               </div>
               <button type="button" className="ide-icon-btn" title={`Close Panel (${sc.toggleTerminal})`} onClick={() => setBottomTab(null)}>
@@ -740,6 +889,21 @@ export function IdeWorkbench({
                   </div>
                   <pre>{outputLogs.join('\n') || 'Workspace watcher and Monaco workers ready.'}</pre>
                 </div>
+              )}
+              {bottomTab === 'debug' && (
+                <DebugPanel
+                  cwd={cwd}
+                  activeTab={activeTab}
+                  breakpoints={breakpoints}
+                  debugState={debugState}
+                  watchExpressions={watchExpressions}
+                  onStartDebug={startDebugSession}
+                  onCommand={runDebugCommand}
+                  onJumpToLocation={(fp, ln) => openFile(fp, ln, 1)}
+                  onToggleBreakpoint={toggleBreakpoint}
+                  onAddWatch={(expr) => setWatchExpressions((prev) => (prev.includes(expr) ? prev : [...prev, expr]))}
+                  onRemoveWatch={(expr) => setWatchExpressions((prev) => prev.filter((x) => x !== expr))}
+                />
               )}
             </div>
           </div>

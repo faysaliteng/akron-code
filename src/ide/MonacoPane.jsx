@@ -78,6 +78,10 @@ export function MonacoPane({
   pendingReveal = null, // { path, line, col }
   viewStates = {},
   onViewStateChange,
+  breakpoints = [],
+  onToggleBreakpoint,
+  pausedDebugLine = null,
+  renderCustomTabBody = null,
   provider,
   orchestrator,
   Icon,
@@ -88,9 +92,13 @@ export function MonacoPane({
   const editorRef = useRef(null);
   const splitEditorRef = useRef(null);
   const diffEditorRef = useRef(null);
+  const debugDecosRef = useRef([]);
+  const nextEditTimerRef = useRef(null);
+  const baselineContentRef = useRef({});
 
   const [minimap, setMinimap] = useState(false);
   const [inlineEdit, setInlineEdit] = useState(null);
+  const [nextEdit, setNextEdit] = useState(null);
   const [activeSymbol, setActiveSymbol] = useState('');
   const [lineChanges, setLineChanges] = useState([]);
   const [activeHunkIdx, setActiveHunkIdx] = useState(0);
@@ -99,6 +107,28 @@ export function MonacoPane({
   const activeTab = tabs.find((t) => t.path === activeTabPath) || null;
   const splitTab = splitTabPath ? tabs.find((t) => t.path === splitTabPath) : null;
   const hasActiveTab = Boolean(activeTab);
+  const customBody = !diffMode && activeTab && renderCustomTabBody ? renderCustomTabBody(activeTab) : null;
+  const hasMonacoHost = Boolean(activeTab && !customBody);
+
+  const applyNextEdit = useCallback(() => {
+    const ed = editorRef.current;
+    const pred = nextEdit;
+    if (!ed || !pred || !pred.line) return;
+    const model = ed.getModel();
+    if (!model) return;
+    const lineNum = Math.max(1, Math.min(model.getLineCount(), Number(pred.line)));
+    const maxCol = model.getLineMaxColumn(lineNum);
+    if (typeof pred.replacementLineText === 'string' && pred.replacementLineText.length > 0) {
+      ed.executeEdits('akron-next-edit', [{
+        range: new monaco.Range(lineNum, 1, lineNum, maxCol),
+        text: pred.replacementLineText,
+      }]);
+    }
+    ed.revealLineInCenter(lineNum);
+    ed.setPosition({ lineNumber: lineNum, column: pred.column || 1 });
+    ed.focus();
+    setNextEdit(null);
+  }, [nextEdit]);
 
   const openCmdK = useCallback((ed, initialInstruction = '') => {
     const curTab = latestRef.current.activeTab;
@@ -137,7 +167,11 @@ export function MonacoPane({
     onOpenQuickOpen,
     onOpenSymbols,
     onViewStateChange,
+    onToggleBreakpoint,
+    applyNextEdit,
     openCmdK,
+    provider,
+    orchestrator,
   };
 
   useEffect(() => {
@@ -181,7 +215,7 @@ export function MonacoPane({
 
   // Primary Single Editor Lifecycle
   useEffect(() => {
-    if (diffMode || !hasActiveTab) {
+    if (diffMode || !hasMonacoHost) {
       if (editorRef.current) { try { editorRef.current.dispose(); } catch (_) {} editorRef.current = null; }
       return undefined;
     }
@@ -192,12 +226,16 @@ export function MonacoPane({
     const monoFont = resolveMonoFontStack(typo);
     const codeFontSize = typo.monoSize || 13.5;
     const initTab = latestRef.current.activeTab;
+    if (initTab && baselineContentRef.current[initTab.path] === undefined) {
+      baselineContentRef.current[initTab.path] = initTab.savedContent ?? initTab.content ?? '';
+    }
     const initModel = getOrCreateFileModel(initTab);
     const ed = monaco.editor.create(container, {
       model: initModel || undefined,
       theme: theme === 'light' ? 'akron-light' : 'akron-dark',
       automaticLayout: true,
       minimap: { enabled: minimap },
+      glyphMargin: true,
       fontSize: codeFontSize,
       lineHeight: Math.round(codeFontSize * 1.55),
       fontFamily: monoFont,
@@ -215,21 +253,54 @@ export function MonacoPane({
         const r = latestRef.current;
         const m = targetEd.getModel();
         const p = (m && m.uri && (m.uri.fsPath || m.uri.path)) || r.activeTabPath;
+        if (p && m) baselineContentRef.current[p] = m.getValue();
         r.onSaveTab && p && r.onSaveTab(p);
       });
       targetEd.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, () => latestRef.current.openCmdK(targetEd));
       targetEd.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, () => latestRef.current.onOpenQuickOpen && latestRef.current.onOpenQuickOpen());
       targetEd.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyO, () => latestRef.current.onOpenSymbols && latestRef.current.onOpenSymbols(extractSymbolsFromModel(targetEd.getModel())));
+      targetEd.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.BracketRight, () => latestRef.current.applyNextEdit && latestRef.current.applyNextEdit());
     };
     bindEditorKeys(ed);
+
+    const dMouse = ed.onMouseDown((ev) => {
+      const r = latestRef.current;
+      if (ev.target && ev.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN && ev.target.position?.lineNumber) {
+        r.onToggleBreakpoint && r.activeTabPath && r.onToggleBreakpoint(r.activeTabPath, ev.target.position.lineNumber);
+      }
+    });
 
     const dContent = ed.onDidChangeModelContent(() => {
       const r = latestRef.current;
       const m = ed.getModel();
       const targetPath = (m && m.uri && (r.tabs || []).find((t) => monaco.Uri.file(t.path).toString() === m.uri.toString())?.path) || r.activeTabPath;
+      const newVal = ed.getValue();
       if (targetPath && r.onChangeTabContent) {
-        r.onChangeTabContent(targetPath, ed.getValue());
+        r.onChangeTabContent(targetPath, newVal);
       }
+      if (nextEditTimerRef.current) clearTimeout(nextEditTimerRef.current);
+      nextEditTimerRef.current = setTimeout(async () => {
+        if (!targetPath || !window.autobot?.idePredictNextEdit) return;
+        const oldVal = baselineContentRef.current[targetPath];
+        if (!oldVal || oldVal === newVal) { setNextEdit(null); return; }
+        const pos = ed.getPosition() || { lineNumber: 1 };
+        try {
+          const predRes = await window.autobot.idePredictNextEdit({
+            filePath: targetPath,
+            language: m ? m.getLanguageId() : 'plaintext',
+            oldContent: oldVal,
+            newContent: newVal,
+            editLine: pos.lineNumber,
+            provider: r.provider,
+            orchestrator: r.orchestrator,
+          });
+          if (predRes && predRes.ok && predRes.prediction && predRes.prediction.line) {
+            setNextEdit({ ...predRes.prediction, path: targetPath });
+          } else {
+            setNextEdit(null);
+          }
+        } catch (_) {}
+      }, 450);
     });
     const dCursor = ed.onDidChangeCursorSelection(() => {
       const r = latestRef.current;
@@ -295,14 +366,43 @@ export function MonacoPane({
     });
 
     return () => {
+      if (nextEditTimerRef.current) clearTimeout(nextEditTimerRef.current);
+      try { dMouse.dispose(); } catch (_) {}
       try { dContent.dispose(); } catch (_) {}
       try { dCursor.dispose(); } catch (_) {}
       try { dScroll.dispose(); } catch (_) {}
       try { dMarkers.dispose(); } catch (_) {}
       try { ed.dispose(); } catch (_) {}
+      debugDecosRef.current = [];
       editorRef.current = null;
     };
-  }, [diffMode, hasActiveTab]);
+  }, [diffMode, hasMonacoHost]);
+
+  // Breakpoint & Debug paused line decorations
+  useEffect(() => {
+    const ed = editorRef.current;
+    if (!ed || diffMode || customBody) return;
+    const decos = [];
+    if (activeTabPath && Array.isArray(breakpoints)) {
+      for (const bp of breakpoints) {
+        if (bp.file === activeTabPath && bp.line > 0) {
+          decos.push({
+            range: new monaco.Range(bp.line, 1, bp.line, 1),
+            options: { isWholeLine: false, glyphMarginClassName: 'ide-bp-glyph', glyphMarginHoverMessage: { value: 'Breakpoint' } },
+          });
+        }
+      }
+    }
+    if (pausedDebugLine && pausedDebugLine > 0) {
+      decos.push({
+        range: new monaco.Range(pausedDebugLine, 1, pausedDebugLine, 1),
+        options: { isWholeLine: true, className: 'ide-debug-paused-line' },
+      });
+    }
+    try {
+      debugDecosRef.current = ed.deltaDecorations(debugDecosRef.current || [], decos);
+    } catch (_) {}
+  }, [breakpoints, pausedDebugLine, activeTabPath, diffMode, customBody]);
 
   // Switch attached per-file Monaco model & restore cursor/scroll ONLY on tab switch
   useEffect(() => {
@@ -697,10 +797,19 @@ export function MonacoPane({
           </div>
         ) : diffMode ? (
           <div ref={diffContainerRef} className="ide-monaco-host" />
+        ) : customBody ? (
+          customBody
         ) : (
           <div className={'ide-monaco-split' + (splitTab ? ' dual' : '')}>
             <div ref={editorContainerRef} className="ide-monaco-host" />
             {splitTab && <div ref={splitContainerRef} className="ide-monaco-host ide-split-second" />}
+          </div>
+        )}
+        {nextEdit && !diffMode && !customBody && nextEdit.path === activeTabPath && (
+          <div className="ide-next-edit-pill" data-testid="ide-next-edit-pill">
+            <span>Next Edit @ L{nextEdit.line}: <code>{nextEdit.reason || 'Update reference'}</code></span>
+            <button type="button" className="ide-primary-btn" onClick={applyNextEdit}>Jump &amp; Apply (Alt+])</button>
+            <button type="button" className="ide-mini-action" onClick={() => setNextEdit(null)}>×</button>
           </div>
         )}
       </div>

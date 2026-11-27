@@ -576,6 +576,7 @@ function start(opts = {}) {
       if (req.method === 'GET' && (pathname === '/v1/health' || pathname === '/health')) {
         return sendJson(res, 200, {
           ok: true,
+          mode: 'desktop-primary',
           port: state.port,
           extensionConnected: !!(state.activeSocket && state.activeSocket.readyState === 1),
           connectedClients: state.clients.size,
@@ -677,6 +678,30 @@ function start(opts = {}) {
         try {
           const r = await fetch(`http://127.0.0.1:${listenPort}/v1/health`, { signal: AbortSignal.timeout(1200) });
           if (r && r.ok) {
+            const h = await r.json().catch(() => ({}));
+            if (h && h.mode === 'mcp-standalone') {
+              try {
+                await fetch(`http://127.0.0.1:${listenPort}/v1/ext/yield`, {
+                  method: 'POST',
+                  signal: AbortSignal.timeout(1500),
+                });
+                await new Promise((rWait) => setTimeout(rWait, 180));
+                if (!server.__yieldRetried) {
+                  server.__yieldRetried = true;
+                  server.removeAllListeners('listening');
+                  server.listen(listenPort, '127.0.0.1', () => {
+                    const addr = server.address();
+                    state.server = server;
+                    state.wss = wss;
+                    state.port = (addr && addr.port) || listenPort;
+                    state.running = true;
+                    state.shared = false;
+                    resolve({ ok: true, running: true, shared: false, reclaimedFromStandalone: true, port: state.port });
+                  });
+                  return;
+                }
+              } catch (_) {}
+            }
             state.shared = true;
             state.running = true;
             state.port = listenPort;

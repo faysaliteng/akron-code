@@ -1,3 +1,36 @@
+# Akron Code (`v1.3.0`) — Production Release Verification (2026-11-27)
+
+**Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.3.0`)
+
+## v1.3.0 Production Gate Summary
+
+| Gate | Command / Platform | Result |
+|---|---|---|
+| Static Syntax / JSX Check | `npm run typecheck` | ✅ `TYPECHECK_OK: verified 357 JS/JSX/MJS/CJS files with 0 syntax/transform errors.` |
+| Full Unit & Integration Suite | `npm test` (`test/*.test.js`) | ✅ **125 / 125 test cases/suites passed (0 failures)** |
+| Deterministic Benchmark Evals | `npm run eval:all` | ✅ `EVAL_ALL: 70/70 passed (100%)` |
+| Cross-Platform Audit | `node test/cross-platform-audit.test.js` | ✅ `CROSS_PLATFORM_AUDIT_ALL_PASS` (`0` `.map` files, `0` hardcoded user paths, `0` leaked secrets) |
+| Cryptographic Brand Seal | `npm run brand:check && node test/brand-integrity.test.js` | ✅ `BRAND_SEAL_OK 12`, `BRAND_INTEGRITY_ALL_PASS` |
+| Line Budget Check | `wc -l electron/main.js src/App.jsx` | ✅ `1515` (`< 1600`) and `3424` (`< 3500`) |
+| v1.3.0 Capabilities E2E (`Phases 1–6`) | `test/{codebase-index-v2,session-db-wal,cli-agent-loop,ide-notebook-debug,daemon-webhook,extbridge-handoff}.test.js` + `node bin/akron.js -p ...` | ✅ Multi-language AST + RRF `CodebaseSearch`, WAL sidecar crash replay + Okapi BM25, multi-turn `akron` CLI loop (`gemma4:latest` live + mock tool tests), stateful `.ipynb` Python/JS kernels & Node CDP debugger, `scheduler-lock` + daemon + HMAC-SHA256 `/webhooks/github` worktrees, and `:8766` `mcp-standalone` → `desktop-primary` handoff |
+| Packaged macOS ARM64 Build + Fuses + Codesign + Top-Level Extension | `npm run dist:mac && ./verify-release.sh` | ✅ `VERIFY_RELEASE_DONE` (all 6/6 Electron Fuses, `codesign OK`, top-level `Akron Browser Bot/`, `sql-wasm.wasm` + `icon.png`/`icon.ico` unpacked, `0` `.map` files) |
+| Clean Cold Boot (`/Applications/Akron Code.app`) + Single Spotlight Entry | `AKRON_COLD_BOOT_CHECK=1 ...` & `mdfind` | ✅ `COLD_BOOT_OK {"ok":true,"brandOk":true,"domOk":true,"ipcOk":true,"checkedFiles":15,"consoleErrorCount":0}` & single `/Applications/Akron Code.app` Spotlight entry |
+| Windows x64/ARM64 & Linux x64 Packaging + Standalone CRX3 | `electron-builder --win nsis --x64 --arm64`, `--win portable --x64`, `npm run dist:linux`, `buildCrx3Package` | ✅ Emitted all Windows `.exe`, Linux `.AppImage`/`.tar.gz`, standalone `AkronBrowserBot-1.6.7.{crx,zip}`, `latest*.yml` manifests, and verified `shasum -a 256 -c SHA256SUMS.txt` |
+
+### Verified Release Artifact Checksums (`v1.3.0` — `release/SHA256SUMS.txt`)
+
+- `AkronCode-1.3.0-arm64.dmg`: `d16f98ba1b7f32d0d768c1f751a12435d1489ae1f7e116903e570dbe6f5624bc`
+- `AkronCode-1.3.0-arm64.zip`: `f0ea3e7e0b705da05dfe8ab112dfba50adc385867f565197af546fafa53521d4`
+- `AkronCode-1.3.0-win-setup-x64.exe`: `170d64383a4dd858b4903e7f093e83c228b0867a3edec610bfafce0734dd8b86`
+- `AkronCode-1.3.0-win-setup-arm64.exe`: `0bd0baff0f90c3ae8d391f8ccad65646486b39a9351f007915a9a80332905a55`
+- `AkronCode-1.3.0-win-portable-x64.exe`: `4bab8ed9004cbb66082fc1acffafd1ee0f1edf84cafbddd93190b66fd205813c`
+- `AkronCode-1.3.0-linux-x86_64.AppImage`: `55811f386d56ffed6e1b67d01a4a48d3472856318b20c6826f20422187c68f17`
+- `AkronCode-1.3.0-linux-x64.tar.gz`: `8d7f8d0ddba06d2c3681bc7e58fbe69a892c2c3d1a87f1e064ec92e194f595ac`
+- `AkronBrowserBot-1.6.7.crx`: `a9275e0f9449990115fbb8589da1062f0c8abf308f2a94cbac4d2782c2fa343c`
+- `AkronBrowserBot-1.6.7.zip`: `ba1e136b8cceb10ea8657f1a9d065d001e8006dbe1c7fe27929b18ec0c918f3e`
+
+---
+
 # Akron Code (`v1.2.0`) — Production Release Verification (2026-11-27)
 
 **Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.2.0`)

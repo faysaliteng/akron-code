@@ -16,6 +16,7 @@ const search = require('./ide/search');
 const git = require('./git');
 const ptyMod = require('./ide/pty');
 const tools = require('./tools');
+const { execFileSync } = require('child_process');
 
 const MAX_BODY = 16 * 1024 * 1024;
 
@@ -67,7 +68,7 @@ function sendJson(res, status, obj) {
   res.end(body);
 }
 
-async function readJsonBody(req) {
+async function readRawBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
@@ -80,13 +81,86 @@ async function readJsonBody(req) {
       }
       chunks.push(c);
     });
-    req.on('end', () => {
-      const raw = Buffer.concat(chunks).toString('utf8').trim();
-      if (!raw) return resolve({});
-      try { resolve(JSON.parse(raw)); } catch (e) { reject(new Error('Invalid JSON body')); }
-    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+async function readJsonBody(req) {
+  const buf = await readRawBody(req);
+  const raw = buf.toString('utf8').trim();
+  if (!raw) return {};
+  try { return JSON.parse(raw); } catch (_) { throw new Error('Invalid JSON body'); }
+}
+
+function verifyGitHubSignature(rawBuf, signatureHeader, secret) {
+  if (!secret) return false;
+  const sig = String(signatureHeader || '').trim();
+  if (!sig.startsWith('sha256=')) return false;
+  const expectedHex = crypto.createHmac('sha256', String(secret)).update(rawBuf).digest('hex');
+  const expected = Buffer.from(`sha256=${expectedHex}`, 'utf8');
+  const supplied = Buffer.from(sig, 'utf8');
+  if (expected.length !== supplied.length) return false;
+  return crypto.timingSafeEqual(expected, supplied);
+}
+
+async function runIsolatedWebhookReview({ payload, event, rootDir, githubToken, onWebhookReview, onGitHubComment }) {
+  const pr = payload.pull_request || payload.issue || null;
+  const sha = payload.pull_request?.head?.sha || payload.after || 'HEAD';
+  const commentsUrl = payload.pull_request?.comments_url || payload.issue?.comments_url || '';
+  const hasGit = fs.existsSync(path.join(rootDir, '.git'));
+  let workDir = rootDir;
+  let worktreeCreated = false;
+  let tmpWt = '';
+  let diffSummary = '';
+  try {
+    if (hasGit) {
+      tmpWt = fs.mkdtempSync(path.join(os.tmpdir(), 'akron-webhook-wt-'));
+      fs.rmSync(tmpWt, { recursive: true, force: true });
+      let ref = 'HEAD';
+      try {
+        execFileSync('git', ['-C', rootDir, 'rev-parse', '--verify', `${sha}^{commit}`], { stdio: 'ignore' });
+        ref = sha;
+      } catch (_) {}
+      execFileSync('git', ['-C', rootDir, 'worktree', 'add', '--detach', tmpWt, ref], { stdio: 'ignore' });
+      workDir = tmpWt;
+      worktreeCreated = true;
+      try {
+        diffSummary = execFileSync('git', ['-C', workDir, 'show', '--stat', '--oneline', '-1'], { encoding: 'utf8' });
+      } catch (_) {}
+    }
+    const review = typeof onWebhookReview === 'function'
+      ? await onWebhookReview({ event, payload, pr, cwd: workDir, rootDir, diffSummary })
+      : { ok: true, summary: `Akron Code verified ${event}${pr?.number ? ` #${pr.number}` : ''} in isolated worktree.` };
+    const bodyText = String(review?.summary || review?.text || 'Akron Code review complete.');
+    if (commentsUrl && typeof onGitHubComment === 'function') {
+      await onGitHubComment({ commentsUrl, body: bodyText, event, pr });
+    } else if (commentsUrl && githubToken && /^https:\/\//i.test(commentsUrl)) {
+      await fetch(commentsUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          Accept: 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'akron-code-webhook-bot',
+        },
+        body: JSON.stringify({ body: bodyText }),
+      }).catch(() => {});
+    }
+    return {
+      ok: true,
+      event,
+      worktreeIsolated: worktreeCreated,
+      workDir,
+      summary: bodyText,
+      commentPosted: Boolean(commentsUrl && (typeof onGitHubComment === 'function' || githubToken)),
+    };
+  } finally {
+    if (worktreeCreated && tmpWt) {
+      try { execFileSync('git', ['-C', rootDir, 'worktree', 'remove', '--force', tmpWt], { stdio: 'ignore' }); } catch (_) {}
+      try { fs.rmSync(tmpWt, { recursive: true, force: true }); } catch (_) {}
+    }
+  }
 }
 
 function listCandidateWorkspaces(rootDir) {
@@ -104,19 +178,63 @@ function listCandidateWorkspaces(rootDir) {
   return out;
 }
 
-function createRemoteServer({ port = 0, host = '127.0.0.1', token, workspaceRoot, dataDir = defaultDataDir() } = {}) {
+function createRemoteServer({
+  port = 0,
+  host = '127.0.0.1',
+  token,
+  workspaceRoot,
+  dataDir = defaultDataDir(),
+  webhookSecret = process.env.AKRON_GITHUB_WEBHOOK_SECRET || '',
+  githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '',
+  onWebhookReview = null,
+  onGitHubComment = null,
+} = {}) {
   const activeToken = String(token || '').trim() || crypto.randomBytes(24).toString('hex');
+  const activeWebhookSecret = String(webhookSecret || '').trim();
   const rootDir = path.resolve(workspaceRoot || os.homedir());
 
   const server = http.createServer(async (req, res) => {
     if (isKillSwitchActive(dataDir)) {
       return sendJson(res, 503, { ok: false, error: 'Remote kill switch active (remote.OFF)' });
     }
+    const u = new URL(req.url || '/', 'http://127.0.0.1');
+    const p = u.pathname;
+
+    if (req.method === 'POST' && p === '/webhooks/github') {
+      try {
+        if (!activeWebhookSecret) {
+          return sendJson(res, 403, { ok: false, error: 'GitHub webhook secret not configured' });
+        }
+        const rawBuf = await readRawBody(req);
+        if (!verifyGitHubSignature(rawBuf, req.headers['x-hub-signature-256'], activeWebhookSecret)) {
+          return sendJson(res, 401, { ok: false, error: 'Invalid GitHub webhook signature' });
+        }
+        const payload = JSON.parse(rawBuf.toString('utf8') || '{}');
+        const event = String(req.headers['x-github-event'] || 'ping');
+        const action = String(payload.action || '');
+        const commentBody = String(payload.comment?.body || '');
+        const prTrigger = event === 'pull_request' && ['opened', 'synchronize', 'reopened'].includes(action);
+        const commentTrigger = event === 'issue_comment' && action === 'created' && /(@akron\b|\/review\b)/i.test(commentBody);
+        if (!prTrigger && !commentTrigger) {
+          return sendJson(res, 200, { ok: true, ignored: true, event, action });
+        }
+        const result = await runIsolatedWebhookReview({
+          payload,
+          event,
+          rootDir,
+          githubToken,
+          onWebhookReview,
+          onGitHubComment,
+        });
+        return sendJson(res, 200, result);
+      } catch (err) {
+        return sendJson(res, 500, { ok: false, error: err && err.message ? err.message : String(err) });
+      }
+    }
+
     if (!timingSafeBearer(req.headers.authorization, activeToken)) {
       return sendJson(res, 401, { ok: false, error: 'Unauthorized' });
     }
-    const u = new URL(req.url || '/', 'http://127.0.0.1');
-    const p = u.pathname;
 
     try {
       if (req.method === 'GET' && p === '/v1/env/ping') {
@@ -126,7 +244,7 @@ function createRemoteServer({ port = 0, host = '127.0.0.1', token, workspaceRoot
           platform: process.platform,
           arch: process.arch,
           cwd: rootDir,
-          version: '1.0.0',
+          version: (() => { try { return require('../package.json').version || '1.3.0'; } catch (_) { return '1.3.0'; } })(),
         });
       }
 
@@ -335,6 +453,8 @@ module.exports = {
   createRemoteServer,
   createOutboundRelay,
   timingSafeBearer,
+  verifyGitHubSignature,
+  runIsolatedWebhookReview,
   killSwitchPath,
   isKillSwitchActive,
   setKillSwitch,

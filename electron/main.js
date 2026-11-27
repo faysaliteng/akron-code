@@ -37,6 +37,7 @@ const browser = require('./browser');
 const git = require('./git');
 const pluginsDir = require('./plugins');
 const scheduler = require('./scheduler');
+const schedulerLock = require('./scheduler-lock');
 const providerStatus = require('./providerstatus');
 const providerOauth = require('./provider-oauth');
 const { normalizeReconnectCode, isRetryableLine } = require('./reconnect-code');
@@ -1427,9 +1428,17 @@ app.whenReady().then(() => {
   createWindow();
   // Start the scheduled-task ticker (fires tasks due on their cadence and
   // notifies every window so the Scheduled panel can refresh).
+  const userDataDir = app.getPath('userData');
+  let schedHbTimer = null;
   try {
+    schedulerLock.acquireSchedulerLease({ dataDir: userDataDir, owner: 'desktop', pid: process.pid });
+    schedHbTimer = setInterval(() => {
+      try { schedulerLock.refreshSchedulerLease({ dataDir: userDataDir, owner: 'desktop', pid: process.pid }); } catch (_) {}
+    }, 10_000);
+    if (schedHbTimer.unref) schedHbTimer.unref();
     scheduler.start(runScheduledPrompt, (evt) => broadcast({ type: 'scheduled-task', ...evt }), {
       resolveFastProvider: runtimesCtrl ? runtimesCtrl.resolveFastProviderForGate : undefined,
+      shouldSkipTick: () => !schedulerLock.canOwnerRunScheduler({ dataDir: userDataDir, owner: 'desktop', pid: process.pid }),
     });
   } catch (e) {
     console.error('scheduler start failed:', e.message);
@@ -1494,6 +1503,7 @@ app.on('will-quit', () => {
   try { ideIpc.cleanup(); } catch (_) {}
   try { environments.toggleHostServer(false).catch(() => {}); } catch (_) {}
   try { scheduler.stop(); } catch (_) {}
+  try { schedulerLock.releaseSchedulerLease({ dataDir: app.getPath('userData'), owner: 'desktop', pid: process.pid }); } catch (_) {}
   try { extHost.stopBridge(); } catch (_) {}
   try { require('./extbridge').stop(); } catch (_) {}
   try { runtimesCtrl.stopFreeLLM(); } catch (_) {}

@@ -2,6 +2,16 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.3.0] - 2026-11-27
+
+### Added
+- **Codebase Indexing 2.0 (`electron/ide/ast-chunker.js`, `electron/ide/embedder.js`, `electron/ide/codebase-index.js`)**: Multi-language structural AST scope chunker across JS/JSX/TS/TSX, Python, Go, Rust, C/C++, Java, Kotlin, Ruby, and Swift with comment/string masking and `1 MB` file ceiling, 384-dim signed FNV-1a subword/trigram embeddings plus optional dense embeddings (`Ollama`/`OpenAI`/`OpenRouter`/`Gemini`) cached by `(chunk_sha256, model)`, and Reciprocal Rank Fusion (`RRF k=60`).
+- **Storage Engine 2.0: Crash-Safe WAL Sidecar & Okapi BM25 (`electron/session-db.js`)**: `O(1)` append-only `<dbPath>.wal.jsonl` sidecar with startup crash replay (ignoring partial/corrupt tail frames), threshold/idle compaction, `tf`/`doc_len` Okapi BM25 (`k1=1.5, b=0.75`) search ranking, `pinConversation` / `archiveConversation`, and dynamic `node:sqlite` integrity verifier.
+- **Standalone Multi-Turn Terminal Coding Agent CLI (`bin/akron.js`, `electron/cli/index.js`, `electron/provider-hydrate.js`)**: Shared pure-Node provider/OAuth/FreeLLMAPI/Ollama hydration powering interactive multi-turn REPL and headless `akron -p` loops with `llm.runAgent`, `--model`, `--mode`, `--max-turns`, `--permission-mode <auto|ask|plan>`, `--yolo`, `--continue`/`--resume`, `--json`/`--stream-json`, and slash commands (`/help`, `/model`, `/status`, `/diff`, `/undo`, `/clear`, `/review`, `/doctor`).
+- **IDE Interactive Notebooks, Integrated Debugger & Next-Edit Prediction (`src/ide/NotebookPane.jsx`, `src/ide/DebugPanel.jsx`, `electron/ide/{notebook-runner,debugger,ai-inline}.js`)**: Stateful Python 3 + Node VM `.ipynb` kernels (stdout/stderr + inline `matplotlib` PNG rendering, interrupt/restart), live Node CDP + Python `pdb` debugging (gutter breakpoints, call stack, locals, watch expressions), and `predictNextEdit` call-site detection with `Alt+]` Jump & Apply.
+- **Background Daemon & GitHub Webhook Review Bot (`electron/daemon.js`, `electron/scheduler-lock.js`, `electron/remote-server.js`)**: `akron daemon <start|stop|status|install|uninstall>` across `launchd` (macOS), `systemd` user units (Linux), and Windows Task Scheduler scripts, `scheduler.lock.json` exclusive lease preventing Desktop/Daemon duplicate execution, and authenticated `POST /webhooks/github` with raw-buffer HMAC-SHA256 verification and isolated detached `git worktree` reviews.
+- **Seamless `:8766` Browser Bridge Handoff & Standalone Fallback (`electron/extbridge.js`, `akron-web-bot/server/mcp-server.mjs`)**: Loopback `POST /v1/ext/yield` protocol enabling Desktop `desktop-primary` to cleanly reclaim port `:8766` from `mcp-standalone`, standalone `/v1/models` + `/v1/chat/completions` fallback, and fixed `akron_web_bot_eval_js` `code` + `expression` forwarding.
+
 ## [1.2.0] - 2026-11-27
 
 ### Added

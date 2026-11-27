@@ -40,6 +40,7 @@ function createScheduler(opts = {}) {
   let _busy = false;
   let _onEvent = null;
   let _resolveFastProvider = null;
+  let _shouldSkipTick = null;
   const _watchers = new Map(); // taskId -> { watchers: FSWatcher[], debounceTimer }
   const _runningTasks = new Set();
 
@@ -703,6 +704,7 @@ function syncWatchers() {
     if (!watchTrg) continue;
     const entry = { watchers: [], debounceTimer: null };
     const scheduleWatchFire = (rel) => {
+      if (_shouldSkipTick && _shouldSkipTick()) return;
       if (_runningTasks.has(t.id)) return;
       if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
       entry.debounceTimer = setTimeout(() => {
@@ -741,6 +743,7 @@ function syncWatchers() {
 
 async function tick() {
   if (_busy) return;
+  if (_shouldSkipTick && _shouldSkipTick()) return;
   _busy = true;
   try {
     const s = load();
@@ -803,6 +806,9 @@ function start(runner, onEvent, startOpts = {}) {
   _resolveFastProvider = (startOpts && typeof startOpts.resolveFastProvider === 'function')
     ? startOpts.resolveFastProvider
     : null;
+  _shouldSkipTick = (startOpts && typeof startOpts.shouldSkipTick === 'function')
+    ? startOpts.shouldSkipTick
+    : null;
   if (_timer) {
     syncWatchers();
     return;
@@ -828,6 +834,7 @@ function start(runner, onEvent, startOpts = {}) {
 
 function stop() {
   if (_timer) { clearInterval(_timer); _timer = null; }
+  _shouldSkipTick = null;
   clearAllWatchers();
 }
 
