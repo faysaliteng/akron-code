@@ -72,11 +72,16 @@ async function checkForUpdates({
   currentVersion = '1.0.0',
   platform = process.platform,
   arch = process.arch,
+  channel = 'stable',
   feedUrl = DEFAULT_FEED_URL,
   headers = {},
 } = {}) {
   try {
-    const res = await fetch(feedUrl, {
+    const usePrerelease = String(channel || 'stable').toLowerCase() === 'prerelease';
+    const targetUrl = usePrerelease
+      ? feedUrl.replace(/\/releases\/latest\b/i, '/releases')
+      : feedUrl;
+    const res = await fetch(targetUrl, {
       headers: {
         Accept: 'application/vnd.github+json',
         'User-Agent': 'Akron-Code-Updater/1.0',
@@ -88,11 +93,17 @@ async function checkForUpdates({
         ok: false,
         status: res.status,
         currentVersion,
+        channel: usePrerelease ? 'prerelease' : 'stable',
         updateAvailable: false,
         error: res.status === 404 ? 'No published GitHub Releases yet.' : `GitHub Releases returned HTTP ${res.status}`,
       };
     }
-    const rel = await res.json();
+    const payload = await res.json();
+    let rel = payload;
+    if (Array.isArray(payload)) {
+      const candidates = usePrerelease ? payload : payload.filter((r) => !r.prerelease);
+      rel = candidates.find((r) => !r.draft) || candidates[0] || {};
+    }
     const latestVersion = String(rel.tag_name || rel.name || '').replace(/^v/i, '');
     const updateAvailable = !!latestVersion && compareSemver(latestVersion, currentVersion) > 0;
     const { installer, sumsAsset } = selectAssetForPlatform(rel.assets || [], platform, arch);
@@ -100,6 +111,8 @@ async function checkForUpdates({
       ok: true,
       currentVersion,
       latestVersion: latestVersion || currentVersion,
+      channel: usePrerelease ? 'prerelease' : 'stable',
+      prerelease: !!rel.prerelease,
       updateAvailable,
       releaseNotes: String(rel.body || '').slice(0, 4000),
       htmlUrl: rel.html_url || '',
@@ -206,16 +219,45 @@ async function downloadAndVerifyUpdate({
   }
 }
 
-function applyUpdate(stagedPath) {
+function applyLinuxAppImageSwap(stagedPath, currentAppImagePath = process.env.APPIMAGE) {
+  if (!stagedPath || !fs.existsSync(stagedPath)) {
+    return { ok: false, error: 'Staged AppImage not found' };
+  }
+  fs.chmodSync(stagedPath, 0o755);
+  if (currentAppImagePath && fs.existsSync(path.dirname(currentAppImagePath))) {
+    const backup = currentAppImagePath + '.bak';
+    try {
+      if (fs.existsSync(currentAppImagePath)) {
+        try { fs.unlinkSync(backup); } catch (_) {}
+        fs.copyFileSync(currentAppImagePath, backup);
+      }
+      fs.copyFileSync(stagedPath, currentAppImagePath + '.new');
+      fs.chmodSync(currentAppImagePath + '.new', 0o755);
+      fs.renameSync(currentAppImagePath + '.new', currentAppImagePath);
+      return { ok: true, swapped: true, target: currentAppImagePath, launched: currentAppImagePath };
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+  }
+  return { ok: true, swapped: false, launched: stagedPath };
+}
+
+function applyUpdate(stagedPath, opts = {}) {
   if (!stagedPath || !fs.existsSync(stagedPath)) {
     return { ok: false, error: 'Update file not found on disk' };
   }
+  const platform = opts.platform || process.platform;
   try {
-    if (process.platform === 'darwin') {
+    if (platform === 'darwin') {
       spawn('open', [stagedPath], { detached: true, stdio: 'ignore' }).unref();
-    } else if (process.platform === 'win32') {
+    } else if (platform === 'win32') {
       spawn(stagedPath, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
     } else {
+      const swapped = applyLinuxAppImageSwap(stagedPath, opts.appImagePath);
+      if (swapped.swapped) {
+        spawn(swapped.target, [], { detached: true, stdio: 'ignore' }).unref();
+        return swapped;
+      }
       fs.chmodSync(stagedPath, 0o755);
       spawn(stagedPath, [], { detached: true, stdio: 'ignore' }).unref();
     }
@@ -223,6 +265,50 @@ function applyUpdate(stagedPath) {
   } catch (e) {
     return { ok: false, error: e && e.message ? e.message : String(e) };
   }
+}
+
+function createUpdateScheduler({
+  intervalMs = 4 * 60 * 60 * 1000,
+  checkFn = checkForUpdates,
+  getOptions = () => ({}),
+  onUpdateAvailable = () => {},
+} = {}) {
+  let timer = null;
+  let lastResult = null;
+
+  async function runOnce() {
+    try {
+      const res = await checkFn(getOptions());
+      lastResult = res;
+      if (res && res.ok && res.updateAvailable) {
+        onUpdateAvailable(res);
+      }
+      return res;
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+  }
+
+  function start() {
+    if (timer) return;
+    timer = setInterval(() => { runOnce(); }, Math.max(60000, Number(intervalMs) || 4 * 60 * 60 * 1000));
+    if (timer.unref) timer.unref();
+  }
+
+  function stop() {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  }
+
+  return {
+    start,
+    stop,
+    runOnce,
+    isRunning: () => !!timer,
+    getLastResult: () => lastResult,
+  };
 }
 
 module.exports = {
@@ -234,4 +320,6 @@ module.exports = {
   checkForUpdates,
   downloadAndVerifyUpdate,
   applyUpdate,
+  applyLinuxAppImageSwap,
+  createUpdateScheduler,
 };

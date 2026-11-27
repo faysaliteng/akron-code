@@ -147,6 +147,16 @@ async function loadURL(url, cwd) {
   if (!g) return { ok: false, error: 'Browser pane is not open (could not be opened automatically)' };
   const u = normalizeUrl(url, cwd);
   if (!u) return { ok: false, error: 'URL required' };
+  try {
+    const s = require('./store').getSettings() || {};
+    if (s.browserAllowUrls || s.browserDenyUrls) {
+      const verdict = require('./browser-rules').evaluateBrowserUrlRule(u, {
+        allowList: s.browserAllowUrls,
+        denyList: s.browserDenyUrls,
+      });
+      if (!verdict.allowed) return { ok: false, error: verdict.reason || 'Blocked by Browser URL rules' };
+    }
+  } catch (_) {}
   const loaded = waitForLoad(g);
   try { await g.loadURL(u); } catch (e) { /* aborted navigations reject */ }
   await loaded;

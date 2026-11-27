@@ -4,6 +4,7 @@ import hljs from 'highlight.js/lib/common';
 import DOMPurify from 'dompurify';
 import 'highlight.js/styles/github-dark.css';
 import './styles.css';
+import './styles/emerald-carbon.css';
 import iconsMap from './icons.json';
 import { t as _t, LOCALES, localeDir } from './i18n.js';
 import { stripToolProtocol } from './textproto.mjs';
@@ -28,6 +29,9 @@ import { QuestionModal, ComputerUseModal, CommandPalette, FindBar, GoogleDriveMo
 import { MemoryView, ProjectsView, McpView, NotebooksView } from './features/WorkspacePanels.jsx';
 import { MissionControlPane } from './components/MissionControlPane.jsx';
 import { ProactiveDashboard } from './components/ProactiveDashboard.jsx';
+import { ProjectsSidebar } from './components/sidebar/ProjectsSidebar.jsx';
+import { ProjectSettingsPanel } from './components/settings/ProjectSettingsPanel.jsx';
+import { ApplicationSettingsSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection } from './components/settings/ExtendedSettingsPanels.jsx';
 
 // Icon, iconChar, GoogleDriveIcon imported from ./components/Icon.jsx
 
@@ -3347,7 +3351,7 @@ export default function App() {
   const visibleTabs = openTabIds.map((id) => convs.find((c) => c.id === id)).filter(Boolean);
 
   return (
-    <div className="app" data-theme={settings.theme} data-platform={isWinHost ? 'win32' : 'darwin'} dir={localeDir(settings.locale)} lang={settings.locale}>
+    <div className="app" data-theme={settings.theme} data-surface={settings.surfaceFinish || 'emerald-carbon'} data-platform={isWinHost ? 'win32' : 'darwin'} dir={localeDir(settings.locale)} lang={settings.locale}>
       <div className="titlebar">
         <div className="titlebar-brand">
           <Logo size={16} active={streaming} />
@@ -3360,7 +3364,7 @@ export default function App() {
               onClick={() => setWorkbenchMode('agent')}
               title={`Agent & Mission Control view (${modShift}E)`}
             >
-              <Icon name="Sparkles" size={12} /> <span>Agent</span>
+              <Icon name="Agent" size={14} /> <span>Agent</span>
             </button>
             <button
               type="button"
@@ -3575,40 +3579,34 @@ export default function App() {
               <span>{T('sidebar.recents')}</span>
               {convs.length > 0 && <span className="recents-count">{convs.length}</span>}
             </div>
-            <div className="convlist">
-              {[...convs].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)).map((c) => {
-                const sh = sessionHealthMap[c.id];
-                const hStatus = sh && (sh.status === 'bad' || sh.status === 'warn' || sh.status === 'ok') ? sh.status : 'ok';
-                return (
-                <div key={c.id} className={'conv ' + (c.id === activeId && panel === 'chats' ? 'on' : '')} onClick={() => selectConv(c.id)}>
-                  {c.pinned && <span className="conv-pin" title="Pinned"><Icon name="Pin" size={12} /></span>}
-                  <span className={'health-dot ' + hStatus} title={sh ? `Session health: ${hStatus} (${sh.score})` : 'Session health: ok'} />
-                  <div className="conv-title">{c.title || 'Untitled'}</div>
-                  {(hStatus === 'bad' || hStatus === 'warn') && (
-                    <button
-                      type="button"
-                      className="btn-mini"
-                      style={{ padding: '1px 5px', fontSize: 10 }}
-                      title="Diagnose & Unstick"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        selectConv(c.id);
-                        if (sh && sh.unstickDraft) setDraft(sh.unstickDraft);
-                        setNotice(`Diagnosed session (${hStatus}) — unstick draft loaded in composer`);
-                      }}
-                    >Unstick</button>
-                  )}
-                  {waitingPermissionConvIds.has(c.id) && (
-                    <span className="conv-perm-bell" title="Waiting for permission approval">
-                      <Icon name="Notification" size={12} />
-                    </span>
-                  )}
-                  <button className="conv-del" onClick={(e) => { e.stopPropagation(); deleteConv(c.id); }}><Icon name="Trash" size={13} /></button>
-                </div>
-                );
-              })}
-              {convs.length === 0 && <div className="muted">No conversations yet</div>}
-            </div>
+            <ProjectsSidebar
+              convs={convs}
+              projects={projects}
+              activeId={activeId}
+              panel={panel}
+              streaming={streaming}
+              streamingConvId={streamingConvId}
+              sessionHealthMap={sessionHealthMap}
+              waitingPermissionConvIds={waitingPermissionConvIds}
+              onSelectConv={selectConv}
+              onNewChatInProject={(projCwd) => { if (projCwd) setCwd(projCwd); newChat(); }}
+              onDeleteConv={deleteConv}
+              onTogglePinConv={(cid) => setConvs((cs) => cs.map((c) => (c.id === cid ? { ...c, pinned: !c.pinned } : c)))}
+              onRenameConv={(cid) => {
+                const cur = convs.find((c) => c.id === cid);
+                const nextTitle = typeof window !== 'undefined' && window.prompt ? window.prompt('Rename conversation', (cur && cur.title) || '') : '';
+                if (nextTitle && nextTitle.trim()) {
+                  setConvs((cs) => cs.map((c) => (c.id === cid ? { ...c, title: nextTitle.trim() } : c)));
+                }
+              }}
+              onOpenProjectSettings={(grp) => { if (grp && grp.cwd) setCwd(grp.cwd); openSettingsAt('project'); }}
+              onUnstickConv={(cid, sh) => {
+                selectConv(cid);
+                if (sh && sh.unstickDraft) setDraft(sh.unstickDraft);
+                setNotice(`Diagnosed session — unstick draft loaded in composer`);
+              }}
+            />
+            {convs.length === 0 && <div className="muted">No conversations yet</div>}
           </div>
 
           <div className="sidebar-bottom">
@@ -7402,7 +7400,7 @@ function BrowserView({ cwd, previewUrl, onClose, onAttachInspect }) {
             </div>
             <div className="bic-actions">
               <button type="button" className="bic-btn primary" onClick={sendInspectedToAgent}>
-                <Icon name="Sparkles" size={12} /> Send to Agent
+                <Icon name="Agent" size={13} /> Send to Agent
               </button>
               <button
                 type="button"
@@ -7431,7 +7429,7 @@ function BrowserView({ cwd, previewUrl, onClose, onAttachInspect }) {
 
 const PANE_TAB_META = [
   { id: 'review', label: 'Review', icon: 'File' },
-  { id: 'subagents', label: 'Subagents', icon: 'GitBranch' },
+  { id: 'subagents', label: 'Subagents', icon: 'Agent' },
   { id: 'files', label: 'Files', icon: 'Files' },
   { id: 'terminal', label: 'Terminal', icon: 'CommandLine' },
   { id: 'browser', label: 'Browser', icon: 'Globe' },
@@ -10927,9 +10925,10 @@ function EnvironmentsSection({ envState, refreshEnvState, onSwitchEnvironment, s
 }
 
 const SETTINGS_SECTIONS = [
-  { id: 'providers', group: 'ai', label: 'Models & Providers', icon: 'Sparkles', sub: 'Primary endpoints, presets, local Ollama, and subscription sign-in.', keys: 'model provider ollama api key preset subscription oauth temperature token' },
+  { id: 'providers', group: 'ai', label: 'Models & Providers', icon: 'Sparkles', sub: 'Primary endpoints, presets, local Ollama, and subscription sign-in.', keys: 'model provider ollama api key preset subscription oauth temperature token limits' },
   { id: 'orchestrator', group: 'ai', label: 'Orchestrator & Pools', icon: 'Orbit', sub: 'DeepSeek Harness profiles, multi-model failover tiers, and role pools.', keys: 'orchestrator pool planner coder vision fast longctx failover swarm profile harness' },
   { id: 'notifications', group: 'ai', label: 'Notifications', icon: 'Notification', sub: 'Choose when to receive desktop notifications and hear synthesized sounds.', keys: 'notifications sound chime staplebops alert agent permissions questions errors' },
+  { id: 'project', group: 'workspace', label: 'Project & Budget', icon: 'Folder', sub: 'Per-project profile, workspace instructions, and 20,000-token customizations budget.', keys: 'project token budget global demote rules workspace' },
   { id: 'environments', group: 'workspace', label: 'Environments', icon: 'Globe', sub: 'Execute locally, over SSH Hosts, or on an authenticated Remote Server.', keys: 'environment ssh host remote server cloud secret keychain' },
   { id: 'worktrees', group: 'workspace', label: 'Worktrees', icon: 'GitBranch', sub: 'Create and switch isolated git worktree checkouts for parallel branches.', keys: 'git worktree branch checkout parallel workspace' },
   { id: 'skills', group: 'workspace', label: 'Skills & Plugins', icon: 'Lightbulb', sub: 'Manage SKILL.md packs, agent capabilities, and plugins.', keys: 'skills plugins packs extensions' },
@@ -10937,14 +10936,15 @@ const SETTINGS_SECTIONS = [
   { id: 'memory', group: 'workspace', label: 'Memory & Notebooks', icon: 'Memory', sub: 'Long-term saved facts and interactive notebooks.', keys: 'memory facts notebooks cells' },
   { id: 'harness', group: 'workspace', label: 'Harness & Custom Tools', icon: 'AgentsSimple', sub: 'Creator Mode runtime tools, developer features, and agent capabilities.', keys: 'creator custom tool harness developer extension buddy remote control' },
   { id: 'rea', group: 'ext', label: 'Reverse Engineering', icon: 'Orbit', sub: 'Built-in REA (morluto/rea) MCP & CLI, 263 tools, doctor & runtime.', keys: 'rea reverse engineer binary ghidra hopper ida rizin asar apk firmware mcp decompile' },
-  { id: 'browser', group: 'ext', label: 'Browser Extension', icon: 'Globe', sub: 'Zero-key Chrome extension bridge for live browser control & shared desktop models.', keys: 'chrome extension akron browser bot bridge websocket tabs 8766' },
+  { id: 'browser', group: 'ext', label: 'Browser Extension', icon: 'Globe', sub: 'Zero-key Chrome extension bridge for live browser control & shared desktop models.', keys: 'chrome extension akron browser bot bridge websocket tabs 8766 allow deny' },
   { id: 'server', group: 'ext', label: 'Server & Pairing', icon: 'Plug', sub: 'Local HTTP/WebSocket host endpoint, bridge health, and device info.', keys: 'server pairing port 8766 endpoint websocket health' },
   { id: 'voice', group: 'ext', label: 'Voice & Dictation', icon: 'Microphone', sub: 'Built-in offline ONNX Whisper speech model & fast gateway transcription.', keys: 'voice dictation whisper microphone speech audio language' },
   { id: 'shortcuts', group: 'system', label: 'Shortcuts', icon: 'Keyboard', sub: 'Keyboard shortcuts for fast navigation and editing.', keys: 'shortcuts hotkeys keybindings keyboard cmd ctrl' },
   { id: 'runtimes', group: 'system', label: 'Runtimes & Updates', icon: 'Refresh', sub: 'Built-in IDE dependencies, optional LSP installers, bundled CLIs & app auto-updater.', keys: 'runtimes updates auto-update github release lsp dependencies repair' },
   { id: 'security', group: 'system', label: 'Permissions & Security', icon: 'LockShield', sub: 'Tool consent rules, Computer Use, Chrome CDP, bridges, and compliance.', keys: 'permission security computer use chrome cdp bridge compliance trusted folders' },
-  { id: 'system', group: 'system', label: 'Appearance & System', icon: 'Palette', sub: 'Theme, language locale, memory injection, launch behavior, and runtimes.', keys: 'theme dark light locale language memory login quick entry runtime' },
+  { id: 'system', group: 'system', label: 'Appearance & System', icon: 'Palette', sub: 'Theme, surface finish, sleep prevention, tray mode, locale & runtimes.', keys: 'theme dark light emerald carbon tray sleep updater locale language memory runtime' },
   { id: 'about', group: 'system', label: 'About & License', icon: 'Info', sub: 'Akron Code details, AkronLogic brand identity, runtime diagnostics, license & trademarks.', keys: 'about akronlogic logo version license trademarks copyright legal brand seal info' },
+  { id: 'feedback', group: 'system', label: 'Give Feedback', icon: 'Bug', sub: 'Report bugs or share ideas with automatic secret & PII scrubbing.', keys: 'feedback bug report diagnostics scrub bundle' },
 ];
 
 function SettingsModal({
@@ -11283,6 +11283,8 @@ function SettingsModal({
                   <label className="check"><input type="checkbox" checked={provider.supportsTools} onChange={(e) => setProvider({ ...provider, supportsTools: e.target.checked })} /> Function calling / tools</label>
                 </div>
 
+                <ModelsAndLimitsSection settings={settings} setSettings={setSettings} convs={convs} />
+
                 <div className="settings-card">
                   <AccountSection T={T} provider={provider} setProvider={setProvider} />
                 </div>
@@ -11606,6 +11608,7 @@ function SettingsModal({
                     </div>
                   )}
                 </div>
+                <BrowserSettingsSection settings={settings} setSettings={setSettings} setNotice={setNotice} />
               </>
             )}
 
@@ -11912,14 +11915,30 @@ function SettingsModal({
                   />
                 </div>
 
+                <ApplicationSettingsSection settings={settings} setSettings={setSettings} features={features} saveFeat={saveFeat} setNotice={setNotice} />
+
                 <div className="settings-card">
                   <RuntimesSection />
                 </div>
               </>
             )}
 
+            {section === 'project' && (
+              <ProjectSettingsPanel
+                cwd={cwd}
+                setCwd={setCwd}
+                skills={skills}
+                mcpServers={mcpServers}
+                setNotice={setNotice}
+              />
+            )}
+
             {section === 'about' && (
               <AboutSection theme={settings.theme || 'dark'} setNotice={setNotice} />
+            )}
+
+            {section === 'feedback' && (
+              <GiveFeedbackSection settings={settings} provider={provider} setNotice={setNotice} />
             )}
             </div>
           </div>

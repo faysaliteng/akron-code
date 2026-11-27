@@ -3740,6 +3740,15 @@ ipcMain.handle('autobot:updateDownload', (e, opts) => updater.downloadAndVerifyU
   },
 }));
 ipcMain.handle('autobot:updateApply', (e, stagedPath) => updater.applyUpdate(stagedPath));
+ipcMain.handle('autobot:tokenBudget', (e, payload = {}) => {
+  try { return require('./token-budget').analyzeCustomizationBudget(payload); } catch (err) { return { error: err.message, items: [] }; }
+});
+ipcMain.handle('autobot:setPreventSleep', (e, enabled) => require('./app-system').setPreventSleep(enabled));
+ipcMain.handle('autobot:browserRulesCheck', (e, payload = {}) => require('./browser-rules').evaluateBrowserUrlRule(payload.url, payload));
+ipcMain.handle('autobot:generateDiagnostics', (e, payload = {}) => require('./diagnostics').generateDiagnosticBundle({
+  appVersion: app.getVersion(),
+  ...(payload || {}),
+}));
 
 // Built-in Browser (renderer <webview> registers its guest WebContents; the
 // agent tools in tools.js control it through the same controller).
@@ -4326,6 +4335,24 @@ app.whenReady().then(() => {
   app.on('browser-window-focus', (_e, win) => {
     notificationService.clearAttention(win);
   });
+  try {
+    const updateScheduler = updater.createUpdateScheduler({
+      getOptions: () => {
+        const s = store.getSettings() || {};
+        return { currentVersion: app.getVersion(), channel: s.updateChannel || 'stable' };
+      },
+      onUpdateAvailable: (res) => {
+        notificationService.notify({
+          kind: 'agent',
+          title: `Akron Code v${res.latestVersion} available`,
+          body: 'Open Settings → Runtimes & Updates to install.',
+        });
+      },
+    });
+    if ((store.getSettings() || {}).autoUpdateScheduler !== false) {
+      updateScheduler.start();
+    }
+  } catch (_) {}
   // Repair any project folder split left by the old auto-create logic (files in
   // `project/` while the conversation points at a titled-but-empty folder).
   try { workspace.reconcile(); } catch (e) { console.error('workspace reconcile failed:', e.message); }

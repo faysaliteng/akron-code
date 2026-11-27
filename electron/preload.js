@@ -439,6 +439,10 @@ contextBridge.exposeInMainWorld('autobot', {
   updateCheck: (opts) => ipcRenderer.invoke('autobot:updateCheck', opts),
   updateDownload: (opts) => ipcRenderer.invoke('autobot:updateDownload', opts),
   updateApply: (stagedPath) => ipcRenderer.invoke('autobot:updateApply', stagedPath),
+  tokenBudget: (payload) => ipcRenderer.invoke('autobot:tokenBudget', payload),
+  setPreventSleep: (enabled) => ipcRenderer.invoke('autobot:setPreventSleep', enabled),
+  browserRulesCheck: (payload) => ipcRenderer.invoke('autobot:browserRulesCheck', payload),
+  generateDiagnostics: (payload) => ipcRenderer.invoke('autobot:generateDiagnostics', payload),
   onEnvChanged: (cb) => {
     const h = (e, state) => cb(state);
     ipcRenderer.on('autobot:envChanged', h);
