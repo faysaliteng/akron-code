@@ -3,6 +3,8 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const _isolatedEnvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'akron-env-cfg-'));
+process.env.AUTOBOT_ENVIRONMENTS_FILE = path.join(_isolatedEnvDir, 'environments.json');
 const { execFileSync } = require('node:child_process');
 const WebSocket = require('ws');
 
@@ -137,6 +139,7 @@ async function testSecretIsolationAndRemoteServerE2E() {
     if (remProfId) environments.deleteRemoteProfile(remProfId);
     await srv.stop();
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(_isolatedEnvDir, { recursive: true, force: true });
   }
 }
 

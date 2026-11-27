@@ -13,9 +13,13 @@ const { URL } = require('url');
 const secretstore = require('./secretstore');
 const { detectLanguage } = require('./ide/fs-watcher');
 
-const DIR = path.join(os.homedir(), '.autobot');
-const CONFIG_FILE = path.join(DIR, 'environments.json');
 const DEFAULT_HOST_PORT = 9477;
+
+function configFile() {
+  if (process.env.AUTOBOT_ENVIRONMENTS_FILE) return process.env.AUTOBOT_ENVIRONMENTS_FILE;
+  const dir = process.env.AUTOBOT_DATA_DIR || path.join(os.homedir(), '.autobot');
+  return path.join(dir, 'environments.json');
+}
 
 const SECRET_KEYS = ['password', 'passphrase', 'token', 'secret'];
 
@@ -30,7 +34,7 @@ function defaultConfig() {
 
 function readRawConfig() {
   try {
-    const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(configFile(), 'utf8'));
     const base = defaultConfig();
     if (!raw || typeof raw !== 'object') return base;
     return {
@@ -52,17 +56,18 @@ function stripSecrets(obj) {
 }
 
 function writeRawConfig(cfg) {
-  fs.mkdirSync(DIR, { recursive: true });
+  const cf = configFile();
+  fs.mkdirSync(path.dirname(cf), { recursive: true });
   const sanitized = {
     active: cfg.active || defaultConfig().active,
     sshProfiles: (cfg.sshProfiles || []).map(stripSecrets),
     remoteProfiles: (cfg.remoteProfiles || []).map(stripSecrets),
     hostServer: cfg.hostServer || defaultConfig().hostServer,
   };
-  const tmp = CONFIG_FILE + '.' + process.pid + '.tmp';
+  const tmp = cf + '.' + process.pid + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(sanitized, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, CONFIG_FILE);
-  try { fs.chmodSync(CONFIG_FILE, 0o600); } catch (_) {}
+  fs.renameSync(tmp, cf);
+  try { fs.chmodSync(cf, 0o600); } catch (_) {}
   return sanitized;
 }
 

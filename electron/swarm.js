@@ -1008,6 +1008,9 @@ async function swarm(goal, opts = {}) {
         emit: (evt) => {
           if (!evt || evt.type === 'done') return;
           if (evt.type === 'orchestrator' && evt.to) servedBy = evt.to;
+          else if (evt.type === 'model' && evt.model && !/^(auto|fast|smart|fusion|default|free|akron-.*)$/i.test(String(evt.model).trim())) {
+            servedBy = evt.model;
+          }
           emit({ ...evt, subagent: name, agentId, tier: task.tier, model: servedBy });
         },
       });

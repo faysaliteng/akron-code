@@ -7,7 +7,7 @@
 | Gate | Command / Platform | Result |
 |---|---|---|
 | Static Syntax / JSX Check | `npm run typecheck` | ✅ `TYPECHECK_OK: verified 375 JS/JSX/MJS/CJS files with 0 syntax/transform errors.` |
-| Full Unit & Integration Suite | `npm test` (`test/*.test.js`) | ✅ **140 / 140 test suites/files passed (0 failures, 0 skipped)** |
+| Full Unit & Integration Suite | `npm test` (`test/*.test.js`, `--test-concurrency=4`) | ✅ **140 / 140 test suites/files passed (0 failures, 0 skipped)** — isolated `AUTOBOT_ENVIRONMENTS_FILE` / `AUTOBOT_DATA_DIR` in `electron/environments.js` + `test/environments.test.js` AND fixed `electron/swarm.js` `servedBy` tracking on `evt.type === 'model'` when `gate.order()` skips an already-cooling model |
 | Stripped-Cache `2`-Token & Real Remote Control Unit Tests | `node --test test/v151-env-context-remote.test.js` | ✅ **3 / 3 passed** (2-token stripped-cache normalization floor, poisoned `context_tokens: 2` recovery from `t1795783272909.jsonl`, HTTP `401`->`200` `/v1/env/ping` Remote Control host toggle, `Auto` `/compact` OAuth resolution, `autoConnectMcp` config hook) |
 | Deterministic Benchmark Evals | `npm run eval:all` | ✅ `EVAL_ALL: 70/70 passed (100%) in 203ms` |
 | Tool Parity Audit | `node scripts/parity-audit.js` | ✅ `DEFS: 184 · tools missing definition: 0 · tools missing handler: 0` |
@@ -19,8 +19,8 @@
 
 ### Verified Local macOS Build Checksums (`v1.5.1`)
 
-- `AkronCode-1.5.1-arm64.dmg`: `04375cfdd147fa716b68414c87bbe3daf6ddcdcf66b1d2530bfe12e6692674e6`
-- `AkronCode-1.5.1-arm64.zip`: `b457f87f38114632008966f8cc2b794a79121e70200219cbd42d58f09696841d`
+- `AkronCode-1.5.1-arm64.dmg`: `82cd2264a91d26622c6a3ab53ae24b20eb6c555bd4aaa1fca506026d03fccbc5`
+- `AkronCode-1.5.1-arm64.zip`: `53989196541ef9da12bf05838a392d30910058609caf855b20c87ee564d742d0`
 - `AkronBrowserBot-1.6.7.crx`: `a9275e0f9449990115fbb8589da1062f0c8abf308f2a94cbac4d2782c2fa343c`
 - `AkronBrowserBot-1.6.7.zip`: `ba1e136b8cceb10ea8657f1a9d065d001e8006dbe1c7fe27929b18ec0c918f3e`
 
