@@ -174,7 +174,7 @@ function syncUpdateBadge(updateState) {
 }
 
 async function getUpdateState() {
-  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.10";
+  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.11";
   try {
     const r = await chrome.storage.local.get(UPDATE_STATE_KEY);
     const saved = r?.[UPDATE_STATE_KEY];
@@ -221,7 +221,7 @@ async function checkForUpdatesNow({ manual = false } = {}) {
     getSettings().catch(() => ({})),
     getUpdateState(),
   ]);
-  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.10";
+  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.11";
   const result = await checkForExtensionUpdate({
     currentVersion,
     repo: GITHUB_REPO,
@@ -2070,17 +2070,27 @@ async function handleBridgeMessage(event, socket) {
   }
 }
 
-// The desktop bridge is opt-in (Settings). When nothing is listening on its
-// port the browser logs each attempt as an extension error, so stay offline
-// unless the user turned it on.
+// Connects to the desktop bridge automatically when reachable, probing /v1/health
+// before opening a WebSocket so offline periods never log extension socket errors.
 const bridgeLink = createBridgeLink({
+  probeReachable: async () => {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 900);
+      const r = await fetch("http://127.0.0.1:8766/v1/health", { signal: ctrl.signal });
+      clearTimeout(t);
+      return !!(r && r.ok);
+    } catch {
+      return false;
+    }
+  },
   createSocket: (url) => new WebSocket(url),
   onOpen: (socket) => {
     try {
       socket.send(JSON.stringify({
         type: "ext_hello",
         product: "Akron Browser Bot",
-        version: chrome.runtime?.getManifest?.().version || "1.6.7",
+        version: chrome.runtime?.getManifest?.().version || "1.6.11",
       }));
     } catch {}
   },

@@ -16,6 +16,7 @@ const BRIDGE_RETRY_MS = 20000;
 export function createBridgeLink({
   url = BRIDGE_URL,
   createSocket,
+  probeReachable,
   onMessage,
   onOpen,
   retryMs = BRIDGE_RETRY_MS,
@@ -25,13 +26,39 @@ export function createBridgeLink({
   let enabled = false;
   let socket = null;
   let retryTimer = null;
+  let probing = false;
 
-  const open = () => {
-    if (!enabled || socket) return;
+  const scheduleRetry = () => {
+    if (!enabled || retryTimer) return;
+    retryTimer = setTimer(() => {
+      retryTimer = null;
+      open();
+    }, retryMs);
+  };
+
+  const open = async () => {
+    if (!enabled || socket || probing) return;
+    if (typeof probeReachable === "function") {
+      probing = true;
+      let reachable = false;
+      try {
+        reachable = !!(await probeReachable(url));
+      } catch {
+        reachable = false;
+      } finally {
+        probing = false;
+      }
+      if (!enabled || socket) return;
+      if (!reachable) {
+        scheduleRetry();
+        return;
+      }
+    }
     let next;
     try {
       next = createSocket(url);
     } catch {
+      scheduleRetry();
       return;
     }
     socket = next;
@@ -44,11 +71,7 @@ export function createBridgeLink({
     next.onerror = () => {};
     next.onclose = () => {
       if (socket === next) socket = null;
-      if (!enabled || retryTimer) return;
-      retryTimer = setTimer(() => {
-        retryTimer = null;
-        open();
-      }, retryMs);
+      scheduleRetry();
     };
   };
 

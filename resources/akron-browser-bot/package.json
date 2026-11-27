@@ -1,6 +1,6 @@
 {
   "name": "akron-browser-bot",
-  "version": "1.6.10",
+  "version": "1.6.11",
   "private": true,
   "type": "module",
   "description": "Bring-your-own-key AI browser agent (Chrome MV3). Works like Claude in Chrome with any provider API key.",

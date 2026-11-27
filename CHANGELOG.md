@@ -2,6 +2,13 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.5.5] - 2026-11-27
+
+### Fixed & Upgraded
+- **Akron Browser Bot `v1.6.11` Pre-Flight Probe, Yieldable `:8766` Bridge Daemon & Seamless Handoff (`resources/akron-browser-bot/`, `electron/extbridge.js`, `scripts/start-bridge-daemon.js`):**
+  - Updated bundled **Akron Browser Bot** to **`v1.6.11`**: `createBridgeLink()` now probes `GET http://127.0.0.1:8766/v1/health` before opening a WebSocket so offline intervals never log `WebSocket connection to 'ws://127.0.0.1:8766/' failed:` errors in `chrome://extensions` / `brave://extensions`.
+  - Added `yieldable: true` mode in `electron/extbridge.js` + `scripts/start-bridge-daemon.js` so a standalone `:8766` bridge daemon can serve all `~/.autobot` OAuth accounts (`Claude`, `Codex`, `Antigravity/Gemini`), Orchestrator pools, and `FreeLLMAPI` / `akron-default`, and cleanly yields `:8766` to `Akron Code.app` via `POST /v1/ext/yield`.
+
 ## [1.5.4] - 2026-11-27
 
 ### Fixed & Upgraded

@@ -565,6 +565,8 @@ function start(opts = {}) {
   state.getProvider = opts.getProvider || state.getProvider;
   state.getOrchestrator = opts.getOrchestrator || state.getOrchestrator;
   state.getExtraProviders = opts.getExtraProviders || state.getExtraProviders;
+  const yieldable = Boolean(opts.yieldable);
+  const onYield = typeof opts.onYield === 'function' ? opts.onYield : null;
   const listenPort = opts.port !== undefined ? Number(opts.port) : (Number(process.env.AKRON_BRIDGE_PORT) || DEFAULT_PORT);
 
   return new Promise((resolve) => {
@@ -581,11 +583,20 @@ function start(opts = {}) {
       if (req.method === 'GET' && (pathname === '/v1/health' || pathname === '/health')) {
         return sendJson(res, 200, {
           ok: true,
-          mode: 'desktop-primary',
+          mode: yieldable ? 'bridge-daemon' : 'desktop-primary',
+          yieldable,
           port: state.port,
           extensionConnected: !!(state.activeSocket && state.activeSocket.readyState === 1),
           connectedClients: state.clients.size,
         });
+      }
+      if (req.method === 'POST' && (pathname === '/v1/ext/yield' || pathname === '/ext/yield') && yieldable) {
+        const ra = String((req.socket && req.socket.remoteAddress) || '');
+        const isLoop = ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1';
+        if (!isLoop) return sendJson(res, 403, { ok: false, error: 'Loopback local control only' });
+        sendJson(res, 200, { ok: true, yielded: true, port: state.port });
+        setTimeout(() => { stop().then(() => { if (onYield) onYield(); }).catch(() => {}); }, 20);
+        return;
       }
       if (pathname === '/v1/ext/tabs' || pathname === '/ext/tabs' || pathname === '/v1/ext/tool' || pathname === '/ext/tool') {
         const ra = String((req.socket && req.socket.remoteAddress) || '');
@@ -703,7 +714,7 @@ function start(opts = {}) {
           const r = await fetch(`http://127.0.0.1:${listenPort}/v1/health`, { signal: AbortSignal.timeout(1000) });
           if (r && r.ok) {
             const h = await r.json().catch(() => ({}));
-            if (h && h.mode === 'mcp-standalone') {
+            if (h && (h.mode === 'mcp-standalone' || h.yieldable === true)) {
               await fetch(`http://127.0.0.1:${listenPort}/v1/ext/yield`, { method: 'POST', signal: AbortSignal.timeout(1200) }).catch(() => {});
               await new Promise((rWait) => setTimeout(rWait, 180));
               bindPrimary();
@@ -728,7 +739,7 @@ function start(opts = {}) {
           const r = await fetch(`http://127.0.0.1:${listenPort}/v1/health`, { signal: AbortSignal.timeout(1200) });
           if (r && r.ok) {
             const h = await r.json().catch(() => ({}));
-            if (h && h.mode === 'mcp-standalone') {
+            if (h && (h.mode === 'mcp-standalone' || h.yieldable === true)) {
               try {
                 await fetch(`http://127.0.0.1:${listenPort}/v1/ext/yield`, {
                   method: 'POST',
