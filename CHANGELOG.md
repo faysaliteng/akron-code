@@ -2,6 +2,16 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.2.0] - 2026-11-27
+
+### Added
+- **Per-Message Input & Output Timestamps (`fmtMessageTimestamp` / `fmtMessageFullTimestamp`)**: Renders compact timestamps (`date-time`, `12h`, `relative`, `iso` with full localized tooltip) below every user input alongside quick `Copy`/`Edit`/`Delete` controls, and in every assistant footer alongside model attribution and worked duration.
+- **Compact Response Action Bar & Overlap Fix**: Tightened `.response-actions` and `.response-action-btn` (`11px` icons, `2px 6px` padding), added `compact` / `icons-only` / `hover` bar styles plus inline `Delete`, and disabled duplicate top-right floating `.msg-toolbar` overlap by default.
+- **UI & Design Customization Studio (`Settings → Appearance & System`)**: Live CSS variable & `data-*` controls (`computeAppearanceVars`, `<AppearanceStudioSection />`) for Theme Mode (`dark`/`light`/`auto`), Surface Finish (`emerald-carbon`, `matte-obsidian`, `midnight-glass`, `minimal-slate`), 6 preset accent swatches + custom `<input type="color">`, Background Pattern, UI Density, Chat Reading Width, Message Layout Style (`editorial`/`bubbles`), Corner Roundness, Timestamps/ActionBar/ModelBadge/Avatars visibility toggles, and 1-click Factory Reset.
+- **Universal Media Studio & Pre-Bundled Office/PDF/ZIP Engine**: 8-role capability router (`planner`, `coder`, `vision`, `fast`, `longctx`, `image_gen`, `video_gen`, `audio_speech`) with `GenerateImage`, `EditImage`, `GenerateVideo`, `EditVideo`, `ReadDocument`, and `GenerateDocument` offline support (`pdf-lib`, `docx`, `xlsx`, `pptxgenjs`, `jszip`, `katex`, `@ffmpeg-installer/ffmpeg`) plus interactive inline `<MediaDocCard />` viewers and non-blocking `<QuestionDock />`.
+- **Antigravity-Style `Customizations` Hub (`Marketplace | Installed`)**: Unified catalog shelves, Slash Skills manager, `@`-mentionable Custom Agents (`~/.autobot/agents/*.md`, `.claude/agents/*.md`), Custom Output Styles, and 263-tool built-in `rea` MCP overview.
+- **Flagship Documentation & GitHub Release Pipeline**: Added story + technical *"How It Works"* architecture guide, static GitHub-safe logo/icon assets (`docs/assets/icon.png`), refreshed 23-screen Dark/Light visual gallery in `docs/screenshots/`, and `latest*.yml` auto-updater artifact uploads in `.github/workflows/build-desktop.yml`.
+
 ## [1.1.0] - 2026-11-26
 
 ### Added

@@ -126,6 +126,7 @@ jobs:
             release/*.exe
             release/*.AppImage
             release/*.deb
+            release/latest*.yml
           if-no-files-found: error
 
   release:
@@ -153,5 +154,6 @@ jobs:
             artifacts/*.exe
             artifacts/*.AppImage
             artifacts/*.deb
+            artifacts/latest*.yml
             artifacts/SHA256SUMS.txt
           generate_release_notes: true

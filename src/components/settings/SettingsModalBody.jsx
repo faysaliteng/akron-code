@@ -7,7 +7,7 @@ import { useVoiceDictation } from '../../voice';
 import { PRESETS, PRESET_KEYS, useDismiss, SOUND_PRESETS, playUiSound, sendDesktopNotification, HARNESS_PROFILES } from '../../utils/appHelpers.jsx';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel.jsx';
 import { MigrationWizard } from './MigrationWizard.jsx';
-import { ApplicationSettingsSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection } from './ExtendedSettingsPanels.jsx';
+import { ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection } from './ExtendedSettingsPanels.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from '../../features/WorkspacePanels.jsx';
 import { SkillsViewBody, PluginsViewBody } from '../chat/WorkspaceViews.jsx';
 import {
@@ -257,7 +257,7 @@ export function SettingsModalBody({
             onClick={() => setSection('about')}
             title="Open About & License"
           >
-            <span>Akron Code v1.1</span>
+            <span>Akron Code v1.2</span>
             <span>{settings.theme === 'light' ? 'Light' : 'Dark'}</span>
           </button>
         </aside>
@@ -956,13 +956,16 @@ export function SettingsModalBody({
 
             {section === 'system' && (
               <>
+                <AppearanceStudioSection settings={settings} setSettings={setSettings} setNotice={setNotice} />
+
                 <div className="settings-card">
                   <h3>{T('settings.behavior')}</h3>
                   <div className="row">
                     <label>{T('settings.theme')}
-                      <select value={settings.theme} onChange={(e) => setSettings({ ...settings, theme: e.target.value })}>
+                      <select value={settings.theme || 'dark'} onChange={(e) => setSettings({ ...settings, theme: e.target.value })}>
                         <option value="dark">{T('settings.theme.dark')}</option>
                         <option value="light">{T('settings.theme.light')}</option>
+                        <option value="auto">Auto (System)</option>
                       </select>
                     </label>
                     <label>{T('settings.locale')}

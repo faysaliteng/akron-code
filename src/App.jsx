@@ -35,7 +35,7 @@ import { MissionControlPane } from './components/MissionControlPane.jsx';
 import { ProactiveDashboard } from './components/ProactiveDashboard.jsx';
 import { ProjectsSidebar } from './components/sidebar/ProjectsSidebar.jsx';
 import { ProjectSettingsPanel } from './components/settings/ProjectSettingsPanel.jsx';
-import { ApplicationSettingsSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection } from './components/settings/ExtendedSettingsPanels.jsx';
+import { ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection, DEFAULT_APPEARANCE_SETTINGS, computeAppearanceVars } from './components/settings/ExtendedSettingsPanels.jsx';
 
 // Icon, iconChar, GoogleDriveIcon imported from ./components/Icon.jsx
 
@@ -48,7 +48,7 @@ import { ApplicationSettingsSection, BrowserSettingsSection, ModelsAndLimitsSect
 import {
   ProvNotice, renderMarkdown, resolveLoopbackKey, timeGreeting, cleanErr, usedTokens, contextWindowFor,
   PRESETS, PRESET_KEYS, STYLES, REASON_LEVELS, DEFAULT_PROVIDER, loadJSON, saveJSON, uid, Logo,
-  LinkPreviews, fmtTokens, estimateCost, fmtCost, msgText, buildDirectives, fmtElapsed,
+  LinkPreviews, fmtTokens, estimateCost, fmtCost, msgText, buildDirectives, fmtElapsed, fmtMessageTimestamp, fmtMessageFullTimestamp,
 } from './utils/appHelpers.jsx';
 import { useAutobotEventStream } from './hooks/useAutobotEventStream.js';
 import {
@@ -129,6 +129,7 @@ export default function App() {
   const [settings, setSettings] = useState(() => {
     const base = loadJSON('autobot:settings', { theme: 'dark', useMemory: true, locale: 'en' });
     return {
+      ...DEFAULT_APPEARANCE_SETTINGS,
       ...base,
       harnessProfile: base.harnessProfile || 'full',
       typography: normalizeTypography(base.typography),
@@ -136,6 +137,29 @@ export default function App() {
       sounds: { agent: 'staplebops-01', permissions: 'staplebops-02', questions: 'staplebops-05', errors: 'none', ...(base.sounds || {}) },
     };
   });
+  const [systemPrefersLight, setSystemPrefersLight] = useState(() => (
+    typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)').matches : false
+  ));
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return undefined;
+    const mq = window.matchMedia('(prefers-color-scheme: light)');
+    const onChange = (e) => setSystemPrefersLight(!!e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  const appAppearance = useMemo(
+    () => computeAppearanceVars(settings, systemPrefersLight),
+    [settings, systemPrefersLight]
+  );
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+    root.setAttribute('data-theme', appAppearance.theme);
+    root.setAttribute('data-surface', appAppearance.surface);
+    for (const [k, v] of Object.entries(appAppearance.style)) {
+      root.style.setProperty(k, v);
+    }
+  }, [appAppearance]);
   const T = useCallback((k) => _t(settings.locale, k), [settings.locale]);
   const [orchestrator, setOrchestrator] = useState(() => ({ enabled: false, providers: [], activeIndex: -1 }));
   const [features, setFeatures] = useState(() => ({ computerUse: true, chrome: false, bridges: false, quickEntry: true, computerUseTeach: false, buddy: false, remoteControl: false, extensions: false, developerMode: false, trustedFolders: false, chromeHost: '127.0.0.1', chromePort: 9222 }));
@@ -2408,7 +2432,20 @@ export default function App() {
     openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
   });
   return (
-    <div className="app" data-theme={settings.theme} data-surface={settings.surfaceFinish || 'emerald-carbon'} data-platform={isWinHost ? 'win32' : 'darwin'} dir={localeDir(settings.locale)} lang={settings.locale}>
+    <div
+      className="app"
+      data-theme={appAppearance.theme}
+      data-surface={appAppearance.surface}
+      data-bg-pattern={appAppearance.bgPattern}
+      data-density={appAppearance.density}
+      data-chat-width={appAppearance.chatWidth}
+      data-msg-style={appAppearance.msgStyle}
+      data-radius={appAppearance.borderRadius}
+      data-platform={isWinHost ? 'win32' : 'darwin'}
+      dir={localeDir(settings.locale)}
+      lang={settings.locale}
+      style={appAppearance.style}
+    >
       <div className="titlebar">
         <div className="titlebar-brand">
           <Logo size={16} active={streaming} />
@@ -2519,6 +2556,7 @@ export default function App() {
                   }}
                   onTogglePane={(tp) => { setWorkbenchMode('agent'); tp ? showSessionPane(tp) : toggleSessionPane(); }}
                   onOpenPlugins={() => openSettingsAt('skills')}
+                  uiSettings={settings}
                   onRenameConv={(title) => active && renameConv(active.id, title)}
                   onPinConv={() => active && pinConv(active.id)}
                   onArchiveConv={() => active && archiveConv(active.id)}
@@ -2698,7 +2736,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} />}
+              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} uiSettings={settings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} initialTab={searchTab} provider={provider} onOpenSessionLink={openSessionDeepLink} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'mission' && (
                 <MissionControlPane
@@ -3001,7 +3039,7 @@ function SegmentView({ segments, tools, streaming }) {
   });
 }
 
-function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, taskCount = 0, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, onOpenReview, onOpenSubagents, onOpenRunLog, onPromptAction, onOpenInIde }) {
+function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, taskCount = 0, uiSettings = {}, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, onOpenReview, onOpenSubagents, onOpenRunLog, onPromptAction, onOpenInIde }) {
   const [copied, setCopied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const shareRef = useRef(null);
@@ -3009,9 +3047,21 @@ function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, 
   const doCopy = () => { copyMessage(m); setCopied(true); setTimeout(() => setCopied(false), 1200); };
   const images = (m.attachments || []).filter((a) => a.isImage && a.dataUrl);
   const otherAtts = (m.attachments || []).filter((a) => !(a.isImage && a.dataUrl));
+  const showTimestamps = uiSettings.showTimestamps !== false;
+  const tsFormat = uiSettings.timestampFormat || 'date-time';
+  const actionBarStyle = uiSettings.actionBarStyle || 'compact';
+  const showModelBadge = uiSettings.showModelBadge !== false;
+  const showAvatars = uiSettings.showAvatars !== false;
+  const showFloatingToolbar = !!uiSettings.showFloatingToolbar;
+  const tsLabel = showTimestamps && m.ts ? fmtMessageTimestamp(m.ts, tsFormat) : '';
+  const tsFull = m.ts ? fmtMessageFullTimestamp(m.ts) : '';
+  const hasModel = showModelBadge && !!m.model;
+  const hasDuration = showModelBadge && m.durationMs > 800;
   return (
     <div className={'msg ' + m.role} id={'msg-' + m.id} data-msg-id={m.id}>
-      <div className={m.role === 'user' ? 'avatar avatar-user' : 'avatar avatar-assistant'}>{m.role === 'user' ? <Icon name="User" size={16} /> : <Logo size={20} />}</div>
+      {showAvatars && (
+        <div className={m.role === 'user' ? 'avatar avatar-user' : 'avatar avatar-assistant'}>{m.role === 'user' ? <Icon name="User" size={16} /> : <Logo size={20} />}</div>
+      )}
       <div className="body">
         {images.length > 0 && (
           <div className="msg-images">
@@ -3056,45 +3106,64 @@ function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, 
         {m.role === 'assistant' && (
           <FilesChangedBar tools={m.tools} checkpoints={m.checkpoints} checkpointId={m.checkpointId} turnLabel={turnLabel} convId={convId} subAgentCount={subAgentCount} taskCount={taskCount} onOpenReview={onOpenReview} onOpenSubagents={onOpenSubagents} onOpenRunLog={onOpenRunLog} streaming={false} Icon={Icon} />
         )}
+        {m.role === 'user' && (tsLabel || editMessage || copyMessage || deleteMessage) && (
+          <div className="msg-user-footer">
+            {tsLabel && <span className="msg-timestamp" title={tsFull}>{tsLabel}</span>}
+            <div className="msg-user-actions">
+              <button type="button" className={'msg-user-mini-btn' + (copied ? ' copied' : '')} title={copied ? 'Copied' : 'Copy prompt'} onClick={doCopy}>
+                <Icon name={copied ? 'Check' : 'Copy'} size={11} /> <span>{copied ? 'Copied' : 'Copy'}</span>
+              </button>
+              <button type="button" className="msg-user-mini-btn" title="Edit prompt" onClick={() => editMessage && editMessage(m)}>
+                <Icon name="Edit" size={11} /> <span>Edit</span>
+              </button>
+              <button type="button" className="msg-user-mini-btn" title="Delete message" onClick={() => deleteMessage && deleteMessage(convId, idx)}>
+                <Icon name="Trash" size={11} />
+              </button>
+            </div>
+          </div>
+        )}
         {m.role === 'assistant' && (
-          <div className="response-actions" data-response-actions>
+          <div className={'response-actions style-' + actionBarStyle} data-response-actions>
             <button type="button" className={'response-action-btn' + (copied ? ' copied' : '')} title="Copy response" onClick={doCopy}>
-              <Icon name={copied ? 'Check' : 'Copy'} size={13} />
-              <span>{copied ? 'Copied' : 'Copy'}</span>
+              <Icon name={copied ? 'Check' : 'Copy'} size={11} />
+              {actionBarStyle !== 'icons-only' && <span>{copied ? 'Copied' : 'Copy'}</span>}
             </button>
             <button type="button" className="response-action-btn" title="Fork conversation from this response" onClick={() => forkFromMessage && forkFromMessage(convId, idx)}>
-              <Icon name="GitBranch" size={13} />
-              <span>Fork</span>
+              <Icon name="GitBranch" size={11} />
+              {actionBarStyle !== 'icons-only' && <span>Fork</span>}
             </button>
             <button type="button" className="response-action-btn" title="Retry this response" onClick={() => retryMessage && retryMessage(convId, idx)}>
-              <Icon name="History" size={13} />
-              <span>Retry</span>
+              <Icon name="History" size={11} />
+              {actionBarStyle !== 'icons-only' && <span>Retry</span>}
             </button>
             <div className="response-share-wrap" ref={shareRef}>
               <button type="button" className="response-action-btn" title="Share or export response" onClick={() => setShareOpen((v) => !v)}>
-                <Icon name="Share" size={13} />
-                <span>Share</span>
+                <Icon name="Share" size={11} />
+                {actionBarStyle !== 'icons-only' && <span>Share</span>}
               </button>
               {shareOpen && (
                 <div className="response-share-menu" onClick={(e) => e.stopPropagation()}>
                   <button type="button" onClick={() => { setShareOpen(false); shareFromMessage && shareFromMessage(convId, idx, 'copy'); }}>
-                    <Icon name="Copy" size={13} /> <span>Copy Markdown</span>
+                    <Icon name="Copy" size={12} /> <span>Copy Markdown</span>
                   </button>
                   <button type="button" onClick={() => { setShareOpen(false); shareFromMessage && shareFromMessage(convId, idx, 'html'); }}>
-                    <Icon name="File" size={13} /> <span>Share as HTML…</span>
+                    <Icon name="File" size={12} /> <span>Share as HTML…</span>
                   </button>
                   <button type="button" onClick={() => { setShareOpen(false); shareFromMessage && shareFromMessage(convId, idx, 'md'); }}>
-                    <Icon name="FileAdd" size={13} /> <span>Export Markdown…</span>
+                    <Icon name="FileAdd" size={12} /> <span>Export Markdown…</span>
                   </button>
                   <button type="button" onClick={() => { setShareOpen(false); shareFromMessage && shareFromMessage(convId, idx, 'json'); }}>
-                    <Icon name="Code" size={13} /> <span>Export JSON…</span>
+                    <Icon name="Code" size={12} /> <span>Export JSON…</span>
                   </button>
                 </div>
               )}
             </div>
-            {(m.model || m.durationMs > 800) && (
+            <button type="button" className="response-action-btn" title="Delete response" onClick={() => deleteMessage && deleteMessage(convId, idx)}>
+              <Icon name="Trash" size={11} />
+            </button>
+            {(hasModel || hasDuration || tsLabel) && (
               <span className="response-actions-meta">
-                {m.model && (
+                {hasModel && (
                   <span
                     className="response-model-badge"
                     title={m.modelsUsed && m.modelsUsed.length > 1 ? `Models used: ${m.modelsUsed.join(' → ')}` : `Model: ${m.model}`}
@@ -3103,22 +3172,26 @@ function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, 
                     <span className="response-model-name">{m.model}</span>
                   </span>
                 )}
-                {m.model && m.durationMs > 800 && <span className="response-meta-sep" aria-hidden="true">·</span>}
-                {m.durationMs > 800 && (
-                  <span className="response-worked-time"><Icon name="Clock" size={12} /> Worked for {fmtElapsed(m.durationMs)}</span>
+                {hasModel && hasDuration && <span className="response-meta-sep" aria-hidden="true">·</span>}
+                {hasDuration && (
+                  <span className="response-worked-time"><Icon name="Clock" size={11} /> Worked for {fmtElapsed(m.durationMs)}</span>
                 )}
+                {(hasModel || hasDuration) && tsLabel && <span className="response-meta-sep" aria-hidden="true">·</span>}
+                {tsLabel && <span className="msg-timestamp" title={tsFull}>{tsLabel}</span>}
               </span>
             )}
           </div>
         )}
       </div>
-      <div className="msg-toolbar">
-        <button className="icon-btn" title={copied ? 'Copied' : 'Copy'} onClick={doCopy}><Icon name={copied ? 'Check' : 'Copy'} size={15} /></button>
-        {m.role === 'user' && <button className="icon-btn" title="Edit" onClick={() => editMessage(m)}><Icon name="Edit" size={15} /></button>}
-        {m.role === 'assistant' && <button className="icon-btn" title="Fork from here" onClick={() => forkFromMessage && forkFromMessage(convId, idx)}><Icon name="GitBranch" size={15} /></button>}
-        {m.role === 'assistant' && <button className="icon-btn" title="Retry" onClick={() => retryMessage(convId, idx)}><Icon name="History" size={15} /></button>}
-        <button className="icon-btn" title="Delete" onClick={() => deleteMessage(convId, idx)}><Icon name="Trash" size={15} /></button>
-      </div>
+      {showFloatingToolbar && (
+        <div className="msg-toolbar">
+          <button className="icon-btn" title={copied ? 'Copied' : 'Copy'} onClick={doCopy}><Icon name={copied ? 'Check' : 'Copy'} size={15} /></button>
+          {m.role === 'user' && <button className="icon-btn" title="Edit" onClick={() => editMessage(m)}><Icon name="Edit" size={15} /></button>}
+          {m.role === 'assistant' && <button className="icon-btn" title="Fork from here" onClick={() => forkFromMessage && forkFromMessage(convId, idx)}><Icon name="GitBranch" size={15} /></button>}
+          {m.role === 'assistant' && <button className="icon-btn" title="Retry" onClick={() => retryMessage(convId, idx)}><Icon name="History" size={15} /></button>}
+          <button className="icon-btn" title="Delete" onClick={() => deleteMessage(convId, idx)}><Icon name="Trash" size={15} /></button>
+        </div>
+      )}
     </div>
   );
 }

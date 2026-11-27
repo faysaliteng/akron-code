@@ -1,7 +1,7 @@
 {
   "name": "akronbot",
   "productName": "Akron Code",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Akron Code — multi-agent desktop coding IDE by Akronlogic.com",
   "main": "electron/main.js",
   "bin": {
@@ -133,6 +133,13 @@
       "output": "release",
       "buildResources": "build"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "faysaliteng",
+        "repo": "akron-code"
+      }
+    ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [

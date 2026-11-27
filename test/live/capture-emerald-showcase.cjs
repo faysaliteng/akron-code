@@ -80,7 +80,7 @@ function registerHandlers() {
     'autobot:customToolList': () => [],
     'autobot:listSlashActions': () => [],
     'autobot:getAccounts': () => ({ claude: [], chatgpt: [], antigravity: [], grok: [] }),
-    'autobot:getVersion': () => ({ version: '1.1.0' }),
+    'autobot:getVersion': () => ({ version: '1.2.0' }),
     'autobot:getCwd': () => ROOT,
     'autobot:getWorkspace': () => ROOT,
     'autobot:getDefaultCwd': () => ROOT,

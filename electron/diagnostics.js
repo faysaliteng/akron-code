@@ -51,7 +51,7 @@ function scrubObject(obj, depth = 0) {
 function generateDiagnosticBundle({
   category = 'bug',
   summary = '',
-  appVersion = '1.1.0',
+  appVersion = '1.2.0',
   surface = 'emerald-carbon',
   theme = 'dark',
   settings = {},
@@ -61,7 +61,7 @@ function generateDiagnosticBundle({
   const payload = {
     bundleId: 'diag-' + crypto.randomBytes(5).toString('hex'),
     generatedAt: new Date().toISOString(),
-    appVersion: String(appVersion || '1.1.0'),
+    appVersion: String(appVersion || '1.2.0'),
     os: { platform: process.platform, arch: process.arch, release: os.release(), node: process.version },
     ui: { theme, surface },
     feedback: {

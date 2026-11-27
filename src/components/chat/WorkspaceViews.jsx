@@ -645,7 +645,7 @@ export function SegmentView({ segments, tools, streaming }) {
 }
 
 // ---------- Chat view ----------
-function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, thinking, paused, onScrollAway, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onLearnSkill, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError, onPromptAction, onOpenInIde }) {
+function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, thinking, paused, onScrollAway, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onLearnSkill, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError, onPromptAction, onOpenInIde, uiSettings }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [subExpanded, setSubExpanded] = useState(false);
@@ -911,12 +911,12 @@ function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, t
           <p className="muted">{T('welcome.prompt')}</p>
         </div>
       )}
-      {MessageComponent && messages.map((m, i) => <MessageComponent key={m.id} m={m} convId={convId} cwd={cwd} idx={i} turnLabel={turnPrompts[i]} subAgentCount={subCount} taskCount={bgTasksCount} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} />)}
+      {MessageComponent && messages.map((m, i) => <MessageComponent key={m.id} m={m} convId={convId} cwd={cwd} idx={i} turnLabel={turnPrompts[i]} subAgentCount={subCount} taskCount={bgTasksCount} uiSettings={uiSettings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} />)}
       {Boolean((subAgents && subAgents.length > 0) || swarmInfo) && (
         <MissionControl subAgents={subAgents} swarmInfo={swarmInfo} swarmBoard={swarmBoard} inline onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} />
       )}
       {live && <div className="msg assistant">
-        <div className="avatar avatar-assistant"><Logo size={20} /></div>
+        {(!uiSettings || uiSettings.showAvatars !== false) && <div className="avatar avatar-assistant"><Logo size={20} /></div>}
         <div className="body">
           <RunActivity live={live} thinking={thinking} startedAt={runStartedAt} />
           <LiveChecklistCard tools={live.tools} subAgents={subAgents} swarmInfo={swarmInfo} streamingTool={live.streamingTool} streaming Icon={Icon} />

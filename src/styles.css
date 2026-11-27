@@ -591,7 +591,7 @@ button { font-family: inherit; letter-spacing: inherit; }
 
 .muted { color: var(--text-400); line-height: 1.55; }
 
-.msg { display: flex; gap: 15px; padding: 16px 0; max-width: 780px; margin: 0 auto; position: relative; }
+.msg { display: flex; gap: 15px; padding: var(--msg-pad-y, 16px) 0; max-width: var(--chat-max-w, 880px); margin: 0 auto; position: relative; }
 .msg .msg-toolbar {
   position: absolute; top: -2px; right: 0; display: flex; gap: 2px;
   padding: 3px; border-radius: 9px; border: 1px solid var(--border-strong);
@@ -668,18 +668,51 @@ button { font-family: inherit; letter-spacing: inherit; }
 
 .worked-for { display: inline-flex; align-items: center; gap: 5px; margin-top: 8px; color: var(--text-400); font-size: var(--fs-footnote); }
 
+/* User message footer: small timestamp + hover copy/edit/delete */
+.msg-user-footer {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 4px; min-height: 18px;
+}
+.msg-user-actions {
+  display: inline-flex; align-items: center; gap: 2px;
+  opacity: 0; transition: opacity .12s ease;
+}
+.msg.user:hover .msg-user-actions,
+.msg-user-footer:focus-within .msg-user-actions { opacity: 1; }
+.msg-user-mini-btn {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 1.5px 5px; border-radius: 5px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--text-400); font-size: 10.5px; font-weight: 500;
+  cursor: pointer; line-height: 1.25;
+}
+.msg-user-mini-btn:hover { color: var(--text-000); background: var(--bg-200); border-color: var(--border); }
+.msg-user-mini-btn.copied { color: var(--accent); }
+.msg-timestamp {
+  font-size: 10.5px;
+  color: var(--text-400);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* Response footer actions (Copy · Fork · Retry · Share) */
 .response-actions {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
-  margin-top: 10px; padding-top: 6px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+  margin-top: 6px; padding-top: 2px;
   position: relative;
 }
+.response-actions.style-hover { opacity: 0.45; transition: opacity .14s ease; }
+.msg:hover .response-actions.style-hover,
+.response-actions.style-hover:focus-within { opacity: 1; }
 .response-action-btn {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 4px 9px; border-radius: 7px;
+  display: inline-flex; align-items: center; gap: 3.5px;
+  padding: 2px 6px; border-radius: 5px;
   border: 1px solid transparent; background: transparent;
-  color: var(--text-400); font-size: 12px; font-weight: 500;
+  color: var(--text-400); font-size: 11px; font-weight: 500; line-height: 1.25;
   cursor: pointer; transition: color .12s ease, background .12s ease, border-color .12s ease;
+}
+.response-actions.style-icons-only .response-action-btn {
+  width: 22px; height: 22px; padding: 0; justify-content: center;
 }
 .response-action-btn:hover {
   color: var(--text-000); background: var(--bg-200); border-color: var(--border);

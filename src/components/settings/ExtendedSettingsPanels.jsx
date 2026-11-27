@@ -1,5 +1,253 @@
 import React, { useState } from 'react';
 import { Icon } from '../Icon.jsx';
+import { DEFAULT_TYPOGRAPHY } from '../../typography.js';
+
+export const ACCENT_PRESETS = [
+  { id: 'emerald', label: 'Emerald', hex: '#10b981' },
+  { id: 'cyan', label: 'Cyan', hex: '#06b6d4' },
+  { id: 'blue', label: 'Blue', hex: '#3b82f6' },
+  { id: 'violet', label: 'Violet', hex: '#8b5cf6' },
+  { id: 'amber', label: 'Amber', hex: '#f59e0b' },
+  { id: 'rose', label: 'Rose', hex: '#f43f5e' },
+];
+
+export const DEFAULT_APPEARANCE_SETTINGS = {
+  theme: 'dark',
+  surfaceFinish: 'emerald-carbon',
+  accentColor: '#10b981',
+  bgPattern: 'carbon-weave',
+  uiDensity: 'comfortable',
+  chatWidth: 'standard',
+  messageStyle: 'editorial',
+  borderRadius: 'balanced',
+  showTimestamps: true,
+  timestampFormat: 'date-time',
+  actionBarStyle: 'compact',
+  showModelBadge: true,
+  showAvatars: true,
+  showFloatingToolbar: false,
+};
+
+function hexToRgb(hex) {
+  const clean = String(hex || '').trim().replace(/^#/, '');
+  const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean;
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) return [16, 185, 129];
+  return [
+    parseInt(full.slice(0, 2), 16),
+    parseInt(full.slice(2, 4), 16),
+    parseInt(full.slice(4, 6), 16),
+  ];
+}
+
+function shadeHex(hex, factor) {
+  const [r, g, b] = hexToRgb(hex);
+  const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
+  const mix = (c) => (factor >= 0 ? c + (255 - c) * factor : c * (1 + factor));
+  return '#' + [clamp(mix(r)), clamp(mix(g)), clamp(mix(b))].map((v) => v.toString(16).padStart(2, '0')).join('');
+}
+
+export function computeAppearanceVars(settings = {}, systemPrefersLight = false) {
+  const theme = settings.theme === 'auto'
+    ? (systemPrefersLight ? 'light' : 'dark')
+    : (settings.theme === 'light' ? 'light' : 'dark');
+  const surface = settings.surfaceFinish || 'emerald-carbon';
+  const bgPattern = settings.bgPattern || 'carbon-weave';
+  const density = settings.uiDensity || 'comfortable';
+  const chatWidth = settings.chatWidth || 'standard';
+  const msgStyle = settings.messageStyle || 'editorial';
+  const borderRadius = settings.borderRadius || 'balanced';
+  const accent = /^#[0-9a-fA-F]{3,6}$/.test(String(settings.accentColor || '')) ? settings.accentColor : '#10b981';
+  const [r, g, b] = hexToRgb(accent);
+  const chatWidthMap = { narrow: '740px', standard: '880px', wide: '1080px', full: '100%' };
+  const radiusMap = {
+    sharp: { md: '4px', lg: '5px', card: '6px', composer: '8px' },
+    balanced: { md: '7px', lg: '9px', card: '12px', composer: '14px' },
+    rounded: { md: '12px', lg: '14px', card: '16px', composer: '18px' },
+  };
+  const rad = radiusMap[borderRadius] || radiusMap.balanced;
+
+  return {
+    theme,
+    surface,
+    bgPattern,
+    density,
+    chatWidth,
+    msgStyle,
+    borderRadius,
+    accent,
+    style: {
+      '--accent': accent,
+      '--accent-strong': shadeHex(accent, -0.22),
+      '--accent-soft': `rgba(${r}, ${g}, ${b}, 0.16)`,
+      '--accent-text': theme === 'light' ? shadeHex(accent, -0.35) : shadeHex(accent, 0.58),
+      '--chat-max-w': chatWidthMap[chatWidth] || '880px',
+      '--radius-md': rad.md,
+      '--radius-lg': rad.lg,
+      '--radius-card': rad.card,
+      '--radius-composer': rad.composer,
+    },
+  };
+}
+
+export function AppearanceStudioSection({ settings, setSettings, setNotice }) {
+  const patch = (next) => setSettings({ ...settings, ...next });
+  const resetDefaults = () => {
+    setSettings({
+      ...settings,
+      ...DEFAULT_APPEARANCE_SETTINGS,
+      typography: { ...DEFAULT_TYPOGRAPHY },
+    });
+    if (setNotice) setNotice('Reset Appearance & Typography to factory defaults.');
+  };
+  const activeAccent = settings.accentColor || '#10b981';
+
+  return (
+    <div data-testid="appearance-studio-section">
+      <div className="settings-card">
+        <h3><Icon name="Palette" size={14} /> Theme, Surface Finish &amp; Accent Color</h3>
+        <div className="row">
+          <label>
+            Theme Mode
+            <select value={settings.theme || 'dark'} onChange={(e) => patch({ theme: e.target.value })}>
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="auto">Auto (System)</option>
+            </select>
+          </label>
+          <label>
+            Surface Finish
+            <select value={settings.surfaceFinish || 'emerald-carbon'} onChange={(e) => patch({ surfaceFinish: e.target.value })}>
+              <option value="emerald-carbon">Glossy Emerald Carbon (Default)</option>
+              <option value="matte-obsidian">Matte Obsidian (Pure Flat Dark)</option>
+              <option value="midnight-glass">Midnight Glass (Translucent Blur)</option>
+              <option value="minimal-slate">Minimal Slate (High-Contrast Clean)</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="row">
+          <label>
+            Background Pattern
+            <select value={settings.bgPattern || 'carbon-weave'} onChange={(e) => patch({ bgPattern: e.target.value })}>
+              <option value="carbon-weave">Subtle Carbon Diagonal Texture (Default)</option>
+              <option value="ambient-glow">Soft Radial Top Glow</option>
+              <option value="solid">Pure Solid Background</option>
+            </select>
+          </label>
+          <div className="accent-swatch-field">
+            <span className="accent-field-label">Accent Color</span>
+            <div className="accent-swatch-row">
+              {ACCENT_PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  className={'accent-swatch-pill' + (activeAccent.toLowerCase() === p.hex.toLowerCase() ? ' on' : '')}
+                  title={p.label}
+                  onClick={() => patch({ accentColor: p.hex })}
+                >
+                  <span className="accent-swatch-dot" style={{ background: p.hex }} />
+                  <span>{p.label}</span>
+                </button>
+              ))}
+              <label className="accent-custom-picker" title="Pick custom accent color">
+                <input
+                  type="color"
+                  value={/^#[0-9a-fA-F]{6}$/.test(activeAccent) ? activeAccent : '#10b981'}
+                  onChange={(e) => patch({ accentColor: e.target.value })}
+                />
+                <span>{activeAccent}</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-card">
+        <h3><Icon name="Grid" size={14} /> Layout, Density &amp; Chat Geometry</h3>
+        <div className="row">
+          <label>
+            UI Density
+            <select value={settings.uiDensity || 'comfortable'} onChange={(e) => patch({ uiDensity: e.target.value })}>
+              <option value="compact">Compact</option>
+              <option value="comfortable">Comfortable (Default)</option>
+              <option value="spacious">Spacious</option>
+            </select>
+          </label>
+          <label>
+            Chat Reading Width
+            <select value={settings.chatWidth || 'standard'} onChange={(e) => patch({ chatWidth: e.target.value })}>
+              <option value="narrow">Narrow (740px)</option>
+              <option value="standard">Standard (880px)</option>
+              <option value="wide">Wide (1080px)</option>
+              <option value="full">Full (100%)</option>
+            </select>
+          </label>
+        </div>
+        <div className="row">
+          <label>
+            Message Layout Style
+            <select value={settings.messageStyle || 'editorial'} onChange={(e) => patch({ messageStyle: e.target.value })}>
+              <option value="editorial">Clean Open Rows (Default)</option>
+              <option value="bubbles">Framed Chat Cards</option>
+            </select>
+          </label>
+          <label>
+            Corner Roundness
+            <select value={settings.borderRadius || 'balanced'} onChange={(e) => patch({ borderRadius: e.target.value })}>
+              <option value="sharp">Sharp (4px)</option>
+              <option value="balanced">Balanced (10px)</option>
+              <option value="rounded">Rounded (16px)</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div className="settings-card">
+        <h3><Icon name="Clock" size={14} /> Message Footer, Timestamps &amp; Visibility</h3>
+        <div className="row">
+          <label>
+            Timestamp Format
+            <select value={settings.timestampFormat || 'date-time'} onChange={(e) => patch({ timestampFormat: e.target.value })}>
+              <option value="date-time">Date &amp; Time (27 Nov · 02:39)</option>
+              <option value="12h">12-Hour (Nov 27 · 2:39 AM)</option>
+              <option value="relative">Relative (5m ago · 02:34)</option>
+              <option value="iso">ISO (2026-11-27 02:39:12)</option>
+            </select>
+          </label>
+          <label>
+            Response Action Buttons
+            <select value={settings.actionBarStyle || 'compact'} onChange={(e) => patch({ actionBarStyle: e.target.value })}>
+              <option value="compact">Compact Icon + Label (Default)</option>
+              <option value="icons-only">Ultra-Compact Icons Only</option>
+              <option value="hover">Fade in on Hover</option>
+            </select>
+          </label>
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={settings.showTimestamps !== false} onChange={(e) => patch({ showTimestamps: e.target.checked })} />
+          Show Date &amp; Time on Messages (every user input &amp; assistant output)
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={settings.showModelBadge !== false} onChange={(e) => patch({ showModelBadge: e.target.checked })} />
+          Show Model Badge &amp; Worked Time
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={settings.showAvatars !== false} onChange={(e) => patch({ showAvatars: e.target.checked })} />
+          Show Message Avatars
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={!!settings.showFloatingToolbar} onChange={(e) => patch({ showFloatingToolbar: e.target.checked })} />
+          Show Legacy Top-Right Floating Message Toolbar
+        </label>
+        <div style={{ marginTop: 10 }}>
+          <button type="button" className="btn-mini" data-testid="reset-appearance-btn" onClick={resetDefaults}>
+            <Icon name="Refresh" size={12} /> Reset Appearance to Default
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function ApplicationSettingsSection({ settings, setSettings, features, saveFeat, setNotice }) {
   const [sleepBusy, setSleepBusy] = useState(false);
@@ -29,6 +277,8 @@ export function ApplicationSettingsSection({ settings, setSettings, features, sa
           >
             <option value="emerald-carbon">Glossy Emerald Carbon (Default)</option>
             <option value="matte-obsidian">Matte Obsidian</option>
+            <option value="midnight-glass">Midnight Glass</option>
+            <option value="minimal-slate">Minimal Slate</option>
           </select>
         </label>
         <label>

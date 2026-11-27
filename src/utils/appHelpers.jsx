@@ -635,6 +635,62 @@ export function fmtElapsed(ms) {
   return m + 'm ' + (s % 60) + 's';
 }
 
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+export function fmtMessageFullTimestamp(ts) {
+  const num = Number(ts);
+  if (!Number.isFinite(num) || num <= 0) return '';
+  try {
+    return new Date(num).toLocaleString();
+  } catch {
+    return '';
+  }
+}
+
+export function fmtMessageTimestamp(ts, format = 'date-time') {
+  const num = Number(ts);
+  if (!Number.isFinite(num) || num <= 0) return '';
+  const d = new Date(num);
+  if (Number.isNaN(d.getTime())) return '';
+
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const hh = d.getHours();
+  const mm = pad2(d.getMinutes());
+  const ss = pad2(d.getSeconds());
+  const mon = SHORT_MONTHS[d.getMonth()];
+  const day = d.getDate();
+  const yr = d.getFullYear();
+  const mode = format === 'short' || !format ? 'date-time' : format;
+
+  if (mode === 'iso') {
+    return `${yr}-${pad2(d.getMonth() + 1)}-${pad2(day)} ${pad2(hh)}:${mm}:${ss}`;
+  }
+  if (mode === '12h') {
+    const h12 = hh % 12 || 12;
+    const ampm = hh >= 12 ? 'PM' : 'AM';
+    return `${mon} ${day} · ${h12}:${mm} ${ampm}`;
+  }
+
+  const now = new Date();
+  const time24 = `${pad2(hh)}:${mm}`;
+
+  if (mode === 'relative') {
+    const diffSec = Math.max(0, Math.round((now.getTime() - d.getTime()) / 1000));
+    if (diffSec < 45) return `just now · ${time24}`;
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago · ${time24}`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago · ${time24}`;
+    return `${day} ${mon} · ${time24}`;
+  }
+
+  const sameDay =
+    yr === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    day === now.getDate();
+  if (sameDay) return `Today · ${time24}`;
+  if (yr !== now.getFullYear()) return `${day} ${mon} ${yr} · ${time24}`;
+  return `${day} ${mon} · ${time24}`;
+}
+
 export function shortPath(p) {
   p = String(p || '').replace(/\\/g, '/');
   const parts = p.split('/').filter(Boolean);

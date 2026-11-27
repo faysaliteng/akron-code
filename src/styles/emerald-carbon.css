@@ -212,3 +212,84 @@
 }
 .limit-ring-label { font-size: 12px; font-weight: 600; margin-top: 6px; color: var(--text-100); }
 .limit-ring-sub { font-size: 11px; color: var(--text-300); margin-top: 2px; }
+
+/* UI & Design Customization Studio Surfaces, Patterns, Density, Geometry */
+.app[data-surface="matte-obsidian"] {
+  background: #0d0d10;
+}
+.app[data-surface="matte-obsidian"][data-theme="light"] {
+  background: #f5f5f7;
+}
+.app[data-surface="midnight-glass"] {
+  background: radial-gradient(1200px 600px at 80% -10%, var(--accent-soft), transparent 60%), #090d16;
+}
+.app[data-surface="midnight-glass"] .sidebar,
+.app[data-surface="midnight-glass"] .composer,
+.app[data-surface="midnight-glass"] .settings-card {
+  background: rgba(18, 24, 38, 0.72);
+  backdrop-filter: blur(14px);
+}
+.app[data-surface="midnight-glass"][data-theme="light"] {
+  background: radial-gradient(1200px 600px at 80% -10%, var(--accent-soft), transparent 60%), #eef2f9;
+}
+.app[data-surface="midnight-glass"][data-theme="light"] .sidebar,
+.app[data-surface="midnight-glass"][data-theme="light"] .composer,
+.app[data-surface="midnight-glass"][data-theme="light"] .settings-card {
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(14px);
+}
+.app[data-surface="minimal-slate"] {
+  --bg-000: #11151c;
+  --bg-100: #161b24;
+  --bg-200: #1f2633;
+  background: #11151c;
+}
+.app[data-surface="minimal-slate"][data-theme="light"] {
+  --bg-000: #ffffff;
+  --bg-100: #f8fafc;
+  --bg-200: #eef2f6;
+  background: #f8fafc;
+}
+.app[data-bg-pattern="ambient-glow"] {
+  background-image: radial-gradient(960px 440px at 65% -12%, var(--accent-soft), transparent 65%);
+}
+.app[data-bg-pattern="solid"] {
+  background-image: none;
+}
+
+.app[data-density="compact"] { --msg-pad-y: 10px; }
+.app[data-density="compact"] .sidenav button { padding-top: 5px; padding-bottom: 5px; }
+.app[data-density="compact"] .composer { padding: 8px 10px; }
+.app[data-density="spacious"] { --msg-pad-y: 22px; }
+.app[data-density="spacious"] .composer { padding: 14px 16px; }
+
+.app[data-msg-style="bubbles"] .msg.user .body {
+  background: var(--bg-200);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card, 12px);
+  padding: 10px 14px;
+}
+.app[data-msg-style="bubbles"] .msg.assistant .body {
+  background: var(--bg-100);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card, 12px);
+  padding: 12px 15px;
+}
+
+.accent-swatch-field { display: flex; flex-direction: column; gap: 5px; flex: 1; }
+.accent-field-label { font-size: 12px; color: var(--text-300); font-weight: 500; }
+.accent-swatch-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.accent-swatch-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 8px; border-radius: 999px;
+  border: 1px solid var(--border); background: rgba(255, 255, 255, 0.03);
+  color: var(--text-200); font-size: 11px; cursor: pointer;
+}
+.accent-swatch-pill.on { border-color: var(--accent); background: var(--accent-soft); color: var(--text-000); font-weight: 600; }
+.accent-swatch-dot { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
+.accent-custom-picker {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--border); font-size: 11px; font-family: var(--mono); cursor: pointer;
+}
+.accent-custom-picker input[type="color"] { width: 18px; height: 18px; border: 0; background: none; padding: 0; cursor: pointer; }
