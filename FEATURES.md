@@ -1,3 +1,14 @@
+## Akron Code v1.2.0 — Current Production Architecture (2026-11-27)
+
+- **Multi-Provider Command Center & 8-Role Routing:** Unites Claude Max, ChatGPT/Codex, Gemini/Antigravity, Grok, Ollama, LM Studio, DeepSeek, and 1,575 unlocked FreeLLMAPI models (`electron/llm.js`, `electron/task-router.js`, `electron/orch-router.js`).
+- **Full-Page `Automations` Hub & `/automation` Skill:** Multi-trigger scheduling (`CRON_TZ=<IANA>` cron + debounced `fs.watch` Git/File Watch + manual routines), starter templates, MCP allowlisting, quiet-hours notifications, and persisted SQLite transcripts (`src/components/AutomationsView.jsx`, `electron/scheduler.js`).
+- **Offline Media & Office Studio + Dual `[Agent | IDE]` Workbench:** Integrated `pdf-lib`, `docx`, `xlsx`, `pptxgenjs`, `jszip`, `katex`, `@ffmpeg-installer/ffmpeg`, Monaco IDE, persistent `@xterm/xterm` PTY, offline Markmap mind maps, and 263 built-in REA reverse-engineering MCP tools (428 total tools).
+- **Standalone `Akron Browser Bot` (`:8766` CRX3 Auto-Installer):** Deterministic RSA-2048 signed CRX3 packaging, Chromium/Edge `HKCU` + External Extensions registration, and `--load-extension` pre-loaded launch (`electron/browser-ext-installer.js`).
+
+*(The archival reverse-engineering specification from early bootstrapping follows below for historical context.)*
+
+---
+
 # Claude Desktop — Reverse Engineering Report (→ Akron Bot build spec)
 
 **Target:** `/Applications/Claude.app` — "Claude Desktop" by Anthropic PBC

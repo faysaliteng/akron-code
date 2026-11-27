@@ -10,6 +10,21 @@ if (process.platform !== 'darwin' || !secretstore.hasLegacySafeStorage()) {
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+// Guard stdout/stderr against benign EPIPE broken pipes when launched as a GUI app on Windows/macOS/Linux
+for (const stream of [process.stdout, process.stderr]) {
+  if (stream && typeof stream.on === 'function') {
+    stream.on('error', (err) => {
+      if (err && (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED' || err.code === 'EBADF')) return;
+      throw err;
+    });
+  }
+}
+process.on('uncaughtException', (err) => {
+  if (err && (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED' || err.code === 'EBADF')) return;
+  try {
+    fs.appendFileSync(path.join(os.tmpdir(), 'akron-uncaught.log'), `[${new Date().toISOString()}] ${err && (err.stack || err.message || err)}\n`);
+  } catch (_) {}
+});
 const { spawn, execFile, spawnSync } = require('child_process');
 const net = require('net');
 const { runAgent, createPauseController, normalizeProvider, humanizeLLMError } = require('./llm');

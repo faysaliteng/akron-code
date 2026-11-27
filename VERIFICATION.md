@@ -6,24 +6,29 @@
 
 | Gate | Command / Platform | Result |
 |---|---|---|
-| Static Syntax / JSX Check | `npm run typecheck` | ✅ `TYPECHECK_OK: verified 321 JS/JSX/MJS/CJS files with 0 syntax/transform errors.` |
-| Full Unit & Integration Suite | `for f in test/*.test.js; do node "$f"; done` | ✅ **81 / 81 test files passed (0 failures)** |
-| Deterministic Benchmark Evals | `npm run eval:all` | ✅ `EVAL_ALL: 70/70 passed (100%) in 163ms` |
-| Cross-Platform Audit | `node test/cross-platform-audit.test.js` | ✅ `CROSS_PLATFORM_AUDIT_ALL_PASS` (`0` `.map` files, `0` hardcoded paths, `0` leaked secrets) |
+| Static Syntax / JSX Check | `npm run typecheck` | ✅ `TYPECHECK_OK: verified 342 JS/JSX/MJS/CJS files with 0 syntax/transform errors.` |
+| Full Unit & Integration Suite | `npm test` (`test/*.test.js`) | ✅ **114 / 114 test cases/suites passed (0 failures)** |
+| Deterministic Benchmark Evals | `npm run eval:all` | ✅ `EVAL_ALL: 70/70 passed (100%)` |
+| Cross-Platform Audit | `node test/cross-platform-audit.test.js` | ✅ `CROSS_PLATFORM_AUDIT_ALL_PASS` (`0` `.map` files, `0` hardcoded user paths, `0` leaked secrets) |
 | Cryptographic Brand Seal | `npm run brand:check && node test/brand-integrity.test.js` | ✅ `BRAND_SEAL_OK 12`, `BRAND_INTEGRITY_ALL_PASS` |
-| Live Electron E2E + Dark/Light Showcase | `./node_modules/.bin/electron test/live/opencode-design-e2e.cjs` & `capture-v120-showcase.cjs` | ✅ `OPENCODE_DESIGN_E2E_OK`, `SHOWCASE_V120_DONE` (23 Dark/Light PNGs visually verified + image/link audit in `test/appearance-timestamps.test.js`) |
-| Packaged macOS ARM64 Build + Fuses + Codesign | `npx electron-builder --mac dmg zip --arm64 --publish never && ./verify-release.sh` | ✅ `VERIFY_RELEASE_DONE` (all 6/6 Electron Fuses, `codesign OK`, `sql-wasm.wasm` + `icon.png`/`icon.ico` unpacked, `0` `.map` files) |
-| Clean-`HOME` Cold Boot (`/Applications/Akron Code.app`) | `HOME="$FRESH_HOME" AKRON_COLD_BOOT_CHECK=1 ...` | ✅ `COLD_BOOT_OK {"ok":true,"brandOk":true,"domOk":true,"ipcOk":true,"checkedFiles":15,"consoleErrorCount":0}` |
-| Local Cross-Built Windows & Linux Artifacts | `--win nsis portable --x64` & `--linux AppImage tar.gz --x64` | ✅ Emitted `AkronCode-1.2.0-win-setup-x64.exe`, `AkronCode-1.2.0-win-portable-x64.exe`, `AkronCode-1.2.0-linux-x86_64.AppImage`, `AkronCode-1.2.0-linux-x64.tar.gz` (`latest.yml`/`latest-mac.yml`/`latest-linux.yml`; `.deb` built natively on CI `ubuntu-latest`) |
+| Automations Hub, `/automation` Skill & Browser Bot CRX3 | `test/e2e-full-production-readiness.test.js` & `test/browser-ext-installer.test.js` | ✅ Multi-trigger `CRON_TZ`, `fs.watch`, MCP filtering, SQLite `sessionDb`, deterministic CRX3 `Cr24`, and stdio `EPIPE` guard verified |
+| Live Electron E2E & Full Screenshot Gallery | `test/live/{opencode-design-e2e,capture-automations-browserbot}.cjs` | ✅ Dark/Light UI, Automations Hub & Modal, Browser Ext Auto-Setup & `test/appearance-timestamps.test.js` README/docs image check passed |
+| Packaged macOS ARM64 Build + Fuses + Codesign + Top-Level Extension | `npm run dist:mac && ./verify-release.sh` | ✅ `VERIFY_RELEASE_DONE` (all 6/6 Electron Fuses, `codesign OK`, top-level `Akron Browser Bot/`, `sql-wasm.wasm` + `icon.png`/`icon.ico` unpacked, `0` `.map` files) |
+| Clean Cold Boot (`/Applications/Akron Code.app`) | `AKRON_COLD_BOOT_CHECK=1 AKRON_NO_DIALOG=1 ...` | ✅ `COLD_BOOT_OK {"ok":true,"brandOk":true,"domOk":true,"ipcOk":true,"checkedFiles":15,"consoleErrorCount":0,"consoleErrors":[]}` |
+| Live Windows 11 ARM64 NSIS Setup Install & GUI Verification | `AkronCode-1.2.0-win-setup-arm64.exe /S` inside Windows 11 VM | ✅ `NSIS_EXIT=0`, `ProductVersion=1.2.0.0`, Uninstall Registry `Akron Code 1.2.0`, Desktop & Start Menu shortcuts `True`, `COLD_BOOT_OK` (`0` errors), CRX3 `Magic=Cr24` & Edge Registry `1.6.7`, live Automations GUI screenshots (`windows11-akron-code-live.png`, `windows11-installer-verified.png`) |
+| Windows x64/ARM64 & Linux x64 Packaging | `electron-builder --win nsis portable --x64`, `--win nsis --arm64`, `--linux AppImage tar.gz --x64` | ✅ Emitted all Windows `.exe`, Linux `.AppImage`/`.tar.gz`, standalone `AkronBrowserBot-1.6.7.{crx,zip}`, and `latest*.yml` manifests |
 
-### Local Verified Artifact Checksums (`v1.2.0` — `release/SHA256SUMS.txt`)
+### Verified Release Artifact Checksums (`v1.2.0` — `release/SHA256SUMS.txt`)
 
-- `AkronCode-1.2.0-arm64.dmg`: `e8239ab3c961ea85fdab1334b352d6d6f3227d7f63c91a5b8eb1bc233f9fe350`
-- `AkronCode-1.2.0-arm64.zip`: `dead81a8173caf69eda2445eec03ed7588991c7b7e85dd1176ca2d71d4e83a1e`
-- `AkronCode-1.2.0-win-setup-x64.exe`: `f1a1112e5518585b33d8695f05b43db5ee4b20698ea8cfd67ebab2ff986295b5`
-- `AkronCode-1.2.0-win-portable-x64.exe`: `e2f13a5ef705572298bf82a38990c2a23d2d05ebb783fbddac933c66eb13f047`
-- `AkronCode-1.2.0-linux-x86_64.AppImage`: `31d075992ab485463222d8b34d01a0b02a4e147fcc3fdb8ce41045cb3d022519`
-- `AkronCode-1.2.0-linux-x64.tar.gz`: `ca46d1f843f0c18e3e98980058419a57a84b228f11a611905e80892e506536e0`
+- `AkronCode-1.2.0-arm64.dmg`: `b204b99ead46101181b8f7989a3c00395c8bea4960b701626ef7cf6ef4721169`
+- `AkronCode-1.2.0-arm64.zip`: `60e30ab294b0c9d28011ff61572d1bd2aa54d7cbfa579672ff008fa3513e635a`
+- `AkronCode-1.2.0-win-setup-x64.exe`: `28a6164416051ec1fc4f07c3a400131d0757414072622d05b27711c93321c19f`
+- `AkronCode-1.2.0-win-setup-arm64.exe`: `58f472f64f7965262db333754c7249ca8a7c2e852d674f4257acb6b37c39003f`
+- `AkronCode-1.2.0-win-portable-x64.exe`: `819eedb455bb6dc50f6b654e8fb903247b3dbbd2dbc0d99e3e5aaf454bb0b737`
+- `AkronCode-1.2.0-linux-x86_64.AppImage`: `c2d50f010726253cb7dbf4d6259077069fca0759a9ebe6a3279c0667ea13abda`
+- `AkronCode-1.2.0-linux-x64.tar.gz`: `df2745b09e4cabba3e382169ea90ddcba0af89b4f30596c44584296d81bafef5`
+- `AkronBrowserBot-1.6.7.crx`: `6df84ac14da902e7db4a7052a01e6604458add889fcfce3ec9d955ac11f06cb4`
+- `AkronBrowserBot-1.6.7.zip`: `e3d64e5a63299de62226fa2f6d6dda1ad7c0d09ddecababd7290dd25e0d18546`
 
 ---
 

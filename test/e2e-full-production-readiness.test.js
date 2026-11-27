@@ -186,9 +186,14 @@ test('automation skill & slash registry cleanup have zero dead Anthropic entries
 
 test('AutomationsView, InputBarView, bundle & codebase hygiene satisfy production limits', () => {
   const appLines = fs.readFileSync(path.join(ROOT, 'src', 'App.jsx'), 'utf8').split('\n').length;
-  const mainLines = fs.readFileSync(path.join(ROOT, 'electron', 'main.js'), 'utf8').split('\n').length;
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'electron', 'main.js'), 'utf8');
+  const mainLines = mainSrc.split('\n').length;
   assert.ok(appLines < 3500, `src/App.jsx (${appLines}) must stay under 3500 lines`);
   assert.ok(mainLines < 1600, `electron/main.js (${mainLines}) must stay under 1600 lines`);
+  assert.ok(
+    mainSrc.includes('process.stdout') && mainSrc.includes('process.stderr') && mainSrc.includes('EPIPE'),
+    'electron/main.js must guard stdout/stderr against broken-pipe EPIPE crashes on Windows GUI launch'
+  );
 
   const autoView = fs.readFileSync(path.join(ROOT, 'src', 'components', 'AutomationsView.jsx'), 'utf8');
   assert.ok(/Create with Prompt/.test(autoView) && /scheduled-task-modal/.test(autoView) && /open-run-session-btn/.test(autoView));

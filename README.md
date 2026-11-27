@@ -13,8 +13,8 @@
   <a href="https://github.com/faysaliteng/akron-code/releases/latest">
     <img src="https://img.shields.io/badge/Release-v1.2.0-10b981?style=for-the-badge" alt="Release v1.2.0" />
   </a>
-  <a href="https://github.com/faysaliteng/akron-code/actions/workflows/build-desktop.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/faysaliteng/akron-code/build-desktop.yml?style=for-the-badge&label=Desktop%20CI" alt="Desktop CI" />
+  <a href="./VERIFICATION.md">
+    <img src="https://img.shields.io/badge/Verified-114%2F114%20Test%20Suites%20%C2%B7%2070%2F70%20Evals-059669?style=for-the-badge" alt="114/114 Test Suites · 70/70 Evals" />
   </a>
   <a href="https://github.com/faysaliteng/akron-code/releases/latest">
     <img src="https://img.shields.io/badge/Platforms-macOS%20%7C%20Windows%20%7C%20Linux-111827?style=for-the-badge" alt="Cross-Platform Desktop" />
@@ -51,16 +51,16 @@
 
 ## Downloads (Official Releases `v1.2.0`)
 
-All desktop installers are built from clean source via GitHub Actions (`macos-latest`, `windows-latest`, `ubuntu-latest`), hardened with **6/6 Electron Fuses** + cryptographic **SHA-256 Brand Seal** integrity verification, paired with `latest*.yml` auto-updater manifests, and published with `SHA256SUMS.txt` on the [**GitHub Releases Page**](https://github.com/faysaliteng/akron-code/releases/latest).
+All desktop installers are hardened with **6/6 Electron Fuses** + cryptographic **SHA-256 Brand Seal** integrity verification, paired with `latest*.yml` auto-updater manifests and `SHA256SUMS.txt` on the [**GitHub Releases Page**](https://github.com/faysaliteng/akron-code/releases/latest).
 
 | Platform / Component | Artifacts | Highlights |
 |---|---|---|
-| **macOS (Apple Silicon)** | `AkronCode-1.2.0-arm64.dmg` · `AkronCode-1.2.0-arm64.zip` | Ad-hoc signed, `RunAsNode=false` Fuse, ASAR + unpacked icon/WASM integrity verified |
-| **Windows 11 / 10 (x64 & ARM64)** | `AkronCode-1.2.0-win-setup-x64.exe` · `AkronCode-1.2.0-win-setup-arm64.exe` | Native dark titlebar overlay (`Ctrl+` shortcuts), ConPTY `node-pty`, Toast logo XML, `com.akronbot.app` AUMID |
+| **macOS (Apple Silicon)** | `AkronCode-1.2.0-arm64.dmg` · `AkronCode-1.2.0-arm64.zip` | Top-level `Akron Code.app` + standalone `Akron Browser Bot/` folder, ad-hoc signed, `RunAsNode=false` Fuse, ASAR integrity verified |
+| **Windows 11 / 10 (x64 & ARM64)** | `AkronCode-1.2.0-win-setup-x64.exe` · `AkronCode-1.2.0-win-setup-arm64.exe` | NSIS Setup (`NSIS_EXIT=0`, Desktop & Start Menu shortcuts), native dark titlebar overlay (`Ctrl+` shortcuts), ConPTY `node-pty`, Toast XML, AUMID |
 | **Windows Portable (x64)** | `AkronCode-1.2.0-win-portable-x64.exe` | Zero-install single portable executable |
-| **Linux (x64)** | `AkronCode-1.2.0-linux-x86_64.AppImage` · `AkronCode-1.2.0-linux-amd64.deb` | Single-file `AppImage` + Debian/Ubuntu `.deb` package (`npmRebuild: false`, ASAR hardened) |
+| **Linux (x64)** | `AkronCode-1.2.0-linux-x86_64.AppImage` · `AkronCode-1.2.0-linux-x64.tar.gz` | Single-file `AppImage` + portable `.tar.gz` archive (`npmRebuild: false`, ASAR + Fuses hardened) |
+| **Standalone Akron Browser Bot (`1.6.7`)** | `AkronBrowserBot-1.6.7.crx` · `AkronBrowserBot-1.6.7.zip` | Deterministic RSA-2048 signed CRX3 (`Cr24`) + unpacked MV3 bundle auto-synced to user-accessible OS folder & `:8766` bridge |
 | **Companion Terminal CLI** | `./bin/akron.js` (`npm link` → `akron`) | Interactive REPL, `akron -p` headless execution, `akron review --adversarial`, `akron remote start`, `akron doctor`, `akron eval` |
-| **Akron Browser Bot (MV3)** | `resources/akron-browser-bot` (bundled in app resources) | Zero-key Chrome/Brave sidepanel extension over `:8766` bridge with inline progress plan UI matching Akron Code |
 
 Verify downloaded installers against `SHA256SUMS.txt`:
 
@@ -202,6 +202,8 @@ Crisp Dark & Light Agent Mode featuring **per-message timestamps** (`Today · HH
 
 ![Akron Code Inline Question Dock Dark](docs/screenshots/question-dock-dark.png)
 
+![Akron Code Editable Message Queue Tray Dark](docs/screenshots/message-queue-dark.png)
+
 ![Akron Code Emerald Sidebar & Mission Control Dark](docs/screenshots/emerald-dark-sidebar-mission.png)
 
 ![Akron Code Emerald Sidebar & Mission Control Light](docs/screenshots/emerald-light-sidebar-mission.png)
@@ -234,6 +236,8 @@ Manage all integrations, slash skills, `@`-mentionable Custom Sub-Agents (`~/.au
 
 ![Akron Code Duet Adversarial Review Dark](docs/screenshots/duet-review-dark.png)
 
+![Akron Code Duet Adversarial Review Light](docs/screenshots/duet-review-light.png)
+
 ---
 
 ### 6. Built-In Browser Inspect Element & Standalone `Akron Browser Bot` (`:8766` CRX3 Auto-Installer)
@@ -243,6 +247,8 @@ Manage all integrations, slash skills, `@`-mentionable Custom Sub-Agents (`~/.au
 ![Built-In Browser Inspect Element Showcase](docs/screenshots/browser-inspect.png)
 
 ![Akron Browser Bot Standalone & 1-Click Auto-Setup](docs/screenshots/browser-ext-autosetup-dark.png)
+
+![Browser Permissions & Site Access Rules Settings](docs/screenshots/settings-browser-rules-dark.png)
 
 <p align="center">
   <img src="docs/screenshots/browser-bot-inline-plan.png" width="420" alt="Akron Browser Bot Inline Checklist" />
@@ -260,15 +266,17 @@ Manage all integrations, slash skills, `@`-mentionable Custom Sub-Agents (`~/.au
 
 ---
 
-### 6C. Live Cross-Platform Desktop Verification (macOS Apple Silicon + Windows 11 ARM64 + Linux)
-Every release is validated with native OS execution — including live booting `Akron Code.exe` inside Windows 11 ARM64 (`COLD_BOOT_OK`, standalone `%LOCALAPPDATA%\AkronLogic\Akron Browser Bot` CRX3 sync, and live Edge `HKCU` extension registration).
+### 6C. Live Cross-Platform Desktop & Windows 11 NSIS Verification (macOS Apple Silicon + Windows 11 ARM64/x64 + Linux)
+Every release is validated with real native execution — including silent NSIS setup (`AkronCode-1.2.0-win-setup-arm64.exe /S` → `NSIS_EXIT=0`, Desktop & Start Menu shortcuts, Uninstall Registry `1.2.0`), cold-boot pass (`COLD_BOOT_OK`, 0 errors), live GUI Automations Hub verification, standalone `%LOCALAPPDATA%\AkronLogic\Akron Browser Bot` CRX3 (`Cr24`) sync, and live Edge `HKCU` extension registration (`1.6.7`).
 
 ![Akron Code Live on Windows 11 Desktop](docs/screenshots/windows11-akron-code-live.png)
 
+![Windows 11 NSIS Setup & CRX3 Installation Verification](docs/screenshots/windows11-installer-verified.png)
+
 ---
 
-### 7. UI & Design Customization Studio, Quota Rings, Cross-OS Notifications & Environments
-Full live visual control (**Theme Mode**, **4 Surface Finishes** — `Emerald Carbon`, `Matte Obsidian`, `Midnight Glass`, `Minimal Slate` — **6 Preset Accent Swatches + Custom Color Picker**, **Background Pattern**, **UI Density**, **Chat Width**, **Editorial vs Bubble Cards**, **Corner Roundness**, **Timestamp Formats**, and **Action Bar Styles**), paired with Dark & Light subscription quota rings, native OS notifications, and SSH/Remote execution environments.
+### 7. UI & Design Customization Studio, Quota Rings, Runtimes, Auto-Updater & Environments
+Full live visual control (**Theme Mode**, **4 Surface Finishes** — `Emerald Carbon`, `Matte Obsidian`, `Midnight Glass`, `Minimal Slate` — **6 Preset Accent Swatches + Custom Color Picker**, **Background Pattern**, **UI Density**, **Chat Width**, **Editorial vs Bubble Cards**, **Corner Roundness**, **Timestamp Formats**, and **Action Bar Styles**), paired with Dark & Light subscription quota rings, cross-OS notifications, runtime dependency manager, auto-updater, migration wizard, token budgets, diagnostics, and SSH/Remote execution environments.
 
 ![Settings UI & Design Customization Studio Dark](docs/screenshots/ui-design-studio-dark.png)
 
@@ -277,6 +285,16 @@ Full live visual control (**Theme Mode**, **4 Surface Finishes** — `Emerald Ca
 ![Settings Models & Limit Rings Light](docs/screenshots/settings-models-limit-rings-light.png)
 
 ![Cross-OS Notifications Settings](docs/screenshots/notifications-settings.png)
+
+![Runtimes & Package Updates Settings](docs/screenshots/runtimes-updates.png)
+
+![Application Auto-Updater Settings](docs/screenshots/settings-application-updater-dark.png)
+
+![Agent Migration Wizard Settings](docs/screenshots/settings-migration-wizard-dark.png)
+
+![Project Token Budget & Cost Controls](docs/screenshots/settings-project-token-budget-dark.png)
+
+![Feedback & Diagnostics Bundle Export](docs/screenshots/settings-feedback-diagnostics-dark.png)
 
 ![Execution Environments Settings](docs/screenshots/environments.png)
 

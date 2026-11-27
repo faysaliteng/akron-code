@@ -1,10 +1,8 @@
 name: Build Akron Code Desktop (macOS · Windows · Linux)
 
+# Triggered manually via workflow_dispatch (or re-enable push/tags below once
+# hosted GitHub Actions billing minutes are active on this private repository).
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -52,13 +50,13 @@ jobs:
         include:
           - os: macos-latest
             platform: mac
-            cmd: npm run build && npx electron-builder --mac dmg zip --config.compression=normal --publish never
+            cmd: npm run build && npx electron-builder --mac dir --config.compression=normal --publish never && node scripts/inject-mac-ext-folder.js
           - os: windows-latest
             platform: win
             cmd: npm run build && npx electron-builder --win --config.compression=normal --publish never
           - os: ubuntu-latest
             platform: linux
-            cmd: npm run build && npx electron-builder --linux AppImage deb --config.compression=normal --publish never
+            cmd: npm run build && npx electron-builder --linux AppImage tar.gz --config.compression=normal --publish never
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
