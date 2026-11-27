@@ -74,6 +74,33 @@ describe('Computer Use 3-OS Claude-parity upgrades & HUD', () => {
     assert.ok(src.includes("ipcMain.handle('autobot:computerUseDoctor'"));
     assert.ok(src.includes("ipcMain.handle('autobot:computerUsePreviewHud'"));
   });
+
+  it('keeps event loop alive for standalone REPL evalJS dynamic imports and suspends HUD shortcuts cleanly', async () => {
+    const { spawnSync } = require('child_process');
+    const runOut = spawnSync(process.execPath, [
+      '-e',
+      'require("./electron/repl").evalJS({ code: "const p = await import(\\"node:path\\"); console.log(p.basename(\\"/tmp/check.txt\\"))", reset: true }).then((r) => { if (!r.ok || r.output !== "check.txt") process.exit(2); console.log("REPL_STANDALONE_OK:" + r.output); })',
+    ], {
+      cwd: path.join(__dirname, '..'),
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    assert.strictEqual(runOut.status, 0, `Standalone REPL exited ${runOut.status}: ${runOut.stderr || runOut.stdout}`);
+    assert.ok(String(runOut.stdout || '').includes('REPL_STANDALONE_OK:check.txt'), runOut.stdout);
+
+    const out = await hud.withSuspendedShortcut(async () => 'suspended_ok');
+    assert.strictEqual(out, 'suspended_ok');
+
+    assert.strictEqual(winLinux.winKeyCodeFor(','), 0xBC);
+    assert.strictEqual(winLinux.winKeyCodeFor('/'), 0xBF);
+    assert.ok(winLinux.buildWinKeyPs('ctrl+,').includes('188'));
+    assert.ok(winLinux.buildWinKeyPs('ctrl+/').includes('191'));
+
+    const mapped = computer._internal.resolvePoint(100, 50, { originX: -1920, originY: 0, width: 1920, height: 1080 });
+    assert.deepStrictEqual(mapped, { x: -1820, y: 50 });
+    const zbox = computer._internal.resolveZoomBox({ x1: 10, y1: 20, x2: 110, y2: 120 }, { originX: -1920, originY: 0, width: 1920, height: 1080 });
+    assert.deepStrictEqual(zbox, { rx: -1910, ry: 20, rw: 100, rh: 100 });
+  });
 });
 
 describe('AGENTS.md memory hierarchy, default seeding, save & reset', () => {

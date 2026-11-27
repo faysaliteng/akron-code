@@ -9,6 +9,8 @@ const path = require('path');
 
 const REPO = path.resolve(__dirname, '../..');
 const OUT_DIR = path.join(REPO, 'docs', 'screenshots');
+const PKG_VER = require(path.join(REPO, 'package.json')).version || '1.6.7';
+const EXT_VER = require(path.join(REPO, 'resources/akron-browser-bot/manifest.json')).version || '1.6.13';
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
 function registerMocks() {
@@ -35,7 +37,7 @@ function registerMocks() {
     provider: { model: 'claude-sonnet-5-5', baseURL: 'https://api.anthropic.com/v1', routingMode: 'auto' },
   };
   const emptyList = [];
-  safe('autobot:getVersion', () => ({ app: '1.4.0', electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node, platform: process.platform, arch: process.arch }));
+  safe('autobot:getVersion', () => ({ app: PKG_VER, version: PKG_VER, electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node, platform: process.platform, arch: process.arch }));
   safe('autobot:getSettings', () => mockSettings);
   safe('autobot:setSettings', (_e, patch) => Object.assign(mockSettings, patch || {}));
   safe('autobot:getFeatures', () => ({ computerUse: true, chrome: true }));
@@ -70,7 +72,7 @@ function registerMocks() {
     running: true,
     port: 8766,
     extensionConnected: false,
-    extensionVersion: '1.6.7',
+    extensionVersion: EXT_VER,
     extensionDir: process.platform === 'darwin' ? '~/Applications/Akron Browser Bot' : '%LOCALAPPDATA%\\AkronLogic\\Akron Browser Bot',
     extensionId: 'dhihhgdamadggcjnjphidopodnlkakdm',
     defaultBrowser: { id: 'brave', name: 'Brave Browser', isChromium: true },
@@ -101,13 +103,16 @@ function registerMocks() {
   safe('autobot:gitInfo', () => ({ isRepo: false }));
   safe('autobot:depsStatus', () => ({ ok: true, coreHealthy: 7, coreTotal: 7, deps: [], lsps: [] }));
   safe('autobot:runtimes', () => ({ autoUpdate: true, items: [] }));
-  safe('autobot:updateCheck', () => ({ ok: true, currentVersion: '1.4.0', upToDate: true }));
+  safe('autobot:updateCheck', () => ({ ok: true, currentVersion: PKG_VER, upToDate: true }));
   safe('autobot:notificationsGet', () => ({ enabled: true, categories: {} }));
   safe('autobot:listPlugins', () => []);
   safe('autobot:pluginCategories', () => []);
   safe('autobot:pluginStats', () => ({ total: 961, installed: 4, enabled: 4 }));
   safe('autobot:registryStatus', () => ({ synced: true, count: 444 }));
   safe('autobot:getSandbox', () => ({ profile: 'workspace-write', allowNet: true }));
+  safe('autobot:paradevStatus', () => ({ ok: true, configured: false, appInstalled: true, desktopSessionPresent: true, docsMcpUrl: 'https://docs.paradev.com/mcp' }));
+  safe('autobot:agentsMdGet', () => ({ ok: true, globalPath: '~/.autobot/AGENTS.md', globalExists: true, globalContent: '# Akron Code Agent Instructions (AGENTS.md)', projectPath: wsDir + '/AGENTS.md', projectExists: false, projectContent: '', defaultContent: '# Akron Code Agent Instructions (AGENTS.md)' }));
+  safe('autobot:computerUseDoctor', () => ({ ok: true, platform: process.platform, ready: true, screen: { width: 1440, height: 920 } }));
 }
 
 async function run() {
@@ -125,7 +130,9 @@ async function run() {
     },
   });
   await win.loadFile(path.join(REPO, 'dist', 'index.html'));
-  await new Promise((r) => setTimeout(r, 1200));
+  await win.webContents.executeJavaScript(`localStorage.setItem('autobot:tutorialSeenV1', 'true');`);
+  await win.reload();
+  await new Promise((r) => setTimeout(r, 1100));
 
   const snap = async (filename) => {
     const img = await win.webContents.capturePage();

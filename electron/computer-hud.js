@@ -25,6 +25,7 @@ let currentDisplayId = null;
 let hudVisible = false;
 let idleTimer = null;
 let escRegistered = false;
+let quitHooked = false;
 let stoppedUntilMs = 0;
 let stopReason = '';
 let lastLabel = 'Computer Use';
@@ -281,16 +282,42 @@ function resolveDisplay(el, displayIndex = 0) {
 function registerEscapeShortcut(el) {
   if (escRegistered || !el || !el.globalShortcut) return;
   try {
-    escRegistered = el.globalShortcut.register('Escape', () => triggerEmergencyStop('Escape key'));
+    const okPrimary = el.globalShortcut.register('Escape', () => triggerEmergencyStop('Escape key'));
+    try { el.globalShortcut.register('CommandOrControl+Shift+Escape', () => triggerEmergencyStop('Hotkey Stop')); } catch (_) {}
+    escRegistered = !!okPrimary;
   } catch (_) {
     escRegistered = false;
   }
 }
 
 function unregisterEscapeShortcut(el) {
-  if (!escRegistered || !el || !el.globalShortcut) return;
+  if (!el || !el.globalShortcut) return;
   try { el.globalShortcut.unregister('Escape'); } catch (_) {}
+  try { el.globalShortcut.unregister('CommandOrControl+Shift+Escape'); } catch (_) {}
   escRegistered = false;
+}
+
+async function withSuspendedShortcut(fn) {
+  const el = getElectron();
+  const wasRegistered = escRegistered;
+  if (wasRegistered && el) unregisterEscapeShortcut(el);
+  try {
+    return await fn();
+  } finally {
+    if (wasRegistered && hudVisible && !isStopped() && el) {
+      await new Promise((r) => setTimeout(r, 80));
+      if (hudVisible && !isStopped()) registerEscapeShortcut(el);
+    }
+  }
+}
+
+function applyClickThrough(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.setIgnoreMouseEvents(true, { forward: true });
+  } catch (_) {
+    try { win.setIgnoreMouseEvents(true); } catch (_) {}
+  }
 }
 
 function resetIdleTimer() {
@@ -302,9 +329,16 @@ async function ensureWindows(displayIndex = 0) {
   if (isHeadlessOrTest()) return false;
   const el = getElectron();
   if (!el || !el.app.isReady()) return false;
+  if (!quitHooked) {
+    quitHooked = true;
+    el.app.once('will-quit', () => hideHud());
+  }
   ensureHtmlFiles();
   const disp = resolveDisplay(el, displayIndex);
   const b = disp.bounds || { x: 0, y: 0, width: 1280, height: 800 };
+  const winTypeOpt = process.platform === 'darwin'
+    ? { type: 'panel' }
+    : (process.platform === 'linux' ? { type: 'toolbar' } : {});
 
   if (!overlayWin || overlayWin.isDestroyed()) {
     overlayWin = new el.BrowserWindow({
@@ -322,14 +356,14 @@ async function ensureWindows(displayIndex = 0) {
       maximizable: false,
       fullscreenable: false,
       enableLargerThanScreen: true,
-      type: process.platform === 'darwin' ? 'panel' : undefined,
+      ...winTypeOpt,
       show: false,
       backgroundColor: '#00000000',
       webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true },
     });
     overlayWin.setAlwaysOnTop(true, 'screen-saver');
     overlayWin.setFullScreenable(false);
-    overlayWin.setIgnoreMouseEvents(true);
+    applyClickThrough(overlayWin);
     try { overlayWin.setContentProtection(true); } catch (_) {}
     if (process.platform === 'darwin') {
       try { overlayWin.setHiddenInMissionControl(true); } catch (_) {}
@@ -359,7 +393,7 @@ async function ensureWindows(displayIndex = 0) {
       minimizable: false,
       maximizable: false,
       fullscreenable: false,
-      type: process.platform === 'darwin' ? 'panel' : undefined,
+      ...winTypeOpt,
       show: false,
       backgroundColor: '#00000000',
       webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true },
@@ -395,6 +429,7 @@ async function showAction({ displayIndex = 0, x = null, y = null, label = 'Compu
 
   if (overlayWin && !overlayWin.isDestroyed()) {
     if (!overlayWin.isVisible()) overlayWin.showInactive();
+    applyClickThrough(overlayWin);
     if (x != null && y != null) {
       const lx = Math.round(Number(x) - b.x);
       const ly = Math.round(Number(y) - b.y);
@@ -489,6 +524,7 @@ module.exports = {
   showAction,
   hideHud,
   withHiddenForCapture,
+  withSuspendedShortcut,
   previewHud,
   status,
 };

@@ -11,6 +11,8 @@ const { execFileSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '../..');
 const OUT_DIR = path.join(REPO, 'docs', 'screenshots');
+const PKG_VER = require(path.join(REPO, 'package.json')).version || '1.6.7';
+const EXT_VER = require(path.join(REPO, 'resources/akron-browser-bot/manifest.json')).version || '1.6.13';
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
 async function buildTempWorkspace() {
@@ -25,7 +27,7 @@ async function buildTempWorkspace() {
   fs.writeFileSync(
     path.join(wsDir, 'src', 'app.js'),
     [
-      '// Akron Code v1.4.0 — Core Orchestrator Entrypoint',
+      `// Akron Code v${PKG_VER} — Core Orchestrator Entrypoint`,
       'export async function dispatchTurn({ prompt, role = "coder", budgetTokens = 20000 }) {',
       '  const startedAt = Date.now();',
       '  return { ok: true, role, budgetTokens, startedAt, promptLen: String(prompt || "").length };',
@@ -47,7 +49,7 @@ async function buildTempWorkspace() {
   fs.writeFileSync(
     path.join(wsDir, 'MINDMAP.md'),
     [
-      '# Akron Code v1.4 Architecture',
+      `# Akron Code v${PKG_VER} Architecture`,
       '## Harness & Context Engine 2.0',
       '- `electron/context-pipeline.js` · Progressive output masking',
       '- `electron/spill.js` · 0o600 disk spill & pruning',
@@ -102,15 +104,15 @@ async function buildTempWorkspace() {
     {
       format: 'pdf',
       output_path: path.join(wsDir, 'reports', 'q4-roadmap.pdf'),
-      title: 'Akron Code v1.4.0 — Architecture & Security Sign-Off',
+      title: `Akron Code v${PKG_VER} — Architecture & Security Sign-Off`,
       content: [
         '# Executive Summary',
-        'Akron Code unifies multi-vendor frontier coding models, offline Office/PDF document generation, and Chromium live browser inspection in one Electron workspace.',
+        'Akron Code unifies multi-vendor frontier coding models, 3-OS Computer Use 2.0 + Emerald HUD, offline Office/PDF document generation, and Chromium live browser inspection in one Electron workspace.',
         '',
         '## Verified Gates',
         '- Context Engine 2.0 adaptive working memory & 0o600 spills',
         '- 182 Built-In Agent Tools + 263 Built-In REA MCP Tools (445 total)',
-        '- 6/6 Electron Fuses + SHA-256 Brand Seal integrity verified',
+        '- 6/6 Electron Fuses + SHA-256 Brand Seal + Editable AGENTS.md verified',
       ].join('\n'),
     },
     { cwd: wsDir }
@@ -216,7 +218,7 @@ function registerIpcMocks(wsDir, webviewMockUrl) {
   });
 
   safe('autobot:getVersion', () => ({
-    version: '1.4.0', app: '1.4.0',
+    version: PKG_VER, app: PKG_VER,
     electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node,
     platform: process.platform, arch: process.arch,
   }));
@@ -338,7 +340,7 @@ function registerIpcMocks(wsDir, webviewMockUrl) {
   ]);
   safe('autobot:mcpConfig', () => ({ servers: [{ id: 'github', transport: 'http', url: 'https://api.githubcopilot.com/mcp' }], status: [] }));
   safe('autobot:reaStatus', () => ({ available: true, connected: true, toolCount: 263 }));
-  safe('autobot:extBridgeStatus', () => ({ running: true, port: 8766, extensionConnected: true, extensionVersion: '1.6.7', connectedClients: 1, tabs: [] }));
+  safe('autobot:extBridgeStatus', () => ({ running: true, port: 8766, extensionConnected: true, extensionVersion: EXT_VER, connectedClients: 1, tabs: [] }));
   safe('autobot:serverInfo', () => ({ port: 8766, url: 'http://127.0.0.1:8766', wsUrl: 'ws://127.0.0.1:8766', platform: process.platform, arch: process.arch, pid: process.pid, extensionConnected: true, connectedClients: 1 }));
   safe('autobot:worktreeList', (_e, cwd) => git.listWorktrees(cwd || wsDir));
   safe('autobot:gitInfo', (_e, cwd) => git.gitInfo(cwd || wsDir));
@@ -416,7 +418,7 @@ function registerIpcMocks(wsDir, webviewMockUrl) {
       { id: 'gemini', name: 'Gemini CLI', version: '0.18.4', latest: '0.18.4', status: 'up-to-date' },
     ],
   }));
-  safe('autobot:updateCheck', () => ({ ok: true, currentVersion: '1.4.0', latestVersion: '1.4.0', upToDate: true, channel: 'stable' }));
+  safe('autobot:updateCheck', () => ({ ok: true, currentVersion: PKG_VER, latestVersion: PKG_VER, upToDate: true, channel: 'stable' }));
   safe('autobot:notificationsGet', () => ({
     enabled: true, notifyWhenFocused: false, categories: { agent: true, permissions: true, questions: true, errors: true },
   }));
@@ -468,7 +470,98 @@ function registerIpcMocks(wsDir, webviewMockUrl) {
     width: 480,
     height: 320,
   }));
-  safe('autobot:diagnosticsSummary', () => ({ appVersion: '1.4.0', crashFreeRate: '99.94%', dbSizeKb: 412, toolCount: 445 }));
+  safe('autobot:diagnosticsSummary', () => ({ appVersion: PKG_VER, crashFreeRate: '99.94%', dbSizeKb: 412, toolCount: 445 }));
+  safe('autobot:paradevStatus', () => ({ ok: true, configured: true, connected: true, keyPreview: 'sk_live_••••94a2', source: 'env', appInstalled: true, desktopSessionPresent: true, docsMcpUrl: 'https://docs.paradev.com/mcp', email: 'team@akronlogic.com' }));
+  safe('autobot:orchPaidProvidersGet', () => ({
+    ok: true,
+    providers: [
+      { id: 'anthropic', name: 'Anthropic API', baseURL: 'https://api.anthropic.com/v1', hasKey: true, keyHint: '••••ant1', models: [{ id: 'claude-opus-5-5', label: 'Claude Opus 5.5', tier: 'critical' }] },
+      { id: 'openai', name: 'OpenAI API', baseURL: 'https://api.openai.com/v1', hasKey: true, keyHint: '••••oai2', models: [{ id: 'gpt-5.4', label: 'GPT-5.4', tier: 'heavy' }] },
+      { id: 'deepseek', name: 'DeepSeek API', baseURL: 'https://api.deepseek.com/v1', hasKey: true, keyHint: '••••ds41', models: [{ id: 'deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash', tier: 'small' }] },
+      { id: 'kimi', name: 'Kimi / Moonshot', baseURL: 'https://api.moonshot.ai/v1', hasKey: true, keyHint: '••••kimi', models: [{ id: 'kimi-k2', label: 'Kimi K2', tier: 'heavy' }] },
+      { id: 'zai', name: 'Z.AI / GLM', baseURL: 'https://api.z.ai/api/paas/v4', hasKey: true, keyHint: '••••zai1', models: [{ id: 'glm-5.3-flash', label: 'GLM 5.3 Flash', tier: 'small' }] },
+      { id: 'xai', name: 'Grok / xAI', baseURL: 'https://api.x.ai/v1', hasKey: false, keyHint: '', models: [{ id: 'grok-4', label: 'Grok 4', tier: 'heavy' }] },
+      { id: 'openrouter', name: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1', hasKey: true, keyHint: '••••or99', models: [{ id: 'deepseek/deepseek-v4.1-flash:free', label: 'DeepSeek V4.1 Flash Free', tier: 'small' }] },
+    ],
+  }));
+  safe('autobot:providerModels', (_e, key) => ({
+    ok: true,
+    models: String(key || '').includes('openai')
+      ? [{ id: 'gpt-5.4', label: 'GPT-5.4', windowLabel: '400K', contextWindow: 400000 }]
+      : String(key || '').includes('gemini')
+        ? [{ id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon High', windowLabel: '1M', contextWindow: 1048576 }]
+        : [{ id: 'claude-opus-5-5', label: 'Claude Opus 5.5', windowLabel: '200K', contextWindow: 200000 }, { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', windowLabel: '200K', contextWindow: 200000 }],
+  }));
+  safe('autobot:tokenBudget', (_e, payload) => {
+    try { return require(path.join(REPO, 'electron/token-budget')).analyzeCustomizationBudget(payload || {}); } catch (_) {
+      return { activeTokens: 1420, capTokens: 20000, globalTokens: 980, projectTokens: 440, demotedCount: 0, items: [] };
+    }
+  });
+  safe('autobot:migrationScan', () => ({ ok: true, sources: [{ id: 'claude', name: 'Claude Code (~/.claude)', found: true, skills: 8, memory: 2 }, { id: 'codex', name: 'Codex CLI (~/.codex)', found: true, skills: 3, memory: 1 }] }));
+  safe('autobot:providerReconnectState', () => ({ waiting: false, active: false }));
+  safe('autobot:orchAutoDetectModels', () => ({
+    ok: true,
+    providers: [
+      { id: 'claude', label: 'Claude OAuth', modelsCount: 6 },
+      { id: 'openai', label: 'Codex OAuth', modelsCount: 4 },
+      { id: 'gemini', label: 'Antigravity OAuth', modelsCount: 5 },
+      { id: 'ollama', label: 'Ollama Local', modelsCount: 2 },
+    ],
+    probed: ['claude', 'openai', 'gemini', 'ollama', 'deepseek', 'kimi', 'zai'],
+  }));
+  const memoryMod = require(path.join(REPO, 'electron/memory'));
+  let mockAgentsMd = memoryMod.DEFAULT_AGENTS_MD;
+  safe('autobot:agentsMdGet', () => ({
+    ok: true,
+    globalPath: '~/.autobot/AGENTS.md',
+    globalExists: true,
+    globalContent: mockAgentsMd,
+    projectPath: path.join(wsDir, 'AGENTS.md'),
+    projectExists: false,
+    projectContent: '',
+    defaultContent: memoryMod.DEFAULT_AGENTS_MD,
+  }));
+  safe('autobot:agentsMdSave', (_e, payload) => {
+    mockAgentsMd = String((payload && payload.content) || '');
+    return {
+      ok: true,
+      globalPath: '~/.autobot/AGENTS.md',
+      globalExists: true,
+      globalContent: mockAgentsMd,
+      projectPath: path.join(wsDir, 'AGENTS.md'),
+      projectExists: false,
+      projectContent: '',
+      defaultContent: memoryMod.DEFAULT_AGENTS_MD,
+    };
+  });
+  safe('autobot:agentsMdReset', () => {
+    mockAgentsMd = memoryMod.DEFAULT_AGENTS_MD;
+    return {
+      ok: true,
+      globalPath: '~/.autobot/AGENTS.md',
+      globalExists: true,
+      globalContent: mockAgentsMd,
+      projectPath: path.join(wsDir, 'AGENTS.md'),
+      projectExists: false,
+      projectContent: '',
+      defaultContent: memoryMod.DEFAULT_AGENTS_MD,
+    };
+  });
+  safe('autobot:computerUseDoctor', () => ({
+    ok: true,
+    platform: process.platform,
+    ready: true,
+    screen: { width: 1440, height: 920, scale: 1, displayCount: 1 },
+  }));
+  safe('autobot:computerUsePreviewHud', () => ({ ok: true, previewed: true }));
+  safe('autobot:mediaStudioList', () => ({ ok: true, imageModels: [], videoModels: [], library: [] }));
+  safe('autobot:mediaKeysGet', () => ({ ok: true, providers: [] }));
+  safe('autobot:proactiveState', () => ({ quietHours: { enabled: false, start: '22:00', end: '08:00' }, matters: [] }));
+  safe('autobot:pushGetConfig', () => ({ enabled: false }));
+  safe('autobot:remoteRelayStatus', () => ({ connected: false, relayUrl: '' }));
+  safe('autobot:debugLogGet', () => ({ ok: true, config: {}, entries: [], logPath: '' }));
+  safe('autobot:debugLogSetConfig', () => ({ ok: true, config: {} }));
+  safe('autobot:debugLogClear', () => ({ ok: true }));
 }
 
 async function run() {
@@ -488,6 +581,11 @@ async function run() {
       sandbox: false,
       webviewTag: true,
     },
+  });
+
+  win.webContents.on('render-process-gone', (_e, details) => console.error('RENDERER_GONE:', details));
+  win.webContents.on('console-message', (_e, level, msg) => {
+    if (level >= 3) console.error('CONSOLE_ERR:', msg);
   });
 
   const now = Date.now();
@@ -517,11 +615,11 @@ async function run() {
             { id: 't3', name: 'Bash', args: { command: 'npm run typecheck && npm run brand:check' }, status: 'done', result: 'TYPECHECK_OK · BRAND_SEAL_OK (12/12)' },
           ],
           content: [
-            '### Release Gate Summary (`v1.4.0`)',
+            `### Release Gate Summary (\`v${PKG_VER}\`)`,
             '',
-            '- **Long-Horizon Complex Project Engine:** Smart `Auto` routing floor, adaptive 28-step working memory + structured compaction digests, autonomous `TodoWrite` continuation gate, and Swarm failed-worker backup retries.',
-            '- **3-OS Computer Use 2.0 & Built-In Browser Screenshot:** 24 `mcp__computer__*` tools across macOS/Win11/Linux plus 1-click Camera Screenshot & Region Crop in `.browser-toolbar`.',
-            '- **Security & Brand Seal:** `6 / 6` Electron Fuses verified (`136/136` tests, `70/70` evals) and zero `.map` files in `dist/`.',
+            '- **3-OS Computer Use 2.0 & Live Emerald HUD:** 60Hz cubic ease-out mouse glide across macOS (`CGEvent`), Windows 11 (`PerMonitorV2` + `SendInput` Unicode + `winAppMenu`), and Linux (`X11` + `Wayland`), with non-activating `#10b981` screen glow & `Stop (Esc)` pill.',
+            `- **Orchestrator Auto-Swarm & Built-In Browser Bot (\`v${EXT_VER}\`):** Mandatory model guard, OAuth + Paid API Auto-Detect (\`Kimi\` / \`Z.AI\` / \`DeepSeek\` / \`Grok\`), Swarm ON by default, and \`:8766\` live Chrome/Brave control.`,
+            '- **Editable `AGENTS.md` & Security:** Global + Workspace `AGENTS.md` editor in Settings (`Reset to Default`), `6 / 6` Electron Fuses verified (`198/198` tests, `70/70` evals), and zero `.map` files in `dist/`.',
           ].join('\n'),
         },
       ],
@@ -593,6 +691,7 @@ async function run() {
 
   await win.loadFile(path.join(REPO, 'dist/index.html'));
   await win.webContents.executeJavaScript(`
+    localStorage.setItem('autobot:tutorialSeenV1', 'true');
     localStorage.setItem('autobot:convs', ${JSON.stringify(JSON.stringify(seedConvs))});
     localStorage.setItem('autobot:openTabs', ${JSON.stringify(JSON.stringify(['conv_v120_agent', 'conv_v120_studio', 'conv_v120_browser']))});
     localStorage.setItem('autobot:activeId', ${JSON.stringify(JSON.stringify('conv_v120_agent'))});
@@ -807,7 +906,7 @@ async function run() {
   await win.webContents.executeJavaScript(`window.__akronTestHarness && window.__akronTestHarness.closePane();`);
   await new Promise((r) => setTimeout(r, 250));
   await win.webContents.executeJavaScript(`(() => {
-    document.querySelectorAll('.composer-att button, .att-remove, .attachment-chip button').forEach((b) => b.click());
+    document.querySelectorAll('.attach-x, .composer-att button, .att-remove, .attachment-chip button').forEach((b) => b.click());
   })()`);
 
   // 11 & 12: IDE Workbench + Swarm Agent Dock + Offline Interactive Mind Map (Dark & Light)
@@ -839,7 +938,7 @@ async function run() {
   `);
   await new Promise((r) => setTimeout(r, 400));
 
-  // 13..22: Settings Showcase (Auto-Switch Brain, UI & Design Studio, FreeLLMAPI Hub & Web Bot, Models & Limit Rings Dark/Light, Notifications, Environments, Runtimes, Project, Browser, Migration, Feedback)
+  // 13..26: Settings Showcase + Paradev + Orchestrator Auto-Detect + AGENTS.md + 3-OS Computer Use HUD
   const settingsShots = [
     ['system', 'autoswitch-brain-dark.png', 'dark', 'autoswitch'],
     ['system', 'ui-design-studio-dark.png', 'dark', 'studio'],
@@ -850,11 +949,14 @@ async function run() {
     ['providers', 'settings-models-limit-rings-light.png', 'light', 'rings'],
     ['notifications', 'notifications-settings.png', 'dark', 'top'],
     ['environments', 'environments.png', 'dark', 'top'],
+    ['mcp', 'paradev-subscription-bridge-dark.png', 'dark', 'paradev'],
     ['runtimes', 'runtimes-updates.png', 'dark', 'top'],
     ['project', 'settings-project-token-budget-dark.png', 'dark', 'top'],
     ['browser', 'settings-browser-rules-dark.png', 'dark', 'top'],
     ['migrate', 'settings-migration-wizard-dark.png', 'dark', 'top'],
     ['feedback', 'settings-feedback-diagnostics-dark.png', 'dark', 'top'],
+    ['orchestrator', 'settings-orchestrator-autodetect-dark.png', 'dark', 'top'],
+    ['agentsmd', 'settings-agents-md-dark.png', 'dark', 'top'],
   ];
   for (const [sec, fname, th, scrollTarget] of settingsShots) {
     await setTheme(th);
@@ -866,6 +968,9 @@ async function run() {
       if (${JSON.stringify(scrollTarget)} === 'rings') {
         const rings = body.querySelector('[data-testid="models-limits-section"]');
         if (rings) rings.scrollIntoView({ block: 'center' });
+      } else if (${JSON.stringify(scrollTarget)} === 'paradev') {
+        const pv = body.querySelector('[data-testid="paradev-integration-card"]');
+        if (pv) pv.scrollIntoView({ block: 'center' });
       } else if (${JSON.stringify(scrollTarget)} === 'studio') {
         const st = body.querySelector('[data-testid="appearance-studio-section"]');
         if (st) st.scrollIntoView({ block: 'start' });
@@ -883,6 +988,51 @@ async function run() {
     await new Promise((r) => setTimeout(r, 250));
     await snap(fname);
   }
+
+  // 27: Computer Use 2.0 (3-OS Drivers + Emerald HUD Overlay + Phantom Cursor + Stop Pill Preview)
+  await setTheme('dark');
+  await win.webContents.executeJavaScript(`window.__akronTestHarness && window.__akronTestHarness.openSettings('security');`);
+  await new Promise((r) => setTimeout(r, 450));
+  await win.webContents.executeJavaScript(`(() => {
+    const docBtn = document.querySelector('[data-testid="cu-doctor-btn"]');
+    if (docBtn) docBtn.click();
+    const hud = document.createElement('div');
+    hud.id = '__akron_cu_hud_preview';
+    hud.innerHTML = \`
+      <div style="position:fixed;inset:0;pointer-events:none;z-index:99990;box-shadow:inset 0 0 0 3px rgba(16,185,129,.82),inset 0 0 36px rgba(16,185,129,.32),inset 0 0 84px rgba(16,185,129,.14);"></div>
+      <div style="position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:99991;display:flex;align-items:center;gap:9px;padding:6px 8px 6px 12px;background:rgba(11,18,16,.95);border:1px solid rgba(16,185,129,.6);border-radius:999px;color:#ecfdf5;font:600 12px -apple-system,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.45);">
+        <span style="width:8px;height:8px;border-radius:50%;background:#10b981;box-shadow:0 0 0 3px rgba(16,185,129,.22);"></span>
+        <span>Akron is working</span>
+        <span style="color:#a7f3d0;font-weight:500;">Screen · 3-OS</span>
+        <span style="border:1px solid rgba(239,68,68,.52);background:rgba(239,68,68,.18);color:#fecaca;border-radius:999px;padding:3px 10px;font-size:11px;">Stop (Esc)</span>
+      </div>
+      <div style="position:fixed;left:640px;top:310px;z-index:99991;pointer-events:none;display:flex;align-items:flex-start;gap:6px;">
+        <svg width="24" height="24" viewBox="0 0 24 24"><path d="M4 2.5L20 12.2L12.7 14.1L9.6 21.2Z" fill="#10b981" stroke="#06281e" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <div style="margin-top:12px;background:rgba(11,20,17,.94);border:1px solid rgba(16,185,129,.65);color:#ecfdf5;border-radius:999px;padding:3px 10px;font:600 11px -apple-system,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.4);display:flex;align-items:center;gap:5px;">
+          <span style="width:6px;height:6px;border-radius:50%;background:#10b981;"></span><span>Akron</span><span style="color:#a7f3d0;font-weight:500;">Clicking</span>
+        </div>
+      </div>\`;
+    document.body.appendChild(hud);
+  })()`);
+  await new Promise((r) => setTimeout(r, 300));
+  await snap('computer-use-3os-hud-dark.png');
+  await win.webContents.executeJavaScript(`document.getElementById('__akron_cu_hud_preview')?.remove(); window.__akronTestHarness?.closeSettings?.();`);
+  await new Promise((r) => setTimeout(r, 250));
+
+  // 28 & 29: Welcome 4-Mode Quick-Start + 5-Step Interactive Hands-On Tutorial Modal
+  await win.webContents.executeJavaScript(`(() => {
+    const nb = [...document.querySelectorAll('aside.sidebar button')].find((b) => /New chat/i.test(b.textContent || ''));
+    if (nb) nb.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 450));
+  await win.webContents.executeJavaScript(`(() => { document.querySelector('.tutorial-close')?.click(); })()`);
+  await new Promise((r) => setTimeout(r, 200));
+  await snap('welcome-4modes-quickstart-dark.png');
+  await win.webContents.executeJavaScript(`(() => { document.querySelector('[data-testid="open-tutorial-btn"]')?.click(); })()`);
+  await new Promise((r) => setTimeout(r, 300));
+  await snap('interactive-tutorial-tour-dark.png');
+  await win.webContents.executeJavaScript(`(() => { document.querySelector('.tutorial-close')?.click(); })()`);
+  await new Promise((r) => setTimeout(r, 200));
 
   console.log('SHOWCASE_V120_DONE');
   previewSrv.close();

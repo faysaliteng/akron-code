@@ -18,6 +18,7 @@ const { spawn } = require('child_process');
 const REPO = path.resolve(__dirname, '..');
 const PACKAGED_RESOURCES = path.join(REPO, 'release/mac-arm64/Akron Code.app/Contents/Resources');
 const APP_ASAR = path.join(PACKAGED_RESOURCES, 'app.asar');
+const PKG_VER = require(path.join(REPO, 'package.json')).version || '1.6.7';
 
 if (process.argv.includes('--worker')) {
   const { app, BrowserWindow, ipcMain, dialog } = require('electron');
@@ -56,7 +57,7 @@ if (process.argv.includes('--worker')) {
       ],
     };
     let mockFeatures = { ...(store.getFeatures() || {}), autoRouter: true };
-    safe('autobot:getVersion', () => ({ version: '1.6.2', app: '1.6.2', platform: process.platform, arch: process.arch }));
+    safe('autobot:getVersion', () => ({ version: PKG_VER, app: PKG_VER, platform: process.platform, arch: process.arch }));
     safe('autobot:getSettings', () => mockSettings);
     safe('autobot:setSettings', (_e, patch) => {
       mockSettings = { ...mockSettings, ...(patch || {}) };
@@ -257,9 +258,9 @@ if (process.argv.includes('--worker')) {
     rec('Preset Auto updates bottom pill to Auto', /^Auto\b/.test(presetCheck.autoPill), presetCheck.autoPill);
     rec('WelcomeQuickStartBar does not overlap .cwdbar', presetCheck.wqsBottom > 0 && presetCheck.wqsBottom <= presetCheck.cwdTop, `${presetCheck.wqsBottom} <= ${presetCheck.cwdTop}`);
 
-    // Capture crisp Welcome + Preset screenshot
+    // Capture Welcome + Preset audit screenshot in tmpUserData (keeps docs/screenshots/ showcase intact)
     const shotAgent = await win.webContents.capturePage();
-    fs.writeFileSync(path.join(REPO, 'docs/screenshots/agent-dark.png'), shotAgent.toPNG());
+    fs.writeFileSync(path.join(tmpUserData, 'audit-agent-dark.png'), shotAgent.toPNG());
 
     // 2. Open Model Picker and verify zero horizontal overflow + capture screenshot
     const pickerMetrics = await win.webContents.executeJavaScript(`(async () => {
@@ -281,7 +282,7 @@ if (process.argv.includes('--worker')) {
     rec('Model Picker opens cleanly with zero horizontal overflow', pickerMetrics.menuOpen && pickerMetrics.menuScrollW <= pickerMetrics.menuClientW + 1 && pickerMetrics.bodyScrollW <= pickerMetrics.bodyClientW + 1, JSON.stringify(pickerMetrics));
 
     const shotPicker = await win.webContents.capturePage();
-    fs.writeFileSync(path.join(REPO, 'docs/screenshots/model-picker-3modes.png'), shotPicker.toPNG());
+    fs.writeFileSync(path.join(tmpUserData, 'audit-model-picker-3modes.png'), shotPicker.toPNG());
 
     // Close picker
     await win.webContents.executeJavaScript(`(() => { document.querySelector('.model-pill')?.click(); })()`);

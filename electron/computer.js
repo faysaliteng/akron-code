@@ -180,20 +180,31 @@ function buildMacMouseOps(kind, opts = {}) {
   return lines.join('\n  ');
 }
 
-function resolvePoint(rawX, rawY) {
+function resolvePoint(rawX, rawY, meta = lastCaptureMeta) {
   let x = Math.round(Number(rawX) || 0);
   let y = Math.round(Number(rawY) || 0);
-  if (lastCaptureMeta && (lastCaptureMeta.originX || lastCaptureMeta.originY)) {
-    const ox = Number(lastCaptureMeta.originX) || 0;
-    const oy = Number(lastCaptureMeta.originY) || 0;
-    const w = Number(lastCaptureMeta.width) || 0;
-    const h = Number(lastCaptureMeta.height) || 0;
+  if (meta && (meta.originX || meta.originY)) {
+    const ox = Number(meta.originX) || 0;
+    const oy = Number(meta.originY) || 0;
+    const w = Number(meta.width) || 0;
+    const h = Number(meta.height) || 0;
     if (x >= 0 && y >= 0 && (!w || x <= w) && (!h || y <= h)) {
       x += ox;
       y += oy;
     }
   }
   return { x, y };
+}
+
+function resolveZoomBox({ x1 = 0, y1 = 0, x2 = 400, y2 = 300 } = {}, meta = lastCaptureMeta) {
+  const p1 = resolvePoint(x1, y1, meta);
+  const p2 = resolvePoint(x2, y2, meta);
+  return {
+    rx: Math.round(Math.min(p1.x, p2.x)),
+    ry: Math.round(Math.min(p1.y, p2.y)),
+    rw: Math.max(16, Math.round(Math.abs(p2.x - p1.x))),
+    rh: Math.max(16, Math.round(Math.abs(p2.y - p1.y))),
+  };
 }
 
 /** Mouse move/click/drag/down/up in 1x logical screen points across macOS, Windows, and Linux. */
@@ -411,31 +422,43 @@ async function type(text, platform = process.platform, opts = {}) {
 async function key(keys, platform = process.platform) {
   gate();
   await hud.showAction({ displayIndex: activeDisplayIndex, x: lastCursorPos?.x, y: lastCursorPos?.y, label: `Key ${keys}` }).catch(() => {});
-  if (platform === 'win32') {
-    winLinux.runPS(winLinux.buildWinKeyPs(keys, 0));
-    return 'ok';
+  const sendKey = async () => {
+    if (platform === 'win32') {
+      winLinux.runPS(winLinux.buildWinKeyPs(keys, 0));
+      return 'ok';
+    }
+    if (platform === 'linux') {
+      winLinux.linuxKey(keys, 0);
+      return 'ok';
+    }
+    return macCgKey(keys, 0);
+  };
+  if (/\besc(ape)?\b/i.test(String(keys || ''))) {
+    return hud.withSuspendedShortcut(sendKey);
   }
-  if (platform === 'linux') {
-    winLinux.linuxKey(keys, 0);
-    return 'ok';
-  }
-  return macCgKey(keys, 0);
+  return sendKey();
 }
 
 async function holdKey(keys, durationMs = 500) {
   gate();
   const ms = Math.min(Math.max(50, Number(durationMs) || 500), 10000);
   await hud.showAction({ displayIndex: activeDisplayIndex, x: lastCursorPos?.x, y: lastCursorPos?.y, label: `Hold ${keys}` }).catch(() => {});
-  if (process.platform === 'win32') {
-    winLinux.runPS(winLinux.buildWinKeyPs(keys, ms));
+  const sendHold = async () => {
+    if (process.platform === 'win32') {
+      winLinux.runPS(winLinux.buildWinKeyPs(keys, ms));
+      return { ok: true, keys, durationMs: ms };
+    }
+    if (process.platform === 'linux') {
+      winLinux.linuxKey(keys, ms);
+      return { ok: true, keys, durationMs: ms };
+    }
+    await macCgKey(keys, ms);
     return { ok: true, keys, durationMs: ms };
+  };
+  if (/\besc(ape)?\b/i.test(String(keys || ''))) {
+    return hud.withSuspendedShortcut(sendHold);
   }
-  if (process.platform === 'linux') {
-    winLinux.linuxKey(keys, ms);
-    return { ok: true, keys, durationMs: ms };
-  }
-  await macCgKey(keys, ms);
-  return { ok: true, keys, durationMs: ms };
+  return sendHold();
 }
 
 async function wait(ms = 1000) {
@@ -768,10 +791,7 @@ function lastScreenshot() { return lastShot; }
 
 async function zoom({ x1 = 0, y1 = 0, x2 = 400, y2 = 300, dir } = {}) {
   gate();
-  const rx = Math.max(0, Math.round(Math.min(Number(x1) || 0, Number(x2) || 0)));
-  const ry = Math.max(0, Math.round(Math.min(Number(y1) || 0, Number(y2) || 0)));
-  const rw = Math.max(16, Math.round(Math.abs((Number(x2) || 0) - (Number(x1) || 0))));
-  const rh = Math.max(16, Math.round(Math.abs((Number(y2) || 0) - (Number(y1) || 0))));
+  const { rx, ry, rw, rh } = resolveZoomBox({ x1, y1, x2, y2 });
   const outDir = sanitizeScreenshotDir(dir);
   fs.mkdirSync(outDir, { recursive: true });
   const file = path.join(outDir, `zoom-${Date.now()}.png`);
@@ -783,9 +803,11 @@ async function zoom({ x1 = 0, y1 = 0, x2 = 400, y2 = 300, dir } = {}) {
         throw new Error(`zoom failed: ${origErrMsg}; desktopCapturer fallback (${viaEl.error || 'failed'}).`);
       }
       const imgSize = viaEl.image.getSize();
+      const ox = (viaEl.pts && viaEl.pts.originX) || 0;
+      const oy = (viaEl.pts && viaEl.pts.originY) || 0;
       const s = viaEl.pts && viaEl.pts.width ? (imgSize.width / viaEl.pts.width) : (viaEl.scale || 1);
-      const cx = Math.max(0, Math.min(imgSize.width - 1, Math.round(rx * s)));
-      const cy = Math.max(0, Math.min(imgSize.height - 1, Math.round(ry * s)));
+      const cx = Math.max(0, Math.min(imgSize.width - 1, Math.round((rx - ox) * s)));
+      const cy = Math.max(0, Math.min(imgSize.height - 1, Math.round((ry - oy) * s)));
       const cw = Math.max(1, Math.min(imgSize.width - cx, Math.round(rw * s)));
       const ch = Math.max(1, Math.min(imgSize.height - cy, Math.round(rh * s)));
       const cropped = viaEl.image.crop({ x: cx, y: cy, width: cw, height: ch });
@@ -872,29 +894,31 @@ async function appScreenshot({ app = '', windowId = null, title = '', dir } = {}
   fs.mkdirSync(outDir, { recursive: true });
   const file = path.join(outDir, `app-${Date.now()}.png`);
 
-  if (process.platform === 'win32') {
-    winLinux.winScreenshot(file, { x: target.x, y: target.y, w: target.width, h: target.height }, activeDisplayIndex);
-  } else if (process.platform === 'linux') {
-    winLinux.linuxScreenshot(file, null, target.windowId);
-  } else {
-    // Primary: screencapture window-id capture. Falls back to Electron's
-    // desktopCapturer when the CLI subprocess is denied Screen Recording TCC
-    // (which inherits a different grant than the Electron main process).
-    const { err } = await execFileP('/usr/sbin/screencapture', ['-x', '-o', '-l', String(target.windowId), file], { timeout: 20000 });
-    let haveShot = !err && fs.existsSync(file) && fs.statSync(file).size > 0;
-    if (haveShot && target.width > 0) {
-      try { normalizePngToLogicalWidth(file, target.width); } catch (_) {}
-    }
-    if (!haveShot) {
-      const viaElectron = await appScreenshotViaElectron(target, file);
-      if (!viaElectron.ok) {
-        const scMsg = err ? err.message : 'screencapture returned empty image';
-        const fbMsg = viaElectron.error || 'could not create image from window';
-        throw new Error(`app screenshot failed: screencapture (${scMsg}); desktopCapturer fallback (${fbMsg}) — grant Screen Recording to Akron Code in System Settings › Privacy & Security.`);
+  await hud.withHiddenForCapture(async () => {
+    if (process.platform === 'win32') {
+      winLinux.winScreenshot(file, { x: target.x, y: target.y, w: target.width, h: target.height }, activeDisplayIndex);
+    } else if (process.platform === 'linux') {
+      winLinux.linuxScreenshot(file, null, target.windowId);
+    } else {
+      // Primary: screencapture window-id capture. Falls back to Electron's
+      // desktopCapturer when the CLI subprocess is denied Screen Recording TCC
+      // (which inherits a different grant than the Electron main process).
+      const { err } = await execFileP('/usr/sbin/screencapture', ['-x', '-o', '-l', String(target.windowId), file], { timeout: 20000 });
+      let haveShot = !err && fs.existsSync(file) && fs.statSync(file).size > 0;
+      if (haveShot && target.width > 0) {
+        try { normalizePngToLogicalWidth(file, target.width); } catch (_) {}
       }
-      haveShot = true;
+      if (!haveShot) {
+        const viaElectron = await appScreenshotViaElectron(target, file);
+        if (!viaElectron.ok) {
+          const scMsg = err ? err.message : 'screencapture returned empty image';
+          const fbMsg = viaElectron.error || 'could not create image from window';
+          throw new Error(`app screenshot failed: screencapture (${scMsg}); desktopCapturer fallback (${fbMsg}) — grant Screen Recording to Akron Code in System Settings › Privacy & Security.`);
+        }
+        haveShot = true;
+      }
     }
-  }
+  });
   const buf = fs.readFileSync(file);
   lastShot = file;
   return {
@@ -1154,5 +1178,5 @@ module.exports = {
   click, move, drag, mouseDown, mouseUp, cursorPosition, scroll, type, key, holdKey, wait,
   openApp, activateApp, frontmostApp, listWindows, listWindowsStructured, axFind, appMenu, batch,
   clipboardRead, clipboardWrite, permission, doctor, previewHud, hud,
-  _internal: { mapMouseButton, buildMacMouseOps, computeGlidePoints: winLinux.computeGlidePoints, resolvePoint },
+  _internal: { mapMouseButton, buildMacMouseOps, computeGlidePoints: winLinux.computeGlidePoints, resolvePoint, resolveZoomBox },
 };

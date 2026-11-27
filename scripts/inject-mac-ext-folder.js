@@ -65,6 +65,18 @@ function main() {
       console.warn('[inject-mac-ext-folder] codesign note:', err.message);
     }
 
+    // Export standalone AkronBrowserBot-<extVer>.crx + .zip alongside app bundles
+    const extVer = synced.version || '1.6.13';
+    if (synced.crxPath && fs.existsSync(synced.crxPath)) {
+      const crxDest = path.join(RELEASE_DIR, `AkronBrowserBot-${extVer}.crx`);
+      fs.copyFileSync(synced.crxPath, crxDest);
+      console.log(`[inject-mac-ext-folder] Exported ${crxDest}`);
+    }
+    const extZipDest = path.join(RELEASE_DIR, `AkronBrowserBot-${extVer}.zip`);
+    if (fs.existsSync(extZipDest)) fs.unlinkSync(extZipDest);
+    run('ditto', ['-c', '-k', '--sequesterRsrc', stagedExt, extZipDest]);
+    console.log(`[inject-mac-ext-folder] Exported ${extZipDest}`);
+
     // 1. Rebuild release ZIP with top-level "Akron Code.app" + "Akron Browser Bot/"
     const zipName = `AkronCode-${VER}-${arch}.zip`;
     const zipOut = path.join(RELEASE_DIR, zipName);

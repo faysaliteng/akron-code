@@ -2,6 +2,26 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.6.7] - 2026-11-28
+
+### Fixed, Hardened & Visualized Across All 3 Platforms
+- **3-Platform GitHub Actions Release Fix (`electron/repl.js`, `package-lock.json`, `scripts/inject-mac-ext-folder.js`):** Fixed premature `.unref()` on child REPL stdout handles while awaiting dynamic `import()` promises (which caused Node test cancellation on Linux CI), synced `package-lock.json` for `npm ci`, and exported `AkronBrowserBot-1.6.13.crx` + `.zip` in releases.
+- **3-OS Computer Use 2.0 + Live Emerald HUD Refinements (`electron/computer-hud.js`, `electron/computer.js`, `electron/computer-win-linux.js`):**
+  - Suspended `Escape` / `CommandOrControl+Shift+Escape` emergency-stop shortcuts around synthetic `key('Escape')` / `holdKey('Escape')` calls so agent keystrokes never self-abort.
+  - Added cross-OS HUD window typing (`panel` on macOS, `toolbar` on Linux, omitted on Windows), click-through re-assertion after `showInactive()`, `will-quit` cleanup, multi-monitor negative-origin `zoom()` coordinate resolution, `withHiddenForCapture` wrapping around `appScreenshot()`, and Windows OEM virtual-key mappings (`;`, `=`, `,`, `-`, `.`, `/`, `` ` ``, `[`, `\`, `]`, `'`).
+- **UI & Showcase Verification (`src/components/settings/OrchPaidProvidersPanel.jsx`, `src/components/settings/ProjectSettingsPanel.jsx`, `docs/screenshots/`):** Guarded provider name rendering and token-budget `toLocaleString()` formatting against partial payloads, and regenerated all `docs/screenshots/` PNGs at `v1.6.7` including 4-Mode Welcome Quick-Start, 5-Step Interactive Tour, Orchestrator Auto-Detect, Editable `AGENTS.md`, and 3-OS Computer Use Emerald HUD.
+
+## [1.6.6] - 2026-11-27
+
+### Added
+- **Claude Desktop 3-OS Parity & Emerald HUD (`electron/computer-hud.js`, `electron/computer.js`, `electron/computer-win-linux.js`):** Added `#10b981` non-activating perimeter glow, phantom cursor, floating `Stop (Esc)` pill, 60Hz cubic ease-out mouse glide & multi-step drags, Per-Monitor DPI v2 + `SendInput` Unicode + `winAppMenu` on Windows 11, Wayland (`ydotool`, `wtype`, `grim`, `spectacle`, AT-SPI2) on Linux, universal `desktopCapturer` fallback, and `doctor()` / `previewHud()` controls in Settings.
+- **Editable `AGENTS.md` + Reset to Default (`electron/memory.js`, `src/components/settings/AgentsMdSection.jsx`):** Added Global (`~/.autobot/AGENTS.md`) and Workspace `AGENTS.md` editor in Settings with `Save`, `Reload from Disk`, and `Reset to Default` (`DEFAULT_AGENTS_MD`).
+
+## [1.6.5] - 2026-11-27
+
+### Added
+- **Orchestrator Swarm Default, Mandatory Model Guard & Universal Auto-Detect (`src/App.jsx`, `src/components/settings/OrchPaidProvidersPanel.jsx`):** Defaulted Swarm ON when activating Orchestrator, added a setup notice/guard when no Orchestrator models are configured, and added 1-click OAuth & Paid API (`Kimi`, `Z.AI`, `Grok`, `DeepSeek`, `OpenRouter`) Auto-Detect.
+
 ## [1.5.6] - 2026-11-27
 
 ### Fixed & Hardened

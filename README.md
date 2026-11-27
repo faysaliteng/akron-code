@@ -14,10 +14,10 @@
     <img src="https://github.com/faysaliteng/akron-code/actions/workflows/build-desktop.yml/badge.svg" alt="CI Build Status" />
   </a>
   <a href="https://github.com/faysaliteng/akron-code/releases/latest">
-    <img src="https://img.shields.io/badge/Release-v1.5.6-10b981?style=for-the-badge" alt="Release v1.5.6" />
+    <img src="https://img.shields.io/badge/Release-v1.6.7-10b981?style=for-the-badge" alt="Release v1.6.7" />
   </a>
   <a href="./VERIFICATION.md">
-    <img src="https://img.shields.io/badge/Verified-148%2F148%20Test%20Suites%20%C2%B7%2070%2F70%20Evals-059669?style=for-the-badge" alt="148/148 Test Suites · 70/70 Evals" />
+    <img src="https://img.shields.io/badge/Verified-198%2F198%20Test%20Suites%20%C2%B7%2070%2F70%20Evals-059669?style=for-the-badge" alt="198/198 Test Suites · 70/70 Evals" />
   </a>
   <a href="https://github.com/faysaliteng/akron-code/releases/latest">
     <img src="https://img.shields.io/badge/Platforms-macOS%20%7C%20Windows%20%7C%20Linux-111827?style=for-the-badge" alt="Cross-Platform Desktop" />
@@ -31,7 +31,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/faysaliteng/akron-code/releases/latest"><strong>⬇️ Download v1.5.6</strong></a>
+  <a href="https://github.com/faysaliteng/akron-code/releases/latest"><strong>⬇️ Download v1.6.7</strong></a>
   ·
   <a href="#how-it-works">How It Works</a>
   ·
@@ -52,17 +52,17 @@
 
 ---
 
-## Downloads (Official Releases `v1.5.6`)
+## Downloads (Official Releases `v1.6.7`)
 
 All desktop installers are hardened with **6/6 Electron Fuses** + cryptographic **SHA-256 Brand Seal** integrity verification, paired with `latest*.yml` auto-updater manifests (`latest-mac.yml`, `latest.yml`, `latest-linux.yml`) and `SHA256SUMS.txt` on the [**GitHub Releases Page**](https://github.com/faysaliteng/akron-code/releases/latest) (ad-hoc / unsigned locally without paid Developer ID or EV Authenticode certificates).
 
 | Platform / Component | Artifacts | Highlights |
 |---|---|---|
-| **macOS (Apple Silicon)** | `AkronCode-1.5.6-arm64.dmg` · `AkronCode-1.5.6-arm64.zip` | Top-level `Akron Code.app` + standalone `Akron Browser Bot/` folder, ad-hoc signed, `RunAsNode=false` Fuse, ASAR integrity verified |
-| **Windows 11 / 10 (x64 & ARM64)** | `AkronCode-1.5.6-win-setup-x64.exe` · `AkronCode-1.5.6-win-setup-arm64.exe` | NSIS Setup, native dark titlebar overlay (`Ctrl+` shortcuts), ConPTY `node-pty`, PowerShell/UIAutomation Computer Use 2.0, Toast XML, AUMID |
-| **Windows Portable (x64)** | `AkronCode-1.5.6-win-portable-x64.exe` | Zero-install single portable executable |
-| **Linux (x64)** | `AkronCode-1.5.6-linux-x86_64.AppImage` · `AkronCode-1.5.6-linux-x64.tar.gz` | Single-file `AppImage` + portable `.tar.gz` archive (`npmRebuild: false`, `xdotool`/`ydotool`/`grim` Computer Use 2.0, ASAR + Fuses hardened) |
-| **Standalone Akron Browser Bot (`1.6.12`)** | `AkronBrowserBot-1.6.12.crx` · `AkronBrowserBot-1.6.12.zip` | Deterministic RSA-2048 signed CRX3 (`Cr24`) + unpacked MV3 bundle auto-synced to user-accessible OS folder, instant options auto-save, zero-error `:8766` pre-flight probe, GitHub auto-updater |
+| **macOS (Apple Silicon)** | `AkronCode-1.6.7-arm64.dmg` · `AkronCode-1.6.7-arm64.zip` | Top-level `Akron Code.app` + standalone `Akron Browser Bot/` folder, ad-hoc signed, `RunAsNode=false` Fuse, ASAR integrity verified, `CGEvent` 60Hz glide + Emerald HUD |
+| **Windows 11 / 10 (x64 & ARM64)** | `AkronCode-1.6.7-win-setup-x64.exe` · `AkronCode-1.6.7-win-setup-arm64.exe` | NSIS Setup, native dark titlebar overlay (`Ctrl+` shortcuts), ConPTY `node-pty`, Per-Monitor DPI v2 + `SendInput` Unicode + UIAutomation Computer Use 2.0, Toast XML |
+| **Windows Portable (x64)** | `AkronCode-1.6.7-win-portable-x64.exe` | Zero-install single portable executable |
+| **Linux (x64)** | `AkronCode-1.6.7-linux-x86_64.AppImage` · `AkronCode-1.6.7-linux-x64.tar.gz` | Single-file `AppImage` + portable `.tar.gz` archive (`npmRebuild: false`, X11 + Wayland `ydotool`/`wtype`/`grim`/AT-SPI2 Computer Use 2.0, ASAR + Fuses hardened) |
+| **Standalone Akron Browser Bot (`1.6.13`)** | `AkronBrowserBot-1.6.13.crx` · `AkronBrowserBot-1.6.13.zip` | Deterministic RSA-2048 signed CRX3 (`Cr24`) + unpacked MV3 bundle auto-synced to user-accessible OS folder, `close_tab` & `list_tabs` fixes, `:8766` bridge, GitHub auto-updater |
 | **Companion Terminal CLI & Daemon** | `./bin/akron.js` (`npm link` → `akron`) | Multi-turn `akron` REPL & `akron -p` coding agent (`--continue`/`--yolo`/`--stream-json`), `akron daemon`, `akron update`, `akron review --adversarial`, `akron doctor`, `akron eval` |
 
 Verify downloaded installers against `SHA256SUMS.txt`:
@@ -99,15 +99,15 @@ Every major AI company wants you trapped inside its own **Four Walled Gardens**:
 
 ```mermaid
 flowchart TD
-  UI["Akron Code UI (3-Mode Picker · UI Design Studio · Monaco IDE · Notebooks · Debugger · Markmap)"] --> Preload["Context-Isolated Preload Bridge"]
-  Preload --> Main["Electron Main Process & Agent Harness (v1.5.6)"]
+  UI["Akron Code UI (4-Mode Welcome · 3-Mode Picker · Editable AGENTS.md · Monaco IDE · Notebooks · Markmap)"] --> Preload["Context-Isolated Preload Bridge"]
+  Preload --> Main["Electron Main Process & Agent Harness (v1.6.7)"]
 
   Main --> Vault["1. OAuth 2.1 PKCE Vault & AES-256-GCM SecretStore"]
   Main --> Brain["2. DeepSeek V4.1 Flash Dispatcher (OpenRouter Free / DeepSeek API / FreeLLMAPI)"]
-  Main --> Context["3. Context Pipeline 2.0 (Spill-to-Disk · 20k Budget · Mindmap Bridge)"]
+  Main --> Context["3. Context Pipeline 2.0 (Spill-to-Disk · 20k Budget · AGENTS.md · Mindmap Bridge)"]
   Main --> Failover["4. 8-Role Failover Engine (planner · coder · vision · fast · longctx · image · video · audio)"]
   Main --> Swarm["5. 9-Agent Parallel Swarm DAG & Duet Adversarial Review"]
-  Main --> Harness["6. 428 Tools (ApplyPatch · EditGuard · Media/Office Studio · 263 REA Tools · Browser Bot :8766)"]
+  Main --> Harness["6. 428 Tools (Computer Use 2.0 3-OS + Emerald HUD · ApplyPatch · Media/Office Studio · 263 REA Tools · Browser Bot :8766)"]
 ```
 
 | Stage | Module & Mechanism |
@@ -121,12 +121,14 @@ flowchart TD
 
 ---
 
-### Why Akron Code (`v1.5.6` Head-to-Head Matrix)
+### Why Akron Code (`v1.6.7` Head-to-Head Matrix)
 
-| Capability | **Akron Code v1.5** | **Claude.app** | **ChatGPT / Codex.app** | **Google Antigravity** | **Cursor** |
+| Capability | **Akron Code v1.6.7** | **Claude.app** | **ChatGPT / Codex.app** | **Google Antigravity** | **Cursor** |
 |---|---|---|---|---|---|
 | Multi-Vendor Subscriptions (`Claude` + `GPT` + `Gemini` + `Grok` + `Ollama`) | **Native OAuth + Auto-Heal** | Anthropic only | OpenAI only | Google / Partner | Proprietary billing |
 | 8-Role Auto-Routing (`planner`, `coder`, `image_gen`, `video_gen`, `audio_speech`, …) | **Yes + 429 Failover** | No | No | Partial | Partial |
+| 3-OS Computer Use 2.0 (`macOS` · `Win 11 PMv2` · `Linux X11/Wayland`) + Emerald HUD | **Yes + `Stop (Esc)` Pill** | macOS/Win beta | Limited | No | No |
+| Editable Global & Workspace `AGENTS.md` + `CLAUDE.md` in Settings | **UI Editor + Reset Default** | File only | Partial | `.gemini` rules | `.cursorrules` |
 | Cross-Vendor Duet Adversarial Code Review (`Claude × GPT / Gemini`) | **Built-in 3-Pass** | Single family | Single family | Single family | Single family |
 | Non-Blocking `<PermissionDock />` + `<QuestionDock />` + Editable Queue Tray | **Yes (1–4 / Esc / Queue)** | Blocking modal | Partial | Inline dock | Inline prompt |
 | Offline Media & Office Studio (`PDF`/`DOCX`/`XLSX`/`PPTX`/`ZIP`/`PNG`/`MP4`) | **Pre-Bundled Offline** | Text/Preview only | Sandbox required | Cloud tools | External only |
@@ -145,7 +147,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   UI["Akron Code Desktop UI (React 18 · Monaco · Notebooks · Debugger · Markmap · Appearance Studio)"] --> Preload["Context-Isolated Preload Bridge (contextIsolation: true)"]
-  Preload --> Main["Electron Main Process & Agent Harness (v1.5.6)"]
+  Preload --> Main["Electron Main Process & Agent Harness (v1.6.7)"]
 
   Main --> Brand["Brand Guard & 6/6 Electron Fuses (SHA-256 Assets + ASAR Integrity)"]
   Main --> Auth["OAuth Auto-Heal & AES-256-GCM Secret Store (Claude · Codex · Gemini · Grok · Keyring)"]
@@ -187,8 +189,12 @@ sequenceDiagram
 
 ## Visual Product Gallery
 
-### 1. Autonomous Agent Workspace & Per-Message Timestamps (Dark & Light)
-Crisp Dark & Light Agent Mode featuring **per-message timestamps** (`Today · HH:MM`) under every user input and assistant reply, compact `11px` **Response Action Bar** (`Copy · Fork · Retry · Share · Delete`), zero floating toolbar overlap, inline tool summaries, and active model + work duration badges.
+### 1. Autonomous Agent Workspace, 4-Mode Quick-Start, 5-Step Interactive Tour & Timestamps
+Crisp Dark & Light Agent Mode featuring the **4-Mode Welcome Quick-Start** (`Smart Auto`, `Lead + Builder`, `Full AI Team`, `Single Model`), built-in **5-Step Interactive Hands-On Guide**, **per-message timestamps** (`Today · HH:MM`), compact `11px` **Response Action Bar** (`Copy · Fork · Retry · Share · Delete`), zero floating toolbar overlap, inline tool summaries, and active model + work duration badges.
+
+![Akron Code 4-Mode Welcome Quick-Start Dark](docs/screenshots/welcome-4modes-quickstart-dark.png)
+
+![Akron Code Interactive 5-Step Tutorial & Quick Start](docs/screenshots/interactive-tutorial-tour-dark.png)
 
 ![Akron Code Agent Workspace Dark](docs/screenshots/agent-dark.png)
 
@@ -212,6 +218,8 @@ Crisp Dark & Light Agent Mode featuring **per-message timestamps** (`Today · HH
 ![Akron Code Emerald Sidebar & Mission Control Dark](docs/screenshots/emerald-dark-sidebar-mission.png)
 
 ![Akron Code Emerald Sidebar & Mission Control Light](docs/screenshots/emerald-light-sidebar-mission.png)
+
+![Live Environment Pane, Context Meter & Remote Host](docs/screenshots/environment-pane-live-v151.png)
 
 ---
 
@@ -280,8 +288,14 @@ Every release is validated with real native execution — including silent NSIS 
 
 ---
 
-### 7. UI & Design Customization Studio, Quota Rings, Runtimes, Auto-Updater & Environments
-Full live visual control (**Theme Mode**, **4 Surface Finishes** — `Emerald Carbon`, `Matte Obsidian`, `Midnight Glass`, `Minimal Slate` — **6 Preset Accent Swatches + Custom Color Picker**, **Background Pattern**, **UI Density**, **Chat Width**, **Editorial vs Bubble Cards**, **Corner Roundness**, **Timestamp Formats**, and **Action Bar Styles**), paired with Dark & Light subscription quota rings, cross-OS notifications, runtime dependency manager, auto-updater, migration wizard, token budgets, diagnostics, and SSH/Remote execution environments.
+### 7. 3-OS Computer Use 2.0 + Emerald HUD, Editable `AGENTS.md`, UI Studio & Environments
+Claude-parity **3-OS Computer Use 2.0** (`macOS`, `Windows 11 PMv2`, `Linux X11 + Wayland`) with live **Emerald Screen Glow HUD**, animated phantom cursor, and `Stop (Esc)` emergency halt pill; **Editable Global & Workspace `AGENTS.md` in Settings** with 1-click **Reset to Default**; **Orchestrator Auto-Swarm & Auto-Detect** across OAuth and Paid APIs (`Kimi`, `Z.AI`, `DeepSeek`, `Grok`, `OpenRouter`); full **UI & Design Studio**, quota rings, notifications, runtimes, auto-updater, migration wizard, token budgets, diagnostics, and SSH/Remote execution environments.
+
+![3-OS Computer Use 2.0 & Live Emerald Screen HUD](docs/screenshots/computer-use-3os-hud-dark.png)
+
+![Editable Global & Workspace AGENTS.md Settings](docs/screenshots/settings-agents-md-dark.png)
+
+![Orchestrator Auto-Swarm, OAuth & Paid API Auto-Detect](docs/screenshots/settings-orchestrator-autodetect-dark.png)
 
 ![Settings UI & Design Customization Studio Dark](docs/screenshots/ui-design-studio-dark.png)
 

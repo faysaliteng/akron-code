@@ -168,7 +168,7 @@ async function run() {
   }));
   const seedConvs = [{
     id: 'conv_poisoned_2tok',
-    title: 'make a super beautifull adult entertenmaint live',
+    title: 'Multi-Agent Platform & Live Browser Suite',
     cwd: wsDir,
     ts: now - 60000,
     updatedAt: now - 60000,
@@ -190,6 +190,7 @@ async function run() {
   await win.loadFile(path.join(REPO, 'dist/index.html'));
   await win.webContents.executeJavaScript(`
     localStorage.clear();
+    localStorage.setItem('autobot:tutorialSeenV1', 'true');
     localStorage.setItem('autobot:convs', ${JSON.stringify(JSON.stringify(seedConvs))});
     localStorage.setItem('autobot:openTabs', ${JSON.stringify(JSON.stringify(['conv_poisoned_2tok']))});
     localStorage.setItem('autobot:activeId', ${JSON.stringify(JSON.stringify('conv_poisoned_2tok'))});

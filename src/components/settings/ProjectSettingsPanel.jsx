@@ -52,15 +52,15 @@ export function ProjectSettingsPanel({ cwd, projects = [], setProjects, activePr
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginTop: 8 }}>
             <span>
-              <strong>{budget.activeTokens.toLocaleString()}</strong> / {budget.capTokens.toLocaleString()} active tokens
-              {budget.demotedCount > 0 && (
+              <strong>{Number(budget.activeTokens || 0).toLocaleString()}</strong> / {Number(budget.capTokens || 20000).toLocaleString()} active tokens
+              {Number(budget.demotedCount || 0) > 0 && (
                 <span className="token-badge-demoted" style={{ marginLeft: 8 }}>
                   {budget.demotedCount} auto-demoted to @path
                 </span>
               )}
             </span>
             <span className="muted" style={{ margin: 0 }}>
-              Global: {budget.globalTokens.toLocaleString()} · Project: {budget.projectTokens.toLocaleString()}
+              Global: {Number(budget.globalTokens || 0).toLocaleString()} · Project: {Number(budget.projectTokens || 0).toLocaleString()}
             </span>
           </div>
 

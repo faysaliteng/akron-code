@@ -240,6 +240,14 @@ rl.on('line', async (line) => {
 });
 `;
 
+function syncWorkerRef(entry) {
+  if (!entry || entry.kind !== 'child' || !entry.proc || !entry.proc.stdout) return;
+  try {
+    if (entry.pending.size > 0 && typeof entry.proc.stdout.ref === 'function') entry.proc.stdout.ref();
+    else if (entry.pending.size === 0 && typeof entry.proc.stdout.unref === 'function') entry.proc.stdout.unref();
+  } catch (_) {}
+}
+
 function destroySession(entry) {
   if (!entry) return;
   if (entry.kind === 'child' && entry.proc) {
@@ -249,6 +257,7 @@ function destroySession(entry) {
         p.resolve({ ok: false, output: 'Error: REPL session terminated.' });
       }
       entry.pending.clear();
+      syncWorkerRef(entry);
       entry.proc.kill('SIGKILL');
     } catch (_) {}
   }
@@ -290,6 +299,7 @@ function createChildWorkerSession(key, cwd) {
       entry.pending.delete(id);
       p.resolve({ ok: false, output: `Error: REPL worker exited (${why}${entry.errBuf ? ': ' + entry.errBuf.slice(0, 300) : ''}).` });
     }
+    syncWorkerRef(entry);
     if (sessions.get(key) === entry) sessions.delete(key);
   };
   proc.stdout.on('data', (chunk) => {
@@ -305,6 +315,7 @@ function createChildWorkerSession(key, cwd) {
       if (p) {
         clearTimeout(p.timer);
         entry.pending.delete(msg.id);
+        syncWorkerRef(entry);
         p.resolve({ ok: !!msg.ok, output: String(msg.output || '') });
       }
     }
@@ -404,17 +415,19 @@ async function evalJS({ code, timeout = 30000, cwd, sessionId, reset = false }) 
       const reqId = session.seq++;
       const timer = setTimeout(() => {
         session.pending.delete(reqId);
+        syncWorkerRef(session);
         destroySession(session);
         sessions.delete(session.id);
         resolve({ ok: false, output: `Error: REPL evaluation timed out after ${ms}ms.` });
       }, ms + 500);
-      if (timer.unref) timer.unref();
       session.pending.set(reqId, { resolve, timer });
+      syncWorkerRef(session);
       try {
         session.proc.stdin.write(JSON.stringify({ id: reqId, code: rawSrc, timeout: ms }) + '\n');
       } catch (e) {
         clearTimeout(timer);
         session.pending.delete(reqId);
+        syncWorkerRef(session);
         resolve({ ok: false, output: 'Error: ' + (e && e.message ? e.message : String(e)) });
       }
     });

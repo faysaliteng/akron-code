@@ -340,10 +340,10 @@ export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoad
               type="button"
               className={'orch-paid-pill' + (isSel ? ' sel' : '') + (p.hasKey ? ' ready' : '')}
               onClick={() => { setCreatingCustom(false); setSelectedId(p.id); setErrMsg(''); setStatusMsg(''); }}
-              title={p.hasKey ? `${p.name} · Key saved (${p.keyHint})` : `${p.name} · Set API key`}
+              title={p.hasKey ? `${p.name || p.label || p.id} · Key saved (${p.keyHint || ''})` : `${p.name || p.label || p.id} · Set API key`}
             >
               <span className={'orch-paid-dot' + (p.hasKey ? ' ok' : '')} />
-              <span>{p.name.replace(/\s*\([^)]*\)/, '')}</span>
+              <span>{String(p.name || p.label || p.id || '').replace(/\s*\([^)]*\)/, '')}</span>
             </button>
           );
         })}
