@@ -624,6 +624,38 @@ async function zoom({ x1 = 0, y1 = 0, x2 = 400, y2 = 300, dir } = {}) {
   return { path: file, size: buf.length, region: { x: rx, y: ry, width: rw, height: rh }, b64: buf.toString('base64') };
 }
 
+// Capture a single window through Electron's desktopCapturer (uses the app's
+// own Screen Recording grant) and write it to `file`. Returns {ok,error}.
+async function appScreenshotViaElectron(target, file) {
+  let el = null;
+  try { el = require('electron'); } catch (_) { el = null; }
+  if (!el || !el.desktopCapturer || !el.nativeImage) {
+    return { ok: false, error: 'desktopCapturer unavailable (not in Electron main process)' };
+  }
+  try {
+    const sources = await el.desktopCapturer.getSources({
+      types: ['window'],
+      thumbnailSize: { width: Math.max(1, target.width * 2), height: Math.max(1, target.height * 2) },
+    });
+    const wantName = String(target.app || '').toLowerCase();
+    const wantTitle = String(target.title || '').toLowerCase();
+    let src = sources.find((s) => String(s.name || '').toLowerCase() === (target.title || target.app || '').toLowerCase());
+    if (!src && wantTitle) src = sources.find((s) => String(s.name || '').toLowerCase().includes(wantTitle));
+    if (!src && wantName) src = sources.find((s) => String(s.name || '').toLowerCase().includes(wantName));
+    if (!src) src = sources[0];
+    if (!src || !src.thumbnail || src.thumbnail.isEmpty()) {
+      return { ok: false, error: 'no matching window source / empty pixels' };
+    }
+    const png = src.thumbnail.toPNG();
+    if (!png || !png.length) return { ok: false, error: 'empty PNG from desktopCapturer' };
+    fs.writeFileSync(file, png);
+    if (target.width > 0) { try { normalizePngToLogicalWidth(file, target.width); } catch (_) {} }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  }
+}
+
 async function appScreenshot({ app = '', windowId = null, title = '', dir } = {}) {
   gate();
   const wins = await listWindowsStructured();
@@ -646,9 +678,21 @@ async function appScreenshot({ app = '', windowId = null, title = '', dir } = {}
   } else if (process.platform === 'linux') {
     winLinux.linuxScreenshot(file, null, target.windowId);
   } else {
+    // Primary: screencapture window-id capture. Falls back to Electron's
+    // desktopCapturer when the CLI subprocess is denied Screen Recording TCC
+    // (which inherits a different grant than the Electron main process).
     const { err } = await execP(`/usr/sbin/screencapture -x -o -l ${target.windowId} "${file}"`, { timeout: 20000 });
-    if (err) throw new Error('app screenshot failed: ' + err.message);
-    if (target.width > 0) normalizePngToLogicalWidth(file, target.width);
+    let haveShot = !err && fs.existsSync(file) && fs.statSync(file).size > 0;
+    if (haveShot && target.width > 0) {
+      try { normalizePngToLogicalWidth(file, target.width); } catch (_) {}
+    }
+    if (!haveShot) {
+      const viaElectron = await appScreenshotViaElectron(target, file);
+      if (!viaElectron.ok) {
+        throw new Error('app screenshot failed: ' + (err ? err.message : viaElectron.error || 'could not create image from window') + ' — grant Screen Recording to Akron Code in System Settings › Privacy & Security.');
+      }
+      haveShot = true;
+    }
   }
   const buf = fs.readFileSync(file);
   lastShot = file;

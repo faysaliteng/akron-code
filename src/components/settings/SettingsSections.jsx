@@ -885,7 +885,7 @@ export function DependenciesAndUpdaterSection({ setNotice }) {
         <h3>App Auto-Update (GitHub Releases)</h3>
         <div className="env-prof-row">
           <div className="env-prof-meta">
-            <span className="env-prof-title">Akron Code v{(upd && upd.currentVersion) || curVer || '1.5.2'}</span>
+            <span className="env-prof-title">Akron Code v{(upd && upd.currentVersion) || curVer || '1.5.3'}</span>
             <span className="env-prof-sub">
               {upd
                 ? (upd.ok
@@ -2101,7 +2101,7 @@ export function OutboundRelaySection({ setNotice }) {
             <div className="oc-row-sub">Connect outbound without opening inbound firewall ports</div>
           </div>
           <div className="oc-row-ctrl" style={{ gap: 6 }}>
-            <input placeholder="wss://relay.example/akron" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} />
+            <input placeholder="wss://relay.example" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} />
             <input type="password" placeholder="Bearer token" value={token} onChange={(e) => setToken(e.target.value)} style={{ width: 120 }} />
             {st.connected ? (
               <button type="button" className="btn-mini" onClick={disconnectRelay}>Disconnect</button>

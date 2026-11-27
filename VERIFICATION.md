@@ -1,3 +1,29 @@
+# Akron Code (`v1.5.3`) — Production Release Verification (2026-11-27)
+
+**Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.5.3`)
+
+## v1.5.3 Production Gate Summary
+
+| Gate | Command / Platform | Result |
+|---|---|---|
+| Static Syntax / JSX Check | `npm run typecheck` | ✅ `TYPECHECK_OK: verified 380 JS/JSX/MJS/CJS files with 0 syntax/transform errors.` |
+| Full Unit & Integration Suite | `npm test` (`test/*.test.js`, `--test-concurrency=4`) | ✅ **`144 / 144` passed, `0` failed** (`ℹ pass 144`, `ℹ fail 0`) |
+| Benchmark Evals & Audits | `npm run eval:all && node scripts/parity-audit.js && node test/cross-platform-audit.test.js` | ✅ **`EVAL_ALL: 70/70 passed (100%)`**, `parity-audit.js OK`, `CROSS_PLATFORM_AUDIT_ALL_PASS` |
+| Full-App Live DOM Overlap, Overflow & Contrast Audit | `./node_modules/.bin/electron -r /tmp/suppress-electron-dialog.cjs test/live/ui-layout-overlap-audit.cjs` | ✅ **`UI_LAYOUT_AUDIT_OK`** — `0` overlaps, `0` clipped placeholders, `0` horizontal overflows, `0` contrast failures across Dark `1280×820`, Dark `1040×760` Split-Pane, and Light `1280×820` (covering Image Studio, Video Studio, Media Library, Chat+Review, Chat+DocPreview, Automations, Customizations, Mission, Projects, Artifacts, Search, Notifications, Settings) |
+| Live Electron UI E2E (`v1.5.2` Regression) | `./node_modules/.bin/electron -r /tmp/suppress-electron-dialog.cjs test/live/verify-v152-ui.cjs` | ✅ **`UI_V152_E2E_OK`** |
+| Cryptographic Brand Seal | `npm run brand:check` | ✅ `BRAND_SEAL_OK 12` |
+| Line Budget Check | `wc -l electron/main.js src/App.jsx` | ✅ `1559` (`< 1600`) and `3473` (`< 3500`) |
+| Packaged macOS ARM64 Build + Fuses + Codesign + Cold Boot | `npm run dist:mac`, `@electron/fuses`, `/Applications/Akron Code.app` | ✅ **6/6 Electron Fuses** (`RunAsNode=0, CookieEnc=1, NodeOpts=0, NodeInspect=0, OnlyAsar=1, AsarIntegrity=1`), `0` `.map` files in `dist/` and `app.asar`, `codesign --verify --deep --strict OK`, `COLD_BOOT_OK {"ok":true,"brandOk":true,"domOk":true,"ipcOk":true,"checkedFiles":15,"consoleErrorCount":0}` |
+
+### Verified Local macOS Build Checksums (`v1.5.3`)
+
+- `AkronCode-1.5.3-arm64.dmg`: `ca7d8dfa8ccd8edc2935504cbbc46ab05bb2dca44b57baced759dd6ce910077d`
+- `AkronCode-1.5.3-arm64.zip`: `17575e2a8482500bc549f28a7107fc59f60ec23a13123eb93d5b0f02042918d6`
+- `AkronBrowserBot-1.6.7.crx`: `a9275e0f9449990115fbb8589da1062f0c8abf308f2a94cbac4d2782c2fa343c`
+- `AkronBrowserBot-1.6.7.zip`: `ba1e136b8cceb10ea8657f1a9d065d001e8006dbe1c7fe27929b18ec0c918f3e`
+
+---
+
 # Akron Code (`v1.5.2`) — Production Release Verification (2026-11-27)
 
 **Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.5.2`)

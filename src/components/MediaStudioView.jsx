@@ -241,7 +241,7 @@ export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onO
           <div className="media-studio-controls">
             <div className="media-studio-field media-studio-field-model">
               <div className="media-studio-field-head">
-                <label>Image Model (Grok / Gemini / OpenAI / Flux)</label>
+                <label title="Image Model (Auto, Grok, Imagen 3, Gemini Flash, GPT-Image-1, Flux)">Image Model</label>
                 {onConfigureMediaKey && (
                   <button type="button" className="media-field-config-link" onClick={() => onConfigureMediaKey('')}>
                     Config APIs →
@@ -303,7 +303,7 @@ export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onO
           <div className="media-studio-controls">
             <div className="media-studio-field media-studio-field-model">
               <div className="media-studio-field-head">
-                <label>Video Model (Veo 2 / Sora / Grok / Studio)</label>
+                <label title="Video Model (Auto, Veo 2, Sora, Grok, Studio)">Video Model</label>
                 {onConfigureMediaKey && (
                   <button type="button" className="media-field-config-link" onClick={() => onConfigureMediaKey('')}>
                     Config APIs →
@@ -320,7 +320,7 @@ export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onO
               />
             </div>
             <div className="media-studio-field">
-              <label>Animate Source Image (Optional)</label>
+              <label title="Animate Source Image (Optional)">Source Image (Optional)</label>
               <select value={vidSourceImage} onChange={(e) => setVidSourceImage(e.target.value)}>
                 <option value="">None (Text-to-Video)</option>
                 {imageChoices.map((img) => (

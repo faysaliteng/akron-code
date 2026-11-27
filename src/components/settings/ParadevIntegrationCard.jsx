@@ -118,7 +118,7 @@ export function ParadevIntegrationCard({ setNotice }) {
           <input
             type="password"
             value={apiKey}
-            placeholder={status && status.configured ? `Saved (${status.keyPreview}) — leave blank to keep` : 'sk_live_… (from app.paradev.com → Settings → API Keys)'}
+            placeholder={status && status.configured ? `Saved (${status.keyPreview}) — leave blank to keep` : 'sk_live_… (from Paradev API Keys)'}
             onChange={(e) => setApiKey(e.target.value)}
           />
         </label>

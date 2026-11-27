@@ -1386,7 +1386,7 @@ export function SearchView({ convs, cwd, initialTab = 'search', provider = null,
         <>
           <div className="search-bar">
             <Icon name="Search" size={16} />
-            <input ref={inputRef} className="search-input" placeholder="Search conversations, files, notebooks, memory…" value={q} onChange={(e) => setQ(e.target.value)} />
+            <input ref={inputRef} className="search-input" placeholder="Search chats, files, notes, memory…" value={q} onChange={(e) => setQ(e.target.value)} />
             {busy && <span className="search-busy">searching…</span>}
             <span className="search-count">{q.trim() ? total + ' result' + (total === 1 ? '' : 's') : ''}</span>
           </div>

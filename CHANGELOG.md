@@ -2,6 +2,20 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.5.3] - 2026-11-27
+
+### Fixed & Hardened
+- **Images & Video Studio Overlap, Alignment & Container Queries (`src/styles/media-doc-studio.css`, `src/components/MediaStudioView.jsx`):**
+  - Replaced `repeat(auto-fit, minmax(160px, 1fr))` + rigid `min-width: 240px` on `.media-studio-field-model` (which overflowed Column 1 onto `Aspect Ratio` and `Animate Source Image (Optional)`) with proportional desktop grid tracks (`minmax(230px, 1.9fr) repeat(3, minmax(120px, 1fr)) auto`), `min-width: 0` on all grid children, uniform `34px` control heights, concise single-line field labels with full hover tooltips, and `@container` responsive breakpoints (`<= 860px`, `<= 500px`) inside `.media-studio-composer`.
+  - Widened `.media-studio-search` (`width: 268px; max-width: 100%`) so `"Filter by name, prompt, or model…"` renders unclipped, made `.media-model-picker.is-compact` responsive inside cards, aligned card action bars via `.media-studio-grid .media-doc-actions { margin-top: auto }`, and fixed `[data-theme="light"]` contrast on `.media-doc-tab.on` and `.media-studio-gen-btn`.
+- **App-Wide Split-Pane Responsiveness, Light-Theme Contrast & Input Placeholders (`src/styles.css`, `src/styles/workspace-panels.css`, `src/components/chat/WorkspaceViews.jsx`, `src/components/settings/`):**
+  - Added `container-type: inline-size` + `min-width: 0` across `.cust-hub`, `.cust-hub-inner`, `.cust-market-card`, `.scheduled-panel`, and `.settings-body`; added `flex-wrap: wrap` on `.auto-task-head` so Automations card titles never crush beside action controls when a side pane is open.
+  - Replaced hardcoded dark `#1b1c1f` / `#18191c` colors in `.conv-popover`, `.rv-pane`, and `.doc-preview-pane` with theme tokens and crisp `[data-theme="light"]` overrides (and matched `[data-theme="light"]` alongside `.light` on `.duet-*` and `.mc-*` pills); fixed `.project-new button` green-on-green contrast (`#059669` bg / `#ffffff` text) and shortened overlong input placeholders in Global Search, Paradev Key, Relay URL, and FreeLLM platform filter.
+- **macOS Window Capture Fallback (`electron/computer.js`):**
+  - Added `appScreenshotViaElectron` (`desktopCapturer`) fallback when `/usr/sbin/screencapture -l` lacks CLI Screen Recording TCC permission.
+- **Automated Live Full-App DOM Overlap & Contrast Suite (`test/live/ui-layout-overlap-audit.cjs`):**
+  - Audits sibling bounding-box intersections, canvas-measured placeholder clipping, container horizontal overflows, and WCAG contrast across Dark, Light, and Narrow Split-Pane modes for every workspace view and Settings section.
+
 ## [1.5.2] - 2026-11-27
 
 ### Fixed & Upgraded

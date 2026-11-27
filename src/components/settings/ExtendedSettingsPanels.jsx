@@ -1182,7 +1182,7 @@ export function FreeLLMAPISection({ settings, setSettings, orchestrator, saveOrc
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Filter 97 platforms (openrouter, huggingface, cloudflare, groq…)"
+          placeholder="Filter 97 platforms (openrouter, groq, hf…)"
         />
       </div>
 
