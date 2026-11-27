@@ -404,7 +404,7 @@ function resolveClassifierProvider({
       }
     }
     if (Array.isArray(orchestrator.providers)) {
-      const fastOrch = orchestrator.providers.find((p) => p && p.enabled !== false && p.model && (p.role === 'fast' || p.tier === 'small' || /haiku|flash|mini|fast|27b|nano/i.test(p.model)));
+      const fastOrch = orchestrator.providers.find((p) => p && p.enabled !== false && p.model && (p.role === 'fast' || p.tier === 'small' || /haiku|flash|(?:^|[-_/.])mini(?=$|[-_/.])|fast|27b|nano/i.test(p.model)));
       if (fastOrch) return fastOrch;
     }
   }
@@ -841,7 +841,7 @@ function buildAvailableRoster({
     const entry = { ...cand, contextWindow: ctxWin };
     const normRole = orchRouter.normalizeRole(cand.role);
 
-    const isFast = normRole === 'fast' || tierSets.fast.has(ml) || /haiku|hydrogen|grok-4-fast|flash|mini|nano|lite|gemma|27b/i.test(ml);
+    const isFast = normRole === 'fast' || tierSets.fast.has(ml) || /haiku|hydrogen|grok-4-fast|flash|(?:^|[-_/.])mini(?=$|[-_/.])|nano|lite|gemma|27b/i.test(ml);
     const isCoder = normRole === 'coder' || tierSets.coder.has(ml) || /sonnet|terra|carbon-medium|code-fast|coder|codex|deepseek-chat/i.test(ml);
     const isPlanner = normRole === 'planner' || tierSets.planner.has(ml) || /opus|carbon-high|neon-high|gpt-6|fable|grok-4\.5|reasoner|\br1\b/i.test(ml);
     const isVision = normRole === 'vision' || tierSets.vision.has(ml) || /vision|\bvl\b|\b4o\b|\b4\.1\b|gpt-5\.6|claude-(?:opus|sonnet|haiku)|gemini-/i.test(ml);
@@ -921,14 +921,14 @@ async function callDeepSeekCompletions({
   messages,
   maxTokens = 45,
   fetchImpl = global.fetch,
-  timeoutMs = 1200,
+  timeoutMs = 3500,
   signal = null,
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new Error('fetch unavailable');
   const normBase = normRouterBase(baseURL);
   const altBase = fallbackBaseURL ? normRouterBase(fallbackBaseURL) : '';
   const ctrl = new AbortController();
-  const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, Math.max(50, Number(timeoutMs) || 1200));
+  const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, Math.max(50, Number(timeoutMs) || 3500));
   if (timer && typeof timer.unref === 'function') timer.unref();
   const onParentAbort = () => { try { ctrl.abort(); } catch (_) {} };
   if (signal && typeof signal.addEventListener === 'function') {
@@ -1054,7 +1054,7 @@ async function classifyWithDeepSeek({
   autoRouterConfig = null,
   autoSwitchConfig = null,
   fetchImpl = global.fetch,
-  timeoutMs = 1200,
+  timeoutMs = 3500,
   signal = null,
 } = {}) {
   if (signal && signal.aborted) throw new Error('aborted');
@@ -1116,7 +1116,7 @@ async function classifyWithDeepSeek({
         ],
         maxTokens: 45,
         fetchImpl,
-        timeoutMs: Math.max(50, Number(timeoutMs) || 1200),
+        timeoutMs: Math.max(50, Number(timeoutMs) || 3500),
         signal,
       });
       const parsed = parseDeepSeekRouterJson(res.content, normRoster);
@@ -1213,7 +1213,7 @@ async function dispatchWithDeepSeekFlash({
   autoSwitchConfig = null,
   autoRouterConfig = null,
   fetchImpl = global.fetch,
-  timeoutMs = 1200,
+  timeoutMs = 3500,
   signal = null,
 } = {}) {
   const connectedIds = (Array.isArray(availableModels) ? availableModels : [])
@@ -1236,7 +1236,7 @@ async function dispatchWithDeepSeekFlash({
     autoRouterConfig,
     autoSwitchConfig,
     fetchImpl,
-    timeoutMs: Math.max(50, Math.min(1200, Number(timeoutMs) || 1200)),
+    timeoutMs: Math.max(50, Math.min(3500, Number(timeoutMs) || 3500)),
     signal,
   });
 
@@ -1372,13 +1372,31 @@ async function selectModelForTier({
 
   const ranked = pool.slice().sort((a, b) => rankOf(a) - rankOf(b));
 
+  const inferTierAndRole = (cand) => {
+    const ml = String((cand && cand.model) || '').toLowerCase();
+    const curRole = orchRouter.normalizeRole(cand && cand.role);
+    let r = curRole;
+    if (!r) {
+      if (TIER_PREFERENCES.fast.some((p) => ml === p.toLowerCase()) || /haiku|hydrogen|grok-4-fast|flash|(?:^|[-_/.])mini(?=$|[-_/.])|nano|lite|gemma|27b/i.test(ml)) r = 'fast';
+      else if (TIER_PREFERENCES.planner.some((p) => ml === p.toLowerCase()) || /opus|carbon-high|neon-high|gpt-6|fable|grok-4\.5|reasoner|\br1\b/i.test(ml)) r = 'planner';
+      else r = 'coder';
+    }
+    const t = cand && cand.tier ? cand.tier : (orchRouter.ROLE_TIER[r] || 'heavy');
+    return { role: r, tier: t };
+  };
+
   const hydratedList = [];
   for (const c of ranked) {
     const clean = { ...c };
     delete clean._source;
+    const tag = inferTierAndRole(clean);
+    clean.role = clean.role || tag.role;
+    clean.tier = clean.tier || tag.tier;
     if (clean.oauthProvider && !clean.accessToken && typeof hydrateProvider === 'function') {
       try {
         const hy = await hydrateProvider(clean);
+        hy.role = hy.role || clean.role;
+        hy.tier = hy.tier || clean.tier;
         hydratedList.push(hy);
       } catch (_) {
         // Dead account/row does not derail Auto selection
@@ -1391,11 +1409,44 @@ async function selectModelForTier({
   if (!hydratedList.length && provider) {
     const fallback = { ...provider };
     if (!fallback.model || String(fallback.model).toLowerCase() === 'auto') fallback.model = cls.model || prefList[0] || 'llama3.1';
+    const tag = inferTierAndRole(fallback);
+    fallback.role = fallback.role || tag.role;
+    fallback.tier = fallback.tier || tag.tier;
     hydratedList.push(fallback);
   }
 
   const chosen = hydratedList[0] || { ...(provider || {}), model: cls.model || (TIER_PREFERENCES[lookupRole] || [])[0] || 'llama3.1' };
-  const failoverChain = hydratedList.slice(1, 8);
+  const failoverChain = [];
+  const chainSeen = new Set([candidateSig(chosen)]);
+  const pushChain = (item) => {
+    if (!item || failoverChain.length >= 11) return false;
+    const sig = candidateSig(item);
+    if (chainSeen.has(sig)) return false;
+    chainSeen.add(sig);
+    failoverChain.push(item);
+    return true;
+  };
+  // Primary failover peers for the active turn tier first (top 4)
+  for (const item of hydratedList.slice(1, 5)) pushChain(item);
+  // Guarantee multi-tier representation (at least 2 each from critical, heavy, small)
+  // so downstream Swarm Manager / Workers always get dedicated tier models.
+  for (const wantTier of ['critical', 'heavy', 'small']) {
+    const roleKey = wantTier === 'critical' ? 'planner' : (wantTier === 'small' ? 'fast' : 'coder');
+    const tierPrefs = (TIER_PREFERENCES[roleKey] || []).map((x) => x.toLowerCase());
+    const tierCandidates = hydratedList
+      .filter((item) => item.tier === wantTier)
+      .sort((a, b) => {
+        const ai = tierPrefs.indexOf(String(a.model || '').toLowerCase());
+        const bi = tierPrefs.indexOf(String(b.model || '').toLowerCase());
+        return (ai >= 0 ? ai : 999) - (bi >= 0 ? bi : 999);
+      });
+    let added = 0;
+    for (const item of tierCandidates) {
+      if (pushChain(item) && ++added >= 2) break;
+    }
+  }
+  // Fill any remaining failover slots up to 11
+  for (const item of hydratedList.slice(1)) pushChain(item);
 
   return {
     chosen,
@@ -1419,7 +1470,7 @@ async function classifyAndSelect({
   callClassifier = null,
   gate = null,
   store = null,
-  timeoutMs = 600,
+  timeoutMs = 3500,
   signal = null,
 } = {}) {
   if (signal && signal.aborted) throw new Error('aborted');

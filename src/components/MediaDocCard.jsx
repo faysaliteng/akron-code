@@ -110,10 +110,38 @@ export function extractMediaDocTargets({ tools = [], content = '' } = {}) {
   return out.slice(0, 8);
 }
 
-export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
+const AI_EDIT_MODELS = [
+  { id: 'auto', label: 'Auto (Best AI)' },
+  { id: 'grok-2-image', label: 'xAI Grok 2 Image' },
+  { id: 'imagen-3.0-generate-002', label: 'Google Imagen 3' },
+  { id: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash Image' },
+  { id: 'gpt-image-1', label: 'OpenAI GPT-Image-1' },
+  { id: 'flux-1.1-pro', label: 'Flux 1.1 Pro' },
+  { id: 'flux-1-schnell', label: 'Flux 1 Schnell (Free AI)' },
+  { id: 'flux-realism', label: 'Flux Realism' },
+  { id: 'flux-anime', label: 'Flux Anime' },
+  { id: 'flux-3d', label: 'Flux 3D' },
+];
+
+export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde, onOpenMediaStudio, onAnimateImage, onDelete }) {
+  const propFilePath = typeof target === 'string' ? target : target.path;
+  const propCachePath = typeof target === 'object' ? (target.cachePath || '') : '';
+  const propPreview = typeof target === 'object' ? (target.previewDataUrl || '') : '';
+  const propModel = typeof target === 'object' ? (target.model || '') : '';
+
+  const [activePath, setActivePath] = useState(propFilePath);
+  const [activeCachePath, setActiveCachePath] = useState(propCachePath);
+  const [activePreview, setActivePreview] = useState(propPreview);
+  const [activeModel, setActiveModel] = useState(propModel);
+  const [historyStack, setHistoryStack] = useState([]);
+
   const [info, setInfo] = useState(null);
   const [status, setStatus] = useState('');
   const [zoomOpen, setZoomOpen] = useState(false);
+  const [editDrawerOpen, setEditDrawerOpen] = useState(false);
+  const [aiEditPrompt, setAiEditPrompt] = useState('');
+  const [aiEditModel, setAiEditModel] = useState('auto');
+  const [catalogModels, setCatalogModels] = useState(null);
   const [sheetIdx, setSheetIdx] = useState(0);
   const [slideIdx, setSlideIdx] = useState(0);
   const [showPdfEmbed, setShowPdfEmbed] = useState(false);
@@ -121,37 +149,79 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
   const [videoDur, setVideoDur] = useState(0);
   const videoRef = useRef(null);
 
-  const filePath = typeof target === 'string' ? target : target.path;
-  const cachePath = typeof target === 'object' ? (target.cachePath || '') : '';
-  const initialPreview = typeof target === 'object' ? (target.previewDataUrl || '') : '';
-  const targetModel = typeof target === 'object' ? (target.model || '') : '';
-  const kind = (typeof target === 'object' && target.kind) || classifyExt(filePath);
-  const fileName = String(filePath || '').split(/[\\/]/).pop() || filePath;
+  useEffect(() => {
+    setActivePath(propFilePath);
+    setActiveCachePath(propCachePath);
+    setActivePreview(propPreview);
+    setActiveModel(propModel);
+    setHistoryStack([]);
+  }, [propFilePath, propCachePath]);
 
-  const inspect = () => {
+  const kind = (typeof target === 'object' && target.kind && activePath === propFilePath) ? target.kind : classifyExt(activePath);
+  const fileName = String(activePath || '').split(/[\\/]/).pop() || activePath;
+  const isSvg = /\.svg$/i.test(String(activePath || ''));
+
+  const inspect = (p = activePath, cp = activeCachePath) => {
     if (!window.autobot || typeof window.autobot.studioInspect !== 'function') return;
-    window.autobot.studioInspect({ path: filePath, cachePath, cwd }).then((r) => {
+    window.autobot.studioInspect({ path: p, cachePath: cp, cwd }).then((r) => {
       if (r && r.ok) setInfo(r);
     }).catch(() => {});
   };
 
   useEffect(() => {
-    inspect();
-  }, [filePath, cachePath, cwd]);
+    inspect(activePath, activeCachePath);
+  }, [activePath, activeCachePath, cwd]);
+
+  useEffect(() => {
+    if (!editDrawerOpen || catalogModels) return;
+    if (!window.autobot || typeof window.autobot.mediaStudioCatalog !== 'function') return;
+    window.autobot.mediaStudioCatalog({ cwd }).then((res) => {
+      if (res && res.ok && Array.isArray(res.imageModels)) setCatalogModels(res.imageModels);
+    }).catch(() => {});
+  }, [editDrawerOpen, catalogModels, cwd]);
+
+  const imgSrc = (info && (info.dataUrl || info.fileUrl)) || activePreview || (activeCachePath ? ('file://' + encodeURI(activeCachePath)) : '');
 
   const runAction = async (action, extra = {}) => {
     if (!window.autobot || typeof window.autobot.studioAction !== 'function') return;
     setStatus('Working…');
     try {
-      const r = await window.autobot.studioAction({ action, path: filePath, cachePath, cwd, ...extra });
+      const payload = { action, path: activePath, cachePath: activeCachePath, cwd, ...extra };
+      if (action === 'copy_image' && !payload.dataUrl && imgSrc) {
+        payload.dataUrl = imgSrc;
+      }
+      const r = await window.autobot.studioAction(payload);
       if (r && r.canceled) { setStatus(''); return; }
       if (r && r.ok) {
         if (r.copied) {
-          setStatus('Copied to clipboard');
+          setStatus('Copied image to clipboard');
+          setTimeout(() => setStatus((s) => (s === 'Copied image to clipboard' ? '' : s)), 2400);
+          return;
+        }
+        // In-place live preview update when an image/video edit produces a new file
+        if (r.path && ['remove_background', 'upscale', 'resize', 'ai_edit', 'to_gif'].includes(action)) {
+          setHistoryStack((prev) => [...prev, { path: activePath, cachePath: activeCachePath, preview: activePreview, model: activeModel, info }]);
+          setActivePath(r.path);
+          if (r.cachePath) setActiveCachePath(r.cachePath);
+          if (r.previewDataUrl) setActivePreview(r.previewDataUrl);
+          if (r.model) setActiveModel(r.model);
+          setInfo((prev) => ({
+            ...(prev || {}),
+            ok: true,
+            path: r.path,
+            name: r.path.split(/[\\/]/).pop(),
+            width: r.width || (prev && prev.width) || 0,
+            height: r.height || (prev && prev.height) || 0,
+            size: r.size || (prev && prev.size) || 0,
+            dataUrl: r.previewDataUrl || (prev && prev.dataUrl) || '',
+            fileUrl: 'file://' + encodeURI(r.path),
+          }));
+          if (action === 'ai_edit') setEditDrawerOpen(false);
+          setStatus(`Updated in-place → ${r.path.split(/[\\/]/).pop()}`);
           return;
         }
         setStatus(r.path ? `Saved: ${r.path.split(/[\\/]/).pop()}` : 'Done');
-        if (r.path && onPromptAction && action !== 'saveAs' && action !== 'reveal') {
+        if (r.path && onPromptAction && !['saveAs', 'reveal', 'remove_background', 'upscale', 'resize', 'ai_edit'].includes(action)) {
           onPromptAction(`Created ${r.path}`);
         }
       } else {
@@ -162,9 +232,20 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
     }
   };
 
+  const handleRevert = () => {
+    if (!historyStack.length) return;
+    const prev = historyStack[historyStack.length - 1];
+    setHistoryStack((s) => s.slice(0, -1));
+    setActivePath(prev.path);
+    setActiveCachePath(prev.cachePath);
+    setActivePreview(prev.preview);
+    setActiveModel(prev.model);
+    if (prev.info) setInfo(prev.info);
+    setStatus('Reverted');
+  };
+
   const extLabel = (fileName.split('.').pop() || kind).toUpperCase();
-  const sizeLabel = info && info.size ? `${Math.round(info.size / 1024) || 1} KB` : '';
-  const imgSrc = (info && (info.dataUrl || info.fileUrl)) || initialPreview || (cachePath ? ('file://' + encodeURI(cachePath)) : '');
+  const sizeLabel = info && info.size ? `${Math.round(info.size / 1024) || 1} KB` : (typeof target === 'object' && target.size ? `${Math.round(target.size / 1024) || 1} KB` : '');
   const dimsLabel = (info && info.width && info.height)
     ? `${info.width}×${info.height} · `
     : (typeof target === 'object' && target.width && target.height ? `${target.width}×${target.height} · ` : '');
@@ -174,10 +255,10 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
       <div className="media-doc-head">
         <div className="media-doc-title-wrap">
           <span className="media-doc-badge">{extLabel}</span>
-          <span className="media-doc-title" title={filePath}>{fileName}</span>
+          <span className="media-doc-title" title={activePath}>{fileName}</span>
         </div>
         <span className="media-doc-meta">
-          {targetModel ? `${targetModel} · ` : ''}
+          {activeModel ? `${activeModel} · ` : ''}
           {dimsLabel}
           {info && info.pageCount ? `${info.pageCount}p · ` : ''}
           {info && info.slideCount ? `${info.slideCount} slides · ` : ''}
@@ -199,7 +280,7 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
             className="media-doc-video"
             controls
             playsInline
-            src={(info && info.fileUrl) || ('file://' + encodeURI(filePath))}
+            src={(info && info.fileUrl) || ('file://' + encodeURI(activePath))}
             onLoadedMetadata={(e) => setVideoDur(e.currentTarget.duration || 0)}
             onTimeUpdate={(e) => setVideoTime(e.currentTarget.currentTime || 0)}
           />
@@ -228,7 +309,7 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
         <audio
           className="media-doc-audio"
           controls
-          src={(info && info.fileUrl) || ('file://' + encodeURI(filePath))}
+          src={(info && info.fileUrl) || ('file://' + encodeURI(activePath))}
         />
       )}
 
@@ -309,13 +390,43 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
 
       {status && <div className="media-doc-meta">{status}</div>}
 
+      {kind === 'image' && editDrawerOpen && (
+        <div className="media-doc-edit-drawer">
+          <input
+            type="text"
+            value={aiEditPrompt}
+            onChange={(e) => setAiEditPrompt(e.target.value)}
+            placeholder="Describe AI edit (e.g. Change lighting to emerald cyberpunk neon)…"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && aiEditPrompt.trim()) {
+                runAction('ai_edit', { instruction: aiEditPrompt.trim(), model: aiEditModel });
+              }
+            }}
+          />
+          <select value={aiEditModel} onChange={(e) => setAiEditModel(e.target.value)} title="Select AI Edit Model">
+            {(catalogModels || AI_EDIT_MODELS).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} — {m.available === false ? 'Needs API Key' : 'Available'}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="media-doc-btn"
+            onClick={() => aiEditPrompt.trim() && runAction('ai_edit', { instruction: aiEditPrompt.trim(), model: aiEditModel })}
+          >
+            <Icon name="Sparkles" size={12} /> Apply Edit
+          </button>
+        </div>
+      )}
+
       <div className="media-doc-actions">
         {kind === 'image' && (
           <>
-            <button type="button" className="media-doc-btn" onClick={() => runAction('copy_image')}>
+            <button type="button" className="media-doc-btn" onClick={() => runAction('copy_image', { dataUrl: imgSrc })}>
               <Icon name="Copy" size={12} /> Copy Image
             </button>
-            <button type="button" className="media-doc-btn" onClick={() => onPromptAction && onPromptAction(`Edit image ${filePath}: `)}>
+            <button type="button" className="media-doc-btn" onClick={() => setEditDrawerOpen((v) => !v)}>
               <Icon name="Edit" size={12} /> Edit with AI
             </button>
             <button type="button" className="media-doc-btn" onClick={() => runAction('remove_background')}>Remove BG</button>
@@ -325,6 +436,11 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
               className="media-doc-btn"
               onClick={() => runAction('resize', { width: Math.max(64, Math.round(((info && info.width) || 1024) / 2)) })}
             >Resize 50%</button>
+            {onAnimateImage && (
+              <button type="button" className="media-doc-btn" onClick={() => onAnimateImage(activePath)}>
+                Animate Video
+              </button>
+            )}
           </>
         )}
         {kind === 'video' && (
@@ -335,7 +451,7 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
           </>
         )}
         {kind === 'audio' && (
-          <button type="button" className="media-doc-btn" onClick={() => onPromptAction && onPromptAction(`Transcribe audio file ${filePath}`)}>
+          <button type="button" className="media-doc-btn" onClick={() => onPromptAction && onPromptAction(`Transcribe audio file ${activePath}`)}>
             Transcribe
           </button>
         )}
@@ -350,15 +466,33 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
         {kind === 'archive' && (
           <button type="button" className="media-doc-btn" onClick={() => runAction('extract_archive')}>Extract to Workspace</button>
         )}
+        {historyStack.length > 0 && (
+          <button type="button" className="media-doc-btn" onClick={handleRevert} title="Revert to previous image">
+            ↺ Original
+          </button>
+        )}
         <button type="button" className="media-doc-btn" onClick={() => runAction('reveal')}>
           Reveal in Finder
         </button>
         <button type="button" className="media-doc-btn" onClick={() => runAction('saveAs')}>
           <Icon name="Download" size={12} /> Save As…
         </button>
-        {onOpenInIde && (
-          <button type="button" className="media-doc-btn" onClick={() => onOpenInIde(filePath)}>
-            Open in IDE
+        {(kind === 'image' && !isSvg) || kind === 'video' || kind === 'audio' ? (
+          onOpenMediaStudio ? (
+            <button type="button" className="media-doc-btn" onClick={() => onOpenMediaStudio(activePath)}>
+              <Icon name="Palette" size={12} /> Media Studio
+            </button>
+          ) : null
+        ) : (
+          onOpenInIde ? (
+            <button type="button" className="media-doc-btn" onClick={() => onOpenInIde(activePath)}>
+              Open in IDE
+            </button>
+          ) : null
+        )}
+        {onDelete && (
+          <button type="button" className="media-doc-btn" onClick={() => onDelete(activePath)}>
+            Delete
           </button>
         )}
       </div>
@@ -367,6 +501,7 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
         <div className="media-doc-lightbox" onClick={() => setZoomOpen(false)}>
           <img src={imgSrc} alt={fileName} />
           <div className="media-doc-actions" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="media-doc-btn" onClick={() => runAction('copy_image', { dataUrl: imgSrc })}>Copy Image</button>
             <button type="button" className="media-doc-btn" onClick={() => runAction('saveAs')}>Save As…</button>
             <button type="button" className="media-doc-btn" onClick={() => setZoomOpen(false)}>Close</button>
           </div>
@@ -376,13 +511,13 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde }) {
   );
 }
 
-export function MediaDocCardList({ tools, content, cwd, onPromptAction, onOpenInIde }) {
+export function MediaDocCardList({ tools, content, cwd, onPromptAction, onOpenInIde, onOpenMediaStudio }) {
   const targets = extractMediaDocTargets({ tools, content });
   if (!targets.length) return null;
   return (
     <div className="media-doc-list">
       {targets.map((t) => (
-        <MediaDocCard key={t.path} target={t} cwd={cwd} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} />
+        <MediaDocCard key={t.path} target={t} cwd={cwd} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} onOpenMediaStudio={onOpenMediaStudio} />
       ))}
     </div>
   );

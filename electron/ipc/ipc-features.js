@@ -477,6 +477,7 @@ ipcMain.handle('autobot:createScheduledTask', (e, input) => scheduler.create(inp
 ipcMain.handle('autobot:updateScheduledTask', (e, id, patch) => scheduler.update(id, patch));
 ipcMain.handle('autobot:deleteScheduledTask', (e, id) => scheduler.remove(id));
 ipcMain.handle('autobot:runScheduledTask', (e, id) => scheduler.runNow(id));
+ipcMain.handle('autobot:listScheduledTaskRuns', (e, id, opts) => scheduler.listRuns(id, opts || {}));
 
 ipcMain.handle('autobot:getSettings', () => store.getSettings());
 // ── Sandbox / network policy (Desktop `sandbox.*` + `network.*` parity) ──
@@ -1333,13 +1334,36 @@ ipcMain.handle('autobot:studioAction', async (event, payload) => {
     const mediaGen = require('../media-gen');
     const docStudio = require('../doc-studio');
     if (action === 'reveal') {
-      shell.showItemInFolder(srcPath);
+      if (srcPath && fs.existsSync(srcPath)) shell.showItemInFolder(srcPath);
+      else if (cwd && fs.existsSync(cwd)) shell.openPath(cwd);
       return { ok: true };
+    }
+    if (action === 'reveal_library') {
+      const libDir = mediaGen.resolveLibraryDir ? mediaGen.resolveLibraryDir() : path.join(os.homedir(), '.autobot', 'media-library');
+      fs.mkdirSync(libDir, { recursive: true });
+      shell.openPath(libDir);
+      return { ok: true, path: libDir };
     }
     if (action === 'copy_image') {
       const { clipboard, nativeImage } = require('electron');
-      const img = nativeImage.createFromPath(srcPath);
-      if (img.isEmpty()) return { ok: false, error: 'Could not decode image for clipboard' };
+      let img = srcPath && fs.existsSync(srcPath) ? nativeImage.createFromPath(srcPath) : null;
+      if ((!img || img.isEmpty()) && srcPath && fs.existsSync(srcPath)) {
+        try {
+          const decoded = await mediaGen.decodeImageBuffer(srcPath);
+          if (decoded && decoded.width > 0 && decoded.height > 0 && decoded.data) {
+            const { PNG } = require('pngjs');
+            const png = new PNG({ width: decoded.width, height: decoded.height });
+            decoded.data.copy(png.data);
+            img = nativeImage.createFromBuffer(PNG.sync.write(png));
+          }
+        } catch (_) {}
+      }
+      if (!img || img.isEmpty()) {
+        if (p.dataUrl && typeof p.dataUrl === 'string' && p.dataUrl.startsWith('data:image/')) {
+          img = nativeImage.createFromDataURL(p.dataUrl);
+        }
+      }
+      if (!img || img.isEmpty()) return { ok: false, error: 'Could not decode image for clipboard' };
       clipboard.writeImage(img);
       return { ok: true, copied: true };
     }
@@ -1355,10 +1379,10 @@ ipcMain.handle('autobot:studioAction', async (event, payload) => {
       return { ok: true, path: r.filePath };
     }
     if (action === 'resize') {
-      return await mediaGen.editImage({ input_path: srcPath, operation: 'resize', width: Number(p.width) || 800, height: p.height ? Number(p.height) : undefined, cwd });
+      return await mediaGen.editImage({ input_path: srcPath, operation: 'resize', width: Number(p.width) || 800, height: p.height ? Number(p.height) : undefined, cwd }, { store, provider: store.getSettings().provider || {}, orchestrator: store.getOrchestrator(), cwd });
     }
     if (action === 'remove_background' || action === 'upscale' || action === 'ai_edit') {
-      return await mediaGen.editImage({ input_path: srcPath, operation: action, instruction: p.instruction || '', cwd });
+      return await mediaGen.editImage({ input_path: srcPath, operation: action, instruction: p.instruction || '', model: p.model || '', cwd }, { store, provider: store.getSettings().provider || {}, orchestrator: store.getOrchestrator(), cwd });
     }
     if (action === 'to_gif' || action === 'extract_frames' || action === 'extract_audio') {
       return await mediaGen.editVideo({ input_path: srcPath, operation: action, cwd });
@@ -1373,6 +1397,79 @@ ipcMain.handle('autobot:studioAction', async (event, payload) => {
       return await docStudio.generateDocument({ format: 'pdf', output_path: outPdf, title: path.basename(srcPath), markdown: doc.markdown || doc.text || '', cwd });
     }
     return { ok: false, error: `Unknown studioAction: ${action}` };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+});
+
+ipcMain.handle('autobot:mediaStudioCatalog', async (_event, payload) => {
+  try {
+    const p = payload || {};
+    const mediaGen = require('../media-gen');
+    const router = require('../orch-router');
+    const catalog = router.listMediaStudioCatalog({
+      store,
+      provider: p.provider || store.getSettings().provider || {},
+      orchestrator: store.getOrchestrator(),
+    });
+    const library = mediaGen.listMediaLibrary({ cwd: p.cwd || '', kind: p.kind || 'all', limit: 150 });
+    return {
+      ok: true,
+      ...catalog,
+      library,
+      libraryDir: mediaGen.resolveLibraryDir(),
+    };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+});
+
+ipcMain.handle('autobot:mediaStudioGenerate', async (_event, payload) => {
+  try {
+    const p = payload || {};
+    const mediaGen = require('../media-gen');
+    const cwd = p.cwd || workspace.scratch();
+    const ctx = { store, provider: p.provider || store.getSettings().provider || {}, orchestrator: store.getOrchestrator(), cwd };
+    if (p.kind === 'video') {
+      return await mediaGen.generateVideo({
+        prompt: p.prompt || 'Akron Motion Studio',
+        model: p.model || '',
+        aspect_ratio: p.aspect_ratio || '16:9',
+        duration_sec: Number(p.duration_sec) || 3,
+        format: p.format || 'mp4',
+        image_path: p.image_path || '',
+        cwd,
+      }, ctx);
+    }
+    if (p.kind === 'edit_image' && p.input_path) {
+      return await mediaGen.editImage({
+        input_path: p.input_path,
+        operation: p.operation || 'ai_edit',
+        instruction: p.prompt || p.instruction || '',
+        model: p.model || '',
+        style: p.style || '',
+        cwd,
+      }, ctx);
+    }
+    return await mediaGen.generateImage({
+      prompt: p.prompt || '',
+      model: p.model || '',
+      style: p.style || '',
+      aspect_ratio: p.aspect_ratio || '16:9',
+      format: p.format || 'png',
+      count: Number(p.count) || 1,
+      cwd,
+    }, ctx);
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+});
+
+ipcMain.handle('autobot:mediaStudioDelete', async (_event, payload) => {
+  try {
+    const p = payload || {};
+    const mediaGen = require('../media-gen');
+    return mediaGen.deleteMediaLibraryItem({ id: p.id || '', path: p.path || '' });
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) };
   }

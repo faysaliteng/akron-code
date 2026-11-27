@@ -11,6 +11,7 @@
   "homepage": "https://akronlogic.com",
   "license": "SEE LICENSE IN LICENSE.md",
   "scripts": {
+    "test": "node --test --test-concurrency=4 test/*.test.js",
     "build": "vite build",
     "typecheck": "node scripts/typecheck.js",
     "start": "electron .",
@@ -29,8 +30,8 @@
     "predist": "node scripts/vendor-runtimes.js --download --stale || npm run vendor:runtimes",
     "dist": "npm run build && electron-builder --mac dmg zip",
     "dist:mac": "npm run build && electron-builder --mac dmg zip",
-    "dist:win": "npm run build && electron-builder --win nsis portable",
-    "dist:linux": "npm run build && electron-builder --linux AppImage deb",
+    "dist:win": "npm run build && electron-builder --win nsis portable --x64",
+    "dist:linux": "npm run build && electron-builder --linux AppImage tar.gz --x64",
     "freellm": "node scripts/freellm-server.js",
     "icons": "electron build/render_icon.cjs"
   },
@@ -200,7 +201,7 @@
       "maintainer": "AkronLogic <support@akronlogic.com>",
       "target": [
         "AppImage",
-        "deb"
+        "tar.gz"
       ],
       "category": "Development",
       "artifactName": "AkronCode-${version}-linux-${arch}.${ext}"

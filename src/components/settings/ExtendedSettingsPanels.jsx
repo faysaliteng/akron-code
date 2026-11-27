@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Icon } from '../Icon.jsx';
+import { Icon, ModelLogo } from '../Icon.jsx';
 import { DEFAULT_TYPOGRAPHY } from '../../typography.js';
 
 export const ACCENT_PRESETS = [
@@ -70,11 +70,11 @@ export function computeAppearanceVars(settings = {}, systemPrefersLight = false)
   const accent = /^#[0-9a-fA-F]{3,6}$/.test(String(settings.accentColor || '')) ? settings.accentColor : '#10b981';
   const [r, g, b] = hexToRgb(accent);
   const chatWidthMap = {
-    narrow: '740px',
-    focused: '760px',
-    standard: '880px',
+    narrow: '780px',
+    focused: '840px',
+    standard: '1220px',
     wide: '1080px',
-    ultra: '1140px',
+    ultra: '1380px',
     full: '100%',
   };
   const radiusMap = {
@@ -93,9 +93,9 @@ export function computeAppearanceVars(settings = {}, systemPrefersLight = false)
     mono: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', ui-monospace, monospace",
   };
   const btnScaleMap = {
-    'ultra-compact': { gap: '2px', pad: '1.5px 5px', fs: '10.5px' },
-    compact: { gap: '3px', pad: '2px 6px', fs: '11px' },
-    standard: { gap: '5px', pad: '3px 8px', fs: '11.5px' },
+    'ultra-compact': { gap: '0px', pad: '1.5px 3.5px', fs: '10.5px' },
+    compact: { gap: '1px', pad: '2px 4.5px', fs: '11px' },
+    standard: { gap: '4px', pad: '3px 7px', fs: '11.5px' },
   };
   const btnScale = btnScaleMap[settings.actionButtonScale || 'compact'] || btnScaleMap.compact;
   const accentGlow = settings.accentGlow || 'subtle';
@@ -118,7 +118,7 @@ export function computeAppearanceVars(settings = {}, systemPrefersLight = false)
       '--accent-strong': shadeHex(accent, -0.22),
       '--accent-soft': `rgba(${r}, ${g}, ${b}, ${accentGlow === 'vibrant' ? '0.24' : (accentGlow === 'none' ? '0.08' : '0.16')})`,
       '--accent-text': theme === 'light' ? shadeHex(accent, -0.35) : shadeHex(accent, 0.58),
-      '--chat-max-w': chatWidthMap[chatWidth] || '880px',
+      '--chat-max-w': chatWidthMap[chatWidth] || '1220px',
       '--radius-md': rad.md,
       '--radius-lg': rad.lg,
       '--radius-card': rad.card,
@@ -569,7 +569,7 @@ export function AutoSwitchBrainSection({ settings, setSettings, provider, setPro
   return (
     <div className="settings-card deepseek-brain-card" id="deepseek-auto-switch-brain" data-testid="deepseek-auto-brain-card">
       <div className="deepseek-card-head">
-        <h3>🧠 Auto-Switch Brain (DeepSeek V4.1 Flash Dispatcher)</h3>
+        <h3 style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><ModelLogo model="deepseek" size={18} /> Auto-Switch Brain (DeepSeek V4.1 Flash Dispatcher)</h3>
         <span className={'deepseek-status-pill ' + (hasKey ? 'ready' : 'muted')} data-testid="deepseek-status-badge">
           {hasKey ? `● DeepSeek V4.1 Flash Ready · ${source === 'openrouter_free' ? 'OpenRouter Free' : (source === 'freellmapi' ? 'FreeLLMAPI' : 'DeepSeek API')}${telemetry.lastLatencyMs ? ` · ${telemetry.lastLatencyMs}ms` : ''}` : 'Not Configured'}
         </span>

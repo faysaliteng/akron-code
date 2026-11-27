@@ -87,6 +87,8 @@ export function Icon({ name, size = 16, className = '', title, style }) {
   );
 }
 
+export { ModelLogo, resolveModelBrand } from './ModelLogo.jsx';
+
 export function GoogleDriveIcon({ size = 15 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>

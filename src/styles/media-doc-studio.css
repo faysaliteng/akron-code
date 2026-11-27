@@ -22,6 +22,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  row-gap: 4px;
   gap: 8px;
   min-width: 0;
 }
@@ -31,6 +33,7 @@
   align-items: center;
   gap: 7px;
   min-width: 0;
+  flex: 1 1 140px;
 }
 
 .media-doc-badge {
@@ -228,6 +231,196 @@
   max-height: 84vh;
   border-radius: 10px;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
+}
+
+.media-doc-edit-drawer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  background: rgba(16, 185, 129, 0.06);
+}
+
+.media-doc-edit-drawer input {
+  flex: 1 1 200px;
+  min-width: 160px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.media-doc-edit-drawer select {
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--text);
+  font-size: 11.5px;
+}
+
+/* Dedicated Sidebar Media Studio (Images & Videos + AI Generators) */
+.media-studio-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 22px 28px;
+  max-width: 1180px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.media-studio-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.media-studio-title h2 {
+  margin: 0;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.media-studio-title p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.media-studio-mode-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.media-studio-mode-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.media-studio-mode-tab.on {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(52, 211, 153, 0.5);
+  color: #34d399;
+}
+
+.media-studio-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border, rgba(52, 211, 153, 0.24));
+  background: var(--panel, rgba(16, 26, 22, 0.72));
+}
+
+.media-studio-composer textarea {
+  width: 100%;
+  min-height: 70px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.24);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.media-studio-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.media-studio-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+
+.media-studio-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.media-studio-field label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.media-studio-field select {
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.26);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.media-studio-gen-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: none;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #ecfdf5;
+  font-weight: 600;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.media-studio-gen-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.media-studio-library-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.media-studio-search {
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--text);
+  font-size: 12px;
+  min-width: 190px;
+}
+
+.media-studio-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  gap: 12px;
 }
 
 /* Inline Non-Blocking QuestionDock & Plan Approval Dock */

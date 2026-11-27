@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
-import { Icon } from '../Icon.jsx';
+import { Icon, ModelLogo } from '../Icon.jsx';
 import ConnectorLogo from '../../ConnectorLogo.jsx';
 import { ctxToastState } from '../../ctx-toast.mjs';
 import { LiveChecklistCard, LiveToolActivityCard, FilesChangedBar, summarizeChangedFiles } from '../LiveProgress.jsx';
@@ -645,7 +645,7 @@ export function SegmentView({ segments, tools, streaming }) {
 }
 
 // ---------- Chat view ----------
-function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, thinking, paused, onScrollAway, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onLearnSkill, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError, onPromptAction, onOpenInIde, uiSettings }) {
+function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, thinking, paused, onScrollAway, subAgents, swarmInfo, swarmBoard, planMode, copyBlock, applyBlock, bottomRef, convId, cwd, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, conv, exportConv, T, runStartedAt, onToggleEnv, envOpen, onToggleRunLog, runLogOpen, reviewOpen, sessionPaneType, onOpenReview, onTogglePane, onOpenPlugins, onLearnSkill, onRenameConv, onPinConv, onArchiveConv, onSplitConv, onDeleteConv, setError, onPromptAction, onOpenInIde, onOpenMediaStudio, uiSettings }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [subExpanded, setSubExpanded] = useState(false);
@@ -911,7 +911,7 @@ function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, t
           <p className="muted">{T('welcome.prompt')}</p>
         </div>
       )}
-      {MessageComponent && messages.map((m, i) => <MessageComponent key={m.id} m={m} convId={convId} cwd={cwd} idx={i} turnLabel={turnPrompts[i]} subAgentCount={subCount} taskCount={bgTasksCount} uiSettings={uiSettings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} />)}
+      {MessageComponent && messages.map((m, i) => <MessageComponent key={m.id} m={m} convId={convId} cwd={cwd} idx={i} turnLabel={turnPrompts[i]} subAgentCount={subCount} taskCount={bgTasksCount} uiSettings={uiSettings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} onOpenMediaStudio={onOpenMediaStudio} />)}
       {Boolean((subAgents && subAgents.length > 0) || swarmInfo) && (
         <MissionControl subAgents={subAgents} swarmInfo={swarmInfo} swarmBoard={swarmBoard} inline onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} />
       )}
@@ -1544,7 +1544,7 @@ export function SearchView({ convs, cwd, initialTab = 'search', provider = null,
   );
 }
 
-export function ArtifactsView({ blocks, tools = [], cwd = '', onPromptAction, onOpenInIde }) {
+export function ArtifactsView({ blocks, tools = [], cwd = '', onPromptAction, onOpenInIde, onOpenMediaStudio }) {
   const [idx, setIdx] = useState(0);
   const [mode, setMode] = useState('preview'); // 'preview' | 'code'
   const block = blocks[idx];
@@ -1580,7 +1580,7 @@ export function ArtifactsView({ blocks, tools = [], cwd = '', onPromptAction, on
   return (
     <div className="panel artifacts">
       <h2>Artifacts</h2>
-      <MediaDocCardList tools={tools} cwd={cwd} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} />
+      <MediaDocCardList tools={tools} cwd={cwd} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} onOpenMediaStudio={onOpenMediaStudio} />
       {blocks.length === 0 && <p className="muted">No code artifacts yet. Ask Akron Code to write code and it will appear here.</p>}
       {blocks.length > 0 && (
         <>
@@ -2261,23 +2261,90 @@ export function ExtensionsView() {
 
 // ---------- Scheduled tasks (Claude Desktop parity) ----------
 export const CADENCES = [
-  { id: 'once', label: 'Once' },
-  { id: 'every', label: 'Every N minutes' },
-  { id: 'hourly', label: 'Hourly' },
   { id: 'daily', label: 'Daily' },
+  { id: 'weekdays', label: 'Weekdays (Mon–Fri)' },
   { id: 'weekly', label: 'Weekly' },
+  { id: 'hourly', label: 'Hourly' },
+  { id: 'every', label: 'Every N minutes' },
+  { id: 'once', label: 'One-time (Date & Time)' },
+  { id: 'cron', label: 'Custom Cron (5-field)' },
+  { id: 'manual', label: 'Manual Only (Routine)' },
 ];
 
-export function ScheduledViewBody({ cwd, convs = [], onSendToChat }) {
+const AUTOMATION_TEMPLATES = [
+  {
+    id: 'git-triage',
+    label: 'Morning Git & CI Triage',
+    name: 'Morning Git & CI Triage',
+    description: 'Summarize uncommitted changes, recent commits, and failing checks.',
+    prompt: 'Check git status, inspect recent commits from the last 24h, run project tests/lint, and give me a concise triage report of anything broken or needing attention.',
+    cadence: 'weekdays',
+    time: '09:00',
+  },
+  {
+    id: 'test-sweep',
+    label: 'Nightly Test & Build Sweep',
+    name: 'Nightly Test & Build Sweep',
+    description: 'Run full test suite and production build overnight.',
+    prompt: 'Run the test suite and build command in this project. If anything fails, diagnose the root cause and list exact file/line fixes needed.',
+    cadence: 'daily',
+    time: '02:00',
+  },
+  {
+    id: 'dep-audit',
+    label: 'Weekly Dependency & Security Audit',
+    name: 'Weekly Dependency & Security Audit',
+    description: 'Audit outdated packages and high-severity vulnerabilities.',
+    prompt: 'Audit project dependencies for outdated versions and known security advisories. Summarize recommended safe upgrades without modifying lockfiles yet.',
+    cadence: 'weekly',
+    dayOfWeek: 1,
+    time: '10:00',
+  },
+  {
+    id: 'todo-digest',
+    label: 'Repo TODO & Tech-Debt Digest',
+    name: 'Repo TODO & Tech-Debt Digest',
+    description: 'Scan codebase for TODO/FIXME notes and dead code.',
+    prompt: 'Scan src/ and electron/ for TODO, FIXME, and high-complexity functions added recently, and prioritize top 5 quick wins.',
+    cadence: 'weekly',
+    dayOfWeek: 5,
+    time: '16:00',
+  },
+];
+
+function toLocalDatetimeValue(ms) {
+  const d = new Date(ms || (Date.now() + 3600 * 1000));
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+export function ScheduledViewBody({ cwd, convs = [], provider = null, onSendToChat }) {
   const [tasks, setTasks] = useState([]);
+  const [editingId, setEditingId] = useState(null);
   const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
   const [prompt, setPrompt] = useState('');
   const [cadence, setCadence] = useState('daily');
   const [time, setTime] = useState('09:00');
   const [everyMinutes, setEveryMinutes] = useState(60);
+  const [hourlyMinute, setHourlyMinute] = useState(0);
   const [dayOfWeek, setDayOfWeek] = useState(1);
+  const [cronExpr, setCronExpr] = useState('0 9 * * 1-5');
+  const [fireAtLocal, setFireAtLocal] = useState(() => toLocalDatetimeValue(Date.now() + 3600 * 1000));
+  const [taskCwd, setTaskCwd] = useState(cwd || '');
+  const [taskModel, setTaskModel] = useState('auto');
+  const [permissionMode, setPermissionMode] = useState('auto');
+  const [attentionGate, setAttentionGate] = useState(false);
+  const [useWorktree, setUseWorktree] = useState(false);
+  const [expandedRunsId, setExpandedRunsId] = useState(null);
+  const [runsByTask, setRunsByTask] = useState({});
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [runningId, setRunningId] = useState('');
+
+  useEffect(() => {
+    if (cwd && !editingId && !taskCwd) setTaskCwd(cwd);
+  }, [cwd, editingId, taskCwd]);
 
   const refresh = useCallback(async () => {
     const list = await window.autobot.listScheduledTasks();
@@ -2289,18 +2356,102 @@ export function ScheduledViewBody({ cwd, convs = [], onSendToChat }) {
     if (evt && evt.type === 'scheduled-task') refresh();
   }), [refresh]);
 
-  const create = async () => {
+  const resetForm = () => {
+    setEditingId(null);
+    setName('');
+    setDescription('');
+    setPrompt('');
+    setCadence('daily');
+    setTime('09:00');
+    setEveryMinutes(60);
+    setHourlyMinute(0);
+    setDayOfWeek(1);
+    setCronExpr('0 9 * * 1-5');
+    setFireAtLocal(toLocalDatetimeValue(Date.now() + 3600 * 1000));
+    setTaskCwd(cwd || '');
+    setTaskModel('auto');
+    setPermissionMode('auto');
+    setAttentionGate(false);
+    setUseWorktree(false);
+    setErr('');
+  };
+
+  const applyTemplate = (tpl) => {
+    setEditingId(null);
+    setName(tpl.name);
+    setDescription(tpl.description || '');
+    setPrompt(tpl.prompt);
+    setCadence(tpl.cadence || 'daily');
+    if (tpl.time) setTime(tpl.time);
+    if (tpl.dayOfWeek != null) setDayOfWeek(tpl.dayOfWeek);
+    if (!taskCwd && cwd) setTaskCwd(cwd);
+    setErr('');
+  };
+
+  const startEdit = (t) => {
+    setEditingId(t.id);
+    setName(t.name || '');
+    setDescription(t.description || '');
+    setPrompt(t.prompt || '');
+    setCadence(t.cadence || 'daily');
+    setTime(t.time || '09:00');
+    setEveryMinutes(t.everyMinutes || 60);
+    setHourlyMinute(t.minute != null ? t.minute : 0);
+    setDayOfWeek(t.dayOfWeek != null ? t.dayOfWeek : 1);
+    setCronExpr(t.cronExpression || t.cron || '0 9 * * *');
+    if (t.fireAt || t.at) setFireAtLocal(toLocalDatetimeValue(t.fireAt || t.at));
+    setTaskCwd(t.cwd || cwd || '');
+    setTaskModel(t.model || 'auto');
+    setPermissionMode(t.permissionMode || 'auto');
+    setAttentionGate(Boolean(t.attentionGate));
+    setUseWorktree(Boolean(t.useWorktree));
+    setErr('');
+  };
+
+  const browseCwd = async () => {
+    if (!window.autobot || typeof window.autobot.pickFolder !== 'function') return;
+    const picked = await window.autobot.pickFolder();
+    if (picked) setTaskCwd(picked);
+  };
+
+  const submitTask = async () => {
     setErr('');
     if (!prompt.trim()) { setErr('Prompt is required.'); return; }
-    setBusy(true);
-    const input = { name: name.trim() || undefined, prompt: prompt.trim(), cadence };
+    const input = {
+      name: name.trim() || undefined,
+      description: description.trim(),
+      prompt: prompt.trim(),
+      cadence,
+      cwd: taskCwd.trim(),
+      model: taskModel && taskModel !== 'auto' ? taskModel.trim() : '',
+      permissionMode,
+      attentionGate,
+      useWorktree,
+      durable: cadence === 'cron',
+    };
     if (cadence === 'every') input.everyMinutes = Number(everyMinutes) || 60;
-    if (cadence === 'daily' || cadence === 'weekly') input.time = time;
+    if (cadence === 'hourly') input.minute = Math.max(0, Math.min(59, Number(hourlyMinute) || 0));
+    if (cadence === 'daily' || cadence === 'weekdays' || cadence === 'weekly') input.time = time;
     if (cadence === 'weekly') input.dayOfWeek = Number(dayOfWeek);
-    const r = await window.autobot.createScheduledTask(input);
+    if (cadence === 'cron') {
+      if (!cronExpr.trim()) { setErr('Cron expression is required.'); return; }
+      input.cron = cronExpr.trim();
+      input.cronExpression = cronExpr.trim();
+    }
+    if (cadence === 'once') {
+      const ts = Date.parse(fireAtLocal);
+      if (isNaN(ts)) { setErr('Valid date & time is required for a one-time task.'); return; }
+      input.fireAt = ts;
+      input.at = ts;
+    }
+
+    setBusy(true);
+    const r = editingId
+      ? await window.autobot.updateScheduledTask(editingId, input)
+      : await window.autobot.createScheduledTask(input);
     setBusy(false);
-    if (!r || r.ok === false) { setErr((r && r.error) || 'Could not create task.'); return; }
-    setName(''); setPrompt('');
+    if (!r || r.ok === false) { setErr((r && r.error) || 'Could not save scheduled task.'); return; }
+    resetForm();
     await refresh();
   };
 
@@ -2308,64 +2459,230 @@ export function ScheduledViewBody({ cwd, convs = [], onSendToChat }) {
     await window.autobot.updateScheduledTask(t.id, { enabled: t.enabled === false });
     await refresh();
   };
-  const remove = async (id) => { await window.autobot.deleteScheduledTask(id); await refresh(); };
-  const runNow = async (id) => { setBusy(true); await window.autobot.runScheduledTask(id); setBusy(false); await refresh(); };
+  const remove = async (id) => {
+    await window.autobot.deleteScheduledTask(id);
+    if (editingId === id) resetForm();
+    await refresh();
+  };
+  const loadTaskRuns = async (taskId) => {
+    if (!taskId || !window.autobot || typeof window.autobot.listScheduledTaskRuns !== 'function') return;
+    try {
+      const r = await window.autobot.listScheduledTaskRuns(taskId, { limit: 25 });
+      if (r && r.ok && Array.isArray(r.runs)) {
+        setRunsByTask((prev) => ({ ...prev, [taskId]: r.runs }));
+      }
+    } catch (_) {}
+  };
+  const runNow = async (id) => {
+    setRunningId(id);
+    try {
+      await window.autobot.runScheduledTask(id);
+      setExpandedRunsId(id);
+      await loadTaskRuns(id);
+      await refresh();
+    } finally {
+      setRunningId('');
+    }
+  };
 
   return (
     <div className="panel scheduled-panel">
       <ProactiveDashboard cwd={cwd} convs={convs} onScheduledCreated={refresh} onSendToChat={onSendToChat} Icon={Icon} />
       <div className="panel-head">
-        <h2>Scheduled tasks</h2>
-        <span className="muted">{tasks.length} task{tasks.length === 1 ? '' : 's'}</span>
+        <div>
+          <h2 style={{ margin: 0 }}>Scheduled tasks &amp; routines</h2>
+          <p className="muted" style={{ margin: '3px 0 0' }}>
+            Claude-parity local automation engine · tasks persist as <code>SKILL.md</code> with missed-run catch-up, retry backoff &amp; full run logs.
+          </p>
+        </div>
+        <span className="badge ok">{tasks.length} task{tasks.length === 1 ? '' : 's'}</span>
       </div>
-      <p className="muted">Scheduled tasks run a prompt through the agent automatically — a daily brief, a periodic check, or a one-off reminder. Results are saved with each task.</p>
+
+      <div className="sched-templates">
+        <span className="sched-templates-label">Starter templates:</span>
+        {AUTOMATION_TEMPLATES.map((tpl) => (
+          <button key={tpl.id} type="button" className="sched-tpl-pill" onClick={() => applyTemplate(tpl)}>
+            + {tpl.label}
+          </button>
+        ))}
+      </div>
 
       <div className="sched-form">
-        <input placeholder="Task name (optional)" value={name} onChange={(e) => setName(e.target.value)} />
-        <textarea rows={3} placeholder="Prompt to run, e.g. “Summarize overnight changes in ~/projects and list anything broken.”" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-        <div className="sched-row">
-          <select value={cadence} onChange={(e) => setCadence(e.target.value)}>
-            {CADENCES.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
-          </select>
-          {cadence === 'every' && (
-            <label className="inline-num">Every <input type="number" min={1} value={everyMinutes} onChange={(e) => setEveryMinutes(e.target.value)} /> min</label>
+        <div className="sched-form-head">
+          <strong>{editingId ? `Editing task: ${editingId}` : 'New scheduled automation'}</strong>
+          {editingId && (
+            <button type="button" className="btn-mini" onClick={resetForm}>Cancel Edit</button>
           )}
-          {(cadence === 'daily' || cadence === 'weekly') && (
-            <label className="inline-num">at <input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></label>
+        </div>
+        <div className="sched-row">
+          <input style={{ flex: '1 1 220px' }} placeholder="Task name (e.g. Morning Git Triage)" value={name} onChange={(e) => setName(e.target.value)} />
+          <input style={{ flex: '1.3 1 260px' }} placeholder="One-line description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} />
+        </div>
+        <textarea rows={3} placeholder="Self-contained prompt to execute on each run, e.g. “Summarize overnight changes in this repo and list any failing tests.”" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+
+        <div className="sched-meta-grid">
+          <label className="sched-field">
+            <span>Schedule</span>
+            <select value={cadence} onChange={(e) => setCadence(e.target.value)}>
+              {CADENCES.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          </label>
+          {cadence === 'every' && (
+            <label className="sched-field">
+              <span>Interval (minutes)</span>
+              <input type="number" min={1} value={everyMinutes} onChange={(e) => setEveryMinutes(e.target.value)} />
+            </label>
+          )}
+          {cadence === 'hourly' && (
+            <label className="sched-field">
+              <span>At minute (:mm)</span>
+              <input type="number" min={0} max={59} value={hourlyMinute} onChange={(e) => setHourlyMinute(e.target.value)} />
+            </label>
+          )}
+          {(cadence === 'daily' || cadence === 'weekdays' || cadence === 'weekly') && (
+            <label className="sched-field">
+              <span>Local time</span>
+              <input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+            </label>
           )}
           {cadence === 'weekly' && (
-            <select value={dayOfWeek} onChange={(e) => setDayOfWeek(e.target.value)}>
-              {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => <option key={d} value={i}>{d}</option>)}
-            </select>
+            <label className="sched-field">
+              <span>Day of week</span>
+              <select value={dayOfWeek} onChange={(e) => setDayOfWeek(e.target.value)}>
+                {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => <option key={d} value={i}>{d}</option>)}
+              </select>
+            </label>
           )}
-          <button className="primary" disabled={busy} onClick={create}>Schedule</button>
+          {cadence === 'once' && (
+            <label className="sched-field">
+              <span>Run once at</span>
+              <input type="datetime-local" value={fireAtLocal} onChange={(e) => setFireAtLocal(e.target.value)} />
+            </label>
+          )}
+          {cadence === 'cron' && (
+            <label className="sched-field">
+              <span>5-field cron (min hr dom mon dow)</span>
+              <input value={cronExpr} onChange={(e) => setCronExpr(e.target.value)} placeholder="0 9 * * 1-5" />
+            </label>
+          )}
+          <label className="sched-field">
+            <span>Permission mode</span>
+            <select value={permissionMode} onChange={(e) => setPermissionMode(e.target.value)}>
+              <option value="auto">Auto approve safe tools</option>
+              <option value="default">Ask before risky tools</option>
+              <option value="plan">Plan only (read-only)</option>
+            </select>
+          </label>
+          <label className="sched-field">
+            <span>Model override</span>
+            <input
+              value={taskModel}
+              onChange={(e) => setTaskModel(e.target.value)}
+              placeholder={(provider && provider.model) ? `auto (${provider.model})` : 'auto'}
+            />
+          </label>
+        </div>
+
+        <div className="sched-row" style={{ justifyContent: 'space-between' }}>
+          <div className="sched-cwd-wrap">
+            <input
+              value={taskCwd}
+              onChange={(e) => setTaskCwd(e.target.value)}
+              placeholder="Working folder (defaults to active workspace)"
+            />
+            <button type="button" className="btn-mini" onClick={browseCwd}>Browse…</button>
+          </div>
+          <label className="sched-check">
+            <input type="checkbox" checked={attentionGate} onChange={(e) => setAttentionGate(e.target.checked)} />
+            <span>Stage-1 Attention Gate</span>
+          </label>
+          <label className="sched-check">
+            <input type="checkbox" checked={useWorktree} onChange={(e) => setUseWorktree(e.target.checked)} />
+            <span>Git Worktree</span>
+          </label>
+          <button type="button" className="primary" disabled={busy} onClick={submitTask}>
+            {busy ? 'Saving…' : (editingId ? 'Save Changes' : 'Schedule Task')}
+          </button>
         </div>
       </div>
 
       {err && <p className="form-error">{err}</p>}
-      {tasks.length === 0 && <p className="muted">No scheduled tasks yet.</p>}
+      {tasks.length === 0 && <p className="muted">No scheduled tasks yet. Pick a starter template above or define your own schedule.</p>}
 
-      {tasks.map((t) => (
-        <div key={t.id} className={'sched-item' + (t.enabled === false ? ' off' : '')}>
-          <div className="sched-item-head">
-            <button className={'switch' + (t.enabled !== false ? ' on' : '')} role="switch" aria-checked={t.enabled !== false} onClick={() => toggle(t)} title="Enable/disable"><span className="knob" /></button>
-            <div className="sched-item-body">
-              <b>{t.name}</b>
-              <span className="muted">{t.schedule}{t.nextRunAt ? ' · next ' + new Date(t.nextRunAt).toLocaleString() : ''}{t.runCount ? ' · ran ' + t.runCount + '×' : ''}</span>
-              <span className="skillitem-desc">{t.prompt}</span>
-              {t.lastResult && (
-                <span className={'muted sched-last' + (t.lastResult.ok ? '' : ' err')}>
-                  Last run {new Date(t.lastRunAt || t.lastResult.at).toLocaleString()}: {t.lastResult.ok ? String(t.lastResult.output || '').slice(0, 240) : 'ERROR ' + t.lastResult.error}
+      {tasks.map((t) => {
+        const runs = runsByTask[t.id] || (Array.isArray(t.runs) ? t.runs : []);
+        const isRunsOpen = expandedRunsId === t.id;
+        return (
+          <div key={t.id} className={'sched-item' + (t.enabled === false ? ' off' : '')}>
+            <div className="sched-item-head">
+              <button className={'switch' + (t.enabled !== false ? ' on' : '')} role="switch" aria-checked={t.enabled !== false} onClick={() => toggle(t)} title="Enable/disable"><span className="knob" /></button>
+              <div className="sched-item-body">
+                <div className="sched-item-title-row">
+                  <b>{t.name}</b>
+                  <span className="sched-pill">{t.permissionMode || 'auto'}</span>
+                  {t.model && <span className="sched-pill">{t.model}</span>}
+                  {t.attentionGate && <span className="sched-pill ok">Attention Gate</span>}
+                  {t.useWorktree && <span className="sched-pill">Worktree</span>}
+                </div>
+                <span className="muted">
+                  {t.schedule}
+                  {t.nextRunAt ? ' · next ' + new Date(t.nextRunAt).toLocaleString() : ''}
+                  {t.runCount ? ' · ran ' + t.runCount + '×' : ''}
+                  {t.cwd ? ' · ' + t.cwd : ''}
                 </span>
-              )}
+                {t.waiting && <span className="sched-waiting">{t.waiting}</span>}
+                {t.description && <span className="muted" style={{ fontSize: 11.5 }}>{t.description}</span>}
+                <span className="skillitem-desc">{t.prompt}</span>
+                {t.lastResult && (
+                  <span className={'muted sched-last' + (t.lastResult.ok ? '' : ' err')}>
+                    Last run ({t.lastResult.trigger || 'scheduled'}) {new Date(t.lastRunAt || t.lastResult.at).toLocaleString()}: {t.lastResult.ok ? String(t.lastResult.output || '').slice(0, 240) : 'ERROR ' + t.lastResult.error}
+                  </span>
+                )}
+              </div>
+              <div className="sched-actions">
+                <button type="button" className="btn-mini" title="Run task immediately" disabled={runningId === t.id} onClick={() => runNow(t.id)}>
+                  {runningId === t.id ? 'Running…' : 'Run now'}
+                </button>
+                <button type="button" className="btn-mini" onClick={() => {
+                  const nextOpen = isRunsOpen ? null : t.id;
+                  setExpandedRunsId(nextOpen);
+                  if (nextOpen) loadTaskRuns(t.id);
+                }}>
+                  Runs ({runs.length})
+                </button>
+                <button type="button" className="icon-btn" title="Edit task" onClick={() => startEdit(t)}><Icon name="Edit" size={13} /></button>
+                {t.filePath && (
+                  <button type="button" className="icon-btn" title="Reveal SKILL.md in Finder" onClick={() => window.autobot?.studioAction?.({ action: 'reveal', path: t.filePath })}><Icon name="Folder" size={13} /></button>
+                )}
+                <button type="button" className="icon-btn" title="Delete" onClick={() => remove(t.id)}><Icon name="Trash" size={13} /></button>
+              </div>
             </div>
-            <div className="sched-actions">
-              <button className="icon-btn" title="Run now" disabled={busy} onClick={() => runNow(t.id)}><Icon name="CheckCircle" size={14} /></button>
-              <button className="icon-btn" title="Delete" onClick={() => remove(t.id)}><Icon name="Trash" size={13} /></button>
-            </div>
+            {isRunsOpen && (
+              <div className="sched-runs-drawer">
+                {runs.length === 0 ? (
+                  <div className="muted" style={{ fontSize: 11.5 }}>No runs recorded yet. Click <b>Run now</b> to test this task.</div>
+                ) : (
+                  runs.slice(0, 25).map((r) => (
+                    <div key={r.runId} className="sched-run-row">
+                      <span className={'badge ' + (r.status === 'succeeded' ? 'ok' : (r.status === 'failed' ? 'warn' : ''))}>{r.status}</span>
+                      <span className="sched-pill">{r.trigger}</span>
+                      {r.model && <span className="sched-pill">{r.model}</span>}
+                      {r.cwd && <span className="muted" title={r.cwd}>{String(r.cwd).split(/[\\/]/).pop()}</span>}
+                      <span className="muted">{new Date(r.startedAt).toLocaleString()} ({Math.round((r.durationMs || 0) / 100) / 10}s)</span>
+                      <span className="sched-run-out">{r.error ? 'ERROR: ' + r.error : String(r.output || '').slice(0, 220)}</span>
+                      {onSendToChat && r.output && (
+                        <button type="button" className="btn-mini" onClick={() => onSendToChat(`Follow up on scheduled task "${t.name}":\n\n${r.output}`)}>
+                          Open in Chat
+                        </button>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -2702,7 +3019,7 @@ export function SessionPane({ icon, title, activeType, openTabs = [], onSelectTa
 // used to render as one flat, unscrollable column that buried the current pick.
 // Group them by family, add a filter once the list gets long, cap the height with
 // its own scroll, and scroll the active model into view on open.
-export function ProvModelList({ list, picked, onPick }) {
+export function ProvModelList({ list, picked, onPick, providerId = '' }) {
   const [q, setQ] = useState('');
   const boxRef = useRef(null);
   const selRef = useRef(null);
@@ -2742,13 +3059,15 @@ export function ProvModelList({ list, picked, onPick }) {
     return { rows: all, total: (list || []).length, mixed: fams.size > 1 };
   }, [list, q]);
 
-  // Bring the selected model into view once the catalog has populated.
+  // Bring the selected model into view cleanly inside the list container without clipping the top row.
   useEffect(() => {
     const el = selRef.current, box = boxRef.current;
     if (!el || !box) return;
     const eb = el.getBoundingClientRect(), bb = box.getBoundingClientRect();
-    if (eb.top < bb.top || eb.bottom > bb.bottom) {
-      box.scrollTop += (eb.top - bb.top) - (box.clientHeight - el.offsetHeight) / 2;
+    if (eb.top < bb.top + 4) {
+      box.scrollTop = Math.max(0, box.scrollTop - (bb.top - eb.top + 6));
+    } else if (eb.bottom > bb.bottom - 4) {
+      box.scrollTop += (eb.bottom - bb.bottom + 8);
     }
   }, [picked, total]);
   return (
@@ -2781,6 +3100,7 @@ export function ProvModelList({ list, picked, onPick }) {
               title={m.id + (m.windowLabel ? ' · ' + m.windowLabel + ' context' : '')}
               onClick={() => onPick(m.id)}
             >
+              <ModelLogo model={m.id} label={m.label} provider={m.fam || m.group || providerId} size={14} />
               <span className="model-opt-name">{m.label}</span>
               {m.tag && <span className="prov-model-tag">{m.tag}</span>}
               {mixed && m.fam && <span className="prov-model-fam">{m.fam}</span>}
@@ -2799,11 +3119,12 @@ export function ProvModelList({ list, picked, onPick }) {
 // used to render every one of them as a flat row in a 340 px box. Same shell as
 // the subscription list: group by provider, filter when long, one capped scroll,
 // and put the group holding the current pick first so it is visible on open.
-const SESSION_SHELF_CAP = 30;
+const SESSION_SHELF_CAP = 6;
 
 export function SessionModelList({ rows, isActive, renderRow }) {
   const [q, setQ] = useState('');
   const [expanded, setExpanded] = useState({});
+  const [collapsedFams, setCollapsedFams] = useState({});
   const boxRef = useRef(null);
   const selRef = useRef(null);
 
@@ -2876,25 +3197,33 @@ export function SessionModelList({ rows, isActive, renderRow }) {
         {total > 0 && !groups.length && <div className="prov-none">No models match “{q}”.</div>}
         {groups.map((g) => {
           const { shown, hidden, pinned } = shelf(g);
+          const isCollapsed = !searching && !!collapsedFams[g.fam];
           return (
             <div key={g.fam} className="prov-fam">
-              <div className="prov-fam-head">
+              <button
+                type="button"
+                className="prov-fam-head"
+                onClick={() => setCollapsedFams((c) => ({ ...c, [g.fam]: !c[g.fam] }))}
+                aria-expanded={!isCollapsed}
+              >
+                <ModelLogo provider={g.fam} size={14} />
                 <span className="prov-fam-name">{g.fam}</span>
                 {g.installed && <span className="prov-model-tag">installed</span>}
                 <span className="prov-fam-count">{g.items.length}</span>
-              </div>
-              {shown.map((r) => {
+                <Icon name={isCollapsed ? 'CaretDown' : 'CaretUp'} size={10} />
+              </button>
+              {!isCollapsed && shown.map((r) => {
                 const active = isActive(r);
                 const node = renderRow(r);
                 if (!active) return node;
                 return React.cloneElement(node, { ref: selRef });
               })}
-              {hidden > 0 && (
+              {!isCollapsed && hidden > 0 && (
                 <button className="prov-more" onClick={() => setExpanded((e) => ({ ...e, [g.fam]: true }))}>
-                  Show all {g.items.length}{pinned ? ' · current pick pinned above' : ''}
+                  Show all {g.items.length} models{pinned ? ' · current pick pinned above' : ''}
                 </button>
               )}
-              {!hidden && expanded[g.fam] && g.items.length > SESSION_SHELF_CAP && !searching && (
+              {!isCollapsed && !hidden && expanded[g.fam] && g.items.length > SESSION_SHELF_CAP && !searching && (
                 <button className="prov-more" onClick={() => setExpanded((e) => ({ ...e, [g.fam]: false }))}>
                   Show fewer
                 </button>

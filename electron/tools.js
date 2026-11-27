@@ -36,7 +36,16 @@ function bundledNodePathEnv(extraEnv = {}) {
   const nextNodePath = existing
     ? (existing.split(path.delimiter).includes(appMods) ? existing : existing + path.delimiter + appMods)
     : appMods;
-  return { ...process.env, ...extraEnv, NODE_PATH: nextNodePath };
+  const binDir = path.join(os.homedir(), '.autobot', 'bin');
+  const curPath = String((extraEnv && extraEnv.PATH) || process.env.PATH || '');
+  let nextPath = curPath;
+  if (fs.existsSync(binDir)) {
+    const parts = curPath.split(path.delimiter).filter(Boolean);
+    if (parts[0] !== binDir) {
+      nextPath = [binDir, ...parts.filter((d) => d !== binDir)].join(path.delimiter);
+    }
+  }
+  return { ...process.env, ...extraEnv, NODE_PATH: nextNodePath, ...(nextPath ? { PATH: nextPath } : {}) };
 }
 
 const MAX_OUTPUT = 120000; // chars
@@ -890,25 +899,32 @@ const executors = {
   async scheduled_tasks_create_scheduled_task(args = {}) {
     const r = scheduler.create(args);
     if (!r.ok) return 'Error: ' + r.error;
-    return `Created scheduled task ${r.task.id} "${r.task.name}" [${r.task.schedule}].`;
+    return `Created scheduled task "${r.task.id}" ("${r.task.name}") [${r.task.schedule}]${r.task.filePath ? `\nTask file: ${r.task.filePath}` : ''}.`;
   },
   async scheduled_tasks_list_scheduled_tasks() {
     return scheduler.formatList(scheduler.list());
   },
-  async scheduled_tasks_update_scheduled_task({ id, ...patch } = {}) {
-    const r = scheduler.update(id, patch);
+  async scheduled_tasks_update_scheduled_task({ id, taskId, ...patch } = {}) {
+    const r = scheduler.update(id || taskId, patch);
     if (!r.ok) return 'Error: ' + r.error;
     return `Updated scheduled task ${r.task.id} [${r.task.schedule}].`;
   },
-  async scheduled_tasks_delete_scheduled_task({ id } = {}) {
-    const r = scheduler.remove(id);
+  async scheduled_tasks_delete_scheduled_task({ id, taskId } = {}) {
+    const target = id || taskId;
+    const r = scheduler.remove(target);
     if (!r.ok) return 'Error: ' + r.error;
-    return `Deleted scheduled task ${id}.`;
+    return `Deleted scheduled task ${target}.${r.skillPath ? ` Its SKILL.md was preserved at ${r.skillPath}.` : ''}`;
   },
-  async scheduled_tasks_run_scheduled_task({ id } = {}) {
-    const r = await scheduler.runNow(id);
+  async scheduled_tasks_run_scheduled_task({ id, taskId } = {}) {
+    const target = id || taskId;
+    const r = await scheduler.runNow(target);
     if (!r.ok) return 'Error: ' + r.error;
-    return `Ran scheduled task ${id}: ` + (r.result.ok ? String(r.result.output || '').slice(0, 1200) : 'ERROR ' + r.result.error);
+    return `Ran scheduled task ${target}: ` + (r.result.ok ? String(r.result.output || '').slice(0, 1200) : 'ERROR ' + r.result.error);
+  },
+  async scheduled_tasks_list_task_runs({ id, taskId, limit } = {}) {
+    const r = scheduler.listRuns(id || taskId || '', { limit });
+    if (!r.ok) return 'Error: ' + r.error;
+    return JSON.stringify(r, null, 2);
   },
 
   // ---- Slash commands ----
@@ -1253,11 +1269,12 @@ const toolDefinitions = [
   { name: 'mcp-registry__suggest_connectors', description: 'Suggest MCP connectors that match a described task or goal.', parameters: { type: 'object', properties: { goal: { type: 'string' }, limit: { type: 'number' } }, required: ['goal'] } },
 
   // ---- Scheduled tasks ----
-  { name: 'scheduled-tasks__create_scheduled_task', description: 'Create a scheduled task that runs a prompt on a cadence (once | every | hourly | daily | weekly).', parameters: { type: 'object', properties: { name: { type: 'string' }, prompt: { type: 'string' }, cadence: { type: 'string', enum: ['once', 'every', 'hourly', 'daily', 'weekly'] }, at: { type: 'string', description: 'ISO time for cadence=once' }, everyMinutes: { type: 'number' }, time: { type: 'string', description: 'HH:MM for daily/weekly' }, dayOfWeek: { type: 'number', description: '0=Sunday for weekly' }, enabled: { type: 'boolean' } }, required: ['prompt'] } },
+  { name: 'scheduled-tasks__create_scheduled_task', description: 'Create a scheduled task persisted as SKILL.md on a cadence (daily | weekdays | weekly | hourly | every | once | cron | manual).', parameters: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, prompt: { type: 'string' }, cadence: { type: 'string', enum: ['daily', 'weekdays', 'weekly', 'hourly', 'every', 'once', 'cron', 'manual'] }, cronExpression: { type: 'string' }, fireAt: { type: 'string', description: 'ISO time for cadence=once' }, at: { type: 'string', description: 'ISO time for cadence=once' }, everyMinutes: { type: 'number' }, minute: { type: 'number' }, time: { type: 'string', description: 'HH:MM for daily/weekdays/weekly' }, dayOfWeek: { type: 'number', description: '0=Sunday for weekly' }, cwd: { type: 'string' }, model: { type: 'string' }, permissionMode: { type: 'string', enum: ['auto', 'default', 'plan'] }, attentionGate: { type: 'boolean' }, useWorktree: { type: 'boolean' }, durable: { type: 'boolean' }, enabled: { type: 'boolean' } }, required: ['prompt'] } },
   { name: 'scheduled-tasks__list_scheduled_tasks', description: 'List all scheduled tasks with their next run time.', parameters: { type: 'object', properties: {} } },
-  { name: 'scheduled-tasks__update_scheduled_task', description: 'Update a scheduled task (name, prompt, cadence, schedule, or enabled).', parameters: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' }, prompt: { type: 'string' }, cadence: { type: 'string' }, at: { type: 'string' }, everyMinutes: { type: 'number' }, time: { type: 'string' }, dayOfWeek: { type: 'number' }, enabled: { type: 'boolean' } }, required: ['id'] } },
-  { name: 'scheduled-tasks__delete_scheduled_task', description: 'Delete a scheduled task by id.', parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
-  { name: 'scheduled-tasks__run_scheduled_task', description: 'Run a scheduled task immediately, without waiting for its next fire time.', parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
+  { name: 'scheduled-tasks__update_scheduled_task', description: 'Update a scheduled task (name, description, prompt, cadence, schedule, cwd, model, permissionMode, or enabled).', parameters: { type: 'object', properties: { id: { type: 'string' }, taskId: { type: 'string' }, name: { type: 'string' }, description: { type: 'string' }, prompt: { type: 'string' }, cadence: { type: 'string' }, cronExpression: { type: 'string' }, fireAt: { type: 'string' }, at: { type: 'string' }, everyMinutes: { type: 'number' }, minute: { type: 'number' }, time: { type: 'string' }, dayOfWeek: { type: 'number' }, cwd: { type: 'string' }, model: { type: 'string' }, permissionMode: { type: 'string', enum: ['auto', 'default', 'plan'] }, attentionGate: { type: 'boolean' }, useWorktree: { type: 'boolean' }, durable: { type: 'boolean' }, enabled: { type: 'boolean' } }, required: ['id'] } },
+  { name: 'scheduled-tasks__delete_scheduled_task', description: 'Delete a scheduled task by id (preserves {taskId}/SKILL.md on disk).', parameters: { type: 'object', properties: { id: { type: 'string' }, taskId: { type: 'string' } }, required: ['id'] } },
+  { name: 'scheduled-tasks__run_scheduled_task', description: 'Run a scheduled task immediately, without waiting for its next fire time.', parameters: { type: 'object', properties: { id: { type: 'string' }, taskId: { type: 'string' } }, required: ['id'] } },
+  { name: 'scheduled-tasks__list_task_runs', description: 'List structured execution history (up to 25 runs) for a scheduled task or across all tasks.', parameters: { type: 'object', properties: { id: { type: 'string', description: 'Optional task ID' }, taskId: { type: 'string' }, limit: { type: 'number' } } } },
 
   // ---- Custom skill authoring ----
   { name: 'create_skill', description: 'Create a new custom skill from Markdown content (the model writes a SKILL.md-style document with name/description frontmatter).', parameters: { type: 'object', properties: { name: { type: 'string' }, content: { type: 'string', description: 'Full Markdown skill document' } }, required: ['name', 'content'] } },
@@ -1408,6 +1425,8 @@ const executorsByTool = {
   'scheduled-tasks__update_scheduled_task': 'scheduled_tasks_update_scheduled_task',
   'scheduled-tasks__delete_scheduled_task': 'scheduled_tasks_delete_scheduled_task',
   'scheduled-tasks__run_scheduled_task': 'scheduled_tasks_run_scheduled_task',
+  'scheduled-tasks__list_task_runs': 'scheduled_tasks_list_task_runs',
+  scheduled_tasks_list_task_runs: 'scheduled_tasks_list_task_runs',
   create_skill: 'create_skill',
   delete_skill: 'delete_skill',
   ...mediaDocExecutorsByTool,

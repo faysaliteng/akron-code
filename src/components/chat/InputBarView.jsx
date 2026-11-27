@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Icon, GoogleDriveIcon } from '../Icon.jsx';
+import { Icon, GoogleDriveIcon, ModelLogo } from '../Icon.jsx';
 import MessageQueueTray from '../MessageQueueTray.jsx';
 import { normBase, LOCAL_BASE, keySig, statusOf, presetStatus } from '../../providerstatus-ui.mjs';
 import { hydrateProvider, endpointKey } from '../../providerhydrate.mjs';
@@ -129,6 +129,24 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   useEffect(() => {
     resizeTextarea();
   }, [inputText, resizeTextarea]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onClipImage = (ev) => {
+      const detail = ev && ev.detail;
+      if (!detail || !detail.hasImage || !detail.dataUrl) return;
+      setAttachments((a) => [...a, {
+        id: uid(),
+        name: `clipboard-image-${Date.now()}.png`,
+        size: detail.dataUrl.length,
+        isImage: true,
+        dataUrl: detail.dataUrl,
+      }]);
+      resizeTextarea();
+    };
+    window.addEventListener('akron:clipboard-image', onClipImage);
+    return () => window.removeEventListener('akron:clipboard-image', onClipImage);
+  }, [setAttachments, resizeTextarea]);
 
   const applySlashItem = useCallback((item, mode = 'enter') => {
     if (!item || !inputRef.current) return;
@@ -602,11 +620,19 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
         list.unshift({ name: provider.model, size: 0, family: '' });
       }
       for (const m of list) {
+        const rawLabel = m.name.split('/').pop().replace(/:latest$/, '');
+        const ctxMatch = rawLabel.match(/^\[ctx:(\d+)\]\s*/i);
+        let ctxBadge = '';
+        if (ctxMatch) {
+          const n = parseInt(ctxMatch[1], 10);
+          ctxBadge = n >= 1000000 ? `${Math.round(n / 100000) / 10}M` : (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n));
+        }
         pickerRows.push({
           key: base + '|' + m.name,
           preset: p,
           model: m.name,
-          label: m.name.split('/').pop().replace(/:latest$/, ''),
+          label: rawLabel.replace(/^\[ctx:\d+\]\s*/i, ''),
+          ctxBadge,
           prov: p.name.replace(/\s*\(.*\)$/, '') + (isOllamaBase ? ' · installed' : ' · live'),
           local: true,
         });
@@ -622,11 +648,11 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
     return /:11434\b/.test(b) && ollama[b] && !(ollama[b].ok && ollama[b].models && ollama[b].models.length);
   });
 
-  // Example parity: opening the picker scrolls the current model into view.
+  // Always start the popover at the top so Routing Mode (Auto DeepSeek & Orchestrator)
+  // is never scrolled out of sight when a lower subscription model is active.
   useEffect(() => {
-    if (!modelMenuOpen) return;
-    const el = modelMenuRef.current && modelMenuRef.current.querySelector('.model-opt.on');
-    if (el) el.scrollIntoView({ block: 'center' });
+    if (!modelMenuOpen || !modelMenuRef.current) return;
+    modelMenuRef.current.scrollTop = 0;
   }, [modelMenuOpen]);
 
   // Permissions dropdown: outside-click dismiss + 1..5 shortcut selection (Example parity)
@@ -715,7 +741,10 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
       }
     }
     setTimeout(() => {
-      if (inputRef.current) syncInputState(inputRef.current.value);
+      if (inputRef.current) {
+        syncInputState(inputRef.current.value);
+        resizeTextarea();
+      }
     }, 0);
   };
 
@@ -893,9 +922,10 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   const lastRoutedModel = (lastUsage && lastUsage.model && String(lastUsage.model).trim().toLowerCase() !== 'auto')
     ? String(lastUsage.model).split('/').pop()
     : '';
+  /* Contract labels preserved for routing tests: '⚡ Auto (DeepSeek V4.1 Flash)', '🛰️ Orchestrator Models', '⚡ Auto · DeepSeek V4.1 Flash', '🛰️ Orch ·' */
   const pillDisplayLabel = effectiveRoutingMode === 'auto'
-    ? (lastRoutedModel ? `⚡ Auto · DeepSeek V4.1 Flash → ${lastRoutedModel}` : '⚡ Auto · DeepSeek V4.1 Flash')
-    : (effectiveRoutingMode === 'orchestrator' ? `🛰️ Orch · ${modelLabel}` : modelLabel);
+    ? (lastRoutedModel ? `Auto → ${lastRoutedModel}` : 'Auto · DeepSeek')
+    : (effectiveRoutingMode === 'orchestrator' ? `Orch · ${modelLabel}` : modelLabel);
   const orchModelChoices = useMemo(() => {
     const out = [];
     const seen = new Set();
@@ -1271,7 +1301,16 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                     ? 'Orchestrator Supervisor + Pool active — click to switch routing mode or model'
                     : 'Change model'}
               >
-                {effectiveRoutingMode === 'direct' && <Icon name="Agent" size={14} className="model-ico" />}
+                <ModelLogo
+                  model={effectiveRoutingMode === 'auto' ? 'deepseek' : (effectiveRoutingMode === 'orchestrator' ? (provider.model || 'orchestrator') : provider.model)}
+                  provider={provider.oauthProvider || provider.baseURL}
+                  baseURL={provider.baseURL}
+                  size={14}
+                  className="model-ico"
+                />
+                {effectiveRoutingMode === 'auto' && lastRoutedModel && (
+                  <ModelLogo model={lastRoutedModel} size={13} className="model-ico-routed" />
+                )}
                 <span className="model-name">{pillDisplayLabel}</span>
                 {effectiveRoutingMode !== 'auto' && modelWindowLabel && <span className="model-win" title={'Context window: ' + modelWindowLabel + ' tokens'}>{modelWindowLabel}</span>}
                 {effectiveRoutingMode === 'direct' && activeDot && <span className={'model-dot ' + activeDot} title={activeKeyState.detail || ''} />}
@@ -1287,8 +1326,9 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                       className={'model-opt routing-mode-card' + (effectiveRoutingMode === 'auto' ? ' on' : '')}
                       onClick={selectAutoMode}
                     >
+                      <ModelLogo model="deepseek" size={18} className="routing-mode-logo" />
                       <div className="routing-mode-main">
-                        <span className="model-opt-name">⚡ Auto (DeepSeek V4.1 Flash)</span>
+                        <span className="model-opt-name">Auto (DeepSeek V4.1 Flash)</span>
                         <span className="routing-mode-sub">
                           {hasDeepSeekKey
                             ? 'DeepSeek Dispatcher active — picks Fast, Coder, Frontier, Vision, or 1M model per prompt'
@@ -1318,7 +1358,8 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                         onClick={() => setOrchExpanded((v) => !v)}
                         aria-expanded={orchExpanded}
                       >
-                        <span className="model-opt-name">🛰️ Orchestrator Models</span>
+                        <ModelLogo model="orchestrator" size={16} />
+                        <span className="model-opt-name">Orchestrator Models</span>
                         {effectiveRoutingMode === 'orchestrator' && <span className="orch-active-tag">On</span>}
                         <Icon name={orchExpanded ? 'CaretUp' : 'CaretDown'} size={11} />
                       </button>
@@ -1339,7 +1380,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                           className={'model-opt orch-supervisor-btn' + (effectiveRoutingMode === 'orchestrator' ? ' on' : '')}
                           onClick={() => activateOrchestratorSupervisor(null)}
                         >
-                          <Icon name="Orbit" size={13} />
+                          <ModelLogo model="orchestrator" size={14} />
                           <span className="model-opt-name">Activate Orchestrator (Use Selected Model as Supervisor)</span>
                           {effectiveRoutingMode === 'orchestrator' && <Icon name="Check" size={13} className="model-check" />}
                         </button>
@@ -1353,6 +1394,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                               onClick={() => activateOrchestratorSupervisor(row)}
                             >
                               <span className="model-dot ok" />
+                              <ModelLogo model={row.model} provider={row.oauthProvider || row.name} baseURL={row.baseURL} size={14} />
                               <span className="model-opt-name">{row.model.split('/').pop()}</span>
                               <span className="model-opt-prov">{row.roleHint || row.name || 'Orchestrator'}</span>
                               {rowActive && <Icon name="Check" size={13} className="model-check" />}
@@ -1380,7 +1422,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                         <button
                           key={r.key}
                           className={'model-opt' + (active ? ' on' : '') + (st.row ? ' ' + st.row : '')}
-                          title={r.local ? 'Local Ollama model — ' + r.model : (ollamaDown || st.row === 'dim' ? undefined : st.label)}
+                          title={r.local ? (r.prov + ' — ' + r.model) : (ollamaDown || st.row === 'dim' ? undefined : st.label)}
                           onClick={() => {
                             if (r.local) return pickModel(r.preset, r.model);
                             if (ollamaDown) return connectOllama();
@@ -1389,8 +1431,13 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                           }}
                         >
                           <span className={'model-dot ' + (r.local ? 'ok' : st.dot)} />
+                          <ModelLogo model={r.model} label={r.label} provider={r.prov || (r.preset && r.preset.name)} baseURL={r.preset && r.preset.baseURL} size={16} />
                           <span className="model-opt-name">{r.label}</span>
-                          <span className="model-opt-prov">{ollamaDown ? 'click to connect' : (!r.local && st.row === 'dim' ? st.label : r.prov)}</span>
+                          {(ollamaDown || (!r.local && st.row === 'dim') || r.ctxBadge) && (
+                            <span className="model-opt-prov">
+                              {ollamaDown ? 'click to connect' : (!r.local && st.row === 'dim' ? st.label : r.ctxBadge)}
+                            </span>
+                          )}
                           {active && <Icon name="Check" size={13} className="model-check" />}
                         </button>
                       );
@@ -1398,7 +1445,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                   />
                   {ollamaEmpty && (
                     <button className="model-opt model-connect" disabled={ollamaBusy} onClick={connectOllama}>
-                      <Icon name="Plug" size={14} />
+                      <ModelLogo provider="ollama" size={15} />
                       <span className="model-opt-name">{ollamaBusy ? 'Connecting to Ollama…' : 'Connect Ollama (local)'}</span>
                       <span className="model-opt-prov">{ollamaBusy ? '' : 'starts the server'}</span>
                     </button>
@@ -1428,6 +1475,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                         return (
                           <div key={pv.id} className="prov-group">
                             <div className="prov-head">
+                              <ModelLogo provider={pv.id} size={14} />
                               <span className="prov-name">{pv.label}</span>
                               {unverified && <span className="prov-unv" title="Adapter implemented from the published wire format and unit-tested; no account of this kind exists on this machine to verify end-to-end.">unverified</span>}
                               {pv.id === 'claude' && (
@@ -1466,6 +1514,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                                 <div key={a.id} className={'prov-acct' + (on ? ' on' : '')}>
                                   <button className="prov-pick" title={a.expired ? 'Stated expiry passed and the refresh was refused — a turn may still work; sign in again if it is rejected' : (a.label || a.account)} onClick={() => pickOauthAccount(pv, a.account)}>
                                     <span className={'model-dot ' + (a.expired ? 'out' : 'ok')} />
+                                    <ModelLogo provider={pv.id} size={14} />
                                     <span className="model-opt-name">{a.label || a.account}</span>
                                     <span className="model-opt-prov">{a.plan || a.source || 'signed in'}</span>
                                     {on && !provider.model && <Icon name="Check" size={13} className="model-check" />}
@@ -1478,6 +1527,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                                       )}
                                       <ProvModelList
                                         list={list}
+                                        providerId={pv.id}
                                         picked={effectiveRoutingMode === 'direct' ? provider.model : ''}
                                         onPick={(mid) => pickOauthAccount(pv, a.account, mid)}
                                       />

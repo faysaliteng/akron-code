@@ -149,12 +149,14 @@ function cacheMediaArtifact(filePath) {
     if (!filePath || !fs.existsSync(filePath)) return out;
     const stat = fs.statSync(filePath);
     if (!stat.isFile() || stat.size <= 0) return out;
-    const cacheDir = path.join(os.homedir(), '.autobot', 'media-cache');
-    fs.mkdirSync(cacheDir, { recursive: true });
-    const hash = crypto.createHash('sha1').update(filePath + ':' + stat.mtimeMs).digest('hex').slice(0, 8);
-    const cachePath = path.join(cacheDir, `${Date.now()}-${hash}-${path.basename(filePath)}`);
-    fs.copyFileSync(filePath, cachePath);
-    out.cachePath = cachePath;
+    if (!isTransientTestPath(filePath)) {
+      const cacheDir = path.join(os.homedir(), '.autobot', 'media-cache');
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const hash = crypto.createHash('sha1').update(filePath + ':' + stat.mtimeMs).digest('hex').slice(0, 8);
+      const cachePath = path.join(cacheDir, `${Date.now()}-${hash}-${path.basename(filePath)}`);
+      fs.copyFileSync(filePath, cachePath);
+      out.cachePath = cachePath;
+    }
     const ext = path.extname(filePath).toLowerCase().slice(1);
     if (/^(png|jpe?g|webp|gif|svg|ico|bmp)$/.test(ext) && stat.size <= 4 * 1024 * 1024) {
       const mime = ext === 'svg' ? 'image/svg+xml' : (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/' + ext);
@@ -162,6 +164,173 @@ function cacheMediaArtifact(filePath) {
     }
   } catch (_) {}
   return out;
+}
+
+function getElectronNativeImage() {
+  try {
+    const electron = require('electron');
+    return (electron && electron.nativeImage) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function resolveLibraryDir() {
+  const dir = path.join(os.homedir(), '.autobot', 'media-library');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  return dir;
+}
+
+function readLibraryIndex() {
+  const indexPath = path.join(resolveLibraryDir(), 'index.json');
+  try {
+    if (!fs.existsSync(indexPath)) return [];
+    const parsed = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeLibraryIndex(items) {
+  const indexPath = path.join(resolveLibraryDir(), 'index.json');
+  try {
+    fs.writeFileSync(indexPath, JSON.stringify((Array.isArray(items) ? items : []).slice(0, 300), null, 2), 'utf8');
+  } catch (_) {}
+}
+
+function isTransientTestPath(p) {
+  if (!p) return false;
+  if (process.env.AKRON_SKIP_MEDIA_LIBRARY === '1') return true;
+  const s = String(p);
+  if (/(\/|^)(akron-media-doc-|akron-repro-|akron-repro|_tooltest|_videotest)(\/|$)/i.test(s)) return true;
+  try {
+    const tmpRoot = path.resolve(os.tmpdir());
+    const abs = path.resolve(s);
+    if (abs === tmpRoot || abs.startsWith(tmpRoot + path.sep)) return true;
+  } catch (_) {}
+  if (/^\/tmp\//i.test(s) || /^\/var\/folders\//i.test(s)) return true;
+  return false;
+}
+
+function recordMediaLibraryItem(item = {}) {
+  try {
+    if (!item || !item.path || item.skipLibrary) return null;
+    if (isTransientTestPath(item.path) || isTransientTestPath(item.cwd)) return null;
+    const libDir = resolveLibraryDir();
+    let stablePath = item.cachePath && fs.existsSync(item.cachePath) ? item.cachePath : '';
+    if (!stablePath && fs.existsSync(item.path)) {
+      const filesDir = path.join(libDir, 'files');
+      fs.mkdirSync(filesDir, { recursive: true });
+      const dest = path.join(filesDir, `${Date.now()}-${path.basename(item.path)}`);
+      fs.copyFileSync(item.path, dest);
+      stablePath = dest;
+    }
+    const stat = fs.existsSync(item.path) ? fs.statSync(item.path) : (stablePath && fs.existsSync(stablePath) ? fs.statSync(stablePath) : null);
+    const entry = {
+      id: item.id || crypto.randomBytes(6).toString('hex'),
+      kind: item.kind || 'image',
+      name: item.name || path.basename(item.path),
+      path: item.path,
+      cachePath: stablePath || item.cachePath || '',
+      format: item.format || path.extname(item.path).slice(1).toLowerCase() || 'png',
+      width: Number(item.width) || 0,
+      height: Number(item.height) || 0,
+      duration: Number(item.duration || item.duration_sec) || 0,
+      size: Number(item.size) || (stat ? stat.size : 0),
+      model: item.model || '',
+      backend: item.backend || '',
+      prompt: String(item.prompt || '').slice(0, 500),
+      operation: item.operation || '',
+      cwd: item.cwd || '',
+      createdAt: item.createdAt || Date.now(),
+    };
+    const list = readLibraryIndex().filter((x) => x && x.path !== entry.path);
+    list.unshift(entry);
+    writeLibraryIndex(list);
+    return entry;
+  } catch (_) {
+    return null;
+  }
+}
+
+function pruneTransientMediaCache() {
+  try {
+    const cacheDir = path.join(os.homedir(), '.autobot', 'media-cache');
+    if (!fs.existsSync(cacheDir)) return 0;
+    let removed = 0;
+    for (const name of fs.readdirSync(cacheDir)) {
+      if (/(akron-media-doc-|akron-repro-|akron-repro|_tooltest|_videotest)/i.test(name)) {
+        try { fs.unlinkSync(path.join(cacheDir, name)); removed++; } catch (_) {}
+      }
+    }
+    return removed;
+  } catch (_) {
+    return 0;
+  }
+}
+
+function listMediaLibrary({ cwd = '', kind = 'all', limit = 120 } = {}) {
+  pruneTransientMediaCache();
+  const raw = readLibraryIndex();
+  const out = [];
+  const cleaned = [];
+  let dirty = false;
+  for (const item of raw) {
+    if (!item || !item.path) { dirty = true; continue; }
+    if (isTransientTestPath(item.path) || isTransientTestPath(item.cwd)) {
+      if (item.cachePath && item.cachePath.includes('media-library') && fs.existsSync(item.cachePath)) {
+        try { fs.unlinkSync(item.cachePath); } catch (_) {}
+      }
+      dirty = true;
+      continue;
+    }
+    // Remove previously mislabeled offline videos (<200KB 640x360 claiming Veo)
+    if (item.kind === 'video' && item.backend === 'google-veo' && Number(item.size) < 200000 && Number(item.width) <= 640) {
+      dirty = true;
+      continue;
+    }
+    const diskExists = fs.existsSync(item.path);
+    const cacheExists = item.cachePath && fs.existsSync(item.cachePath);
+    if (!diskExists && !cacheExists) { dirty = true; continue; }
+    cleaned.push(item);
+    if (kind !== 'all' && item.kind !== kind) continue;
+    const resolvedFile = diskExists ? item.path : item.cachePath;
+    let previewDataUrl = '';
+    if (item.kind === 'image') {
+      try {
+        const ext = path.extname(resolvedFile).slice(1).toLowerCase() || 'png';
+        const st = fs.statSync(resolvedFile);
+        if (st.size > 0 && st.size <= 4 * 1024 * 1024) {
+          const mime = ext === 'svg' ? 'image/svg+xml' : (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`);
+          previewDataUrl = `data:${mime};base64,${fs.readFileSync(resolvedFile).toString('base64')}`;
+        }
+      } catch (_) {}
+    }
+    out.push({
+      ...item,
+      inCurrentProject: !!(cwd && item.cwd && path.resolve(item.cwd) === path.resolve(cwd)),
+      existsOnDisk: diskExists,
+      fileUrl: 'file://' + encodeURI(resolvedFile),
+      previewDataUrl,
+    });
+    if (out.length >= limit) break;
+  }
+  if (dirty) writeLibraryIndex(cleaned);
+  return out;
+}
+
+function deleteMediaLibraryItem({ id = '', path: targetPath = '' } = {}) {
+  const list = readLibraryIndex();
+  const next = list.filter((x) => {
+    const match = (id && x.id === id) || (targetPath && x.path === targetPath);
+    if (match && x.cachePath && x.cachePath.includes('media-library') && fs.existsSync(x.cachePath)) {
+      try { fs.unlinkSync(x.cachePath); } catch (_) {}
+    }
+    return !match;
+  });
+  writeLibraryIndex(next);
+  return { ok: true, remaining: next.length };
 }
 
 function resolveOutputPath(cwd, outputPath, prefix, ext) {
@@ -174,7 +343,9 @@ function resolveOutputPath(cwd, outputPath, prefix, ext) {
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const rand = crypto.randomBytes(3).toString('hex');
-  const dir = path.join(baseDir, '.akron-studio');
+  const isTemp = path.resolve(baseDir) === path.resolve(os.tmpdir());
+  const folderName = isTemp ? '.akron-studio' : (prefix === 'video' ? 'videos' : 'images');
+  const dir = path.join(baseDir, folderName);
   fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, `${prefix}-${stamp}-${rand}.${ext.replace(/^\./, '')}`);
 }
@@ -538,38 +709,108 @@ async function encodeImageBuffer({ width, height, data }, format, outPath) {
   return outPath;
 }
 
-async function decodeImageBuffer(inputPath) {
-  const buf = fs.readFileSync(inputPath);
-  const ext = path.extname(inputPath).toLowerCase();
-  if (ext === '.png' || (buf[0] === 0x89 && buf[1] === 0x50)) {
-    const png = PNG.sync.read(buf);
-    return { width: png.width, height: png.height, data: png.data, rawTextMeta: extractPngText(buf) };
+function trimPngToIend(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 16) return buf;
+  if (buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4e || buf[3] !== 0x47) return buf;
+  let off = 8;
+  while (off + 12 <= buf.length) {
+    const len = buf.readUInt32BE(off);
+    const type = buf.subarray(off + 4, off + 8).toString('ascii');
+    const chunkEnd = off + 12 + len;
+    if (chunkEnd > buf.length) break;
+    if (type === 'IEND') {
+      return chunkEnd < buf.length ? buf.subarray(0, chunkEnd) : buf;
+    }
+    off = chunkEnd;
   }
-  if (ext === '.jpg' || ext === '.jpeg' || (buf[0] === 0xff && buf[1] === 0xd8)) {
+  return buf;
+}
+
+function cropBottomStrip(src, stripPx = 44) {
+  if (!src || !src.data || src.height <= stripPx + 32) return src;
+  const targetH = src.height - stripPx;
+  const rowBytes = src.width * 4;
+  return {
+    width: src.width,
+    height: targetH,
+    data: Buffer.from(src.data.subarray(0, targetH * rowBytes)),
+  };
+}
+
+async function decodeBufferToRgba(buf, hintPath = '') {
+  if (!Buffer.isBuffer(buf) || buf.length === 0) {
+    throw new Error('Cannot decode empty image buffer');
+  }
+  const ext = path.extname(String(hintPath || '')).toLowerCase();
+  const isJpgMagic = buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  const isPngMagic = buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+  const headStr = buf.subarray(0, Math.min(256, buf.length)).toString('utf8').trimStart();
+  const isSvg = ext === '.svg' || headStr.startsWith('<svg') || (headStr.startsWith('<?xml') && headStr.includes('<svg'));
+
+  // 1. Check magic bytes FIRST (prevents JPEG bytes in a .png filename from failing pngjs)
+  if (isJpgMagic) {
     const dec = jpeg.decode(buf, { useTArray: true, formatAsRGBA: true });
     return { width: dec.width, height: dec.height, data: Buffer.from(dec.data), rawTextMeta: '' };
   }
-  if (ext === '.svg') {
+  if (isPngMagic) {
+    const trimmed = trimPngToIend(buf);
+    try {
+      const png = PNG.sync.read(trimmed);
+      return { width: png.width, height: png.height, data: png.data, rawTextMeta: extractPngText(trimmed) };
+    } catch (_) {
+      const ni = getElectronNativeImage();
+      if (ni) {
+        const img = ni.createFromBuffer(buf);
+        if (img && !img.isEmpty()) {
+          const png = PNG.sync.read(img.toPNG());
+          return { width: png.width, height: png.height, data: png.data, rawTextMeta: '' };
+        }
+      }
+    }
+  }
+  if (isSvg) {
     const svgText = buf.toString('utf8');
     const txtMatches = [...svgText.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/gi)].map((m) => m[1].replace(/<[^>]+>/g, '').trim()).filter(Boolean);
     const pngBuf = await renderHtmlWithElectron(`<!doctype html><html><body style="margin:0">${svgText}</body></html>`, 1024, 1024);
     if (pngBuf) {
-      const png = PNG.sync.read(pngBuf);
+      const png = PNG.sync.read(trimPngToIend(pngBuf));
       return { width: png.width, height: png.height, data: png.data, rawTextMeta: txtMatches.join('\n') };
     }
-    const proc = paintProceduralRgba({ prompt: txtMatches[0] || path.basename(inputPath), width: 640, height: 640 });
+    const proc = paintProceduralRgba({ prompt: txtMatches[0] || path.basename(hintPath || 'image.svg'), width: 640, height: 640 });
     return { ...proc, rawTextMeta: txtMatches.join('\n') };
   }
+
+  // 2. Fallback to Electron nativeImage (handles WebP, GIF, BMP, ICO, etc.)
+  const ni = getElectronNativeImage();
+  if (ni) {
+    try {
+      const img = ni.createFromBuffer(buf);
+      if (img && !img.isEmpty()) {
+        const png = PNG.sync.read(img.toPNG());
+        return { width: png.width, height: png.height, data: png.data, rawTextMeta: '' };
+      }
+    } catch (_) {}
+  }
+
+  // 3. Final fallback to ffmpeg transcode
   const ff = resolveFfmpeg();
-  if (!ff) throw new Error(`Cannot decode "${ext}" image without ffmpeg`);
+  if (!ff) throw new Error(`Cannot decode "${ext || 'image'}" image without ffmpeg`);
+  const tmpIn = path.join(os.tmpdir(), `akron-in-${crypto.randomBytes(4).toString('hex')}${ext || '.bin'}`);
   const tmpPng = path.join(os.tmpdir(), `akron-dec-${crypto.randomBytes(4).toString('hex')}.png`);
   try {
-    await runBin(ff, ['-y', '-i', inputPath, tmpPng]);
-    const png = PNG.sync.read(fs.readFileSync(tmpPng));
+    fs.writeFileSync(tmpIn, buf);
+    await runBin(ff, ['-y', '-i', tmpIn, tmpPng]);
+    const png = PNG.sync.read(trimPngToIend(fs.readFileSync(tmpPng)));
     return { width: png.width, height: png.height, data: png.data, rawTextMeta: '' };
   } finally {
+    try { fs.unlinkSync(tmpIn); } catch (_) {}
     try { fs.unlinkSync(tmpPng); } catch (_) {}
   }
+}
+
+async function decodeImageBuffer(inputPath) {
+  const buf = fs.readFileSync(inputPath);
+  return await decodeBufferToRgba(buf, inputPath);
 }
 
 function extractPngText(buf) {
@@ -636,9 +877,16 @@ async function tryRemoteImageGenerate(candidate, { prompt, aspect_ratio, style, 
     const h = (dims && dims.height) || 1024;
     const fullPrompt = style ? `${prompt}, ${style}` : prompt;
     const seed = crypto.randomInt(1, 999999);
-    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=${w}&height=${h}&model=flux&nologo=true&seed=${seed}`;
+    const polyModel = String(candidate.remoteModel || candidate.model || 'flux').toLowerCase().includes('realism')
+      ? 'flux-realism'
+      : (String(candidate.remoteModel || candidate.model || '').toLowerCase().includes('anime')
+        ? 'flux-anime'
+        : (String(candidate.remoteModel || candidate.model || '').toLowerCase().includes('3d')
+          ? 'flux-3d'
+          : 'flux'));
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=${w}&height=${h}&model=${encodeURIComponent(polyModel)}&nologo=true&enhance=true&seed=${seed}`;
     const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 14000);
+    const timer = setTimeout(() => ac.abort(), 16000);
     try {
       const res = await fetch(url, { signal: ac.signal, headers: { accept: 'image/*' } });
       if (!res.ok) return null;
@@ -737,18 +985,15 @@ async function generateImage(args = {}, ctx = {}) {
 
   const routed = await router.resolveMediaProvider({
     kind: 'image',
+    preferredModel: args.model || '',
     provider: ctx.provider || args.provider || null,
     orchestrator: ctx.orchestrator || args.orchestrator || null,
     store: ctx.store || null,
   });
-  let selectedCandidate = routed.chosen;
-  if (args.model) {
-    selectedCandidate = { source: 'explicit', backend: 'explicit', model: String(args.model), offline: false };
-  }
 
   const files = [];
-  let usedModel = (selectedCandidate && selectedCandidate.model) || 'akron-svg-canvas-studio';
-  let usedBackend = (selectedCandidate && selectedCandidate.backend) || 'offline-image-studio';
+  let usedModel = 'akron-svg-canvas-studio';
+  let usedBackend = 'offline-image-studio';
 
   for (let i = 0; i < count; i++) {
     let suffixOut = args.output_path;
@@ -775,11 +1020,13 @@ async function generateImage(args = {}, ctx = {}) {
     }
 
     if (remoteBuf) {
-      fs.writeFileSync(outFile, remoteBuf);
-      if (format !== 'png' && path.extname(outFile).toLowerCase() !== '.png') {
-        const decoded = await decodeImageBuffer(outFile);
-        await encodeImageBuffer(decoded, format, outFile);
+      let decoded = await decodeBufferToRgba(remoteBuf, outFile);
+      if (usedBackend === 'pollinations-flux' && decoded.height > 180) {
+        // Trim bottom strip in case the free endpoint appended a watermark banner, then scale cleanly to target dimensions.
+        const cropped = cropBottomStrip(decoded, Math.min(44, Math.floor(decoded.height * 0.08)));
+        decoded = resizeRgbaBilinear(cropped, dims.width, dims.height);
       }
+      await encodeImageBuffer(decoded, format, outFile);
     } else if (format === 'svg') {
       const svg = buildArtboardSvg({ prompt: count > 1 ? `${prompt} #${i + 1}` : prompt, style: args.style, width: dims.width, height: dims.height });
       fs.writeFileSync(outFile, svg, 'utf8');
@@ -794,7 +1041,7 @@ async function generateImage(args = {}, ctx = {}) {
         if (format === 'png') {
           fs.writeFileSync(outFile, electronPng);
         } else {
-          const decoded = PNG.sync.read(electronPng);
+          const decoded = PNG.sync.read(trimPngToIend(electronPng));
           await encodeImageBuffer({ width: decoded.width, height: decoded.height, data: decoded.data }, format, outFile);
         }
       } else {
@@ -806,8 +1053,24 @@ async function generateImage(args = {}, ctx = {}) {
   }
 
   const primaryCache = cacheMediaArtifact(files[0]);
+  const outStat = fs.existsSync(files[0]) ? fs.statSync(files[0]) : null;
+  for (const fp of files) {
+    recordMediaLibraryItem({
+      kind: 'image',
+      path: fp,
+      cachePath: fp === files[0] ? primaryCache.cachePath : '',
+      format,
+      width: dims.width,
+      height: dims.height,
+      size: fs.existsSync(fp) ? fs.statSync(fp).size : 0,
+      model: usedModel,
+      backend: usedBackend,
+      prompt,
+      cwd: args.cwd || ctx.cwd || '',
+    });
+  }
   if (typeof ctx.emit === 'function') {
-    ctx.emit({ type: 'mediaArtifact', kind: 'image', files, cachePath: primaryCache.cachePath, previewDataUrl: primaryCache.previewDataUrl, model: usedModel, backend: usedBackend, width: dims.width, height: dims.height, format });
+    ctx.emit({ type: 'mediaArtifact', kind: 'image', files, cachePath: primaryCache.cachePath, previewDataUrl: primaryCache.previewDataUrl, model: usedModel, backend: usedBackend, width: dims.width, height: dims.height, size: outStat ? outStat.size : 0, format });
   }
   return {
     ok: true,
@@ -817,6 +1080,7 @@ async function generateImage(args = {}, ctx = {}) {
     previewDataUrl: primaryCache.previewDataUrl,
     width: dims.width,
     height: dims.height,
+    size: outStat ? outStat.size : 0,
     aspect_ratio: aspect,
     format,
     model: usedModel,
@@ -903,7 +1167,7 @@ async function editImage(args = {}, ctx = {}) {
       targetFormat = 'png';
     }
   } else if (op === 'remove_background') {
-    // Sample 4 corner pixels as background reference and alpha-matte similar pixels cleanly.
+    // Sample 4 corners + outer border midpoints so solid, radial, or studio dark/light backdrops become cleanly transparent.
     const corners = [
       0,
       (img.width - 1) * 4,
@@ -913,13 +1177,13 @@ async function editImage(args = {}, ctx = {}) {
     let bgR = 0, bgG = 0, bgB = 0;
     for (const c of corners) { bgR += img.data[c]; bgG += img.data[c + 1]; bgB += img.data[c + 2]; }
     bgR /= 4; bgG /= 4; bgB /= 4;
-    const threshold = Number(args.threshold) || 46;
+    const threshold = Number(args.threshold) || 52;
     for (let i = 0; i < img.data.length; i += 4) {
       const dist = Math.hypot(img.data[i] - bgR, img.data[i + 1] - bgG, img.data[i + 2] - bgB);
       if (dist < threshold) {
         img.data[i + 3] = 0;
-      } else if (dist < threshold * 1.6) {
-        img.data[i + 3] = Math.round(((dist - threshold) / (threshold * 0.6)) * 255);
+      } else if (dist < threshold * 1.65) {
+        img.data[i + 3] = Math.round(((dist - threshold) / (threshold * 0.65)) * 255);
       }
     }
     if (!args.format && !args.output_path) targetFormat = 'png';
@@ -931,42 +1195,72 @@ async function editImage(args = {}, ctx = {}) {
     const y0 = Math.max(8, img.height - 11 * scale);
     drawBitmapText(img.data, img.width, img.height, label, x0, y0, scale, [236, 253, 245, 255], [4, 14, 11, 180]);
   } else if (op === 'annotate' || op === 'ai_edit' || op === 'inpaint') {
-    const box = args.crop_box
-      ? parseCropBox(args.crop_box, img.width, img.height)
-      : { x: Math.round(img.width * 0.12), y: Math.round(img.height * 0.12), width: Math.round(img.width * 0.76), height: Math.round(img.height * 0.76) };
-    // Subtle contrast boost on ai_edit/inpaint or callout border on annotate
-    if (op === 'ai_edit' || op === 'inpaint') {
-      for (let y = box.y; y < box.y + box.height; y++) {
+    let aiEditedOk = false;
+    let aiEditModel = '';
+    if (op === 'ai_edit' && args.instruction && !args.crop_box && !args.forceOffline) {
+      try {
+        const aspectGuess = img.width > img.height * 1.25 ? '16:9' : (img.height > img.width * 1.25 ? '9:16' : (Math.abs(img.width - img.height) < 80 ? '1:1' : '4:3'));
+        const routed = await router.resolveMediaProvider({
+          kind: 'image',
+          preferredModel: args.model || '',
+          provider: ctx.provider || args.provider || null,
+          orchestrator: ctx.orchestrator || args.orchestrator || null,
+          store: ctx.store || null,
+        });
+        for (const cand of routed.candidates || []) {
+          if (cand.offline) break;
+          const editPrompt = `${String(args.instruction).trim()}, high detail studio quality, refined from ${path.basename(inputPath).replace(/\.[^.]+$/, '')}`;
+          const buf = await tryRemoteImageGenerate(cand, { prompt: editPrompt, aspect_ratio: aspectGuess, style: args.style, dims: { width: img.width, height: img.height } });
+          if (buf) {
+            let dec = await decodeBufferToRgba(buf, inputPath);
+            if (cand.backend === 'pollinations-flux' && dec.height > 180) {
+              dec = cropBottomStrip(dec, Math.min(44, Math.floor(dec.height * 0.08)));
+            }
+            img = resizeRgbaBilinear(dec, img.width, img.height);
+            aiEditedOk = true;
+            aiEditModel = cand.model || cand.backend;
+            break;
+          }
+        }
+      } catch (_) {}
+    }
+    if (!aiEditedOk) {
+      const box = args.crop_box
+        ? parseCropBox(args.crop_box, img.width, img.height)
+        : { x: Math.round(img.width * 0.12), y: Math.round(img.height * 0.12), width: Math.round(img.width * 0.76), height: Math.round(img.height * 0.76) };
+      if (op === 'ai_edit' || op === 'inpaint') {
+        for (let y = box.y; y < box.y + box.height; y++) {
+          for (let x = box.x; x < box.x + box.width; x++) {
+            const i = (y * img.width + x) * 4;
+            img.data[i] = Math.min(255, Math.round(img.data[i] * 0.94 + 8));
+            img.data[i + 1] = Math.min(255, Math.round(img.data[i + 1] * 1.06 + 10));
+            img.data[i + 2] = Math.min(255, Math.round(img.data[i + 2] * 0.98 + 6));
+          }
+        }
+      }
+      for (let t = 0; t < 3; t++) {
         for (let x = box.x; x < box.x + box.width; x++) {
-          const i = (y * img.width + x) * 4;
-          img.data[i] = Math.min(255, Math.round(img.data[i] * 0.94 + 8));
-          img.data[i + 1] = Math.min(255, Math.round(img.data[i + 1] * 1.06 + 10));
-          img.data[i + 2] = Math.min(255, Math.round(img.data[i + 2] * 0.98 + 6));
+          for (const yy of [box.y + t, box.y + box.height - 1 - t]) {
+            if (yy >= 0 && yy < img.height && x >= 0 && x < img.width) {
+              const idx = (yy * img.width + x) * 4;
+              img.data[idx] = 16; img.data[idx + 1] = 185; img.data[idx + 2] = 129; img.data[idx + 3] = 255;
+            }
+          }
         }
-      }
-    }
-    // Draw emerald highlight frame (2px)
-    for (let t = 0; t < 3; t++) {
-      for (let x = box.x; x < box.x + box.width; x++) {
-        for (const yy of [box.y + t, box.y + box.height - 1 - t]) {
-          if (yy >= 0 && yy < img.height && x >= 0 && x < img.width) {
-            const idx = (yy * img.width + x) * 4;
-            img.data[idx] = 16; img.data[idx + 1] = 185; img.data[idx + 2] = 129; img.data[idx + 3] = 255;
+        for (let y = box.y; y < box.y + box.height; y++) {
+          for (const xx of [box.x + t, box.x + box.width - 1 - t]) {
+            if (y >= 0 && y < img.height && xx >= 0 && xx < img.width) {
+              const idx = (y * img.width + xx) * 4;
+              img.data[idx] = 16; img.data[idx + 1] = 185; img.data[idx + 2] = 129; img.data[idx + 3] = 255;
+            }
           }
         }
       }
-      for (let y = box.y; y < box.y + box.height; y++) {
-        for (const xx of [box.x + t, box.x + box.width - 1 - t]) {
-          if (y >= 0 && y < img.height && xx >= 0 && xx < img.width) {
-            const idx = (y * img.width + xx) * 4;
-            img.data[idx] = 16; img.data[idx + 1] = 185; img.data[idx + 2] = 129; img.data[idx + 3] = 255;
-          }
-        }
+      if (args.instruction || args.watermark_text) {
+        drawBitmapText(img.data, img.width, img.height, String(args.watermark_text || args.instruction).slice(0, 36), box.x + 8, Math.max(8, box.y - 20), 2, [236, 253, 245, 255], [6, 78, 59, 210]);
       }
     }
-    if (args.instruction || args.watermark_text) {
-      drawBitmapText(img.data, img.width, img.height, String(args.watermark_text || args.instruction).slice(0, 36), box.x + 8, Math.max(8, box.y - 20), 2, [236, 253, 245, 255], [6, 78, 59, 210]);
-    }
+    args._usedEditModel = aiEditModel || (aiEditedOk ? 'ai-edit' : 'akron-svg-canvas-studio');
   } else {
     throw new Error(`Unsupported EditImage operation: ${op}`);
   }
@@ -974,8 +1268,22 @@ async function editImage(args = {}, ctx = {}) {
   const outFile = resolveOutputPath(args.cwd || ctx.cwd, args.output_path, `edited-${op}`, targetFormat);
   await encodeImageBuffer(img, targetFormat, outFile);
   const editCache = cacheMediaArtifact(outFile);
+  const outStat = fs.existsSync(outFile) ? fs.statSync(outFile) : null;
+  recordMediaLibraryItem({
+    kind: 'image',
+    path: outFile,
+    cachePath: editCache.cachePath,
+    format: targetFormat,
+    width: img.width,
+    height: img.height,
+    size: outStat ? outStat.size : 0,
+    model: args._usedEditModel || '',
+    operation: op,
+    prompt: args.instruction || `${op} (${path.basename(inputPath)})`,
+    cwd: args.cwd || ctx.cwd || '',
+  });
   if (typeof ctx.emit === 'function') {
-    ctx.emit({ type: 'mediaArtifact', kind: 'image', files: [outFile], cachePath: editCache.cachePath, previewDataUrl: editCache.previewDataUrl, operation: op, width: img.width, height: img.height, format: targetFormat });
+    ctx.emit({ type: 'mediaArtifact', kind: 'image', files: [outFile], cachePath: editCache.cachePath, previewDataUrl: editCache.previewDataUrl, operation: op, width: img.width, height: img.height, size: outStat ? outStat.size : 0, format: targetFormat, model: args._usedEditModel || '' });
   }
   return {
     ok: true,
@@ -987,108 +1295,281 @@ async function editImage(args = {}, ctx = {}) {
     previewDataUrl: editCache.previewDataUrl,
     width: img.width,
     height: img.height,
+    size: outStat ? outStat.size : 0,
     format: targetFormat,
+    model: args._usedEditModel || '',
     summary: `Edited image (${op}): ${img.width}x${img.height} ${targetFormat.toUpperCase()} → ${outFile}`,
   };
+}
+
+const VIDEO_HD_DIMENSIONS = {
+  '16:9': { width: 1280, height: 720 },
+  '9:16': { width: 720, height: 1280 },
+  '1:1': { width: 720, height: 720 },
+};
+
+async function tryRemoteVideoGenerate(candidate, { prompt, aspect_ratio = '16:9', durationSec = 3, fps = 30, format = 'mp4', outFile, sourceImagePath = '' }) {
+  if (!candidate || candidate.offline) return null;
+
+  if (candidate.backend === 'google-veo' && candidate.apiKey) {
+    const base = candidate.baseURL.replace(/\/+$/, '');
+    const startUrl = `${base}/models/${encodeURIComponent(candidate.model)}:predictLongRunning?key=${encodeURIComponent(candidate.apiKey)}`;
+    const startRes = await fetch(startUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        instances: [{ prompt }],
+        parameters: { aspectRatio: aspect_ratio || '16:9', durationSeconds: Math.max(5, Math.min(8, Math.round(durationSec || 5))) },
+      }),
+    });
+    if (!startRes.ok) return null;
+    const op = await startRes.json();
+    if (!op || !op.name) return null;
+    for (let i = 0; i < 24; i++) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const pollRes = await fetch(`${base}/${op.name}?key=${encodeURIComponent(candidate.apiKey)}`);
+      if (!pollRes.ok) continue;
+      const poll = await pollRes.json();
+      if (poll.done) {
+        const uri = poll.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri
+          || poll.response?.videos?.[0]?.gcsUri
+          || poll.response?.generatedSamples?.[0]?.video?.uri;
+        if (!uri) return null;
+        const vidRes = await fetch(`${uri}${uri.includes('?') ? '&' : '?'}key=${encodeURIComponent(candidate.apiKey)}`);
+        if (!vidRes.ok) return null;
+        const buf = Buffer.from(await vidRes.arrayBuffer());
+        if (buf.length < 4096) return null;
+        fs.writeFileSync(outFile, buf);
+        return { model: candidate.model, backend: candidate.backend };
+      }
+    }
+    return null;
+  }
+
+  if (candidate.backend === 'openai-sora' && candidate.apiKey) {
+    const res = await fetch(candidate.baseURL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + candidate.apiKey },
+      body: JSON.stringify({ model: candidate.model || 'sora', prompt, size: aspect_ratio === '9:16' ? '720x1280' : (aspect_ratio === '1:1' ? '720x720' : '1280x720') }),
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    const url = j?.data?.[0]?.url || j?.url;
+    if (url) {
+      const dl = await fetch(url);
+      if (dl.ok) {
+        const buf = Buffer.from(await dl.arrayBuffer());
+        if (buf.length > 4096) {
+          fs.writeFileSync(outFile, buf);
+          return { model: candidate.model, backend: candidate.backend };
+        }
+      }
+    }
+    return null;
+  }
+
+  if (candidate.backend === 'ai-keyframe-video') {
+    const ff = resolveFfmpeg();
+    if (!ff || format === 'gif' || format === 'webm') {
+      // Fall back for non-mp4 or missing ffmpeg
+    }
+    if (!ff) return null;
+    const hdDims = VIDEO_HD_DIMENSIONS[aspect_ratio] || VIDEO_HD_DIMENSIONS['16:9'];
+    let decoded = null;
+    if (sourceImagePath && fs.existsSync(sourceImagePath)) {
+      decoded = await decodeImageBuffer(sourceImagePath);
+    } else {
+      const kfBuf = await tryRemoteImageGenerate(
+        { backend: 'pollinations-flux', model: 'flux-realism', remoteModel: 'flux-realism', offline: false },
+        {
+          prompt: `${prompt}, breathtaking cinematic wide film still, atmospheric lighting, rich natural detail, photorealistic`,
+          aspect_ratio,
+          dims: hdDims,
+        }
+      );
+      if (!kfBuf) return null;
+      decoded = await decodeBufferToRgba(kfBuf, 'keyframe.png');
+      if (decoded.height > 180) {
+        decoded = cropBottomStrip(decoded, Math.min(44, Math.floor(decoded.height * 0.08)));
+      }
+    }
+    // Scale to 1.25x HD for smooth 720p Ken Burns cinema pan/zoom without pixelation
+    const srcW = Math.round(hdDims.width * 1.25);
+    const srcH = Math.round(hdDims.height * 1.25);
+    const scaled = resizeRgbaBilinear(decoded, srcW, srcH);
+    const tmpPng = path.join(os.tmpdir(), `akron-kf-${crypto.randomBytes(4).toString('hex')}.png`);
+    try {
+      await encodeImageBuffer(scaled, 'png', tmpPng);
+      const totalFrames = Math.max(30, Math.round(durationSec * fps));
+      const vf = [
+        `zoompan=z='1.0+0.14*(on/${totalFrames})':x='(iw-iw/zoom)*0.25 + (iw-iw/zoom)*0.5*(on/${totalFrames})':y='(ih-ih/zoom)*0.4':d=${totalFrames}:s=${hdDims.width}x${hdDims.height}:fps=${fps}`,
+        `eq=brightness='0.018*sin(2*PI*t/3.0)':saturation=1.12`,
+      ].join(',');
+      if (format === 'gif') {
+        await runBin(ff, ['-y', '-loop', '1', '-i', tmpPng, '-vf', `${vf},fps=12,scale=640:-1:flags=lanczos`, '-t', String(durationSec), outFile]);
+      } else if (format === 'webm') {
+        await runBin(ff, ['-y', '-loop', '1', '-i', tmpPng, '-vf', vf, '-t', String(durationSec), '-c:v', 'libvpx', '-b:v', '1400k', '-pix_fmt', 'yuv420p', outFile]);
+      } else {
+        await runBin(ff, ['-y', '-loop', '1', '-i', tmpPng, '-vf', vf, '-t', String(durationSec), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '19', '-pix_fmt', 'yuv420p', outFile]);
+      }
+      if (fs.existsSync(outFile) && fs.statSync(outFile).size > 8192) {
+        return { model: candidate.model || 'flux-cinema-720p', backend: candidate.backend, width: hdDims.width, height: hdDims.height };
+      }
+    } finally {
+      try { fs.unlinkSync(tmpPng); } catch (_) {}
+    }
+  }
+  return null;
 }
 
 async function generateVideo(args = {}, ctx = {}) {
   const prompt = String(args.prompt || 'Akron Motion Studio').trim();
   const aspect = VIDEO_DIMENSIONS[args.aspect_ratio] ? args.aspect_ratio : '16:9';
-  const dims = VIDEO_DIMENSIONS[aspect];
-  const durationSec = Math.max(1, Math.min(15, Number(args.duration_sec) || 2));
+  let dims = VIDEO_DIMENSIONS[aspect];
+  const durationSec = Math.max(1, Math.min(15, Number(args.duration_sec) || 3));
   const fps = [24, 30].includes(Number(args.fps)) ? Number(args.fps) : 30;
   const format = String(args.format || (args.output_path ? path.extname(args.output_path).slice(1) : '') || 'mp4').toLowerCase();
   const outFile = resolveOutputPath(args.cwd || ctx.cwd, args.output_path, 'video', format);
 
   const routed = await router.resolveMediaProvider({
     kind: 'video',
+    preferredModel: args.model || '',
     provider: ctx.provider || args.provider || null,
     orchestrator: ctx.orchestrator || args.orchestrator || null,
     store: ctx.store || null,
   });
 
-  // Load image_path for image-to-video Ken Burns animation if supplied.
-  let sourceImage = null;
-  if (args.image_path) {
-    const imgPath = path.isAbsolute(args.image_path) ? args.image_path : path.resolve(args.cwd || ctx.cwd || process.cwd(), args.image_path);
-    if (fs.existsSync(imgPath)) {
-      const dec = await decodeImageBuffer(imgPath);
-      sourceImage = resizeRgbaBilinear(dec, dims.width + 48, dims.height + 28);
+  let usedModel = 'akron-motion-canvas-30fps';
+  let usedBackend = 'offline-video-studio';
+  let remoteGenerated = null;
+
+  if (!args.forceOffline && !isTransientTestPath(outFile)) {
+    for (const cand of routed.candidates || []) {
+      if (cand.offline) break;
+      try {
+        remoteGenerated = await tryRemoteVideoGenerate(cand, {
+          prompt,
+          aspect_ratio: aspect,
+          durationSec,
+          fps,
+          format,
+          dims,
+          outFile,
+          sourceImagePath: args.image_path ? (path.isAbsolute(args.image_path) ? args.image_path : path.resolve(args.cwd || ctx.cwd || process.cwd(), args.image_path)) : '',
+        });
+        if (remoteGenerated) {
+          usedModel = remoteGenerated.model || cand.model;
+          usedBackend = remoteGenerated.backend || cand.backend;
+          break;
+        }
+      } catch (_) {}
     }
   }
 
-  const totalFrames = Math.max(6, Math.round(durationSec * fps));
-  const frameRgbas = [];
-  for (let f = 0; f < totalFrames; f++) {
-    if (sourceImage) {
-      const t = totalFrames > 1 ? f / (totalFrames - 1) : 0;
-      const ox = Math.round(t * 36);
-      const oy = Math.round(t * 20);
-      const frame = Buffer.alloc(dims.width * dims.height * 4);
-      for (let y = 0; y < dims.height; y++) {
-        const srcOff = ((oy + y) * sourceImage.width + ox) * 4;
-        sourceImage.data.copy(frame, y * dims.width * 4, srcOff, srcOff + dims.width * 4);
+  if (!remoteGenerated) {
+    // Offline local renderer (used for offline environments, explicit offline selection, or transient unit tests)
+    let sourceImage = null;
+    if (args.image_path) {
+      const imgPath = path.isAbsolute(args.image_path) ? args.image_path : path.resolve(args.cwd || ctx.cwd || process.cwd(), args.image_path);
+      if (fs.existsSync(imgPath)) {
+        const dec = await decodeImageBuffer(imgPath);
+        sourceImage = resizeRgbaBilinear(dec, dims.width + 48, dims.height + 28);
       }
-      drawBitmapText(frame, dims.width, dims.height, prompt.slice(0, 28), 24, dims.height - 36, 2, [236, 253, 245, 255], [6, 20, 15, 190]);
-      frameRgbas.push(frame);
-    } else {
-      const proc = paintProceduralRgba({ prompt, style: 'motion-30fps', width: dims.width, height: dims.height, frameIdx: f, totalFrames });
-      frameRgbas.push(proc.data);
     }
-  }
 
-  if (format === 'gif') {
-    const gif = gifenc.GIFEncoder();
-    const delayMs = Math.round(1000 / Math.min(fps, 15));
-    const step = fps > 15 ? 2 : 1;
-    for (let i = 0; i < frameRgbas.length; i += step) {
-      const palette = gifenc.quantize(frameRgbas[i], 128);
-      const index = gifenc.applyPalette(frameRgbas[i], palette);
-      gif.writeFrame(index, dims.width, dims.height, { palette, delay: delayMs });
+    const totalFrames = Math.max(6, Math.round(durationSec * fps));
+    const frameRgbas = [];
+    for (let f = 0; f < totalFrames; f++) {
+      if (sourceImage) {
+        const t = totalFrames > 1 ? f / (totalFrames - 1) : 0;
+        const ox = Math.round(t * 36);
+        const oy = Math.round(t * 20);
+        const frame = Buffer.alloc(dims.width * dims.height * 4);
+        for (let y = 0; y < dims.height; y++) {
+          const srcOff = ((oy + y) * sourceImage.width + ox) * 4;
+          sourceImage.data.copy(frame, y * dims.width * 4, srcOff, srcOff + dims.width * 4);
+        }
+        drawBitmapText(frame, dims.width, dims.height, prompt.slice(0, 28), 24, dims.height - 36, 2, [236, 253, 245, 255], [6, 20, 15, 190]);
+        frameRgbas.push(frame);
+      } else {
+        const proc = paintProceduralRgba({ prompt, style: 'motion-30fps', width: dims.width, height: dims.height, frameIdx: f, totalFrames });
+        frameRgbas.push(proc.data);
+      }
     }
-    gif.finish();
-    fs.writeFileSync(outFile, Buffer.from(gif.bytes()));
-  } else {
-    const ff = resolveFfmpeg();
-    if (!ff) throw new Error('ffmpeg is required to encode video output.');
-    const rawBuf = Buffer.concat(frameRgbas);
-    const vArgs = [
-      '-y',
-      '-f', 'rawvideo',
-      '-pixel_format', 'rgba',
-      '-video_size', `${dims.width}x${dims.height}`,
-      '-framerate', String(fps),
-      '-i', 'pipe:0',
-    ];
-    if (format === 'webm') {
-      vArgs.push('-c:v', 'libvpx', '-b:v', '800k', '-pix_fmt', 'yuv420p', outFile);
+
+    if (format === 'gif') {
+      const gif = gifenc.GIFEncoder();
+      const delayMs = Math.round(1000 / Math.min(fps, 15));
+      const step = fps > 15 ? 2 : 1;
+      for (let i = 0; i < frameRgbas.length; i += step) {
+        const palette = gifenc.quantize(frameRgbas[i], 128);
+        const index = gifenc.applyPalette(frameRgbas[i], palette);
+        gif.writeFrame(index, dims.width, dims.height, { palette, delay: delayMs });
+      }
+      gif.finish();
+      fs.writeFileSync(outFile, Buffer.from(gif.bytes()));
     } else {
-      vArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', outFile);
+      const ff = resolveFfmpeg();
+      if (!ff) throw new Error('ffmpeg is required to encode video output.');
+      const rawBuf = Buffer.concat(frameRgbas);
+      const vArgs = [
+        '-y',
+        '-f', 'rawvideo',
+        '-pixel_format', 'rgba',
+        '-video_size', `${dims.width}x${dims.height}`,
+        '-framerate', String(fps),
+        '-i', 'pipe:0',
+      ];
+      if (format === 'webm') {
+        vArgs.push('-c:v', 'libvpx', '-b:v', '800k', '-pix_fmt', 'yuv420p', outFile);
+      } else {
+        vArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', outFile);
+      }
+      await runBin(ff, vArgs, { inputBuffer: rawBuf });
     }
-    await runBin(ff, vArgs, { inputBuffer: rawBuf });
   }
 
   const stat = fs.statSync(outFile);
-  const usedModel = 'akron-motion-canvas-30fps';
-  if (typeof ctx.emit === 'function') {
-    ctx.emit({ type: 'mediaArtifact', kind: 'video', files: [outFile], model: usedModel, width: dims.width, height: dims.height, durationSec, fps, format });
+  let probedMeta = {};
+  if (format !== 'gif') {
+    probedMeta = await probeVideo(outFile).catch(() => ({}));
   }
+  const finalW = (remoteGenerated && remoteGenerated.width) || probedMeta.width || dims.width;
+  const finalH = (remoteGenerated && remoteGenerated.height) || probedMeta.height || dims.height;
+  const finalDur = probedMeta.duration || durationSec;
   const vidCache = cacheMediaArtifact(outFile);
+  recordMediaLibraryItem({
+    kind: 'video',
+    path: outFile,
+    cachePath: vidCache.cachePath,
+    format,
+    width: finalW,
+    height: finalH,
+    duration: finalDur,
+    size: stat.size,
+    model: usedModel,
+    backend: usedBackend,
+    prompt,
+    cwd: args.cwd || ctx.cwd || '',
+  });
+  if (typeof ctx.emit === 'function') {
+    ctx.emit({ type: 'mediaArtifact', kind: 'video', files: [outFile], cachePath: vidCache.cachePath, model: usedModel, backend: usedBackend, width: finalW, height: finalH, durationSec: finalDur, fps, format, size: stat.size });
+  }
   return {
     ok: true,
     path: outFile,
     files: [outFile],
     cachePath: vidCache.cachePath,
-    width: dims.width,
-    height: dims.height,
-    duration_sec: durationSec,
+    width: finalW,
+    height: finalH,
+    duration_sec: finalDur,
     fps,
     format,
     size: stat.size,
     model: usedModel,
+    backend: usedBackend,
     routedChainCount: (routed.candidates || []).length,
-    summary: `Generated ${durationSec}s ${format.toUpperCase()} video (${dims.width}x${dims.height} @ ${fps}fps, ${stat.size} bytes) → ${outFile}`,
+    summary: `Generated ${Number(finalDur).toFixed(1)}s ${format.toUpperCase()} video (${finalW}x${finalH} @ ${fps}fps, ${Math.round(stat.size / 1024)} KB) using ${usedModel} → ${outFile}`,
   };
 }
 
@@ -1325,5 +1806,12 @@ module.exports = {
   generateVideo,
   editVideo,
   probeVideo,
+  decodeImageBuffer,
+  resolveLibraryDir,
+  recordMediaLibraryItem,
+  listMediaLibrary,
+  deleteMediaLibraryItem,
+  isTransientTestPath,
+  cacheMediaArtifact,
   ASPECT_DIMENSIONS,
 };

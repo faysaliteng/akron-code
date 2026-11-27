@@ -334,6 +334,24 @@ async function generateWeeklyRetro({
   return { ok: true, markdown: lines.join('\n'), preparedWork, sessions: week, matter: res.matter };
 }
 
+const STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'what', 'when', 'where',
+  'which', 'who', 'how', 'are', 'you', 'your', 'our', 'can', 'could', 'would',
+  'should', 'have', 'has', 'had', 'not', 'but', 'just', 'now', 'here', 'there',
+  'going', 'about', 'please', 'hey', 'hello', 'thanks', 'thank', 'okay', 'yeah',
+]);
+
+function isActionableAutomationCandidate(text) {
+  const clean = String(text || '').trim();
+  if (clean.length < 18 || clean.startsWith('/')) return false;
+  if (/^(hi|hello|hey|yo|sup|howdy|good (morning|afternoon|evening)|who are you|what is going on|what's going on|what's up|how are you|thanks|thank you|ok|okay|yes|no|sure|nice|cool|great|test|testing)\b/i.test(clean)) {
+    return false;
+  }
+  const meaningful = normPromptWords(clean).filter((w) => !STOPWORDS.has(w));
+  if (meaningful.length < 3) return false;
+  return true;
+}
+
 function normPromptWords(s) {
   return String(s || '')
     .toLowerCase()
@@ -363,12 +381,12 @@ function suggestAutomationsFromHistory({
       if (!m || m.role !== 'user') continue;
       const txt = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
       const clean = txt.trim();
-      if (clean.length >= 12 && !clean.startsWith('/')) prompts.push(clean);
+      if (isActionableAutomationCandidate(clean)) prompts.push(clean);
     }
   }
   const recent = scanRecentSessions({ sessionsRoot, withinMs: 14 * 24 * 3600 * 1000 });
   if (!prompts.length && recent.length) {
-    for (const r of recent) if (r.title && r.title !== r.convId) prompts.push(r.title);
+    for (const r of recent) if (r.title && r.title !== r.convId && isActionableAutomationCandidate(r.title)) prompts.push(r.title);
   }
 
   const existingPrompts = (Array.isArray(existingTasks) ? existingTasks : []).map((t) => String(t.prompt || ''));
@@ -413,4 +431,5 @@ module.exports = {
   generateMorningBrief,
   generateWeeklyRetro,
   suggestAutomationsFromHistory,
+  isActionableAutomationCandidate,
 };

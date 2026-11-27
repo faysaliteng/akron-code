@@ -723,6 +723,20 @@ export async function readTextFromClipboard() {
   return '';
 }
 
+function setNativeInputValue(el, nextValue) {
+  if (!el) return;
+  try {
+    const proto = el.tagName === 'TEXTAREA'
+      ? (typeof window !== 'undefined' && window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype)
+      : (typeof window !== 'undefined' && window.HTMLInputElement && window.HTMLInputElement.prototype);
+    const setter = proto ? Object.getOwnPropertyDescriptor(proto, 'value')?.set : null;
+    if (typeof setter === 'function') setter.call(el, nextValue);
+    else el.value = nextValue;
+  } catch (_) {
+    el.value = nextValue;
+  }
+}
+
 function insertTextIntoEditable(el, text) {
   if (!el || text == null) return false;
   const str = String(text);
@@ -731,7 +745,7 @@ function insertTextIntoEditable(el, text) {
       const start = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
       const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length;
       const next = el.value.slice(0, start) + str + el.value.slice(end);
-      el.value = next;
+      setNativeInputValue(el, next);
       const caret = start + str.length;
       try { el.setSelectionRange(caret, caret); } catch (_) {}
       el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -819,9 +833,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined' && !window.
     const ae = document.activeElement;
     const inEditable = !!(ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.isContentEditable));
     const inMonaco = !!(ae && ae.closest && ae.closest('.monaco-editor'));
+    const inTerminal = !!(ae && ae.closest && ae.closest('.xterm'));
 
-    // Ctrl+C / Cmd+C anywhere with active/cached selection (except inside Monaco which manages its own selection)
-    if (modOnly && (k === 'c' || code === 'KeyC') && !inMonaco) {
+    // Ctrl+C / Cmd+C anywhere with active/cached selection (except inside Monaco or xterm)
+    if (modOnly && (k === 'c' || code === 'KeyC') && !inMonaco && !inTerminal) {
       const txt = getActiveSelectedText();
       if (!txt) return;
       e.preventDefault();
@@ -832,31 +847,43 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined' && !window.
       return;
     }
 
-    // On macOS, Cocoa binds Ctrl+V to pageDown, Ctrl+A to lineStart, etc. Make Ctrl+V/Ctrl+X/Ctrl+A work like Windows/Linux too!
-    if (isMac && e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && inEditable && !inMonaco) {
+    // On macOS, Cocoa binds Ctrl+V to pageDown, Ctrl+A to lineStart, etc. Make Ctrl+V/Ctrl+X/Ctrl+A work cleanly everywhere!
+    if (isMac && e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && !inMonaco && !inTerminal) {
       if (k === 'v' || code === 'KeyV') {
         e.preventDefault();
         e.stopPropagation();
+        const target = inEditable ? ae : document.querySelector('.composer textarea');
         readTextFromClipboard().then((txt) => {
-          if (txt) insertTextIntoEditable(ae, txt);
+          if (txt && target) {
+            if (!inEditable) { try { target.focus(); } catch (_) {} }
+            insertTextIntoEditable(target, txt);
+            return;
+          }
+          if (!txt && typeof window !== 'undefined' && window.autobot && typeof window.autobot.clipboardReadImage === 'function') {
+            window.autobot.clipboardReadImage().then((imgRes) => {
+              if (imgRes && imgRes.ok && imgRes.hasImage && imgRes.dataUrl) {
+                window.dispatchEvent(new CustomEvent('akron:clipboard-image', { detail: imgRes }));
+              }
+            }).catch(() => {});
+          }
         });
         return;
       }
-      if ((k === 'x' || code === 'KeyX') && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) {
+      if (inEditable && (k === 'x' || code === 'KeyX') && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) {
         const s = ae.selectionStart;
         const en = ae.selectionEnd;
         if (typeof s === 'number' && typeof en === 'number' && en > s) {
           e.preventDefault();
           e.stopPropagation();
           const cutText = ae.value.slice(s, en);
-          ae.value = ae.value.slice(0, s) + ae.value.slice(en);
+          setNativeInputValue(ae, ae.value.slice(0, s) + ae.value.slice(en));
           try { ae.setSelectionRange(s, s); } catch (_) {}
           ae.dispatchEvent(new Event('input', { bubbles: true }));
           copyTextToClipboard(cutText);
         }
         return;
       }
-      if ((k === 'a' || code === 'KeyA') && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) {
+      if (inEditable && (k === 'a' || code === 'KeyA') && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) {
         e.preventDefault();
         e.stopPropagation();
         try { ae.select(); } catch (_) {}
@@ -867,7 +894,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined' && !window.
 
   window.addEventListener('copy', (e) => {
     const ae = document.activeElement;
-    if (ae && ae.closest && ae.closest('.monaco-editor')) return;
+    if (ae && ae.closest && (ae.closest('.monaco-editor') || ae.closest('.xterm'))) return;
     const txt = getActiveSelectedText();
     if (!txt) return;
     try {

@@ -43,12 +43,12 @@ function normalizeTier(t, fallback) {
 // explicit `frontier: true` flag or by matching a known frontier model family.
 // Cheap/local models never enter a swarm roster (they remain fair game for the
 // automatic Task/Agent multi-agent path).
-const FRONTIER_RE = /(kimi|moonshot|deepseek|glm|zhipu|chatgpt|gpt-?[3-9]|codex|\bo[1-4]\b|anthropic|claude|fable|sonnet|opus|haiku|gemini[- ]?(pro|ultra)|qwen.*(max|235b)|grok|command-r-plus|mistral-large|frontier|terra|luna|reserve)/i;
+const FRONTIER_RE = /(kimi|moonshot|deepseek|glm|zhipu|chatgpt|gpt-?[3-9]|codex|\bo[1-4]\b|anthropic|claude|fable|sonnet|opus|haiku|gemini[- ]?(pro|ultra|[2-9])|carbon|neon|hydrogen|argon|qwen.*(max|235b)|grok|command-r-plus|mistral-large|frontier|terra|luna|reserve)/i;
 function inferModelTier(model, fallback) {
   const m = String(model || '').toLowerCase();
   if (!m) return fallback || 'heavy';
-  if (/(haiku|flash|mini|nano|lite|small|\b[1-9]b\b)/i.test(m)) return 'small';
-  if (/(opus|ultra|carbon|\bo3\b|\bgpt-6\b|pro-max)/i.test(m)) return 'critical';
+  if (/(haiku|hydrogen|grok-4-fast|gpt-5\.6-luna|flash|(?:^|[-_/.])mini(?=$|[-_/.])|nano|lite|small|\b[1-9]b\b)/i.test(m)) return 'small';
+  if (/(opus|ultra|carbon-high|neon-high|fable|grok-4\.5|\bo3\b|\bgpt-6\b|pro-max|reasoner)/i.test(m)) return 'critical';
   return fallback || 'heavy';
 }
 

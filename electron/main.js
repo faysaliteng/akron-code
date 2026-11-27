@@ -365,61 +365,17 @@ const broadcastArtifactSaved = (...args) => winExtCtrl && winExtCtrl.broadcastAr
 const createQuickWindow = (...args) => winExtCtrl && winExtCtrl.createQuickWindow(...args);
 const hideQuickWin = () => winExtCtrl && winExtCtrl.hideQuickWin();
 
-let __lastClipWriteText = '';
-let __lastClipWriteAt = 0;
+const nativeClip = require('./native-clipboard').createNativeClipboard({
+  clipboardImpl: clipboard,
+  spawnSyncImpl: spawnSync,
+});
 
 function writeNativeClipboard(text, html = '') {
-  const str = String(text == null ? '' : text);
-  if (!str) return false;
-  const now = Date.now();
-  if (str === __lastClipWriteText && (now - __lastClipWriteAt) < 200) {
-    return true;
-  }
-  __lastClipWriteText = str;
-  __lastClipWriteAt = now;
-  let ok = false;
-  try {
-    if (html) clipboard.write({ text: str, html: String(html) });
-    else clipboard.writeText(str);
-    if (clipboard.readText() === str) ok = true;
-  } catch (_) {}
-  if (!ok || process.platform === 'darwin') {
-    if (process.platform === 'darwin') {
-      try {
-        const r = spawnSync('/usr/bin/pbcopy', [], {
-          input: str,
-          encoding: 'utf8',
-          env: { ...process.env, LANG: process.env.LANG || 'en_US.UTF-8', LC_ALL: process.env.LC_ALL || 'en_US.UTF-8' },
-          timeout: 2000,
-        });
-        if (r && r.status === 0) ok = true;
-      } catch (_) {}
-    } else if (process.platform === 'win32') {
-      try {
-        const r = spawnSync('clip', [], { input: str, encoding: 'utf8', timeout: 2000 });
-        if (r && r.status === 0) ok = true;
-      } catch (_) {}
-    }
-  }
-  return ok;
+  return nativeClip.writeNativeClipboard(text, html);
 }
 
 function readNativeClipboard() {
-  try {
-    const t = clipboard.readText();
-    if (t) return t;
-  } catch (_) {}
-  if (process.platform === 'darwin') {
-    try {
-      const r = spawnSync('/usr/bin/pbpaste', [], {
-        encoding: 'utf8',
-        env: { ...process.env, LANG: process.env.LANG || 'en_US.UTF-8', LC_ALL: process.env.LC_ALL || 'en_US.UTF-8' },
-        timeout: 2000,
-      });
-      if (r && r.status === 0 && r.stdout) return r.stdout;
-    } catch (_) {}
-  }
-  return '';
+  return nativeClip.readNativeClipboard();
 }
 
 function attachContextMenu(wc) {
@@ -516,8 +472,8 @@ ipcMain.handle('autobot:clipboardWrite', (_e, payload) => {
     const isObj = payload && typeof payload === 'object';
     const str = String(isObj ? (payload.text == null ? '' : payload.text) : (payload == null ? '' : payload));
     const html = isObj && payload.html ? String(payload.html) : '';
-    const ok = writeNativeClipboard(str, html);
-    return { ok, verified: ok && clipboard.readText() === str };
+    const res = nativeClip.writeNativeClipboard(str, html, { detailed: true });
+    return { ok: Boolean(res && res.ok), verified: Boolean(res && res.verified) };
   } catch (err) {
     return { ok: false, error: err && err.message ? err.message : String(err) };
   }
@@ -528,14 +484,7 @@ ipcMain.handle('autobot:clipboardRead', () => {
 });
 
 ipcMain.handle('autobot:clipboardReadImage', () => {
-  try {
-    const img = clipboard.readImage();
-    if (!img || img.isEmpty()) return { ok: true, hasImage: false };
-    const size = img.getSize();
-    return { ok: true, hasImage: true, dataUrl: img.toDataURL(), width: size.width, height: size.height };
-  } catch (err) {
-    return { ok: false, hasImage: false, error: err && err.message ? err.message : String(err) };
-  }
+  return nativeClip.readClipboardImagePayload();
 });
 
 function createWindow() {
@@ -1446,7 +1395,9 @@ app.whenReady().then(() => {
   // Start the scheduled-task ticker (fires tasks due on their cadence and
   // notifies every window so the Scheduled panel can refresh).
   try {
-    scheduler.start(runScheduledPrompt, (evt) => broadcast({ type: 'scheduled-task', ...evt }));
+    scheduler.start(runScheduledPrompt, (evt) => broadcast({ type: 'scheduled-task', ...evt }), {
+      resolveFastProvider: runtimesCtrl ? runtimesCtrl.resolveFastProviderForGate : undefined,
+    });
   } catch (e) {
     console.error('scheduler start failed:', e.message);
   }

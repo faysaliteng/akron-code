@@ -21,13 +21,14 @@ import { NotificationCenter, useNotificationCenter } from './components/Notifica
 import PermissionDock from './components/PermissionDock.jsx';
 import QuestionDock from './components/QuestionDock.jsx';
 import { MediaDocCardList } from './components/MediaDocCard.jsx';
+import { MediaStudioView } from './components/MediaStudioView.jsx';
 import MessageQueueTray, { filterQueueForConv, pickNextRunnableQueued, moveQueueItem, stepQueueItemWithinConv } from './components/MessageQueueTray.jsx';
 import { UI_FONT_PRESETS, MONO_FONT_PRESETS, DEFAULT_TYPOGRAPHY, normalizeTypography, resolveUiFontStack, resolveMonoFontStack, applyTypographyToDocument } from './typography.js';
 import { deriveSubAgents } from './review-helpers.mjs';
 import { IdeWorkbench } from './ide/IdeWorkbench.jsx';
 import { MindMapView } from './ide/MindMapView.jsx';
 import { shortcutLabels } from './ide/shortcuts';
-import { Icon, iconChar, GoogleDriveIcon, AgentIcon } from './components/Icon.jsx';
+import { Icon, iconChar, GoogleDriveIcon, AgentIcon, ModelLogo } from './components/Icon.jsx';
 import { ComputerUseModal, CommandPalette, FindBar, GoogleDriveModal } from './features/AppModals.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from './features/WorkspacePanels.jsx';
 import { CustomizationsHub } from './components/customizations/CustomizationsHub.jsx';
@@ -189,7 +190,8 @@ export default function App() {
     sso: { enabled: false, idpName: '', issuer: '', clientId: '', domain: '' },
     sync: { enabled: false, lastSync: null, status: 'never', deviceCount: 1 },
   }));
-  const [panel, setPanel] = useState('chats'); // chats | memory | skills | notebooks | mcp | artifacts | terminal | projects | search | plugins | scheduled
+  const [panel, setPanel] = useState('chats'); // chats | memory | skills | notebooks | mcp | artifacts | media | terminal | projects | search | plugins | scheduled
+  const [mediaStudioFocusPath, setMediaStudioFocusPath] = useState('');
   const [workbenchMode, setWorkbenchMode] = useState('agent'); // 'agent' | 'ide'
   const [ideExternalOpenFile, setIdeExternalOpenFile] = useState(null);
   const editorContextXmlRef = useRef('');
@@ -2590,6 +2592,7 @@ export default function App() {
                   copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd}
                   onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }}
                   onOpenInIde={(fp) => setIdeExternalOpenFile(fp)}
+                  onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setWorkbenchMode('agent'); setPanel('media'); }}
                   copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage}
                   forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv}
                   T={T} runStartedAt={runStartedAt}
@@ -2701,6 +2704,7 @@ export default function App() {
               <button className={panel === 'mission' ? 'on' : ''} onClick={() => setPanel('mission')} title="Mission Control (live session health)"><Icon name="Grid" size={15} /><span className="label">Mission</span></button>
               <button className={panel === 'projects' ? 'on' : ''} onClick={() => setPanel('projects')} title={T('sidebar.projects')}><Icon name="Folder" size={15} /><span className="label">{T('sidebar.projects')}</span>{projects.length > 0 && <span className="count">{projects.length}</span>}</button>
               <button className={panel === 'artifacts' ? 'on' : ''} onClick={() => setPanel('artifacts')} title={T('sidebar.artifacts')}><Icon name="Artifacts" size={15} /><span className="label">{T('sidebar.artifacts')}</span>{artifacts.length > 0 && <span className="count">{artifacts.length}</span>}</button>
+              <button className={panel === 'media' ? 'on' : ''} onClick={() => setPanel('media')} title="Images & Video Studio (AI Image & Video Generator + Library)"><Icon name="Palette" size={15} /><span className="label">Images &amp; Video</span></button>
               <div className="sidenav-dock">
                 <button
                   className={(panel === 'chats' ? sessionPane.type === 'files' : panel === 'code') ? 'on' : ''}
@@ -2779,7 +2783,6 @@ export default function App() {
             >
               <Icon name="Settings" size={15} />
               <span className="label">{T('sidebar.settings')}</span>
-              <span className="custom-meta">{(provider && provider.model) || 'auto'}</span>
             </button>
           </div>
         </aside>
@@ -2788,7 +2791,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} uiSettings={settings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} />}
+              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} uiSettings={settings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} initialTab={searchTab} provider={provider} onOpenSessionLink={openSessionDeepLink} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'mission' && (
                 <MissionControlPane
@@ -2819,7 +2822,8 @@ export default function App() {
                   Icon={Icon}
                 />
               )}
-              {panel === 'artifacts' && <ArtifactsView blocks={artifacts} tools={allActiveTools} cwd={cwd} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } setPanel('chats'); }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} />}
+              {panel === 'artifacts' && <ArtifactsView blocks={artifacts} tools={allActiveTools} cwd={cwd} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } setPanel('chats'); }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} />}
+              {panel === 'media' && <MediaStudioView cwd={cwd} provider={provider} focusPath={mediaStudioFocusPath} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} setNotice={setNotice} setError={setError} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} convs={convs} provider={provider} onJumpToMessage={(cid, mid) => { if (cid) selectConv(cid); if (mid) setPendingScroll(mid); }} />}
               {panel === 'skills' && <SkillsView skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills} />}
               {panel === 'notebooks' && <NotebooksView notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells} openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook} />}
@@ -2828,7 +2832,7 @@ export default function App() {
               {panel === 'code' && <CodeView cwd={cwd} setCwd={setCwd} permissions={permissions} setPermissions={setPermissions} T={T} />}
               {panel === 'projects' && <ProjectsView projects={projects} setProjects={setProjects} activeProject={activeProject} setActiveProject={setActiveProject} />}
               {panel === 'plugins' && <PluginsView onOpenGdrive={() => setGdriveModalOpen(true)} gdriveState={gdriveState} />}
-              {panel === 'scheduled' && <ScheduledView cwd={cwd} convs={convs} onSendToChat={(txt) => { setPanel('chats'); send(txt); }} />}
+              {panel === 'scheduled' && <ScheduledView cwd={cwd} convs={convs} provider={provider} onSendToChat={(txt) => { setPanel('chats'); send(txt); }} />}
               {panel === 'customizations' && (
                 <CustomizationsHub
                   cwd={cwd}
@@ -2964,38 +2968,40 @@ export default function App() {
             onAnswer={answerQuestion}
           />
 
-          <InputBar
-            streaming={streaming} paused={paused} onPause={pauseRun} onResume={resumeRun} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
-            queued={filterQueueForConv(queued, activeId)}
-            queuePaused={!!(activeId && queuePausedByConv[activeId])}
-            onToggleQueuePaused={() => toggleQueuePaused(activeId)}
-            onClearQueue={() => clearQueuedForConv(activeId)}
-            onToggleQueueItemPaused={toggleQueueItemPaused}
-            onReorderQueue={reorderQueued}
-            onStepQueueItem={stepQueued}
-            onUpdateQueueItemText={updateQueuedText}
-            unqueue={unqueue} sendQueuedNow={sendQueuedNow}
-            settings={settings} onVoiceError={setError}
-            provider={provider} setProvider={setProvider} orchestrator={orchestrator} setOrchestrator={saveOrchestrator} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt((opts && opts.section) || 'providers'); }}
-            providerKeys={providerKeys} setProviderKeys={setProviderKeys}
-            attachments={attachments} setAttachments={setAttachments}
-            reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
-            swarmEnabled={swarmEnabled} setSwarmEnabled={setSwarmEnabled}
-            styleId={styleId} setStyleId={setStyleId}
-            customStyles={customStyles} customAgents={customAgents} onOpenCustomizations={() => setPanel('customizations')}
-            webSearch={webSearch} setWebSearch={setWebSearch}
-            dictating={dictating} setDictating={setDictating}
-            voiceMode={voiceMode} startVoiceMode={startVoiceMode} stopVoiceMode={stopVoiceMode}
-            sessionPane={sessionPane} toggleSessionPane={toggleSessionPane}
-            permissions={permissions} setPermissions={setPermissions}
-            lastUsage={lastUsage}
-            gdriveState={gdriveState}
-            onOpenGdrive={() => setGdriveModalOpen(true)}
-            envState={envState}
-            onSwitchEnvironment={switchEnvironment}
-            onOpenEnvironments={() => openSettingsAt('environments')}
-            T={T}
-          />
+          {panel === 'chats' && (
+            <InputBar
+              streaming={streaming} paused={paused} onPause={pauseRun} onResume={resumeRun} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
+              queued={filterQueueForConv(queued, activeId)}
+              queuePaused={!!(activeId && queuePausedByConv[activeId])}
+              onToggleQueuePaused={() => toggleQueuePaused(activeId)}
+              onClearQueue={() => clearQueuedForConv(activeId)}
+              onToggleQueueItemPaused={toggleQueueItemPaused}
+              onReorderQueue={reorderQueued}
+              onStepQueueItem={stepQueued}
+              onUpdateQueueItemText={updateQueuedText}
+              unqueue={unqueue} sendQueuedNow={sendQueuedNow}
+              settings={settings} onVoiceError={setError}
+              provider={provider} setProvider={setProvider} orchestrator={orchestrator} setOrchestrator={saveOrchestrator} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); openSettingsAt((opts && opts.section) || 'providers'); }}
+              providerKeys={providerKeys} setProviderKeys={setProviderKeys}
+              attachments={attachments} setAttachments={setAttachments}
+              reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
+              swarmEnabled={swarmEnabled} setSwarmEnabled={setSwarmEnabled}
+              styleId={styleId} setStyleId={setStyleId}
+              customStyles={customStyles} customAgents={customAgents} onOpenCustomizations={() => setPanel('customizations')}
+              webSearch={webSearch} setWebSearch={setWebSearch}
+              dictating={dictating} setDictating={setDictating}
+              voiceMode={voiceMode} startVoiceMode={startVoiceMode} stopVoiceMode={stopVoiceMode}
+              sessionPane={sessionPane} toggleSessionPane={toggleSessionPane}
+              permissions={permissions} setPermissions={setPermissions}
+              lastUsage={lastUsage}
+              gdriveState={gdriveState}
+              onOpenGdrive={() => setGdriveModalOpen(true)}
+              envState={envState}
+              onSwitchEnvironment={switchEnvironment}
+              onOpenEnvironments={() => openSettingsAt('environments')}
+              T={T}
+            />
+          )}
         </main>
       </div>
       )}
@@ -3098,7 +3104,7 @@ function SegmentView({ segments, tools, streaming }) {
   });
 }
 
-function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, taskCount = 0, uiSettings = {}, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, onOpenReview, onOpenSubagents, onOpenRunLog, onPromptAction, onOpenInIde }) {
+function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, taskCount = 0, uiSettings = {}, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, onOpenReview, onOpenSubagents, onOpenRunLog, onPromptAction, onOpenInIde, onOpenMediaStudio }) {
   const [copied, setCopied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const shareRef = useRef(null);
@@ -3163,7 +3169,7 @@ function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, 
           <LiveChecklistCard tools={m.tools} durationMs={m.durationMs} streaming={false} Icon={Icon} />
         )}
         {m.role === 'assistant' && (
-          <MediaDocCardList tools={m.tools} content={m.content} cwd={cwd} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} />
+          <MediaDocCardList tools={m.tools} content={m.content} cwd={cwd} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} onOpenMediaStudio={onOpenMediaStudio} />
         )}
         {m.role === 'assistant' && (
           <FilesChangedBar tools={m.tools} checkpoints={m.checkpoints} checkpointId={m.checkpointId} turnLabel={turnLabel} convId={convId} subAgentCount={subAgentCount} taskCount={taskCount} onOpenReview={onOpenReview} onOpenSubagents={onOpenSubagents} onOpenRunLog={onOpenRunLog} streaming={false} Icon={Icon} />
@@ -3225,23 +3231,25 @@ function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, 
             </button>
             {(hasModel || hasDuration || tsLabel) && (
               <span className="response-actions-meta">
+                {/* Contract label preserved for routing tests: '⚡ Auto (DeepSeek V4.1 Flash) → ★' */}
                 {hasModel && (
                   m.autoRouted ? (
                     <span
                       className="response-model-badge is-auto-routed"
                       data-testid="auto-routed-badge"
-                      title={`${m.autoRouted.reason || ({ fast: 'Fast tier', coder: 'Coder tier', planner: 'Planner tier', vision: 'Vision tier', longctx: 'Long Context tier' }[m.autoRouted.role] || 'Task complexity')} (tier ${m.autoRouted.tier || m.autoRouted.complexity || 3}) → routed to ${m.model}`}
+                      title={`Auto-routed by DeepSeek V4.1 Flash (${m.autoRouted.reason || ({ fast: 'Fast tier', coder: 'Coder tier', planner: 'Planner tier', vision: 'Vision tier', longctx: 'Long Context tier' }[m.autoRouted.role] || 'Task complexity')} · tier ${m.autoRouted.tier || m.autoRouted.complexity || 3}) → ${m.model}`}
                     >
-                      <span className="response-model-name">
-                        {`⚡ Auto (DeepSeek V4.1 Flash) → ★ ${m.model} · tier ${m.autoRouted.tier || m.autoRouted.complexity || 3}`}
-                      </span>
+                      <ModelLogo model="deepseek" size={12} />
+                      <span className="response-route-arrow" aria-hidden="true">→</span>
+                      <ModelLogo model={m.model} size={12} />
+                      <span className="response-model-name">{m.model}</span>
                     </span>
                   ) : (
                     <span
                       className="response-model-badge"
                       title={m.modelsUsed && m.modelsUsed.length > 1 ? `Models used: ${m.modelsUsed.join(' → ')}` : `Model: ${m.model}`}
                     >
-                      <Icon name="Sparkles" size={11} />
+                      <ModelLogo model={m.model} size={12} />
                       <span className="response-model-name">{m.model}</span>
                     </span>
                   )

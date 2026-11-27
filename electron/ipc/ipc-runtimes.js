@@ -35,10 +35,89 @@ function getRuntimes() {
   return runtimesHandle;
 }
 
+function syncBundledBinsToDir({ binDir, links = [] } = {}) {
+  try {
+    if (!binDir) return { binDir: '', linked: [] };
+    fs.mkdirSync(binDir, { recursive: true });
+    const linked = [];
+    for (const item of links) {
+      const name = item && item.name;
+      const target = item && item.target;
+      if (!name || !target || !fs.existsSync(target)) continue;
+      const ext = process.platform === 'win32' && !/\.(exe|cmd|bat)$/i.test(name)
+        ? (/\.(exe|cmd|bat)$/i.test(target) ? path.extname(target) : '.exe')
+        : '';
+      const destName = ext ? `${name}${ext}` : name;
+      const dest = path.join(binDir, destName);
+      if (path.resolve(target) === path.resolve(dest)) {
+        linked.push({ name: destName, dest, target });
+        continue;
+      }
+      try { fs.chmodSync(target, 0o755); } catch (_) {}
+      try {
+        try {
+          if (fs.lstatSync(dest)) fs.unlinkSync(dest);
+        } catch (_) {}
+        fs.symlinkSync(target, dest);
+        linked.push({ name: destName, dest, target });
+      } catch (_) {
+        try {
+          fs.copyFileSync(target, dest);
+          fs.chmodSync(dest, 0o755);
+          linked.push({ name: destName, dest, target });
+        } catch (_) {}
+      }
+    }
+    return { binDir, linked };
+  } catch (_) {
+    return { binDir: '', linked: [] };
+  }
+}
+
+function prependPathDir(dir) {
+  if (!dir) return;
+  const cur = String(process.env.PATH || '');
+  const parts = cur.split(path.delimiter).filter(Boolean);
+  if (parts[0] === dir) return;
+  process.env.PATH = [dir, ...parts.filter((d) => d !== dir)].join(path.delimiter);
+}
+
+function ensureBundledMediaBins(extraLinks = []) {
+  try {
+    const os = require('os');
+    const mediaGen = require('../media-gen');
+    const depManager = require('../dep-manager');
+    const binDir = path.join(os.homedir(), '.autobot', 'bin');
+    const links = [
+      { name: 'ffmpeg', target: mediaGen.resolveFfmpeg && mediaGen.resolveFfmpeg() },
+      { name: 'ffprobe', target: mediaGen.resolveFfprobe && mediaGen.resolveFfprobe() },
+      { name: 'rg', target: depManager.resolveRipgrepBinary && depManager.resolveRipgrepBinary() },
+      ...(Array.isArray(extraLinks) ? extraLinks : []),
+    ];
+    syncBundledBinsToDir({ binDir, links });
+    prependPathDir(binDir);
+    return binDir;
+  } catch (_) {
+    return '';
+  }
+}
+
 /** Prepended PATH entries for a child process env. */
 async function runtimePathPrefix() {
   try {
-    const dirs = String(await getRuntimes().envPath()).split(path.delimiter).filter(Boolean);
+    const rt = getRuntimes();
+    const rtLinks = [];
+    for (const d of (rt.DESCRIPTORS || [])) {
+      try {
+        const resolved = await rt.resolve(d.id);
+        if (resolved && resolved.bin && fs.existsSync(resolved.bin)) {
+          rtLinks.push({ name: d.bin, target: resolved.bin });
+        }
+      } catch (_) {}
+    }
+    const mediaBin = ensureBundledMediaBins(rtLinks);
+    const dirs = String(await rt.envPath()).split(path.delimiter).filter(Boolean);
+    if (mediaBin && !dirs.includes(mediaBin)) dirs.unshift(mediaBin);
     return dirs.join(path.delimiter);
   } catch (_) { return ''; }
 }
@@ -317,27 +396,58 @@ function scheduledProvider() {
   return null;
 }
 
+async function resolveFastProviderForGate(task) {
+  try {
+    let p = scheduledProvider();
+    if (!p || !p.model) return null;
+    if (task && task.model && String(task.model).trim() && String(task.model).trim().toLowerCase() !== 'auto') {
+      p = { ...p, model: String(task.model).trim() };
+    }
+    return await hydrateProvider(p);
+  } catch (_) {
+    return null;
+  }
+}
+
 async function runScheduledPrompt({ task }) {
+  const os = require('os');
+  const fs = require('fs');
   let provider = scheduledProvider();
   if (!provider || !provider.model) throw new Error('No LLM provider configured — open Settings and select a model first.');
+  if (task && task.model && String(task.model).trim() && String(task.model).trim().toLowerCase() !== 'auto') {
+    provider = { ...provider, model: String(task.model).trim() };
+  }
   // A scheduled task persists only the account id, so the bearer token is
   // minted here at fire time (and refreshed if the subscription rotated).
   provider = await hydrateProvider(provider);
   let out = '';
-  // The pool is shared with interactive turns, so a stale row would break a
-  // scheduled task too — and a scheduled run has no window to complain into.
-  // A scheduled run has no window to complain into, so a row it cannot mint a
-  // token for is simply left out — but it must be *minted*, not taken from disk.
   let orch = store.getOrchestrator();
   try { orch = (await hydrateOrchestrator(orch, hydrateProvider)).orch; } catch (_) { /* keep the pool as stored */ }
   try { orch = await validateOrchestrator(orch, () => {}); } catch (_) { /* keep the pool as stored */ }
+  let taskCwd = (task && task.cwd && fs.existsSync(task.cwd)) ? task.cwd : workspace.scratch();
+  if (task && task.useWorktree && task.cwd && fs.existsSync(task.cwd)) {
+    try {
+      const wtDir = path.join(os.homedir(), '.autobot', 'worktrees', task.id || ('sched-' + Date.now()));
+      if (fs.existsSync(wtDir)) {
+        taskCwd = wtDir;
+      } else {
+        const git = require('../git');
+        const wtRes = await git.addWorktree(task.cwd, 'sched/' + (task.id || Date.now()), wtDir);
+        if (wtRes && wtRes.ok && wtRes.path && fs.existsSync(wtRes.path)) {
+          taskCwd = wtRes.path;
+        }
+      }
+    } catch (_) {}
+  }
+  const permMode = (task && task.permissionMode === 'plan') ? 'plan' : 'auto';
   const finalMessages = await runAgent({
     provider,
     orchestrator: orch,
     messages: [{ role: 'user', content: String(task.prompt) }],
-    cwd: workspace.scratch(),
+    cwd: taskCwd,
     useMemory: true,
     maxSteps: 0,
+    permissionMode: permMode,
     emit: (evt) => {
       if (evt && evt.type === 'delta' && evt.text) out += evt.text;
     },
@@ -408,9 +518,11 @@ async function freellmStatus() {
   };
 }
 
+  ensureBundledMediaBins();
+
   return {
     bundledRuntimeDir, getRuntimes, runtimePathPrefix, syncClientVersions, startRuntimes,
-    scheduledProvider, runScheduledPrompt, startFreeLLM, freellmStatus,
+    scheduledProvider, runScheduledPrompt, resolveFastProviderForGate, startFreeLLM, freellmStatus,
     stopFreeLLM: () => {
       try { if (freellmHandle) freellmHandle.stop(); } catch (_) {}
       try { if (freellmCompatHandle) freellmCompatHandle.stop(); } catch (_) {}
@@ -418,4 +530,37 @@ async function freellmStatus() {
       freellmCompatHandle = null;
     },
   };
+};
+
+module.exports.syncBundledBinsToDir = function syncBundledBinsToDirStandalone({ binDir, links = [] } = {}) {
+  if (!binDir) return { binDir: '', linked: [] };
+  fs.mkdirSync(binDir, { recursive: true });
+  const linked = [];
+  for (const item of links) {
+    const name = item && item.name;
+    const target = item && item.target;
+    if (!name || !target || !fs.existsSync(target)) continue;
+    const ext = process.platform === 'win32' && !/\.(exe|cmd|bat)$/i.test(name)
+      ? (/\.(exe|cmd|bat)$/i.test(target) ? path.extname(target) : '.exe')
+      : '';
+    const destName = ext ? `${name}${ext}` : name;
+    const dest = path.join(binDir, destName);
+    if (path.resolve(target) === path.resolve(dest)) {
+      linked.push({ name: destName, dest, target });
+      continue;
+    }
+    try { fs.chmodSync(target, 0o755); } catch (_) {}
+    try {
+      try { if (fs.lstatSync(dest)) fs.unlinkSync(dest); } catch (_) {}
+      fs.symlinkSync(target, dest);
+      linked.push({ name: destName, dest, target });
+    } catch (_) {
+      try {
+        fs.copyFileSync(target, dest);
+        fs.chmodSync(dest, 0o755);
+        linked.push({ name: destName, dest, target });
+      } catch (_) {}
+    }
+  }
+  return { binDir, linked };
 };
