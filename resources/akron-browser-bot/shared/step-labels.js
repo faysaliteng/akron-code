@@ -124,6 +124,7 @@ const LABELS = {
   gif_creator: (args) => RECORDING[args?.action] || pair("Checking the recording", "Checked the recording"),
   execute_javascript: () => pair("Running a script on the page", "Ran a script on the page"),
   read_clipboard: () => pair("Reading the clipboard", "Read the clipboard"),
+  vault_autofill: () => pair("Autofilling saved credentials", "Autofilled saved credentials"),
   write_clipboard: () => pair("Copying to the clipboard", "Copied to the clipboard"),
   load_skill: (args) => pair(join("Loading the skill", quoted(args?.name)), join("Loaded the skill", quoted(args?.name))),
   save_skill: (args) => pair(join("Saving the skill", quoted(args?.name)), join("Saved the skill", quoted(args?.name))),

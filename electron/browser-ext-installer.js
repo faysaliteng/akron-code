@@ -315,6 +315,18 @@ function buildHowToInstallText(standaloneDir, extensionId) {
   ].join('\n');
 }
 
+function compareSemver(a, b) {
+  const pa = String(a || '').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || '').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length, 3);
+  for (let i = 0; i < len; i++) {
+    const da = pa[i] || 0;
+    const db = pb[i] || 0;
+    if (da !== db) return da > db ? 1 : -1;
+  }
+  return 0;
+}
+
 function syncStandaloneExtension({
   sourceDir = getBundledSourceExtensionDir(),
   targetDir = '',
@@ -333,11 +345,30 @@ function syncStandaloneExtension({
   const crxPath = path.join(destDir, 'akron-browser-bot.crx');
   const destManifestPath = path.join(destDir, 'manifest.json');
 
+  // Never downgrade an already auto-updated user folder (e.g. GitHub auto-update 1.6.11 > bundled 1.6.10).
+  if (!force && fsMod.existsSync(destManifestPath) && fsMod.existsSync(crxPath)) {
+    try {
+      const dm = JSON.parse(fsMod.readFileSync(destManifestPath, 'utf8'));
+      if (dm && dm.key && dm.version && compareSemver(dm.version, srcManifest.version) > 0) {
+        const spkiDer = Buffer.from(dm.key, 'base64');
+        const extensionId = computeExtensionIdFromPublicKeyDer(spkiDer);
+        return {
+          ok: true,
+          preservedNewer: true,
+          extensionDir: destDir,
+          crxPath,
+          extensionId,
+          version: String(dm.version),
+        };
+      }
+    } catch (_) {}
+  }
+
   let needsSync = force || !fsMod.existsSync(destManifestPath) || !fsMod.existsSync(crxPath);
   if (!needsSync) {
     try {
       const dm = JSON.parse(fsMod.readFileSync(destManifestPath, 'utf8'));
-      if (dm.version !== srcManifest.version || !dm.key) needsSync = true;
+      if (compareSemver(dm.version, srcManifest.version) !== 0 || !dm.key) needsSync = true;
     } catch (_) {
       needsSync = true;
     }

@@ -94,6 +94,25 @@ test('Phase 6: standalone MCP yields bridge port cleanly to Akron Code Desktop p
     const h2 = await fetch(`http://127.0.0.1:${port}/v1/health`).then((r) => r.json());
     assert.strictEqual(h2.ok, true);
     assert.strictEqual(h2.mode, 'desktop-primary');
+
+    // Both /v1/models and /models + /v1/chat/completions and /chat/completions must be handled (never 404)
+    const m1 = await fetch(`http://127.0.0.1:${port}/v1/models`);
+    const m2 = await fetch(`http://127.0.0.1:${port}/models`);
+    assert.strictEqual(m1.status, 200);
+    assert.strictEqual(m2.status, 200);
+
+    const c1 = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'akron-default', max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
+    });
+    const c2 = await fetch(`http://127.0.0.1:${port}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'akron-default', max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
+    });
+    assert.notStrictEqual(c1.status, 404, '/v1/chat/completions must never return 404');
+    assert.notStrictEqual(c2.status, 404, '/chat/completions must never return 404');
   } finally {
     try { await extbridge.stop(); } catch (_) {}
     try { child.kill('SIGTERM'); } catch (_) {}

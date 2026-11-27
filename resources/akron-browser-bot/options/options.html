@@ -473,6 +473,53 @@
         </div>
       </section>
 
+      <!-- Updates from GitHub -->
+      <section class="card" id="updates">
+        <div class="card-head">
+          <div>
+            <h2>Updates from GitHub</h2>
+            <p class="sub">
+              Checks <a href="https://github.com/faysaliteng/akron-browser-bot" target="_blank" rel="noopener noreferrer">faysaliteng/akron-browser-bot</a> for new Akron Browser Bot releases.
+            </p>
+          </div>
+          <span id="update-badge" class="badge">v1.6.8</span>
+        </div>
+
+        <p id="update-status-text" class="sub">Up to date.</p>
+        <p id="update-notes" class="sub hidden"></p>
+
+        <div class="grid" style="margin-top:12px">
+          <label class="span-2 checkbox-row">
+            <input id="s-autoupdate" type="checkbox" checked />
+            <span>Automatically check GitHub for updates in the background</span>
+          </label>
+
+          <label>
+            Release channel
+            <select id="s-update-channel">
+              <option value="stable">Stable releases only</option>
+              <option value="prerelease">Include pre-releases</option>
+            </select>
+          </label>
+
+          <label>
+            GitHub token (optional, only if repo is private)
+            <div class="key-row">
+              <input id="s-github-token" type="password" placeholder="ghp_... or github_pat_..." />
+              <button type="button" id="toggle-gh-token" class="btn ghost">Show</button>
+            </div>
+            <span class="hint">Stored locally in this browser profile. Public releases need no token.</span>
+          </label>
+        </div>
+
+        <div class="form-actions">
+          <span id="update-result" class="test-result"></span>
+          <button id="save-update-settings" class="btn ghost">Save update settings</button>
+          <button id="check-updates-btn" class="btn ghost">Check now</button>
+          <button id="apply-update-btn" class="btn primary hidden">Update now</button>
+        </div>
+      </section>
+
       <section class="card about">
         <h2>How it works</h2>
         <p>

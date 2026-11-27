@@ -96,6 +96,30 @@ test('installExternalExtension writes External Extensions manifests without fail
   }
 });
 
+test('syncStandaloneExtension preserves newer auto-updated version (never downgrades)', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'akron-ext-nodowngrade-'));
+  try {
+    const extTarget = path.join(tmp, 'Akron Browser Bot');
+    const keyPath = path.join(tmp, 'ext-key.pem');
+    const r1 = installer.syncStandaloneExtension({ targetDir: extTarget, keyPath, force: true });
+    assert.strictEqual(r1.ok, true);
+    const mfPath = path.join(extTarget, 'manifest.json');
+    const mf = JSON.parse(fs.readFileSync(mfPath, 'utf8'));
+    mf.version = '9.9.9';
+    fs.writeFileSync(mfPath, JSON.stringify(mf, null, 2));
+
+    const r2 = installer.syncStandaloneExtension({ targetDir: extTarget, keyPath });
+    assert.strictEqual(r2.ok, true);
+    assert.strictEqual(r2.preservedNewer, true);
+    assert.strictEqual(r2.version, '9.9.9');
+    assert.strictEqual(r2.extensionId, r1.extensionId);
+    const afterMf = JSON.parse(fs.readFileSync(mfPath, 'utf8'));
+    assert.strictEqual(afterMf.version, '9.9.9', 'newer auto-updated version must NOT be downgraded');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('brand integrity stays intact after extension packaging', () => {
   const r = require('../electron/brand-guard').verifyBrandIntegrity();
   assert.strictEqual(r.ok, true);

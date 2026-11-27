@@ -42,6 +42,7 @@ import {
   clearRecording as gifClear,
   recordingStatus as gifStatus,
 } from "./gif.js";
+import { GITHUB_REPO, checkForExtensionUpdate } from "../shared/updater.js";
 
 const ports = new Map(); // port -> session
 const sessions = new Map(); // sessionId -> session
@@ -134,18 +135,267 @@ function syncKeepalive() {
 chrome.storage.local.set({ [WORKING_FLAG]: false }).catch(() => {});
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === UPDATE_ALARM) {
+    checkForUpdatesNow({ manual: false }).catch(() => {});
+    return;
+  }
   if (alarm.name !== KEEPALIVE_ALARM) return;
   try {
     Promise.resolve(chrome.runtime.getPlatformInfo()).catch(() => {});
   } catch {}
 });
 
+const UPDATE_ALARM = "autobot_update_check";
+const UPDATE_STATE_KEY = "autobot_update_state";
+const UPDATE_INTERVAL_MIN = 240;
+
+let activeNativePort = null;
+const nativeUpdateWaiters = new Map();
+let pendingReloadAfterUpdate = false;
+
+function broadcastUpdateState(updateState) {
+  for (const port of ports.keys()) {
+    try {
+      port.postMessage({ type: "update_state", state: updateState });
+    } catch {}
+  }
+}
+
+function syncUpdateBadge(updateState) {
+  try {
+    if (!chrome.action?.setBadgeText) return;
+    const latest = String(updateState?.latestVersion || "");
+    const show = !!updateState?.updateAvailable && latest && updateState?.dismissedVersion !== latest;
+    chrome.action.setBadgeText({ text: show ? "UP" : "" }).catch?.(() => {});
+    if (show && chrome.action.setBadgeBackgroundColor) {
+      chrome.action.setBadgeBackgroundColor({ color: "#10b981" }).catch?.(() => {});
+    }
+  } catch {}
+}
+
+async function getUpdateState() {
+  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.10";
+  try {
+    const r = await chrome.storage.local.get(UPDATE_STATE_KEY);
+    const saved = r?.[UPDATE_STATE_KEY];
+    if (saved && typeof saved === "object") {
+      return { currentVersion, repo: GITHUB_REPO, ...saved, currentVersion };
+    }
+  } catch {}
+  return {
+    ok: true,
+    currentVersion,
+    latestVersion: currentVersion,
+    updateAvailable: false,
+    repo: GITHUB_REPO,
+    checkedAt: 0,
+    dismissedVersion: null,
+  };
+}
+
+async function saveUpdateState(nextState) {
+  try {
+    await chrome.storage.local.set({ [UPDATE_STATE_KEY]: nextState });
+  } catch {}
+  syncUpdateBadge(nextState);
+  broadcastUpdateState(nextState);
+  return nextState;
+}
+
+async function syncUpdateAlarm() {
+  try {
+    const settings = await getSettings().catch(() => ({}));
+    if (settings.autoUpdate === false) {
+      await chrome.alarms.clear(UPDATE_ALARM).catch(() => {});
+      return;
+    }
+    chrome.alarms.create(UPDATE_ALARM, {
+      delayInMinutes: 1,
+      periodInMinutes: UPDATE_INTERVAL_MIN,
+    });
+  } catch {}
+}
+
+async function checkForUpdatesNow({ manual = false } = {}) {
+  const [settings, prev] = await Promise.all([
+    getSettings().catch(() => ({})),
+    getUpdateState(),
+  ]);
+  const currentVersion = chrome.runtime?.getManifest?.().version || "1.6.10";
+  const result = await checkForExtensionUpdate({
+    currentVersion,
+    repo: GITHUB_REPO,
+    channel: settings.updateChannel || "stable",
+    token: settings.githubUpdateToken || "",
+  });
+  const next = {
+    ...prev,
+    ...result,
+    currentVersion,
+    repo: GITHUB_REPO,
+    dismissedVersion:
+      prev.dismissedVersion === result.latestVersion ? prev.dismissedVersion : null,
+  };
+  await saveUpdateState(next);
+  if (manual && next.updateAvailable && settings.notifyOnComplete !== false && chrome.notifications?.create) {
+    try {
+      chrome.notifications.create(`autobot_update_${next.latestVersion}`, {
+        type: "basic",
+        iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+        title: `Akron Browser Bot v${next.latestVersion} available`,
+        message: "Open Akron Settings → Updates or click Update now in the side panel.",
+      });
+    } catch {}
+  }
+  return next;
+}
+
+function callNativeUpdater(type, payload = {}, timeoutMs = 45000) {
+  if (!activeNativePort) return Promise.resolve(null);
+  const id = `upd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      nativeUpdateWaiters.delete(id);
+      resolve({ ok: false, error: "Native updater timed out." });
+    }, timeoutMs);
+    nativeUpdateWaiters.set(id, (msg) => {
+      clearTimeout(timer);
+      resolve(msg);
+    });
+    try {
+      activeNativePort.postMessage({ id, type, ...payload });
+    } catch (e) {
+      clearTimeout(timer);
+      nativeUpdateWaiters.delete(id);
+      resolve({ ok: false, error: String(e?.message || e) });
+    }
+  });
+}
+
+function triggerReloadWhenIdle() {
+  pendingReloadAfterUpdate = false;
+  setTimeout(() => {
+    try {
+      chrome.runtime?.reload?.();
+    } catch {}
+  }, 500);
+}
+
+async function applyExtensionUpdate({ manual = true } = {}) {
+  const settings = await getSettings().catch(() => ({}));
+  const state = await checkForUpdatesNow({ manual: false });
+  if (!state.ok) return state;
+  if (!state.updateAvailable) {
+    return { ...state, updated: false, message: `Already up to date (v${state.currentVersion}).` };
+  }
+
+  // 1. Prefer silent on-disk replacement if the optional native host is connected.
+  if (settings.nativeHost && activeNativePort) {
+    const res = await callNativeUpdater("apply_extension_update", {
+      repo: GITHUB_REPO,
+      channel: settings.updateChannel || "stable",
+      token: settings.githubUpdateToken || "",
+    });
+    if (res?.ok && res?.updated) {
+      const next = await saveUpdateState({
+        ...state,
+        appliedVersion: res.latestVersion || state.latestVersion,
+        reloading: true,
+      });
+      if (!anySessionRunning()) triggerReloadWhenIdle();
+      else pendingReloadAfterUpdate = true;
+      return { ...res, mode: "native", state: next };
+    }
+  }
+
+  // 2. Ask the Akron Desktop bridge to run the updater if connected and waiting.
+  if (bridgeLink?.send?.({ type: "ext_self_update", repo: GITHUB_REPO, targetVersion: state.latestVersion })) {
+    // Desktop may handle silently; fall through to download if manual click and no immediate ack.
+  }
+
+  // 3. Browser fallback: download AkronBrowserBot-<ver>.zip so the user can extract over their unpacked folder.
+  if (!manual) {
+    return { ok: true, mode: "notify_only", state };
+  }
+
+  const rel = state.release || {};
+  const token = String(settings.githubUpdateToken || "").trim();
+  const filename = rel.zipName || `AkronBrowserBot-${state.latestVersion}.zip`;
+  let downloadUrl = rel.zipUrl || rel.htmlUrl || "";
+
+  if (token && rel.zipApiUrl) {
+    try {
+      const r = await fetch(rel.zipApiUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/octet-stream",
+        },
+      });
+      if (r.ok) {
+        const bytes = new Uint8Array(await r.arrayBuffer());
+        let bin = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        }
+        downloadUrl = `data:application/zip;base64,${btoa(bin)}`;
+      }
+    } catch {}
+  }
+
+  if (chrome.downloads?.download && /^https?:|^data:/i.test(downloadUrl)) {
+    try {
+      const downloadId = await chrome.downloads.download({
+        url: downloadUrl,
+        filename,
+        saveAs: false,
+      });
+      return {
+        ok: true,
+        mode: "download",
+        downloadId,
+        filename,
+        htmlUrl: rel.htmlUrl || "",
+        message: `Downloaded ${filename}. Extract over your extension folder and reload.`,
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        mode: "open_release",
+        htmlUrl: rel.htmlUrl || "",
+        error: String(e?.message || e),
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    mode: "open_release",
+    htmlUrl: rel.htmlUrl || `https://github.com/${GITHUB_REPO}/releases`,
+    filename,
+  };
+}
+
+async function dismissUpdateBanner(version) {
+  const prev = await getUpdateState();
+  return saveUpdateState({
+    ...prev,
+    dismissedVersion: version || prev.latestVersion || null,
+  });
+}
+
 async function connectNativeHost() {
   const settings = await getSettings().catch(() => ({}));
   if (!settings.nativeHost) return;
   try {
     const nativePort = chrome.runtime.connectNative("com.autobot.optimusprime");
+    activeNativePort = nativePort;
     nativePort.onMessage.addListener(async (message) => {
+      if (message?.kind === "update_result" && nativeUpdateWaiters.has(message.id)) {
+        const resolve = nativeUpdateWaiters.get(message.id);
+        nativeUpdateWaiters.delete(message.id);
+        resolve(message);
+        return;
+      }
       if (message?.type === "list_tools") {
         const { TOOL_DEFS } = await import("./tools.js");
         nativePort.postMessage({
@@ -164,10 +414,17 @@ async function connectNativeHost() {
         nativePort.postMessage({ id: message.id, kind: "result", result });
       }
     });
-    nativePort.onDisconnect.addListener(() => {});
+    nativePort.onDisconnect.addListener(() => {
+      if (activeNativePort === nativePort) activeNativePort = null;
+      for (const resolve of nativeUpdateWaiters.values()) {
+        resolve({ ok: false, error: "Native host disconnected." });
+      }
+      nativeUpdateWaiters.clear();
+    });
   } catch {}
 }
 connectNativeHost();
+syncUpdateAlarm();
 
 // Clicking the toolbar icon must open a tab-specific side panel, so disable the
 // default auto-open behaviour and handle the click ourselves.
@@ -1483,6 +1740,25 @@ chrome.runtime.onConnect.addListener((port) => {
           port.postMessage({ type: "gif_status", tabId, ...s });
           break;
         }
+        case "get_update_state": {
+          port.postMessage({ type: "update_state", state: await getUpdateState() });
+          break;
+        }
+        case "check_updates": {
+          const state = await checkForUpdatesNow({ manual: !!msg.manual });
+          port.postMessage({ type: "update_state", state });
+          break;
+        }
+        case "apply_update": {
+          const res = await applyExtensionUpdate({ manual: true });
+          port.postMessage({ type: "update_apply_result", ...res });
+          break;
+        }
+        case "dismiss_update": {
+          const state = await dismissUpdateBanner(msg.version);
+          port.postMessage({ type: "update_state", state });
+          break;
+        }
         default:
           break;
       }
@@ -1496,14 +1772,18 @@ chrome.runtime.onConnect.addListener((port) => {
 
 /* ---------------- toolbar / keyboard ---------------- */
 
-// Runtime messages (used by the options page for schedules).
+// Runtime messages (used by the options page for schedules & updates).
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const type = msg?.type;
   if (
     type !== "run_schedule_now" &&
     type !== "list_schedules" &&
     type !== "sync_alarms" &&
-    type !== "transcribe_audio"
+    type !== "transcribe_audio" &&
+    type !== "get_update_state" &&
+    type !== "check_updates" &&
+    type !== "apply_update" &&
+    type !== "dismiss_update"
   ) {
     return false;
   }
@@ -1515,6 +1795,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true, schedules: await getSchedules() });
       } else if (type === "transcribe_audio") {
         sendResponse(await offscreenRequest({ type: "transcribe", samples: msg.samples, lang: msg.lang }));
+      } else if (type === "get_update_state") {
+        sendResponse({ ok: true, state: await getUpdateState() });
+      } else if (type === "check_updates") {
+        sendResponse(await checkForUpdatesNow({ manual: !!msg.manual }));
+      } else if (type === "apply_update") {
+        sendResponse(await applyExtensionUpdate({ manual: true }));
+      } else if (type === "dismiss_update") {
+        sendResponse({ ok: true, state: await dismissUpdateBanner(msg.version) });
       } else {
         await syncAlarms();
         sendResponse({ ok: true });
@@ -1622,6 +1910,8 @@ if (chrome.notifications?.onClicked) {
 chrome.runtime.onInstalled.addListener((details) => {
   installContextMenus();
   seedLocalProviders();
+  syncUpdateAlarm();
+  checkForUpdatesNow({ manual: false }).catch(() => {});
   if (details.reason === "install") {
     chrome.tabs.create({ url: chrome.runtime.getURL("onboarding/onboarding.html") });
   }
@@ -1630,6 +1920,8 @@ chrome.runtime.onInstalled.addListener((details) => {
 chrome.runtime.onStartup?.addListener(() => {
   installContextMenus();
   seedLocalProviders();
+  syncUpdateAlarm();
+  checkForUpdatesNow({ manual: false }).catch(() => {});
 });
 
 chrome.commands.onCommand.addListener((command) => {
@@ -1802,7 +2094,13 @@ async function syncLocalBridge() {
 }
 syncLocalBridge();
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.autobot_settings) syncLocalBridge();
+  if (area === "local" && changes.autobot_settings) {
+    syncLocalBridge();
+    syncUpdateAlarm();
+  }
+  if (area === "local" && changes[WORKING_FLAG] && changes[WORKING_FLAG].newValue === false && pendingReloadAfterUpdate) {
+    triggerReloadWhenIdle();
+  }
 });
 
 chrome.windows.onRemoved.addListener((windowId) => {

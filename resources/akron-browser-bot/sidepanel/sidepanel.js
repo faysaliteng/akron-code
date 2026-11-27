@@ -347,6 +347,8 @@ function upsertInlinePlanCard(steps, status) {
 }
 
 function renderPlan(steps, status) {
+  const done = status === "done";
+  if (planStatusEl) planStatusEl.textContent = done ? "done" : "in progress";
   upsertInlinePlanCard(steps, status);
 }
 
@@ -2030,6 +2032,15 @@ function onMessage(msg) {
       } catch {}
       break;
     }
+    case "update_state":
+      renderUpdateBanner(msg.state);
+      break;
+    case "update_apply_result":
+      if (msg.mode === "download") toast(msg.message || `Downloaded ${msg.filename}`, 6000);
+      else if (msg.mode === "open_release" && msg.htmlUrl) chrome.tabs.create({ url: msg.htmlUrl });
+      else if (msg.ok && msg.updated) toast(`Updating to v${msg.latestVersion}…`, 4000);
+      else if (!msg.ok && msg.error) toast(msg.error, 5000);
+      break;
     default:
       break;
   }
@@ -2783,18 +2794,22 @@ messagesEl.addEventListener("click", (e) => {
 // A panel opened for a tab keeps that tab's chat: the browser hides it on other
 // tabs, where opening the panel starts another chat, like Claude. Only a page
 // shown without a tab follows the active one.
-chrome.tabs?.onActivated?.addListener?.(() => {
-  updateActiveTabPill();
-  if (urlTabId == null) bindToActiveTab();
-});
-chrome.tabs?.onUpdated?.addListener?.((tabId, changeInfo, tab) => {
-  if (tabId === activeTabId && (changeInfo.url || changeInfo.title)) updateActiveTabPill(tab);
-});
+if (chrome.tabs?.onActivated) {
+  if (urlTabId == null) {
+    chrome.tabs.onActivated.addListener(() => {
+      updateActiveTabPill();
+      bindToActiveTab();
+    });
+  }
+}
 if (urlTabId == null) {
-  chrome.windows.onFocusChanged.addListener(() => {
+  chrome.windows?.onFocusChanged?.addListener?.(() => {
     bindToActiveTab();
   });
 }
+chrome.tabs?.onUpdated?.addListener?.((tabId, changeInfo, tab) => {
+  if (tabId === activeTabId && (changeInfo.url || changeInfo.title)) updateActiveTabPill(tab);
+});
 
 // The shortcut that opened this panel closes it again.
 chrome.runtime.onMessage.addListener((msg) => {
@@ -2826,6 +2841,42 @@ chrome.storage.onChanged.addListener((changes, area) => {
       } catch {}
     }
   }
+  if (changes.autobot_update_state) {
+    renderUpdateBanner(changes.autobot_update_state.newValue);
+  }
+});
+
+let latestUpdateInfo = null;
+function renderUpdateBanner(info) {
+  latestUpdateInfo = info || null;
+  const banner = $("update-banner");
+  if (!banner) return;
+  const show = !!(info?.ok && info?.updateAvailable && info.latestVersion && info.dismissedVersion !== info.latestVersion);
+  banner.classList.toggle("hidden", !show);
+  if (!show) return;
+  const title = $("update-banner-title");
+  const desc = $("update-banner-desc");
+  if (title) title.textContent = `Akron Browser Bot v${info.latestVersion} available`;
+  if (desc) desc.textContent = `Installed: v${info.currentVersion}. Ready from GitHub Releases.`;
+}
+
+$("update-apply-btn")?.addEventListener("click", () => {
+  try {
+    port?.postMessage({ type: "apply_update" });
+  } catch {
+    chrome.runtime.sendMessage({ type: "apply_update" }).catch(() => {});
+  }
+});
+$("update-notes-btn")?.addEventListener("click", () => {
+  const url = latestUpdateInfo?.release?.htmlUrl || "https://github.com/faysaliteng/akron-browser-bot/releases";
+  chrome.tabs.create({ url }).catch(() => {});
+});
+$("update-dismiss-btn")?.addEventListener("click", () => {
+  $("update-banner")?.classList.add("hidden");
+  const ver = latestUpdateInfo?.latestVersion;
+  try {
+    port?.postMessage({ type: "dismiss_update", version: ver });
+  } catch {}
 });
 
 function applyTheme(theme) {
@@ -2865,6 +2916,10 @@ async function boot() {
   } else {
     await refreshActiveTab();
   }
+  try {
+    const storedUpd = await chrome.storage.local.get("autobot_update_state");
+    if (storedUpd?.autobot_update_state) renderUpdateBanner(storedUpd.autobot_update_state);
+  } catch {}
   connect();
 }
 

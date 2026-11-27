@@ -24,6 +24,7 @@ let state = {
   wss: null,
   port: DEFAULT_PORT,
   running: false,
+  reclaimTimer: null,
   getProvider: null,
   getOrchestrator: null,
   getExtraProviders: null,
@@ -332,7 +333,11 @@ async function handleChatCompletions(req, res) {
 
   const list = await resolveCandidateList(body.model);
   if (!list.length) {
-    return sendJson(res, 404, { error: { message: `Model "${body.model || 'default'}" is not configured in Akron Code Desktop.` } });
+    return sendJson(res, 503, {
+      error: {
+        message: `Akron Code Desktop bridge is online (:8766), but no AI model or signed-in provider is configured for "${body.model || 'akron-default'}". Sign in or add a model in Akron Code → Settings → Models & Providers.`,
+      },
+    });
   }
 
   const llm = require('./llm');
@@ -657,11 +662,11 @@ function start(opts = {}) {
         const skills = require('./browser-skills').listSkills();
         return sendJson(res, 200, { ok: true, skills });
       }
-      if (pathname === '/v1/models') {
+      if (pathname === '/v1/models' || pathname === '/models') {
         const data = await gatherModels();
         return sendJson(res, 200, { object: 'list', data });
       }
-      if (req.method === 'POST' && pathname === '/v1/chat/completions') {
+      if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
         return handleChatCompletions(req, res);
       }
       return sendJson(res, 404, { error: { message: 'Not found: ' + pathname } });
@@ -672,6 +677,50 @@ function start(opts = {}) {
     server.on('upgrade', (req, socket, head) => {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
     });
+
+    const bindPrimary = () => {
+      try { if (state.reclaimTimer) { clearInterval(state.reclaimTimer); state.reclaimTimer = null; } } catch (_) {}
+      server.removeAllListeners('listening');
+      server.listen(listenPort, '127.0.0.1', () => {
+        const addr = server.address();
+        state.server = server;
+        state.wss = wss;
+        state.port = (addr && addr.port) || listenPort;
+        state.running = true;
+        state.shared = false;
+      });
+    };
+
+    const scheduleReclaim = () => {
+      if (state.reclaimTimer) return;
+      state.reclaimTimer = setInterval(async () => {
+        if (!state.shared || state.server) {
+          clearInterval(state.reclaimTimer);
+          state.reclaimTimer = null;
+          return;
+        }
+        try {
+          const r = await fetch(`http://127.0.0.1:${listenPort}/v1/health`, { signal: AbortSignal.timeout(1000) });
+          if (r && r.ok) {
+            const h = await r.json().catch(() => ({}));
+            if (h && h.mode === 'mcp-standalone') {
+              await fetch(`http://127.0.0.1:${listenPort}/v1/ext/yield`, { method: 'POST', signal: AbortSignal.timeout(1200) }).catch(() => {});
+              await new Promise((rWait) => setTimeout(rWait, 180));
+              bindPrimary();
+            } else if (h && h.mode === 'desktop-primary') {
+              // Another healthy Akron Code Desktop instance owns :8766; keep sharing.
+              return;
+            }
+          } else {
+            bindPrimary();
+          }
+        } catch (_) {
+          // Listener on :8766 disappeared -> reclaim primary role immediately.
+          bindPrimary();
+        }
+      }, 10000);
+      if (state.reclaimTimer.unref) state.reclaimTimer.unref();
+    };
 
     server.on('error', async (err) => {
       if (err && err.code === 'EADDRINUSE') {
@@ -705,6 +754,7 @@ function start(opts = {}) {
             state.shared = true;
             state.running = true;
             state.port = listenPort;
+            scheduleReclaim();
             return resolve({ ok: true, running: true, shared: true, port: listenPort });
           }
         } catch (_) {}
@@ -726,6 +776,11 @@ function start(opts = {}) {
 }
 
 function stop() {
+  if (state.reclaimTimer) {
+    try { clearInterval(state.reclaimTimer); } catch (_) {}
+    state.reclaimTimer = null;
+  }
+  state.shared = false;
   for (const [, p] of state.pending) {
     clearTimeout(p.timer);
     p.reject(new Error('Extension bridge stopped'));

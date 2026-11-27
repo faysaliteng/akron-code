@@ -1,6 +1,29 @@
-# 🤖 Akron — by akronlogic.com
+<p align="center">
+  <img src="icons/logo.svg" alt="Akron Browser Bot logo" width="96" height="96" />
+</p>
 
-A **bring-your-own-key** AI browser agent for Chrome / Edge / Brave.
+<h1 align="center">Akron Browser Bot</h1>
+
+<p align="center">
+  <strong>by akronlogic.com</strong> — A bring-your-own-key AI browser agent for Chrome, Edge, and Brave (MV3)
+</p>
+
+<p align="center">
+  <a href="https://github.com/faysaliteng/akron-browser-bot/actions/workflows/release.yml"><img src="https://github.com/faysaliteng/akron-browser-bot/actions/workflows/release.yml/badge.svg" alt="Build &amp; Release" /></a>
+  <a href="https://github.com/faysaliteng/akron-browser-bot/releases/latest"><img src="https://img.shields.io/github/v/release/faysaliteng/akron-browser-bot?color=10b981&amp;label=release" alt="Latest GitHub Release" /></a>
+  <img src="https://img.shields.io/badge/Manifest-V3-10b981" alt="Chrome Manifest V3" />
+  <img src="https://img.shields.io/badge/Browser%20Tools-37-059669" alt="37 Browser Tools" />
+  <img src="https://img.shields.io/badge/BYOK-Zero%20Backend-111614" alt="BYOK Zero Backend" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/faysaliteng/akron-browser-bot/releases/latest">Releases</a> ·
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#install-load-unpacked">Install</a> ·
+  <a href="#automatic-updates-from-github">Auto-Update</a> ·
+  <a href="#supported-presets">Providers</a> ·
+  <a href="#what-the-agent-can-do">37 Tools</a>
+</p>
 
 It works like *Claude in Chrome* — a side panel where you ask for something and an
 agent reads the page, clicks, types, scrolls, opens tabs, takes screenshots, and
@@ -10,6 +33,40 @@ Together, Ollama, LM Studio, or any OpenAI-compatible endpoint).
 
 No account. No proxy. No backend. Your key goes straight from your browser to the
 provider you chose.
+
+---
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="screenshots/sidepanel-welcome-dark.png" alt="Akron Browser Bot Dark Side Panel" width="260" /><br />
+      <sub><strong>Dark Side Panel</strong> — Active tab context &amp; quick prompts</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="screenshots/sidepanel-agent-run-dark.png" alt="Akron Browser Bot Multi-Step Agent Run &amp; GitHub Update Banner" width="260" /><br />
+      <sub><strong>Live Agent Run</strong> — Inline plan progress, tool steps &amp; update banner</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="screenshots/sidepanel-light.png" alt="Akron Browser Bot Light Theme &amp; Model Picker" width="260" /><br />
+      <sub><strong>Light Theme &amp; Orchestrator</strong> — Searchable 60+ model picker</sub>
+    </td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="screenshots/settings-providers-orchestrator.png" alt="Akron Browser Bot Providers &amp; Multi-Key Orchestrator Settings" width="460" /><br />
+      <sub><strong>Providers &amp; Failover</strong> — BYOK keys across Anthropic, OpenAI, Gemini &amp; Ollama</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="screenshots/settings-github-updates.png" alt="Akron Browser Bot GitHub Auto-Update Settings" width="460" /><br />
+      <sub><strong>Updates from GitHub</strong> — Zero-token release checks &amp; one-click upgrades</sub>
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -24,6 +81,21 @@ provider you chose.
 
 > There is no build step. The folder *is* the extension. Edit any file and press
 > the reload ↻ button on `chrome://extensions` to apply changes.
+
+---
+
+## Automatic Updates from GitHub
+
+Akron Browser Bot checks [`faysaliteng/akron-browser-bot`](https://github.com/faysaliteng/akron-browser-bot) for new public GitHub Releases with zero GitHub token or rate-limit overhead (`releases/latest/download/latest.json` on `stable`, or REST API on `prerelease`):
+
+- **In the browser (`chrome.alarms`)**: checks in the background every 4 hours, shows an `"UP"` badge + update banner in the side panel, and exposes **Settings → Updates from GitHub** (`Check now` / `Update now`).
+- **Hands-free CLI / unpacked folder update**:
+  ```bash
+  npm run update:check
+  npm run update
+  ```
+  Downloads `AkronBrowserBot-<ver>.zip` + `SHA256SUMS.txt`, verifies SHA-256 before writing anything, updates extension files atomically, and preserves your `local-provider.json` and `.git/` checkout.
+- **CRX3 Omaha manifest**: Every tagged release builds and publishes `AkronBrowserBot-<ver>.crx` signed with `update_url` pointing to `updates.xml` on GitHub Releases alongside `AkronBrowserBot-<ver>.zip`, `latest.json`, and `SHA256SUMS.txt`.
 
 ---
 
@@ -78,7 +150,7 @@ requires its unified `freellmapi-…` key. Its model list loads automatically fr
 
 ## What the agent can do
 
-`TOOL_DEFS` exposes **36 tools** to the model:
+`TOOL_DEFS` exposes **37 tools** to the model:
 
 | Tool | Purpose |
 |---|---|
@@ -112,6 +184,7 @@ requires its unified `freellmapi-…` key. Its model list loads automatically fr
 | `gif_creator` | Record the tab as an animated GIF (`start` → `export`) |
 | `execute_javascript` | Run arbitrary JS in the page and return the JSON result |
 | `read_clipboard` | Read text from the system clipboard |
+| `vault_autofill` | Autofill origin-bound credentials &amp; TOTP from Akron Vault |
 | `write_clipboard` | Write text to the system clipboard |
 | `load_skill` | Load the full instructions of one enabled skill |
 | `save_skill` | Propose a new or updated skill (stored only after you approve) |

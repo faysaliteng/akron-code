@@ -2,6 +2,14 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.5.4] - 2026-11-27
+
+### Fixed & Upgraded
+- **Akron Browser Bot `v1.6.10` Sync, No-Downgrade Installer & `:8766` Zero-Key Proxy Hardening (`resources/akron-browser-bot/`, `electron/browser-ext-installer.js`, `electron/extbridge.js`):**
+  - Bundled **Akron Browser Bot `v1.6.10`** (`desktopBridge: true` by default + built-in GitHub Releases auto-updater) directly inside `resources/akron-browser-bot/`.
+  - Added semver comparison (`compareSemver`) in `syncStandaloneExtension()` so launching Akron Code Desktop **never downgrades** a newer GitHub auto-updated extension folder.
+  - Hardened `electron/extbridge.js` on `127.0.0.1:8766` to accept both `/v1/models` & `/models` and `/v1/chat/completions` & `/chat/completions`, return explicit `503` diagnostics (never `404`) if no AI provider/account is configured yet, and run a 10-second background reclaim loop when `state.shared === true` to reclaim `:8766` whenever a standalone MCP listener yields or exits.
+
 ## [1.5.3] - 2026-11-27
 
 ### Fixed & Hardened

@@ -7,6 +7,7 @@
  *   {"id":"2","method":"tools/call","name":"list_tabs","input":{}}
  */
 import { createServer } from "node:net";
+import { checkUpdateCli, runSelfUpdate } from "../tools/update.mjs";
 
 const pending = new Map();
 
@@ -65,6 +66,12 @@ export function startRelay(send, port = 47331) {
             send
           );
           socket.write(`${JSON.stringify({ id: request.id, result: response.result })}\n`);
+        } else if (request.method === "updater/check") {
+          const result = await checkUpdateCli({ channel: request.channel, token: request.token, baseUrl: request.baseUrl });
+          socket.write(`${JSON.stringify({ id: request.id, result })}\n`);
+        } else if (request.method === "updater/apply") {
+          const result = await runSelfUpdate({ channel: request.channel, token: request.token, baseUrl: request.baseUrl });
+          socket.write(`${JSON.stringify({ id: request.id, result })}\n`);
         } else {
           socket.write(`${JSON.stringify({ id: request.id, error: "Unknown method" })}\n`);
         }
@@ -78,10 +85,28 @@ if (direct) {
   let incoming = Buffer.alloc(0);
   const send = (message) => process.stdout.write(encodeNative(message));
   startRelay(send);
-  process.stdin.on("data", (chunk) => {
+  process.stdin.on("data", async (chunk) => {
     incoming = Buffer.concat([incoming, chunk]);
     const parsed = takeNativeMessages(incoming);
     incoming = Buffer.from(parsed.rest);
-    for (const message of parsed.messages) deliverHostMessage(message);
+    for (const message of parsed.messages) {
+      if (message?.type === "check_updates") {
+        try {
+          const result = await checkUpdateCli({ repo: message.repo, channel: message.channel, token: message.token, baseUrl: message.baseUrl });
+          send({ id: message.id, kind: "update_result", ...result });
+        } catch (e) {
+          send({ id: message.id, kind: "update_result", ok: false, error: String(e?.message || e) });
+        }
+      } else if (message?.type === "apply_extension_update") {
+        try {
+          const result = await runSelfUpdate({ repo: message.repo, channel: message.channel, token: message.token, baseUrl: message.baseUrl });
+          send({ id: message.id, kind: "update_result", ...result });
+        } catch (e) {
+          send({ id: message.id, kind: "update_result", ok: false, error: String(e?.message || e) });
+        }
+      } else {
+        deliverHostMessage(message);
+      }
+    }
   });
 }

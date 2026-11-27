@@ -1,16 +1,14 @@
-# API keys: never commit these
+# API keys and secrets: never commit these
+local-provider.json
 collected-keys.local.md
 *.local.md
 .env
-.env.*
-
-# Extension signing key and packed builds
 *.pem
+
+# Build / release outputs and dependencies
 *.crx
 *.zip
-
-# Tools and OS
+release/
+dist/
 node_modules/
 .DS_Store
-Thumbs.db
-*.log

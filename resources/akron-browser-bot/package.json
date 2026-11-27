@@ -1,6 +1,6 @@
 {
-  "name": "autobot-by-optimus-prime",
-  "version": "1.6.7",
+  "name": "akron-browser-bot",
+  "version": "1.6.10",
   "private": true,
   "type": "module",
   "description": "Bring-your-own-key AI browser agent (Chrome MV3). Works like Claude in Chrome with any provider API key.",
@@ -9,6 +9,9 @@
     "test:runtime": "node tests/runtime-e2e.mjs",
     "test:live": "node tests/live-e2e.mjs",
     "brand:seal": "node tools/seal-brand.mjs",
-    "check": "node --check background/service-worker.js && node --check background/agent.js && node --check background/providers.js && node --check background/tools.js && node --check background/prompts.js && node --check background/storage.js && node --check background/cdp.js && node --check background/confirms.js && node --check background/gif.js && node --check background/scheduler.js && node --check background/run-task.js && node --check background/offscreen-host.js && node --check shared/presets.js && node --check shared/schedules.js && node --check shared/session-features.js && node --check shared/permissions.js && node --check shared/skills.js && node --check shared/bridge.js && node --check shared/voice.js && node --check shared/local-seed.js && node --check shared/panel.js && node --check shared/step-labels.js && node --check shared/results.js && node --check shared/group-title.js && node --check shared/tab-context.js && node --check shared/markdown.js && node --check shared/brand.js &&node --check shared/brand-seal.js && node --check background/brand-guard.js && node --check background/chat-store.js &&node --check tools/seal-brand.mjs &&node --check shared/files.js && node --check native/host.mjs && node --check native/bridge-client.mjs && node --check sidepanel/sidepanel.js && node --check options/options.js && node --check onboarding/onboarding.js && node --check offscreen/offscreen.js && node --check offscreen/whisper-worker.js && node --check offscreen/gif-encoder.js && node --check content/agent-overlay.js && node --check content/page-hooks.js"
+    "build:release": "node tools/build-release.mjs",
+    "update": "node tools/update.mjs",
+    "update:check": "node tools/update.mjs --check",
+    "check": "node --check background/service-worker.js && node --check background/agent.js && node --check background/providers.js && node --check background/tools.js && node --check background/prompts.js && node --check background/storage.js && node --check background/cdp.js && node --check background/confirms.js && node --check background/gif.js && node --check background/scheduler.js && node --check background/run-task.js && node --check background/offscreen-host.js && node --check shared/presets.js && node --check shared/schedules.js && node --check shared/session-features.js && node --check shared/permissions.js && node --check shared/skills.js && node --check shared/bridge.js && node --check shared/voice.js && node --check shared/local-seed.js && node --check shared/panel.js && node --check shared/step-labels.js && node --check shared/results.js && node --check shared/group-title.js && node --check shared/tab-context.js && node --check shared/markdown.js && node --check shared/brand.js && node --check shared/brand-seal.js && node --check shared/updater.js && node --check background/brand-guard.js && node --check background/chat-store.js && node --check tools/seal-brand.mjs && node --check tools/build-release.mjs && node --check tools/update.mjs && node --check shared/files.js && node --check native/host.mjs && node --check native/bridge-client.mjs && node --check sidepanel/sidepanel.js && node --check options/options.js && node --check onboarding/onboarding.js && node --check offscreen/offscreen.js && node --check offscreen/whisper-worker.js && node --check offscreen/gif-encoder.js && node --check content/agent-overlay.js && node --check content/page-hooks.js"
   }
 }

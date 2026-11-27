@@ -52,6 +52,7 @@ const TOOL_NAMES = [
   "gif_creator",
   "execute_javascript",
   "read_clipboard",
+  "vault_autofill",
   "write_clipboard",
   "load_skill",
   "save_skill",
@@ -66,7 +67,8 @@ let skills = [];
 
 // What each settings form showed when it was last filled in from storage. A
 // form that still shows it holds no unsaved input.
-const shown = { agent: {}, policy: {}, tools: [], orchestrator: {} };
+const shown = { agent: {}, policy: {}, tools: [], orchestrator: {}, updates: {} };
+let latestUpdateState = null;
 
 const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -129,6 +131,8 @@ async function init() {
   renderSchedules();
   renderSavedPrompts();
   renderOrchestrator();
+  renderUpdateSettings();
+  loadUpdateState();
   bindEvents();
   applyHash();
 }
@@ -1218,6 +1222,145 @@ function bindEvents() {
   });
   $("add-schedule").addEventListener("click", addSchedule);
   $("add-saved-prompt").addEventListener("click", addSavedPrompt);
+  $("toggle-gh-token")?.addEventListener("click", () => {
+    const input = $("s-github-token");
+    const showing = input.type === "text";
+    input.type = showing ? "password" : "text";
+    $("toggle-gh-token").textContent = showing ? "Show" : "Hide";
+  });
+  $("save-update-settings")?.addEventListener("click", saveUpdateSettings);
+  $("check-updates-btn")?.addEventListener("click", triggerUpdateCheck);
+  $("apply-update-btn")?.addEventListener("click", triggerUpdateApply);
+}
+
+/* ------------------------ updates from github ----------------------- */
+
+function readUpdateForm() {
+  return {
+    autoUpdate: $("s-autoupdate") ? $("s-autoupdate").checked : true,
+    updateChannel: $("s-update-channel")?.value === "prerelease" ? "prerelease" : "stable",
+    githubUpdateToken: ($("s-github-token")?.value || "").trim(),
+  };
+}
+
+function renderUpdateSettings() {
+  if ($("s-autoupdate")) $("s-autoupdate").checked = settings.autoUpdate !== false;
+  if ($("s-update-channel")) {
+    $("s-update-channel").value = settings.updateChannel === "prerelease" ? "prerelease" : "stable";
+  }
+  if ($("s-github-token")) $("s-github-token").value = settings.githubUpdateToken || "";
+  shown.updates = readUpdateForm();
+}
+
+function renderUpdateStatus(updateState) {
+  latestUpdateState = updateState || latestUpdateState;
+  const ver = chrome.runtime?.getManifest?.().version || "1.6.8";
+  const badge = $("update-badge");
+  const statusEl = $("update-status-text");
+  const notesEl = $("update-notes");
+  const applyBtn = $("apply-update-btn");
+  if (!badge || !statusEl) return;
+
+  if (!latestUpdateState) {
+    badge.className = "badge";
+    badge.textContent = `v${ver}`;
+    statusEl.textContent = "Ready to check GitHub for updates.";
+    notesEl?.classList.add("hidden");
+    applyBtn?.classList.add("hidden");
+    return;
+  }
+
+  if (latestUpdateState.ok && latestUpdateState.updateAvailable) {
+    badge.className = "badge ok";
+    badge.textContent = `v${latestUpdateState.latestVersion} available`;
+    statusEl.textContent = `Current: v${latestUpdateState.currentVersion || ver} · Latest on GitHub: v${latestUpdateState.latestVersion}`;
+    if (latestUpdateState.release?.notes && notesEl) {
+      notesEl.textContent = latestUpdateState.release.notes;
+      notesEl.classList.remove("hidden");
+    } else {
+      notesEl?.classList.add("hidden");
+    }
+    applyBtn?.classList.remove("hidden");
+  } else if (latestUpdateState.ok) {
+    badge.className = "badge ok";
+    badge.textContent = `v${latestUpdateState.currentVersion || ver}`;
+    const when = latestUpdateState.checkedAt
+      ? ` · Checked ${new Date(latestUpdateState.checkedAt).toLocaleTimeString()}`
+      : "";
+    statusEl.textContent = `Up to date on v${latestUpdateState.currentVersion || ver}${when}.`;
+    notesEl?.classList.add("hidden");
+    applyBtn?.classList.add("hidden");
+  } else {
+    badge.className = "badge warn";
+    badge.textContent = `v${ver}`;
+    statusEl.textContent = latestUpdateState.error || "Could not check GitHub for updates.";
+    notesEl?.classList.add("hidden");
+    applyBtn?.classList.add("hidden");
+  }
+}
+
+async function loadUpdateState() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "get_update_state" });
+    if (res?.state) renderUpdateStatus(res.state);
+  } catch {
+    renderUpdateStatus(null);
+  }
+}
+
+async function saveUpdateSettings() {
+  const edits = editedFields(readUpdateForm(), shown.updates);
+  await updateSettings((latest) => ({ ...latest, ...edits }));
+  renderUpdateSettings();
+  flash($("update-result"), "Update settings saved.");
+}
+
+async function triggerUpdateCheck() {
+  const btn = $("check-updates-btn");
+  if (btn) btn.disabled = true;
+  if ($("update-result")) $("update-result").textContent = "Checking GitHub…";
+  try {
+    const edits = editedFields(readUpdateForm(), shown.updates);
+    if (Object.keys(edits).length) {
+      await updateSettings((latest) => ({ ...latest, ...edits }));
+      renderUpdateSettings();
+    }
+    const res = await chrome.runtime.sendMessage({ type: "check_updates", manual: true });
+    renderUpdateStatus(res);
+    if ($("update-result")) {
+      $("update-result").textContent = res?.ok
+        ? res.updateAvailable
+          ? `Found v${res.latestVersion}`
+          : "Up to date."
+        : res?.error || "Check failed.";
+    }
+  } catch (e) {
+    if ($("update-result")) $("update-result").textContent = e?.message || "Check failed.";
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function triggerUpdateApply() {
+  const btn = $("apply-update-btn");
+  if (btn) btn.disabled = true;
+  if ($("update-result")) $("update-result").textContent = "Applying update…";
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "apply_update" });
+    if (res?.mode === "download" && $("update-result")) {
+      flash($("update-result"), res.message || `Downloaded ${res.filename}`);
+    } else if (res?.mode === "open_release" && res.htmlUrl) {
+      chrome.tabs.create({ url: res.htmlUrl });
+    } else if (res?.ok && $("update-result")) {
+      flash($("update-result"), `Updated to v${res.latestVersion || latestUpdateState?.latestVersion}. Reloading…`);
+    } else if ($("update-result")) {
+      $("update-result").textContent = res?.error || "Update failed.";
+    }
+  } catch (e) {
+    if ($("update-result")) $("update-result").textContent = e?.message || "Update failed.";
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 /* ---------------------- changes made elsewhere ---------------------- */
@@ -1230,6 +1373,7 @@ function followSettings() {
   if (sameValue(readPolicyForm(), shown.policy)) renderPolicyForm();
   if (sameValue(checkedTools(), shown.tools)) renderConfirmTools();
   if (sameValue(readOrchestratorForm(), shown.orchestrator)) renderOrchestrator();
+  if (sameValue(readUpdateForm(), shown.updates)) renderUpdateSettings();
 }
 
 const FOLLOWED = {
@@ -1253,6 +1397,9 @@ const FOLLOWED = {
   autobot_schedules: async () => {
     schedules = await getSchedules();
     renderSchedules();
+  },
+  autobot_update_state: async () => {
+    await loadUpdateState();
   },
 };
 
