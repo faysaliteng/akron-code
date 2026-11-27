@@ -280,6 +280,81 @@ async function test(name, fn) {
     assert(String(rdJson.text || rdJson.markdown).includes('Alias Spec Paper'));
   });
 
+  await test('listMediaStudioCatalog disables unconfigured image/video models with configKeyId and unlocks them when API keys are set', async () => {
+    const emptyCat = router.listMediaStudioCatalog({ store: false, env: {}, provider: {}, orchestrator: {} });
+    const veoOff = emptyCat.videoModels.find((m) => m.id === 'veo-2.0-generate-001');
+    const soraOff = emptyCat.videoModels.find((m) => m.id === 'sora');
+    const grokVidOff = emptyCat.videoModels.find((m) => m.id === 'grok-2-video');
+    const wanOff = emptyCat.videoModels.find((m) => m.id === 'wan-video/wan-2.1');
+    const klingOff = emptyCat.videoModels.find((m) => m.id === 'kling-v1.6');
+    const lumaOff = emptyCat.videoModels.find((m) => m.id === 'ray-2');
+    const imagenOff = emptyCat.imageModels.find((m) => m.id === 'imagen-3.0-generate-002');
+    const gptImgOff = emptyCat.imageModels.find((m) => m.id === 'gpt-image-1');
+    const cfOff = emptyCat.imageModels.find((m) => m.id === '@cf/black-forest-labs/flux-1-schnell');
+
+    assert.strictEqual(veoOff.available, false);
+    assert.strictEqual(veoOff.configKeyId, 'GEMINI_API_KEY');
+    assert.strictEqual(soraOff.available, false);
+    assert.strictEqual(soraOff.configKeyId, 'OPENAI_API_KEY');
+    assert.strictEqual(grokVidOff.available, false);
+    assert.strictEqual(grokVidOff.configKeyId, 'XAI_API_KEY');
+    assert.strictEqual(wanOff.available, false);
+    assert.strictEqual(wanOff.configKeyId, 'FAL_KEY');
+    assert.strictEqual(klingOff.available, false);
+    assert.strictEqual(klingOff.configKeyId, 'KLING_API_KEY');
+    assert.strictEqual(lumaOff.available, false);
+    assert.strictEqual(lumaOff.configKeyId, 'LUMA_API_KEY');
+    assert.strictEqual(imagenOff.available, false);
+    assert.strictEqual(imagenOff.configKeyId, 'GEMINI_API_KEY');
+    assert.strictEqual(gptImgOff.available, false);
+    assert.strictEqual(gptImgOff.configKeyId, 'OPENAI_API_KEY');
+    assert.strictEqual(cfOff.available, false);
+    assert.strictEqual(cfOff.configKeyId, 'CLOUDFLARE_API_TOKEN');
+
+    const keyedCat = router.listMediaStudioCatalog({
+      store: false,
+      provider: {},
+      orchestrator: {},
+      env: {
+        GEMINI_API_KEY: 'gm-test',
+        OPENAI_API_KEY: 'oa-test',
+        XAI_API_KEY: 'xa-test',
+        FAL_KEY: 'fal-test',
+        KLING_API_KEY: 'kl-test',
+        LUMA_API_KEY: 'lu-test',
+        CLOUDFLARE_API_TOKEN: 'cf-tok',
+        CLOUDFLARE_ACCOUNT_ID: 'cf-acc',
+      },
+    });
+    assert.strictEqual(keyedCat.videoModels.find((m) => m.id === 'veo-2.0-generate-001').available, true);
+    assert.strictEqual(keyedCat.videoModels.find((m) => m.id === 'sora').available, true);
+    assert.strictEqual(keyedCat.videoModels.find((m) => m.id === 'grok-2-video').available, true);
+    assert.strictEqual(keyedCat.videoModels.find((m) => m.id === 'wan-video/wan-2.1').available, true);
+    assert.strictEqual(keyedCat.videoModels.find((m) => m.id === 'kling-v1.6').available, true);
+    assert.strictEqual(keyedCat.videoModels.find((m) => m.id === 'ray-2').available, true);
+    assert.strictEqual(keyedCat.imageModels.find((m) => m.id === 'imagen-3.0-generate-002').available, true);
+    assert.strictEqual(keyedCat.imageModels.find((m) => m.id === 'gpt-image-1').available, true);
+    assert.strictEqual(keyedCat.imageModels.find((m) => m.id === '@cf/black-forest-labs/flux-1-schnell').available, true);
+  });
+
+  await test('UI, Settings & IPC wiring enforce unselectable unconfigured media models + Configure -> Settings navigation', () => {
+    const mediaView = fs.readFileSync(path.join(__dirname, '..', 'src/components/MediaStudioView.jsx'), 'utf8');
+    const docCard = fs.readFileSync(path.join(__dirname, '..', 'src/components/MediaDocCard.jsx'), 'utf8');
+    const extPanels = fs.readFileSync(path.join(__dirname, '..', 'src/components/settings/ExtendedSettingsPanels.jsx'), 'utf8');
+    const modalBody = fs.readFileSync(path.join(__dirname, '..', 'src/components/settings/SettingsModalBody.jsx'), 'utf8');
+    const appSrc = fs.readFileSync(path.join(__dirname, '..', 'src/App.jsx'), 'utf8');
+    const ipcFeat = fs.readFileSync(path.join(__dirname, '..', 'electron/ipc/ipc-features.js'), 'utf8');
+    const preload = fs.readFileSync(path.join(__dirname, '..', 'electron/preload.js'), 'utf8');
+
+    assert(docCard.includes('export function MediaModelPicker') && docCard.includes("if (!available) return;") && docCard.includes('Config →'));
+    assert(mediaView.includes('<MediaModelPicker') && mediaView.includes('onConfigureMediaKey') && mediaView.includes('akron:media-keys-updated'));
+    assert(extPanels.includes('export function MediaStudioApiKeysSection') && extPanels.includes('mediaKeysGet') && extPanels.includes('mediaKeysSave'));
+    assert(modalBody.includes('<MediaStudioApiKeysSection') && modalBody.includes("section === 'media'"));
+    assert(appSrc.includes("id: 'media'") && appSrc.includes('Images & Video APIs') && appSrc.includes("openSettingsAt('media'"));
+    assert(ipcFeat.includes("ipcMain.handle('autobot:mediaKeysGet'") && ipcFeat.includes("ipcMain.handle('autobot:mediaKeysSave'") && ipcFeat.includes('needsApiKey: true'));
+    assert(preload.includes('mediaKeysGet') && preload.includes('mediaKeysSave'));
+  });
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`\nMEDIA_DOC_STUDIO_RESULTS: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);

@@ -225,6 +225,8 @@ contextBridge.exposeInMainWorld('autobot', {
   mediaStudioCatalog: (payload) => ipcRenderer.invoke('autobot:mediaStudioCatalog', payload),
   mediaStudioGenerate: (payload) => ipcRenderer.invoke('autobot:mediaStudioGenerate', payload),
   mediaStudioDelete: (payload) => ipcRenderer.invoke('autobot:mediaStudioDelete', payload),
+  mediaKeysGet: () => ipcRenderer.invoke('autobot:mediaKeysGet'),
+  mediaKeysSave: (payload) => ipcRenderer.invoke('autobot:mediaKeysSave', payload),
   saveFile: (opts) => ipcRenderer.invoke('autobot:saveFile', opts),
   writeFile: (opts) => ipcRenderer.invoke('autobot:writeFile', opts),
   openExternal: (url) => ipcRenderer.invoke('autobot:openExternal', url),

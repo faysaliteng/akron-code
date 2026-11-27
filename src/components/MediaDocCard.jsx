@@ -123,7 +123,126 @@ const AI_EDIT_MODELS = [
   { id: 'flux-3d', label: 'Flux 3D' },
 ];
 
-export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde, onOpenMediaStudio, onAnimateImage, onDelete }) {
+export function MediaModelPicker({
+  models = [],
+  value = 'auto',
+  onChange,
+  onConfigure,
+  unconfiguredLabel = 'Needs API Key',
+  testIdPrefix = 'media-model',
+  compact = false,
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const activeEntry = models.find((m) => m.id === value && m.available !== false)
+    || models.find((m) => m.id === 'auto')
+    || models.find((m) => m.available !== false)
+    || models[0]
+    || { id: 'auto', label: 'Auto (Best Available AI)', badge: 'Auto', available: true };
+
+  return (
+    <div ref={rootRef} className={'media-model-picker' + (compact ? ' is-compact' : '')} data-testid={`${testIdPrefix}-picker`}>
+      <button
+        type="button"
+        className="media-model-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        data-testid={`${testIdPrefix}-trigger`}
+      >
+        <span className="media-model-trigger-label">{activeEntry.label}</span>
+        <span className="media-model-badge is-ok">Available{activeEntry.badge ? ` · ${activeEntry.badge}` : ''}</span>
+        <Icon name="ChevronDown" size={13} />
+      </button>
+
+      {open && (
+        <div className="media-model-menu" role="listbox" data-testid={`${testIdPrefix}-menu`}>
+          {models.map((m) => {
+            const available = m.available !== false;
+            const selected = available && activeEntry.id === m.id;
+            return (
+              <div
+                key={m.id}
+                role="option"
+                aria-selected={selected}
+                aria-disabled={!available}
+                data-model-id={m.id}
+                data-available={available ? 'true' : 'false'}
+                className={
+                  'media-model-option'
+                  + (selected ? ' is-selected' : '')
+                  + (!available ? ' is-disabled' : '')
+                }
+                onClick={() => {
+                  if (!available) return;
+                  if (onChange) onChange(m.id);
+                  setOpen(false);
+                }}
+                title={available
+                  ? `${m.label} (${m.provider || 'Ready'})`
+                  : `${m.label} requires ${m.requiredKeyLabel || 'an API key'} — click Configure to add it in Settings`}
+              >
+                <div className="media-model-option-main">
+                  <span className="media-model-check" aria-hidden="true">
+                    {selected ? <Icon name="Check" size={12} /> : (!available ? <Icon name="Lock" size={11} /> : null)}
+                  </span>
+                  <div className="media-model-option-text">
+                    <div className="media-model-option-title">{m.label}</div>
+                    <div className="media-model-option-sub">
+                      {m.provider || ''}{!available && m.requiredKeyLabel ? ` · Requires ${m.requiredKeyLabel}` : ''}
+                    </div>
+                  </div>
+                </div>
+                <div className="media-model-option-right">
+                  {available ? (
+                    <span className="media-model-badge is-ok">
+                      Available{m.badge ? ` · ${m.badge}` : ''}
+                    </span>
+                  ) : (
+                    <>
+                      <span className="media-model-badge is-needs">{m.statusLabel || unconfiguredLabel}</span>
+                      <button
+                        type="button"
+                        className="media-model-config-btn"
+                        data-testid={`configure-media-key-${m.id}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpen(false);
+                          if (onConfigure) onConfigure(m.configKeyId || '');
+                        }}
+                      >
+                        <Icon name="Settings" size={11} /> Config →
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde, onOpenMediaStudio, onConfigureMediaKey, onAnimateImage, onDelete }) {
   const propFilePath = typeof target === 'string' ? target : target.path;
   const propCachePath = typeof target === 'object' ? (target.cachePath || '') : '';
   const propPreview = typeof target === 'object' ? (target.previewDataUrl || '') : '';
@@ -173,11 +292,23 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde, onOpenM
   }, [activePath, activeCachePath, cwd]);
 
   useEffect(() => {
-    if (!editDrawerOpen || catalogModels) return;
-    if (!window.autobot || typeof window.autobot.mediaStudioCatalog !== 'function') return;
-    window.autobot.mediaStudioCatalog({ cwd }).then((res) => {
-      if (res && res.ok && Array.isArray(res.imageModels)) setCatalogModels(res.imageModels);
-    }).catch(() => {});
+    if (!editDrawerOpen) return undefined;
+    if (!window.autobot || typeof window.autobot.mediaStudioCatalog !== 'function') return undefined;
+    const loadInlineCatalog = () => {
+      window.autobot.mediaStudioCatalog({ cwd }).then((res) => {
+        if (res && res.ok && Array.isArray(res.imageModels)) {
+          setCatalogModels(res.imageModels);
+          setAiEditModel((prev) => {
+            if (prev === 'auto') return prev;
+            const hit = res.imageModels.find((m) => m.id === prev);
+            return hit && hit.available === false ? 'auto' : prev;
+          });
+        }
+      }).catch(() => {});
+    };
+    if (!catalogModels) loadInlineCatalog();
+    window.addEventListener('akron:media-keys-updated', loadInlineCatalog);
+    return () => window.removeEventListener('akron:media-keys-updated', loadInlineCatalog);
   }, [editDrawerOpen, catalogModels, cwd]);
 
   const imgSrc = (info && (info.dataUrl || info.fileUrl)) || activePreview || (activeCachePath ? ('file://' + encodeURI(activeCachePath)) : '');
@@ -403,13 +534,14 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde, onOpenM
               }
             }}
           />
-          <select value={aiEditModel} onChange={(e) => setAiEditModel(e.target.value)} title="Select AI Edit Model">
-            {(catalogModels || AI_EDIT_MODELS).map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label} — {m.available === false ? 'Needs API Key' : 'Available'}
-              </option>
-            ))}
-          </select>
+          <MediaModelPicker
+            models={catalogModels || AI_EDIT_MODELS}
+            value={aiEditModel}
+            onChange={setAiEditModel}
+            onConfigure={onConfigureMediaKey}
+            testIdPrefix="inline-ai-edit"
+            compact
+          />
           <button
             type="button"
             className="media-doc-btn"
@@ -511,13 +643,13 @@ export function MediaDocCard({ target, cwd, onPromptAction, onOpenInIde, onOpenM
   );
 }
 
-export function MediaDocCardList({ tools, content, cwd, onPromptAction, onOpenInIde, onOpenMediaStudio }) {
+export function MediaDocCardList({ tools, content, cwd, onPromptAction, onOpenInIde, onOpenMediaStudio, onConfigureMediaKey }) {
   const targets = extractMediaDocTargets({ tools, content });
   if (!targets.length) return null;
   return (
     <div className="media-doc-list">
       {targets.map((t) => (
-        <MediaDocCard key={t.path} target={t} cwd={cwd} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} onOpenMediaStudio={onOpenMediaStudio} />
+        <MediaDocCard key={t.path} target={t} cwd={cwd} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} onOpenMediaStudio={onOpenMediaStudio} onConfigureMediaKey={onConfigureMediaKey} />
       ))}
     </div>
   );

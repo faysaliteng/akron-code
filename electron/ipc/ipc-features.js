@@ -1402,6 +1402,125 @@ ipcMain.handle('autobot:studioAction', async (event, payload) => {
   }
 });
 
+function buildMediaKeysSnapshot() {
+  const router = require('../orch-router');
+  const settings = store.getSettings ? (store.getSettings() || {}) : {};
+  const pKeys = (settings && settings.providerKeys) || {};
+  let flProvs = {};
+  try {
+    const fl = require('../freellm').loadConfig();
+    if (fl && fl.providers) flProvs = fl.providers;
+  } catch (_) {}
+
+  const findInUrlKeys = (matchers) => {
+    for (const [u, v] of Object.entries(pKeys)) {
+      if (v && String(v).trim() && matchers.some((rx) => rx.test(String(u)))) return String(v).trim();
+    }
+    return '';
+  };
+
+  const hint = (v) => (v ? '••••' + String(v).slice(-4) : '');
+  const specs = router.MEDIA_PROVIDER_KEYS || [];
+  const providers = specs.map((spec) => {
+    let val = '';
+    let source = '';
+    const sVal = secretstore.get(spec.id);
+    if (sVal && String(sVal).trim()) {
+      val = String(sVal).trim();
+      source = 'secretstore';
+    } else if (process.env[spec.id] && String(process.env[spec.id]).trim()) {
+      val = String(process.env[spec.id]).trim();
+      source = 'env';
+    } else if (spec.id === 'GEMINI_API_KEY') {
+      const alt = secretstore.get('GOOGLE_API_KEY') || process.env.GOOGLE_API_KEY || findInUrlKeys([/generativelanguage\.googleapis\.com/i, /ai\.google/i]) || ((flProvs.google && (flProvs.google.apiKey || flProvs.google.key)) || '');
+      if (alt) { val = String(alt).trim(); source = 'configured'; }
+    } else if (spec.id === 'OPENAI_API_KEY') {
+      const alt = findInUrlKeys([/api\.openai\.com/i]);
+      if (alt) { val = alt; source = 'providerKeys'; }
+    } else if (spec.id === 'XAI_API_KEY') {
+      const alt = findInUrlKeys([/api\.x\.ai/i, /grok\.com/i]) || (flProvs.xai && flProvs.xai.apiKey) || (flProvs.grok && flProvs.grok.apiKey) || '';
+      if (alt) { val = String(alt).trim(); source = 'configured'; }
+    } else if (spec.id === 'FAL_KEY') {
+      const alt = secretstore.get('FAL_API_KEY') || process.env.FAL_API_KEY || findInUrlKeys([/fal\.run|fal\.ai/i]);
+      if (alt) { val = String(alt).trim(); source = 'configured'; }
+    } else if (spec.id === 'REPLICATE_API_TOKEN') {
+      const alt = secretstore.get('REPLICATE_API_KEY') || process.env.REPLICATE_API_KEY || findInUrlKeys([/api\.replicate\.com/i]);
+      if (alt) { val = String(alt).trim(); source = 'configured'; }
+    } else if (spec.id === 'TOGETHER_API_KEY') {
+      const alt = findInUrlKeys([/api\.together\.xyz/i]) || (flProvs.together && flProvs.together.apiKey) || '';
+      if (alt) { val = String(alt).trim(); source = 'configured'; }
+    } else if (spec.id === 'CLOUDFLARE_API_TOKEN') {
+      const alt = secretstore.get('CLOUDFLARE_API_KEY') || process.env.CLOUDFLARE_API_KEY || (flProvs.cloudflare && flProvs.cloudflare.apiKey) || '';
+      if (alt) { val = String(alt).trim(); source = 'configured'; }
+    }
+
+    let extraValue = '';
+    if (spec.extraField && spec.extraField.id) {
+      extraValue = String(
+        secretstore.get(spec.extraField.id)
+        || process.env[spec.extraField.id]
+        || (spec.id === 'CLOUDFLARE_API_TOKEN' && flProvs.cloudflare && (flProvs.cloudflare.accountId || flProvs.cloudflare.account_id))
+        || ''
+      ).trim();
+    }
+
+    return {
+      ...spec,
+      hasKey: Boolean(val) && (!spec.extraField || Boolean(extraValue)),
+      rawKeySet: Boolean(val),
+      keyHint: hint(val),
+      source,
+      extraValue,
+    };
+  });
+
+  return { ok: true, providers };
+}
+
+ipcMain.handle('autobot:mediaKeysGet', () => {
+  try {
+    return buildMediaKeysSnapshot();
+  } catch (e) {
+    return { ok: false, providers: [], error: (e && e.message) || String(e) };
+  }
+});
+
+ipcMain.handle('autobot:mediaKeysSave', (_event, payload = {}) => {
+  try {
+    const router = require('../orch-router');
+    const keys = (payload && payload.keys && typeof payload.keys === 'object') ? payload.keys : {};
+    const clearKeys = Array.isArray(payload && payload.clearKeys) ? payload.clearKeys : [];
+    for (const [k, v] of Object.entries(keys)) {
+      const id = String(k || '').trim();
+      if (!id) continue;
+      if (typeof v === 'string') {
+        const clean = v.trim();
+        if (clean && !clean.startsWith('••••')) {
+          secretstore.set(id, clean);
+        }
+      }
+    }
+    for (const rawId of clearKeys) {
+      const id = String(rawId || '').trim();
+      if (!id) continue;
+      secretstore.del(id);
+      if (id === 'GEMINI_API_KEY') secretstore.del('GOOGLE_API_KEY');
+      if (id === 'FAL_KEY') secretstore.del('FAL_API_KEY');
+      if (id === 'REPLICATE_API_TOKEN') secretstore.del('REPLICATE_API_KEY');
+      if (id === 'CLOUDFLARE_API_TOKEN') secretstore.del('CLOUDFLARE_API_KEY');
+    }
+    const snap = buildMediaKeysSnapshot();
+    const catalog = router.listMediaStudioCatalog({
+      store,
+      provider: (store.getSettings && store.getSettings().provider) || {},
+      orchestrator: store.getOrchestrator(),
+    });
+    return { ...snap, catalog };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+});
+
 ipcMain.handle('autobot:mediaStudioCatalog', async (_event, payload) => {
   try {
     const p = payload || {};
@@ -1428,8 +1547,22 @@ ipcMain.handle('autobot:mediaStudioGenerate', async (_event, payload) => {
   try {
     const p = payload || {};
     const mediaGen = require('../media-gen');
+    const router = require('../orch-router');
     const cwd = p.cwd || workspace.scratch();
     const ctx = { store, provider: p.provider || store.getSettings().provider || {}, orchestrator: store.getOrchestrator(), cwd };
+    if (p.model && String(p.model).toLowerCase() !== 'auto') {
+      const cat = router.listMediaStudioCatalog({ store, provider: ctx.provider, orchestrator: ctx.orchestrator });
+      const list = p.kind === 'video' ? cat.videoModels : cat.imageModels;
+      const entry = (list || []).find((m) => m.id === p.model);
+      if (entry && entry.available === false) {
+        return {
+          ok: false,
+          needsApiKey: true,
+          configKeyId: entry.configKeyId || '',
+          error: `${entry.label} requires ${entry.requiredKeyLabel || 'an API key'} — click Configure to add your API key in Settings.`,
+        };
+      }
+    }
     if (p.kind === 'video') {
       return await mediaGen.generateVideo({
         prompt: p.prompt || 'Akron Motion Studio',

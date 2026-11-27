@@ -496,8 +496,8 @@ function resolveMediaChain({
   const falKey = env.FAL_KEY || env.FAL_API_KEY || (findKeyInProviderKeys(pKeys, [/fal\.run|fal\.ai/i]) || {}).apiKey || pickSecret(['FAL_KEY', 'FAL_API_KEY']) || '';
   const electronHubKey = pickFreeKey('electronhub');
   const cloudflareEntry = freeLlmProviders.cloudflare;
-  const cloudflareKey = pickFreeKey('cloudflare');
-  const cloudflareAcc = (cloudflareEntry && typeof cloudflareEntry === 'object' && (cloudflareEntry.accountId || cloudflareEntry.account_id)) || env.CLOUDFLARE_ACCOUNT_ID || '';
+  const cloudflareKey = env.CLOUDFLARE_API_TOKEN || env.CLOUDFLARE_API_KEY || pickFreeKey('cloudflare') || pickSecret(['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_API_KEY']) || '';
+  const cloudflareAcc = (cloudflareEntry && typeof cloudflareEntry === 'object' && (cloudflareEntry.accountId || cloudflareEntry.account_id)) || env.CLOUDFLARE_ACCOUNT_ID || pickSecret(['CLOUDFLARE_ACCOUNT_ID']) || '';
   const runwayKey = env.RUNWAYML_API_SECRET || env.RUNWAY_API_KEY || (findKeyInProviderKeys(pKeys, [/runwayml\.com/i]) || {}).apiKey || pickSecret(['RUNWAYML_API_SECRET', 'RUNWAY_API_KEY']) || '';
   const lumaKey = env.LUMA_API_KEY || (findKeyInProviderKeys(pKeys, [/lumalabs\.ai/i]) || {}).apiKey || pickSecret(['LUMA_API_KEY']) || '';
   const klingKey = env.KLING_API_KEY || (findKeyInProviderKeys(pKeys, [/klingai\.com/i]) || {}).apiKey || pickSecret(['KLING_API_KEY']) || '';
@@ -576,7 +576,13 @@ function resolveMediaChain({
 
   const pref = String(preferredModel || '').trim();
   if (pref && pref.toLowerCase() !== 'auto') {
-    const idx = candidates.findIndex((c) => c.model && (c.model.toLowerCase() === pref.toLowerCase() || c.model.toLowerCase().includes(pref.toLowerCase())));
+    const pl = pref.toLowerCase();
+    let idx = candidates.findIndex((c) => c.model && (c.model.toLowerCase() === pl || c.model.toLowerCase().includes(pl)));
+    if (idx < 0 && pl === 'wan-video/wan-2.1') {
+      idx = candidates.findIndex((c) => c.model && /wan/i.test(c.model));
+    } else if (idx < 0 && pl === 'flux-1.1-pro') {
+      idx = candidates.findIndex((c) => c.model && /flux[-.]?1\.1[-.]?pro/i.test(c.model));
+    }
     if (idx > 0) {
       const [match] = candidates.splice(idx, 1);
       candidates.unshift(match);
@@ -620,6 +626,91 @@ async function resolveMediaProvider(opts = {}) {
   return resolveMediaChain({ ...opts, localEndpoints: local });
 }
 
+const MEDIA_PROVIDER_KEYS = [
+  {
+    id: 'GEMINI_API_KEY',
+    label: 'Google Gemini · Imagen 3 & Veo 2',
+    envVar: 'GEMINI_API_KEY',
+    placeholder: 'AIzaSy…',
+    portalUrl: 'https://aistudio.google.com/apikey',
+    unlocksImage: ['Google Imagen 3', 'Gemini 2.5 Flash Image'],
+    unlocksVideo: ['Google Veo 2'],
+  },
+  {
+    id: 'OPENAI_API_KEY',
+    label: 'OpenAI · GPT-Image-1, DALL·E 3 & Sora',
+    envVar: 'OPENAI_API_KEY',
+    placeholder: 'sk-proj-…',
+    portalUrl: 'https://platform.openai.com/api-keys',
+    unlocksImage: ['OpenAI GPT-Image-1', 'OpenAI DALL·E 3'],
+    unlocksVideo: ['OpenAI Sora'],
+  },
+  {
+    id: 'XAI_API_KEY',
+    label: 'xAI Grok · Grok 2 Image & Video',
+    envVar: 'XAI_API_KEY',
+    placeholder: 'xai-…',
+    portalUrl: 'https://console.x.ai',
+    unlocksImage: ['Grok 2 Image'],
+    unlocksVideo: ['Grok 2 Video'],
+  },
+  {
+    id: 'FAL_KEY',
+    label: 'fal.ai · Wan 2.1 Video & Flux Schnell',
+    envVar: 'FAL_KEY',
+    placeholder: 'fal_…',
+    portalUrl: 'https://fal.ai/dashboard/keys',
+    unlocksImage: ['Flux Schnell (fal.ai)'],
+    unlocksVideo: ['Wan 2.1 Video'],
+  },
+  {
+    id: 'REPLICATE_API_TOKEN',
+    label: 'Replicate · Flux 1.1 Pro & Wan 2.1 Video',
+    envVar: 'REPLICATE_API_TOKEN',
+    placeholder: 'r8_…',
+    portalUrl: 'https://replicate.com/account/api-tokens',
+    unlocksImage: ['Flux 1.1 Pro'],
+    unlocksVideo: ['Wan 2.1 Video'],
+  },
+  {
+    id: 'TOGETHER_API_KEY',
+    label: 'Together AI · Flux 1.1 Pro',
+    envVar: 'TOGETHER_API_KEY',
+    placeholder: 'tgp_v1_…',
+    portalUrl: 'https://api.together.ai/settings/api-keys',
+    unlocksImage: ['Flux 1.1 Pro'],
+    unlocksVideo: [],
+  },
+  {
+    id: 'KLING_API_KEY',
+    label: 'Kling AI · Kling 1.6 Video',
+    envVar: 'KLING_API_KEY',
+    placeholder: 'kling-…',
+    portalUrl: 'https://klingai.com',
+    unlocksImage: [],
+    unlocksVideo: ['Kling 1.6'],
+  },
+  {
+    id: 'LUMA_API_KEY',
+    label: 'Luma Dream Machine · Ray 2 Video',
+    envVar: 'LUMA_API_KEY',
+    placeholder: 'luma-…',
+    portalUrl: 'https://lumalabs.ai/dream-machine/api/keys',
+    unlocksImage: [],
+    unlocksVideo: ['Luma Ray 2'],
+  },
+  {
+    id: 'CLOUDFLARE_API_TOKEN',
+    label: 'Cloudflare Workers AI · Flux-1 Schnell',
+    envVar: 'CLOUDFLARE_API_TOKEN',
+    extraField: { id: 'CLOUDFLARE_ACCOUNT_ID', label: 'Cloudflare Account ID', placeholder: '32-char Account ID' },
+    placeholder: 'cfut_…',
+    portalUrl: 'https://dash.cloudflare.com',
+    unlocksImage: ['Cloudflare Flux-1 Schnell'],
+    unlocksVideo: [],
+  },
+];
+
 function listMediaStudioCatalog(opts = {}) {
   const imgChain = resolveMediaChain({ ...opts, kind: 'image' });
   const vidChain = resolveMediaChain({ ...opts, kind: 'video' });
@@ -627,13 +718,13 @@ function listMediaStudioCatalog(opts = {}) {
 
   const imageModels = [
     { id: 'auto', label: 'Auto (Best Available AI)', provider: 'Akron Router', badge: 'Auto', available: true },
-    { id: 'grok-2-image', label: 'Grok 2 Image', provider: 'xAI Grok', badge: 'Grok', available: hasCand(imgChain, (c) => /grok|xai/i.test(c.model + c.backend)) },
-    { id: 'imagen-3.0-generate-002', label: 'Google Imagen 3', provider: 'Google Gemini', badge: 'Imagen 3', available: hasCand(imgChain, (c) => c.model === 'imagen-3.0-generate-002') },
-    { id: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash Image', provider: 'Google Gemini / Antigravity', badge: 'Gemini', available: hasCand(imgChain, (c) => c.model === 'gemini-2.5-flash-image') },
-    { id: 'gpt-image-1', label: 'OpenAI GPT-Image-1', provider: 'OpenAI / ChatGPT', badge: 'GPT-Image', available: hasCand(imgChain, (c) => c.model === 'gpt-image-1') },
-    { id: 'dall-e-3', label: 'OpenAI DALL·E 3', provider: 'OpenAI', badge: 'DALL·E 3', available: hasCand(imgChain, (c) => c.model === 'dall-e-3') },
-    { id: '@cf/black-forest-labs/flux-1-schnell', label: 'Cloudflare Flux-1 Schnell', provider: 'FreeLLMAPI / Cloudflare', badge: 'Workers AI', available: hasCand(imgChain, (c) => c.backend === 'cloudflare-flux') },
-    { id: 'flux-1.1-pro', label: 'Flux 1.1 Pro', provider: 'ElectronHub / Together / Replicate', badge: 'Flux Pro', available: hasCand(imgChain, (c) => /flux.*1\.1.*pro/i.test(c.model)) },
+    { id: 'grok-2-image', label: 'Grok 2 Image', provider: 'xAI Grok', badge: 'Grok', configKeyId: 'XAI_API_KEY', requiredKeyLabel: 'XAI_API_KEY', available: hasCand(imgChain, (c) => /grok|xai/i.test(c.model + c.backend)) },
+    { id: 'imagen-3.0-generate-002', label: 'Google Imagen 3', provider: 'Google Gemini', badge: 'Imagen 3', configKeyId: 'GEMINI_API_KEY', requiredKeyLabel: 'GEMINI_API_KEY', available: hasCand(imgChain, (c) => c.model === 'imagen-3.0-generate-002') },
+    { id: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash Image', provider: 'Google Gemini / Antigravity', badge: 'Gemini', configKeyId: 'GEMINI_API_KEY', requiredKeyLabel: 'GEMINI_API_KEY', available: hasCand(imgChain, (c) => c.model === 'gemini-2.5-flash-image') },
+    { id: 'gpt-image-1', label: 'OpenAI GPT-Image-1', provider: 'OpenAI / ChatGPT', badge: 'GPT-Image', configKeyId: 'OPENAI_API_KEY', requiredKeyLabel: 'OPENAI_API_KEY', available: hasCand(imgChain, (c) => c.model === 'gpt-image-1') },
+    { id: 'dall-e-3', label: 'OpenAI DALL·E 3', provider: 'OpenAI', badge: 'DALL·E 3', configKeyId: 'OPENAI_API_KEY', requiredKeyLabel: 'OPENAI_API_KEY', available: hasCand(imgChain, (c) => c.model === 'dall-e-3') },
+    { id: '@cf/black-forest-labs/flux-1-schnell', label: 'Cloudflare Flux-1 Schnell', provider: 'FreeLLMAPI / Cloudflare', badge: 'Workers AI', configKeyId: 'CLOUDFLARE_API_TOKEN', requiredKeyLabel: 'CLOUDFLARE_API_TOKEN', available: hasCand(imgChain, (c) => c.backend === 'cloudflare-flux') },
+    { id: 'flux-1.1-pro', label: 'Flux 1.1 Pro', provider: 'ElectronHub / Together / Replicate', badge: 'Flux Pro', configKeyId: 'TOGETHER_API_KEY', requiredKeyLabel: 'TOGETHER_API_KEY / REPLICATE_API_TOKEN', available: hasCand(imgChain, (c) => /flux[-.]?1\.1[-.]?pro/i.test(c.model)) },
     { id: 'flux-1-schnell', label: 'Flux 1 Schnell (Free AI)', provider: 'Pollinations Flux', badge: 'Free AI', available: true },
     { id: 'flux-realism', label: 'Flux Realism (Free AI)', provider: 'Pollinations Flux', badge: 'Photoreal', available: true },
     { id: 'flux-anime', label: 'Flux Anime (Free AI)', provider: 'Pollinations Flux', badge: 'Anime', available: true },
@@ -644,12 +735,12 @@ function listMediaStudioCatalog(opts = {}) {
   const videoModels = [
     { id: 'auto', label: 'Auto (Best Available Video)', provider: 'Akron Router', badge: 'Auto', available: true },
     { id: 'flux-cinema-720p', label: 'Flux AI Cinema Video (720p HD Free AI)', provider: 'Flux Keyframe + 30fps Cinema', badge: 'Free AI 720p', available: true },
-    { id: 'veo-2.0-generate-001', label: 'Google Veo 2 (Requires GEMINI_API_KEY)', provider: 'Google Gemini API', badge: 'Veo 2', available: hasCand(vidChain, (c) => /veo/i.test(c.model)) },
-    { id: 'sora', label: 'OpenAI Sora (Requires OPENAI_API_KEY)', provider: 'OpenAI API', badge: 'Sora', available: hasCand(vidChain, (c) => /sora/i.test(c.model)) },
-    { id: 'grok-2-video', label: 'Grok 2 Video (Requires XAI_API_KEY)', provider: 'xAI API', badge: 'Grok', available: hasCand(vidChain, (c) => /grok/i.test(c.model)) },
-    { id: 'wan-video/wan-2.1', label: 'Wan 2.1 Video (Requires FAL_KEY / REPLICATE)', provider: 'fal.ai / Replicate', badge: 'Wan 2.1', available: hasCand(vidChain, (c) => /wan/i.test(c.model)) },
-    { id: 'kling-v1.6', label: 'Kling 1.6 (Requires KLING_API_KEY)', provider: 'Kling AI', badge: 'Kling', available: hasCand(vidChain, (c) => /kling/i.test(c.model)) },
-    { id: 'ray-2', label: 'Luma Ray 2 (Requires LUMA_API_KEY)', provider: 'Luma Dream Machine', badge: 'Luma', available: hasCand(vidChain, (c) => /ray-2/i.test(c.model)) },
+    { id: 'veo-2.0-generate-001', label: 'Google Veo 2 (Requires GEMINI_API_KEY)', provider: 'Google Gemini API', badge: 'Veo 2', configKeyId: 'GEMINI_API_KEY', requiredKeyLabel: 'GEMINI_API_KEY', available: hasCand(vidChain, (c) => /veo/i.test(c.model)) },
+    { id: 'sora', label: 'OpenAI Sora (Requires OPENAI_API_KEY)', provider: 'OpenAI API', badge: 'Sora', configKeyId: 'OPENAI_API_KEY', requiredKeyLabel: 'OPENAI_API_KEY', available: hasCand(vidChain, (c) => /sora/i.test(c.model)) },
+    { id: 'grok-2-video', label: 'Grok 2 Video (Requires XAI_API_KEY)', provider: 'xAI API', badge: 'Grok', configKeyId: 'XAI_API_KEY', requiredKeyLabel: 'XAI_API_KEY', available: hasCand(vidChain, (c) => /grok/i.test(c.model)) },
+    { id: 'wan-video/wan-2.1', label: 'Wan 2.1 Video (Requires FAL_KEY / REPLICATE)', provider: 'fal.ai / Replicate', badge: 'Wan 2.1', configKeyId: 'FAL_KEY', requiredKeyLabel: 'FAL_KEY / REPLICATE_API_TOKEN', available: hasCand(vidChain, (c) => /wan/i.test(c.model)) },
+    { id: 'kling-v1.6', label: 'Kling 1.6 (Requires KLING_API_KEY)', provider: 'Kling AI', badge: 'Kling', configKeyId: 'KLING_API_KEY', requiredKeyLabel: 'KLING_API_KEY', available: hasCand(vidChain, (c) => /kling/i.test(c.model)) },
+    { id: 'ray-2', label: 'Luma Ray 2 (Requires LUMA_API_KEY)', provider: 'Luma Dream Machine', badge: 'Luma', configKeyId: 'LUMA_API_KEY', requiredKeyLabel: 'LUMA_API_KEY', available: hasCand(vidChain, (c) => /ray-2/i.test(c.model)) },
     { id: 'akron-motion-canvas-30fps', label: 'Akron 30fps Motion Studio (Offline)', provider: 'Built-in Local FFmpeg', badge: 'Offline 30fps', available: true },
   ];
 
@@ -678,5 +769,5 @@ module.exports = {
   ROLES, ROLE_LABEL, ROLE_TIER, normalizeRole, tierToRole, isModelAlias, aliasRole, aliasTier,
   poolsConfig, poolsActive, isGatewayCredentialReady, resolve, roleLimit, orchestratorFor, chainFor, hasImages,
   freellmPreset, summary, modelEntry, normBase, rotate,
-  resolveMediaChain, resolveMediaProvider, isTextOnlyModelId, listMediaStudioCatalog,
+  resolveMediaChain, resolveMediaProvider, isTextOnlyModelId, listMediaStudioCatalog, MEDIA_PROVIDER_KEYS,
 };

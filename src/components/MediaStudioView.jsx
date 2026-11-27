@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon.jsx';
-import { MediaDocCard } from './MediaDocCard.jsx';
+import { MediaDocCard, MediaModelPicker } from './MediaDocCard.jsx';
 
 const STYLE_PRESETS = [
   { id: '', label: 'Auto' },
@@ -12,7 +12,7 @@ const STYLE_PRESETS = [
   { id: 'vibrant anime studio key visual artwork', label: 'Anime Art' },
 ];
 
-export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onOpenInIde, setNotice, setError }) {
+export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onOpenInIde, onConfigureMediaKey, setNotice, setError }) {
   const [mode, setMode] = useState('image'); // 'image' | 'video' | 'library'
   const [imageModels, setImageModels] = useState([]);
   const [videoModels, setVideoModels] = useState([]);
@@ -45,8 +45,20 @@ export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onO
     try {
       const res = await window.autobot.mediaStudioCatalog({ cwd, provider });
       if (res && res.ok) {
-        setImageModels(res.imageModels || []);
-        setVideoModels(res.videoModels || []);
+        const imgs = res.imageModels || [];
+        const vids = res.videoModels || [];
+        setImageModels(imgs);
+        setVideoModels(vids);
+        setImgModel((prev) => {
+          if (prev === 'auto') return prev;
+          const hit = imgs.find((m) => m.id === prev);
+          return hit && hit.available === false ? 'auto' : prev;
+        });
+        setVidModel((prev) => {
+          if (prev === 'auto') return prev;
+          const hit = vids.find((m) => m.id === prev);
+          return hit && hit.available === false ? 'auto' : prev;
+        });
         setLibrary(res.library || []);
         if (res.libraryDir) setLibraryDir(res.libraryDir);
       }
@@ -55,6 +67,11 @@ export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onO
 
   useEffect(() => {
     loadCatalog();
+  }, [loadCatalog]);
+
+  useEffect(() => {
+    window.addEventListener('akron:media-keys-updated', loadCatalog);
+    return () => window.removeEventListener('akron:media-keys-updated', loadCatalog);
   }, [loadCatalog]);
 
   useEffect(() => {
@@ -87,8 +104,9 @@ export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onO
       if (res && res.ok) {
         if (setNotice) setNotice(`Generated image with ${res.model || imgModel}`);
         await loadCatalog();
-      } else if (setError) {
-        setError((res && res.error) || 'Image generation failed');
+      } else {
+        if (setError) setError((res && res.error) || 'Image generation failed');
+        if (res && res.needsApiKey && onConfigureMediaKey) onConfigureMediaKey(res.configKeyId || '');
       }
     } catch (e) {
       if (setError) setError((e && e.message) || String(e));
@@ -116,8 +134,9 @@ export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onO
       if (res && res.ok) {
         if (setNotice) setNotice(`Generated ${vidFormat.toUpperCase()} video with ${res.model || vidModel}`);
         await loadCatalog();
-      } else if (setError) {
-        setError((res && res.error) || 'Video generation failed');
+      } else {
+        if (setError) setError((res && res.error) || 'Video generation failed');
+        if (res && res.needsApiKey && onConfigureMediaKey) onConfigureMediaKey(res.configKeyId || '');
       }
     } catch (e) {
       if (setError) setError((e && e.message) || String(e));
@@ -160,6 +179,17 @@ export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onO
           </p>
         </div>
         <div className="media-doc-actions">
+          {onConfigureMediaKey && (
+            <button
+              type="button"
+              className="media-doc-btn"
+              onClick={() => onConfigureMediaKey('')}
+              title="Configure Image & Video API keys in Settings"
+              data-testid="media-studio-config-keys-btn"
+            >
+              <Icon name="Settings" size={12} /> Configure APIs
+            </button>
+          )}
           <button
             type="button"
             className="media-doc-btn"
@@ -209,15 +239,23 @@ export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onO
             ))}
           </div>
           <div className="media-studio-controls">
-            <div className="media-studio-field">
-              <label>Image Model (Grok / Gemini / OpenAI / Flux)</label>
-              <select value={imgModel} onChange={(e) => setImgModel(e.target.value)}>
-                {imageModels.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label} — {m.available ? `Available · ${m.badge}` : 'Needs API Key'}
-                  </option>
-                ))}
-              </select>
+            <div className="media-studio-field media-studio-field-model">
+              <div className="media-studio-field-head">
+                <label>Image Model (Grok / Gemini / OpenAI / Flux)</label>
+                {onConfigureMediaKey && (
+                  <button type="button" className="media-field-config-link" onClick={() => onConfigureMediaKey('')}>
+                    Config APIs →
+                  </button>
+                )}
+              </div>
+              <MediaModelPicker
+                models={imageModels}
+                value={imgModel}
+                onChange={setImgModel}
+                onConfigure={onConfigureMediaKey}
+                unconfiguredLabel="Needs API Key"
+                testIdPrefix="image-model"
+              />
             </div>
             <div className="media-studio-field">
               <label>Aspect Ratio</label>
@@ -263,15 +301,23 @@ export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onO
             }}
           />
           <div className="media-studio-controls">
-            <div className="media-studio-field">
-              <label>Video Model (Veo 2 / Sora / Grok / Studio)</label>
-              <select value={vidModel} onChange={(e) => setVidModel(e.target.value)}>
-                {videoModels.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label} — {m.available ? `Available · ${m.badge}` : 'Needs API Key'}
-                  </option>
-                ))}
-              </select>
+            <div className="media-studio-field media-studio-field-model">
+              <div className="media-studio-field-head">
+                <label>Video Model (Veo 2 / Sora / Grok / Studio)</label>
+                {onConfigureMediaKey && (
+                  <button type="button" className="media-field-config-link" onClick={() => onConfigureMediaKey('')}>
+                    Config APIs →
+                  </button>
+                )}
+              </div>
+              <MediaModelPicker
+                models={videoModels}
+                value={vidModel}
+                onChange={setVidModel}
+                onConfigure={onConfigureMediaKey}
+                unconfiguredLabel="Needs API Key"
+                testIdPrefix="video-model"
+              />
             </div>
             <div className="media-studio-field">
               <label>Animate Source Image (Optional)</label>
@@ -353,6 +399,7 @@ export function MediaStudioView({ cwd = '', provider = null, focusPath = '', onO
               }}
               cwd={item.cwd || cwd}
               onOpenInIde={onOpenInIde}
+              onConfigureMediaKey={onConfigureMediaKey}
               onAnimateImage={(fp) => {
                 setVidSourceImage(fp);
                 setMode('video');

@@ -305,8 +305,15 @@ export default function App() {
   const [sessionPane, setSessionPane] = useState({ type: null, width: 480 }); // type: null | 'browser' | 'env' | 'runlog' | 'review' | 'subagents' | 'files' | 'terminal'
   const [openPaneTabs, setOpenPaneTabs] = useState(['review']);
   const [settingsInitialSection, setSettingsInitialSection] = useState('providers');
-  const openSettingsAt = useCallback((sec = 'providers') => {
-    setSettingsInitialSection(sec || 'providers');
+  const [settingsFocusMediaKey, setSettingsFocusMediaKey] = useState('');
+  const openSettingsAt = useCallback((sec = 'providers', opts = {}) => {
+    if (sec && typeof sec === 'object') {
+      setSettingsInitialSection(sec.section || 'providers');
+      setSettingsFocusMediaKey(sec.focusMediaKey || '');
+    } else {
+      setSettingsInitialSection(sec || 'providers');
+      setSettingsFocusMediaKey((opts && opts.focusMediaKey) || '');
+    }
     setShowSettings(true);
   }, []);
   const lastPaneRef = useRef('review');
@@ -2791,7 +2798,7 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} uiSettings={settings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} />}
+              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} uiSettings={settings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} />}
               {panel === 'search' && <SearchView convs={convs} cwd={cwd} initialTab={searchTab} provider={provider} onOpenSessionLink={openSessionDeepLink} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'mission' && (
                 <MissionControlPane
@@ -2822,8 +2829,8 @@ export default function App() {
                   Icon={Icon}
                 />
               )}
-              {panel === 'artifacts' && <ArtifactsView blocks={artifacts} tools={allActiveTools} cwd={cwd} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } setPanel('chats'); }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} />}
-              {panel === 'media' && <MediaStudioView cwd={cwd} provider={provider} focusPath={mediaStudioFocusPath} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} setNotice={setNotice} setError={setError} />}
+              {panel === 'artifacts' && <ArtifactsView blocks={artifacts} tools={allActiveTools} cwd={cwd} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } setPanel('chats'); }} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} />}
+              {panel === 'media' && <MediaStudioView cwd={cwd} provider={provider} focusPath={mediaStudioFocusPath} onOpenInIde={(fp) => { setIdeExternalOpenFile(fp); setWorkbenchMode('ide'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} setNotice={setNotice} setError={setError} />}
               {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} convs={convs} provider={provider} onJumpToMessage={(cid, mid) => { if (cid) selectConv(cid); if (mid) setPendingScroll(mid); }} />}
               {panel === 'skills' && <SkillsView skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills} />}
               {panel === 'notebooks' && <NotebooksView notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells} openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook} />}
@@ -3016,6 +3023,7 @@ export default function App() {
           compliance={compliance} setCompliance={setCompliance}
           pendingPreset={pendingPreset} clearPendingPreset={() => setPendingPreset(null)}
           initialSection={settingsInitialSection}
+          focusMediaKey={settingsFocusMediaKey}
           skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills}
           mcpServers={mcpServers} mcpForm={mcpForm} setMcpForm={setMcpForm} connectMcp={connectMcp} disconnectMcp={disconnectMcp}
           memory={memory} addMemory={addMemory} clearMemory={clearMemory} convs={convs}
@@ -3104,7 +3112,7 @@ function SegmentView({ segments, tools, streaming }) {
   });
 }
 
-function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, taskCount = 0, uiSettings = {}, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, onOpenReview, onOpenSubagents, onOpenRunLog, onPromptAction, onOpenInIde, onOpenMediaStudio }) {
+function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, taskCount = 0, uiSettings = {}, copyMessage, editMessage, deleteMessage, retryMessage, forkFromMessage, shareFromMessage, onOpenReview, onOpenSubagents, onOpenRunLog, onPromptAction, onOpenInIde, onOpenMediaStudio, onConfigureMediaKey }) {
   const [copied, setCopied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const shareRef = useRef(null);
@@ -3169,7 +3177,7 @@ function Message({ m, convId, cwd = '', idx, turnLabel = '', subAgentCount = 0, 
           <LiveChecklistCard tools={m.tools} durationMs={m.durationMs} streaming={false} Icon={Icon} />
         )}
         {m.role === 'assistant' && (
-          <MediaDocCardList tools={m.tools} content={m.content} cwd={cwd} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} onOpenMediaStudio={onOpenMediaStudio} />
+          <MediaDocCardList tools={m.tools} content={m.content} cwd={cwd} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} onOpenMediaStudio={onOpenMediaStudio} onConfigureMediaKey={onConfigureMediaKey} />
         )}
         {m.role === 'assistant' && (
           <FilesChangedBar tools={m.tools} checkpoints={m.checkpoints} checkpointId={m.checkpointId} turnLabel={turnLabel} convId={convId} subAgentCount={subAgentCount} taskCount={taskCount} onOpenReview={onOpenReview} onOpenSubagents={onOpenSubagents} onOpenRunLog={onOpenRunLog} streaming={false} Icon={Icon} />
@@ -3338,6 +3346,7 @@ function InputBar(props) {
 const SETTINGS_SECTIONS = [
   { id: 'providers', group: 'ai', label: 'Models & Providers', icon: 'Sparkles', sub: 'Primary endpoints, presets, local Ollama, and subscription sign-in.', keys: 'model provider ollama api key preset subscription oauth temperature token limits' },
   { id: 'orchestrator', group: 'ai', label: 'Orchestrator & Pools', icon: 'Orbit', sub: 'DeepSeek Harness profiles, multi-model failover tiers, and role pools.', keys: 'orchestrator pool planner coder vision fast longctx failover swarm profile harness' },
+  { id: 'media', group: 'ai', label: 'Images & Video APIs', icon: 'Palette', sub: 'API keys for Imagen 3, Veo 2, GPT-Image-1, Sora, Grok, Wan 2.1, Kling, Luma & Flux.', keys: 'image video studio api key gemini imagen veo openai gpt-image dalle sora xai grok fal replicate wan kling luma cloudflare together flux media' },
   { id: 'notifications', group: 'ai', label: 'Notifications', icon: 'Notification', sub: 'Choose when to receive desktop notifications and hear synthesized sounds.', keys: 'notifications sound chime staplebops alert agent permissions questions errors' },
   { id: 'project', group: 'workspace', label: 'Project & Budget', icon: 'Folder', sub: 'Per-project profile, workspace instructions, and 20,000-token customizations budget.', keys: 'project token budget global demote rules workspace' },
   { id: 'migrate', group: 'workspace', label: 'Import & Migrate', icon: 'Download', sub: '1-click read-only import from Cursor, Claude Code & VS Code.', keys: 'migrate import cursor claude vscode rules mcp' },

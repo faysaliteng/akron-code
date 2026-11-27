@@ -7,7 +7,7 @@ import { useVoiceDictation } from '../../voice';
 import { PRESETS, PRESET_KEYS, useDismiss, SOUND_PRESETS, playUiSound, sendDesktopNotification, HARNESS_PROFILES } from '../../utils/appHelpers.jsx';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel.jsx';
 import { MigrationWizard } from './MigrationWizard.jsx';
-import { AutoSwitchBrainSection, FreeLLMAPISection, ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection } from './ExtendedSettingsPanels.jsx';
+import { AutoSwitchBrainSection, FreeLLMAPISection, ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSection, ModelsAndLimitsSection, GiveFeedbackSection, MediaStudioApiKeysSection } from './ExtendedSettingsPanels.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from '../../features/WorkspacePanels.jsx';
 import { SkillsViewBody, PluginsViewBody } from '../chat/WorkspaceViews.jsx';
 import {
@@ -19,7 +19,7 @@ import {
 export function SettingsModalBody({
   provider, setProvider, providerKeys, setProviderKeys, settings, setSettings, orchestrator, setOrchestrator,
   features, setFeatures, testProvider, onClose, T, permissions, setPermissions, compliance, setCompliance,
-  pendingPreset, clearPendingPreset, initialSection = 'providers', SETTINGS_SECTIONS = [], AboutSectionComponent = null, renderAboutSection = null,
+  pendingPreset, clearPendingPreset, initialSection = 'providers', focusMediaKey = '', SETTINGS_SECTIONS = [], AboutSectionComponent = null, renderAboutSection = null,
   skills = [], toggleSkill, setAllSkills, refreshSkills,
   mcpServers = [], mcpForm, setMcpForm, connectMcp, disconnectMcp,
   memory = [], addMemory, clearMemory, convs = [], onJumpToMessage,
@@ -199,6 +199,7 @@ export function SettingsModalBody({
     if (id === 'providers') return provider.model ? '' : 'Setup';
     if (id === 'notifications') return notifCfg.agent ? 'On' : 'Off';
     if (id === 'orchestrator') return (orchestrator.pools && orchestrator.pools.enabled) ? 'Pools' : (orchestrator.enabled ? 'On' : '');
+    if (id === 'media') return 'Studio';
     if (id === 'environments') return envState && envState.active && envState.active.kind !== 'local' ? envState.active.kind.toUpperCase() : 'Local';
     if (id === 'worktrees') return wtInfo.worktrees && wtInfo.worktrees.length ? `${wtInfo.worktrees.length}` : '';
     if (id === 'skills') { const n = skills.filter((s) => s.enabled !== false).length; return n > 0 ? `${n}` : ''; }
@@ -357,9 +358,25 @@ export function SettingsModalBody({
                 <FreeLLMAPISection settings={settings} setSettings={setSettings} orchestrator={orchestrator} saveOrch={saveOrch} setNotice={setNotice} onOpenBrowserUrl={onOpenBrowserUrl} />
 
                 <div className="settings-card">
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                    <div>
+                      <h3 style={{ margin: 0 }}><Icon name="Palette" size={14} /> Images &amp; Video Studio APIs</h3>
+                      <p className="muted" style={{ margin: '4px 0 0' }}>Configure GEMINI_API_KEY, OPENAI_API_KEY, XAI_API_KEY, FAL_KEY, Replicate, Kling, Luma &amp; Cloudflare for premium image/video models.</p>
+                    </div>
+                    <button type="button" className="btn-mini primary" onClick={() => setSection('media')}>
+                      Configure →
+                    </button>
+                  </div>
+                </div>
+
+                <div className="settings-card">
                   <AccountSection T={T} provider={provider} setProvider={setProvider} />
                 </div>
               </>
+            )}
+
+            {section === 'media' && (
+              <MediaStudioApiKeysSection focusKeyId={focusMediaKey} setNotice={setNotice} onOpenBrowserUrl={onOpenBrowserUrl} />
             )}
 
             {section === 'notifications' && (

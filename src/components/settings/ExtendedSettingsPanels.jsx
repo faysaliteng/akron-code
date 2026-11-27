@@ -1296,3 +1296,216 @@ export function GiveFeedbackSection({ settings, provider, setNotice }) {
     </div>
   );
 }
+
+export function MediaStudioApiKeysSection({ focusKeyId = '', setNotice, onOpenBrowserUrl }) {
+  const [providers, setProviders] = useState([]);
+  const [drafts, setDrafts] = useState({});
+  const [extraDrafts, setExtraDrafts] = useState({});
+  const [savingId, setSavingId] = useState('');
+  const [loading, setLoading] = useState(true);
+  const inputRefs = React.useRef({});
+  const cardRefs = React.useRef({});
+
+  const refresh = React.useCallback(async () => {
+    if (!window.autobot || typeof window.autobot.mediaKeysGet !== 'function') {
+      setLoading(false);
+      return;
+    }
+    try {
+      const res = await window.autobot.mediaKeysGet();
+      if (res && res.ok && Array.isArray(res.providers)) {
+        setProviders(res.providers);
+        setExtraDrafts((prev) => {
+          const next = { ...prev };
+          for (const p of res.providers) {
+            if (p.extraField && p.extraField.id && next[p.extraField.id] === undefined) {
+              next[p.extraField.id] = p.extraValue || '';
+            }
+          }
+          return next;
+        });
+      }
+    } catch (_) {}
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!focusKeyId || loading) return;
+    const t = setTimeout(() => {
+      const card = cardRefs.current[focusKeyId];
+      const inp = inputRefs.current[focusKeyId];
+      if (card && typeof card.scrollIntoView === 'function') {
+        try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
+      }
+      if (inp && typeof inp.focus === 'function') {
+        try { inp.focus(); } catch (_) {}
+      }
+    }, 60);
+    return () => clearTimeout(t);
+  }, [focusKeyId, loading, providers.length]);
+
+  const handleSave = async (spec) => {
+    if (!window.autobot || typeof window.autobot.mediaKeysSave !== 'function') return;
+    const keyVal = String(drafts[spec.id] || '').trim();
+    const extraId = spec.extraField && spec.extraField.id;
+    const extraVal = extraId ? String(extraDrafts[extraId] || '').trim() : '';
+    if (!keyVal && (!extraId || !extraVal)) {
+      if (setNotice) setNotice(`Paste an API key for ${spec.label} first.`);
+      return;
+    }
+    setSavingId(spec.id);
+    try {
+      const keys = {};
+      if (keyVal) keys[spec.id] = keyVal;
+      if (extraId && extraVal) keys[extraId] = extraVal;
+      const res = await window.autobot.mediaKeysSave({ keys });
+      if (res && res.ok) {
+        if (Array.isArray(res.providers)) setProviders(res.providers);
+        setDrafts((prev) => ({ ...prev, [spec.id]: '' }));
+        try { window.dispatchEvent(new CustomEvent('akron:media-keys-updated', { detail: res })); } catch (_) {}
+        if (setNotice) setNotice(`Saved ${spec.envVar} — Image & Video Studio models unlocked!`);
+      }
+    } finally {
+      setSavingId('');
+    }
+  };
+
+  const handleClear = async (spec) => {
+    if (!window.autobot || typeof window.autobot.mediaKeysSave !== 'function') return;
+    setSavingId(spec.id);
+    try {
+      const clearKeys = [spec.id];
+      if (spec.extraField && spec.extraField.id) clearKeys.push(spec.extraField.id);
+      const res = await window.autobot.mediaKeysSave({ clearKeys });
+      if (res && res.ok) {
+        if (Array.isArray(res.providers)) setProviders(res.providers);
+        setDrafts((prev) => ({ ...prev, [spec.id]: '' }));
+        if (spec.extraField && spec.extraField.id) {
+          setExtraDrafts((prev) => ({ ...prev, [spec.extraField.id]: '' }));
+        }
+        try { window.dispatchEvent(new CustomEvent('akron:media-keys-updated', { detail: res })); } catch (_) {}
+        if (setNotice) setNotice(`Removed saved ${spec.envVar} key.`);
+      }
+    } finally {
+      setSavingId('');
+    }
+  };
+
+  const configuredCount = providers.filter((p) => p.hasKey).length;
+
+  return (
+    <div className="media-keys-section" data-testid="media-studio-api-keys-section">
+      <div className="settings-card">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+          <h3 style={{ margin: 0 }}><Icon name="Palette" size={14} /> Images &amp; Video Generation API Keys</h3>
+          <span className={'media-key-pill ' + (configuredCount > 0 ? 'ok' : 'muted')}>
+            {configuredCount}/{providers.length} configured
+          </span>
+        </div>
+        <p className="muted" style={{ marginTop: 6, marginBottom: 0 }}>
+          Premium image &amp; video models (Google Imagen 3, Veo 2, OpenAI GPT-Image-1 / Sora, xAI Grok, fal.ai Wan 2.1, Replicate Flux 1.1 Pro, Kling, Luma, Cloudflare) require provider API keys (chat OAuth subscriptions do not mint media assets). Keys are stored encrypted in <code>~/.autobot/secrets.json</code>. Free AI Flux &amp; Offline Studio models work without keys.
+        </p>
+      </div>
+
+      <div className="media-keys-grid">
+        {providers.map((spec) => {
+          const isFocused = Boolean(focusKeyId && (spec.id === focusKeyId || (spec.extraField && spec.extraField.id === focusKeyId)));
+          const extraId = spec.extraField && spec.extraField.id;
+          return (
+            <div
+              key={spec.id}
+              ref={(el) => { cardRefs.current[spec.id] = el; }}
+              className={'settings-card media-key-card' + (isFocused ? ' is-focused' : '')}
+              data-testid={`media-key-card-${spec.id}`}
+            >
+              <div className="media-key-card-head">
+                <div>
+                  <div className="media-key-card-title">{spec.label}</div>
+                  <div className="media-key-card-env"><code>{spec.envVar}</code></div>
+                </div>
+                <span className={'media-key-pill ' + (spec.hasKey ? 'ok' : 'needs')}>
+                  {spec.hasKey ? `Configured · ${spec.keyHint || 'Set'}` : 'Needs API Key'}
+                </span>
+              </div>
+
+              {(spec.unlocksImage?.length > 0 || spec.unlocksVideo?.length > 0) && (
+                <div className="media-key-unlocks">
+                  {(spec.unlocksImage || []).map((m) => (
+                    <span key={'i:' + m} className="media-key-chip">Image: {m}</span>
+                  ))}
+                  {(spec.unlocksVideo || []).map((m) => (
+                    <span key={'v:' + m} className="media-key-chip">Video: {m}</span>
+                  ))}
+                </div>
+              )}
+
+              <div className="media-key-inputs">
+                <input
+                  ref={(el) => { inputRefs.current[spec.id] = el; }}
+                  type="password"
+                  value={drafts[spec.id] || ''}
+                  onChange={(e) => setDrafts((prev) => ({ ...prev, [spec.id]: e.target.value }))}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSave(spec); }}
+                  placeholder={spec.rawKeySet ? `Saved (${spec.keyHint}) — paste new key to replace…` : `Paste ${spec.envVar} (${spec.placeholder})`}
+                  data-testid={`media-key-input-${spec.id}`}
+                />
+                {extraId && (
+                  <input
+                    type="text"
+                    value={extraDrafts[extraId] || ''}
+                    onChange={(e) => setExtraDrafts((prev) => ({ ...prev, [extraId]: e.target.value }))}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleSave(spec); }}
+                    placeholder={spec.extraField.placeholder || extraId}
+                    data-testid={`media-key-extra-${extraId}`}
+                  />
+                )}
+              </div>
+
+              <div className="media-key-actions">
+                <button
+                  type="button"
+                  className="btn-mini primary"
+                  disabled={savingId === spec.id}
+                  onClick={() => handleSave(spec)}
+                  data-testid={`media-key-save-${spec.id}`}
+                >
+                  {savingId === spec.id ? 'Saving…' : 'Save API Key'}
+                </button>
+                {spec.source === 'secretstore' && (
+                  <button
+                    type="button"
+                    className="btn-mini"
+                    disabled={savingId === spec.id}
+                    onClick={() => handleClear(spec)}
+                    data-testid={`media-key-clear-${spec.id}`}
+                  >
+                    Clear
+                  </button>
+                )}
+                {spec.portalUrl && (
+                  <button
+                    type="button"
+                    className="btn-mini"
+                    onClick={() => {
+                      if (window.autobot && typeof window.autobot.openExternal === 'function') {
+                        window.autobot.openExternal(spec.portalUrl);
+                      } else if (onOpenBrowserUrl) {
+                        onOpenBrowserUrl(spec.portalUrl);
+                      }
+                    }}
+                  >
+                    Get API Key ↗
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
