@@ -514,8 +514,23 @@ async function listTabs() {
 
 async function callTool(tool, args = {}, tabId) {
   if (tool === 'list_tabs') {
-    const tabs = await listTabs();
-    return { text: tabs.map((t) => `[${t.id}]${t.active ? ' *' : ''} ${t.title} — ${t.url}`).join('\n') || '(no open tabs)', tabs };
+    let tabs = await listTabs();
+    const activeOnly = Boolean(args && args.activeOnly);
+    const currentWindowOnly = Boolean(args && args.currentWindowOnly);
+    if (activeOnly) {
+      tabs = tabs.filter((t) => t && t.active);
+    } else if (currentWindowOnly) {
+      const refTab = (Number.isInteger(tabId) && tabs.find((t) => t && t.id === tabId))
+        || tabs.find((t) => t && t.active)
+        || tabs[0];
+      if (refTab && refTab.windowId != null) {
+        tabs = tabs.filter((t) => t && t.windowId === refTab.windowId);
+      }
+    }
+    return {
+      text: tabs.map((t) => `[${t.id}]${t.windowId != null ? `(w:${t.windowId})` : ''}${t.active ? ' *' : ''} ${t.title} — ${t.url}`).join('\n') || '(no open tabs)',
+      tabs,
+    };
   }
   const payload = { type: 'ext_tool', tool, args };
   if (Number.isInteger(tabId)) payload.tabId = tabId;

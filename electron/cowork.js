@@ -101,6 +101,14 @@ function registerWorker(name, opts = {}) {
   return workers.get(name);
 }
 
+function unregisterWorker(name) {
+  return workers.delete(String(name || ''));
+}
+
+function clearWorkers() {
+  workers.clear();
+}
+
 function listWorkers() {
   return [...workers.values()].map((w) => ({
     name: w.name, status: w.status, goal: w.goal, lastRun: w.lastRun,
@@ -335,6 +343,6 @@ function ccdDrain() { const r = [...ccdQueue]; ccdQueue.length = 0; return r; }
 
 module.exports = {
   startBridge, registerBridge, stopBridge, bridgePort: () => bridgePort,
-  registerWorker, listWorkers, orchestrate,
+  registerWorker, unregisterWorker, clearWorkers, listWorkers, orchestrate,
   ccdSubmit, ccdList, ccdDrain,
 };

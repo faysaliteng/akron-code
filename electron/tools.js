@@ -2,7 +2,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { exec, execFileSync, spawn } = require('child_process');
+const { exec, execFile, execFileSync, spawn } = require('child_process');
 const store = require('./store');
 const visualize = require('./visualize');
 const computer = require('./computer');
@@ -974,11 +974,12 @@ const executors = {
     if (!r.ok) return 'Error: ' + r.error;
     return `Updated scheduled task ${r.task.id} [${r.task.schedule}].`;
   },
-  async scheduled_tasks_delete_scheduled_task({ id, taskId } = {}) {
+  async scheduled_tasks_delete_scheduled_task({ id, taskId, keepSkillFile } = {}) {
     const target = id || taskId;
-    const r = scheduler.remove(target);
+    const purge = keepSkillFile !== true;
+    const r = scheduler.remove(target, { purge });
     if (!r.ok) return 'Error: ' + r.error;
-    return `Deleted scheduled task ${target}.${r.skillPath ? ` Its SKILL.md was preserved at ${r.skillPath}.` : ''}`;
+    return `Deleted scheduled task ${target}.${r.purged ? ' Removed its SKILL.md folder.' : (r.skillPath ? ` Its SKILL.md was preserved at ${r.skillPath}.` : '')}`;
   },
   async scheduled_tasks_run_scheduled_task({ id, taskId } = {}) {
     const target = id || taskId;
@@ -1202,20 +1203,28 @@ const executors = {
 function runCode(lang, code, cwd, timeoutMs) {
   return new Promise((resolve) => {
     const t = Math.min(timeoutMs || 60000, 120000);
-    let cmd;
+    const src = String(code == null ? '' : code);
+    const pathsMod = require('./paths');
+    let bin, argv;
     if (lang === 'javascript' || lang === 'js' || lang === 'node') {
-      cmd = 'node -e ' + JSON.stringify(String(code));
+      bin = pathsMod.resolveNodeBinary() || 'node';
+      argv = ['-e', src];
     } else if (lang === 'python' || lang === 'py' || lang === 'python3') {
-      cmd = (process.platform === 'win32' ? 'python' : 'python3') + ' -c ' + JSON.stringify(String(code));
+      bin = process.platform === 'win32' ? 'python' : 'python3';
+      argv = ['-c', src];
     } else if (lang === 'bash' || lang === 'sh' || lang === 'shell') {
-      cmd = process.platform === 'win32'
-        ? 'powershell.exe -NoLogo -NoProfile -NonInteractive -Command ' + JSON.stringify(String(code))
-        : require('./paths').defaultPosixShell() + ' -c ' + JSON.stringify(String(code));
+      if (process.platform === 'win32') {
+        bin = 'powershell.exe';
+        argv = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', src];
+      } else {
+        bin = pathsMod.defaultPosixShell();
+        argv = ['-c', src];
+      }
     } else {
       resolve(`Unsupported REPL language "${lang}". Supported: javascript/node, python, bash/shell.`);
       return;
     }
-    exec(cmd, { cwd: resolveDir(cwd), env: bundledNodePathEnv(), timeout: t, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+    execFile(bin, argv, { cwd: resolveDir(cwd), env: bundledNodePathEnv(), timeout: t, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
       let out = '';
       if (stdout) out += stdout;
       if (stderr) out += (out ? '\n[stderr]\n' : '') + stderr;
@@ -1332,6 +1341,7 @@ const toolDefinitions = [
 
   // ---- Cowork orchestration ----
   { name: 'mcp__cowork__register_worker', description: '[cowork] Register a cowork worker (a sub-agent). Optionally pin it to its own model endpoint (baseURL + model + apiKey) and tier (small/heavy/critical) so different workers run on different backends (e.g. NVIDIA NIM vs local Ollama Gemma).', parameters: { type: 'object', properties: { name: { type: 'string' }, goal: { type: 'string' }, baseURL: { type: 'string', description: 'OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1 or http://127.0.0.1:11434/v1' }, model: { type: 'string', description: 'Model id for this worker, e.g. nvidia/nemotron-3.5-bolt-e4b or gemma4:latest' }, apiKey: { type: 'string', description: 'API key for this worker (omit for local endpoints)' }, tier: { type: 'string', enum: ['small', 'heavy', 'critical'] }, supportsTools: { type: 'boolean' }, systemPrompt: { type: 'string' } }, required: ['name'] } },
+  { name: 'mcp__cowork__unregister_worker', description: '[cowork] Unregister (remove) a cowork worker by name.', parameters: { type: 'object', properties: { name: { type: 'string', description: 'Registered worker name to remove' } }, required: ['name'] } },
   { name: 'mcp__cowork__list_workers', description: '[cowork] List registered cowork workers.', parameters: { type: 'object', properties: {} } },
   { name: 'mcp__cowork__orchestrate', description: '[cowork] Fan work out to named workers (sub-agents) in parallel and return their results. Pass a single `goal` shared by all workers, or `tasks` with a DISTINCT prompt per worker so each agent does different work. Each entry of `workers` may be a name or an object {name, baseURL, model, apiKey, tier} to run that worker on a specific backend for this call.', parameters: { type: 'object', properties: { goal: { type: 'string', description: 'Shared goal when every worker gets the same prompt' }, tasks: { type: 'array', description: 'Distinct per-worker work: [{worker?, name?, title?, prompt, tier?, model?}]', items: { type: 'object', properties: { worker: { type: 'string' }, name: { type: 'string' }, title: { type: 'string' }, prompt: { type: 'string' }, tier: { type: 'string' }, model: { type: 'string' } } } }, workers: { type: 'array', items: { type: ['string', 'object'] }, description: 'Worker names, or {name, baseURL, model, apiKey, tier} objects' }, concurrency: { type: 'number' }, maxSteps: { type: 'number' } } } },
   { name: 'mcp__ccd_submit', description: '[ccd] Submit a task to the cloud cowork daemon (CCD) queue.', parameters: { type: 'object', properties: { task: { type: 'string' } }, required: ['task'] } },
@@ -1412,6 +1422,8 @@ const toolDefinitions = [
         text: { type: 'string' },
         key: { type: 'string' },
         expression: { type: 'string' },
+        activeOnly: { type: 'boolean', description: 'For list_tabs: return only the active tab(s)' },
+        currentWindowOnly: { type: 'boolean', description: 'For list_tabs: limit tabs to the active browser window' },
       },
       required: ['action'],
     },
@@ -1945,8 +1957,21 @@ async function runToolInner(name, args, ctx) {
   // ---- Visualize (charts) ----
   if (name === 'mcp__visualize__visualize') {
     const chart = visualize.render(args);
-    if (createArtifact) createArtifact({ name: chart.title || 'chart', language: 'svg', content: chart.svg });
-    return `Rendered ${chart.type} chart "${chart.title}" as an SVG artifact (${chart.svg.length} chars).`;
+    const rawTitle = String(chart.title || 'chart').replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'chart';
+    const artName = args && args.path
+      ? String(args.path)
+      : path.join('.autobot', 'artifacts', `${rawTitle}.svg`);
+    let savedMsg = '';
+    if (createArtifact) {
+      const r = createArtifact({ name: artName, language: 'svg', content: chart.svg });
+      if (typeof r === 'string' && r.trim()) savedMsg = ` ${r}`;
+    } else if (ctx.cwd) {
+      const outFp = path.resolve(ctx.cwd, artName);
+      fs.mkdirSync(path.dirname(outFp), { recursive: true });
+      fs.writeFileSync(outFp, chart.svg, 'utf8');
+      savedMsg = ` Saved to ${outFp}.`;
+    }
+    return `Rendered ${chart.type} chart "${chart.title}" as an SVG artifact (${chart.svg.length} chars).${savedMsg}`;
   }
 
   // ---- Cowork orchestration (needs agent runner + provider) ----
@@ -1966,6 +1991,12 @@ async function runToolInner(name, args, ctx) {
     });
     const pin = w.model ? ` pinned to ${w.model} @ ${w.baseURL}` : ' (uses the active provider)';
     return `Registered cowork worker "${args.name}"${pin}${w.tier ? ' [' + w.tier + ' tier]' : ''}.`;
+  }
+  if (name === 'mcp__cowork__unregister_worker') {
+    if (!args.name) return 'Error: worker name required.';
+    return cowork.unregisterWorker(args.name)
+      ? `Unregistered cowork worker "${args.name}".`
+      : `No cowork worker named "${args.name}".`;
   }
   if (name === 'mcp__cowork__list_workers') {
     const ws = cowork.listWorkers();
@@ -2039,6 +2070,55 @@ async function runToolInner(name, args, ctx) {
       const mergedArgs = { ...(nested && typeof nested === 'object' ? nested : {}), ...rest };
       const tabId = Number.isInteger(rawTab) ? rawTab : undefined;
       const out = await bridge.callTool(action, mergedArgs, tabId);
+      if (action === 'screenshot') {
+        const rawDataUrl = (out && typeof out === 'object' && (out.dataUrl || out.imageDataUrl || out.data_url || out.screenshot))
+          || (typeof out === 'string' && out.startsWith('data:image/') ? out : '');
+        const rawB64 = !rawDataUrl && out && typeof out === 'object' ? (out.base64 || out.data || '') : '';
+        const b64Match = /^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/s.exec(String(rawDataUrl || ''));
+        const b64Data = b64Match ? b64Match[2] : (typeof rawB64 === 'string' ? rawB64.replace(/\s+/g, '') : '');
+        if (b64Data) {
+          const buf = Buffer.from(b64Data, 'base64');
+          const mime = b64Match ? b64Match[1] : 'image/png';
+          const ext = /jpeg|jpg/i.test(mime) ? 'jpg' : (/webp/i.test(mime) ? 'webp' : 'png');
+          const savedPath = mergedArgs.path
+            ? resolvePath(mergedArgs.path, ctx.cwd)
+            : path.join(os.homedir(), '.autobot', 'media-cache', `ext-screenshot-${Date.now()}.${ext}`);
+          fs.mkdirSync(path.dirname(savedPath), { recursive: true });
+          fs.writeFileSync(savedPath, buf);
+          let width = (out && typeof out === 'object' && Number(out.width)) || 0;
+          let height = (out && typeof out === 'object' && Number(out.height)) || 0;
+          if (!width && buf.length >= 24 && buf[0] === 0x89 && buf[1] === 0x50) {
+            width = buf.readUInt32BE(16);
+            height = buf.readUInt32BE(20);
+          }
+          const dataUrl = b64Match ? rawDataUrl : `data:${mime};base64,${b64Data}`;
+          if (typeof ctx.emit === 'function') {
+            try {
+              ctx.emit({
+                type: 'mediaArtifact',
+                kind: 'image',
+                files: [savedPath],
+                cachePath: savedPath,
+                previewDataUrl: dataUrl,
+                width,
+                height,
+                format: ext,
+              });
+            } catch (_) {}
+          }
+          return {
+            content: JSON.stringify({
+              ok: true,
+              path: savedPath,
+              width,
+              height,
+              tabId: tabId != null ? tabId : (out && out.tabId != null ? out.tabId : null),
+              summary: `Screenshot saved to ${savedPath}`,
+            }, null, 2),
+            imageDataUrl: dataUrl,
+          };
+        }
+      }
       const textOut = (out && typeof out === 'object' && typeof out.text === 'string')
         ? out.text
         : (typeof out === 'string' ? out : JSON.stringify(out, null, 2));

@@ -91,8 +91,29 @@ exports.default = async function afterPackHardenFuses(context) {
   });
 
   if (platform === 'darwin') {
-    console.log(`[harden-fuses] Re-signing macOS bundle ad-hoc for Apple Silicon AMFI: ${targetPath}`);
-    execFileSync('codesign', ['--force', '--deep', '--sign', '-', targetPath], { stdio: 'inherit' });
+    // A stable signing identity keeps the macOS TCC grants (Screen Recording,
+    // Accessibility) valid across rebuilds; ad-hoc signatures change their
+    // code hash every build, so macOS silently drops the grants each time.
+    const ident = process.env.AKRON_SIGN_IDENTITY || 'Akron Code Local Signing';
+    let haveIdent = false;
+    try {
+      haveIdent = execFileSync('security', ['find-identity', '-p', 'codesigning'], { encoding: 'utf8' }).includes(`"${ident}"`);
+    } catch (_) { haveIdent = false; }
+    const signAs = haveIdent ? ident : '-';
+    const entPath = path.resolve(__dirname, '..', 'build', 'entitlements.mac.plist');
+    console.log(`[harden-fuses] Re-signing macOS bundle (${haveIdent ? ident : 'ad-hoc'}): ${targetPath}`);
+    execFileSync('codesign', ['--force', '--deep', '--sign', signAs, targetPath], { stdio: 'inherit' });
+    if (fs.existsSync(entPath)) {
+      const fwDir = path.join(targetPath, 'Contents', 'Frameworks');
+      if (fs.existsSync(fwDir)) {
+        for (const entry of fs.readdirSync(fwDir)) {
+          if (entry.endsWith('.app')) {
+            execFileSync('codesign', ['--force', '--sign', signAs, '--entitlements', entPath, path.join(fwDir, entry)], { stdio: 'inherit' });
+          }
+        }
+      }
+      execFileSync('codesign', ['--force', '--sign', signAs, '--entitlements', entPath, targetPath], { stdio: 'inherit' });
+    }
   }
   console.log('[harden-fuses] Completed.');
 };

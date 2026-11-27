@@ -418,6 +418,7 @@ function create(input) {
     respectQuietHours: input.respectQuietHours !== false,
     pushAlert: Boolean(input.pushAlert),
     enabled: input.enabled !== false,
+    recurring: input.recurring !== false,
     waitingReason: '',
     retryCount: 0,
     retryAt: null,
@@ -533,7 +534,8 @@ function createCron(input = {}) {
     model: input.model,
     permissionMode: input.permissionMode,
     durable: Boolean(input.durable),
-    enabled: recurring,
+    recurring,
+    enabled: input.enabled !== false,
   });
 }
 
@@ -553,18 +555,31 @@ function createWakeup(input = {}) {
   return r;
 }
 
-function remove(id) {
+function remove(id, opts = {}) {
   const s = load();
   const i = s.tasks.findIndex((x) => x.id === id);
   if (i === -1) return { ok: false, error: `Unknown task: ${id}` };
   const removed = s.tasks[i];
   clearWatchersFor(id);
-  // Match Claude Desktop: preserve {taskId}/SKILL.md on disk for prompt recovery.
   const skillPath = removed.filePath || taskSkillFilePath(removed.id);
+  let purged = false;
+  if (opts && opts.purge === true && skillPath) {
+    try {
+      const taskDir = path.resolve(path.dirname(skillPath));
+      const rootDir = path.resolve(TASK_FILES_DIR);
+      if (taskDir.startsWith(rootDir + path.sep) && fs.existsSync(taskDir)) {
+        fs.rmSync(taskDir, { recursive: true, force: true });
+        purged = true;
+      } else if (fs.existsSync(skillPath)) {
+        fs.rmSync(skillPath, { force: true });
+        purged = true;
+      }
+    } catch (_) {}
+  }
   s.tasks.splice(i, 1);
   save(s);
   mirrorDurable(s);
-  return { ok: true, id, skillPath };
+  return { ok: true, id, skillPath, purged };
 }
 
 async function fire(task, trigger = 'scheduled', extraCtx = {}) {
@@ -673,7 +688,7 @@ async function runNow(id, triggerName = 'manual', extraCtx = {}) {
     recordRunOnTask(t2, res);
     t2.retryCount = 0;
     t2.retryAt = null;
-    if ((t2.cadence || 'once') === 'once') { t2.enabled = false; t2.nextRunAt = null; }
+    if ((t2.cadence || 'once') === 'once' || t2.recurring === false) { t2.enabled = false; t2.nextRunAt = null; }
     else if (t2.enabled !== false) t2.nextRunAt = computeNext(t2, res.at);
     save(s2);
   }
@@ -786,7 +801,7 @@ async function tick() {
       } else {
         t.retryCount = 0;
         t.retryAt = null;
-        if ((t.cadence || 'once') === 'once') { t.enabled = false; t.nextRunAt = null; }
+        if ((t.cadence || 'once') === 'once' || t.recurring === false) { t.enabled = false; t.nextRunAt = null; }
         else t.nextRunAt = computeNext(t, res.at);
       }
 

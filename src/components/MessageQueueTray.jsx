@@ -16,9 +16,28 @@ export function pickNextRunnableQueued(queue, pausedByConv = {}) {
     return true;
   });
   if (idx === -1) return { next: null, rest: queue };
+  const picked = queue[idx];
+  const rest = [];
+  for (let i = 0; i < queue.length; i++) {
+    if (i === idx) continue;
+    const item = queue[i];
+    // Collapse consecutive exact duplicate text-only messages queued for the same conversation.
+    if (
+      picked
+      && item
+      && (!picked.atts || picked.atts.length === 0)
+      && (!item.atts || item.atts.length === 0)
+      && String(item.convId || '') === String(picked.convId || '')
+      && String(item.text || '') === String(picked.text || '')
+      && !item.paused
+    ) {
+      continue;
+    }
+    rest.push(item);
+  }
   return {
-    next: queue[idx],
-    rest: queue.filter((_, i) => i !== idx),
+    next: picked,
+    rest,
   };
 }
 

@@ -16,6 +16,7 @@
 const vm = require('vm');
 const path = require('path');
 const util = require('util');
+const { pathToFileURL } = require('url');
 const { createRequire } = require('module');
 
 const sessions = new Map();
@@ -130,20 +131,50 @@ function clampTimeout(t) {
   return Math.min(Math.max(n, 1000), 600000);
 }
 
+function makeImportModuleDynamically(session) {
+  return async (specifier) => {
+    const spec = String(specifier || '').trim();
+    if (!spec) throw new Error('Empty module specifier');
+    if (spec.startsWith('node:') || spec.startsWith('file:') || spec.startsWith('data:')) {
+      return import(spec);
+    }
+    if (spec.startsWith('.') || path.isAbsolute(spec)) {
+      return import(pathToFileURL(path.resolve((session && session.cwd) || process.cwd(), spec)).href);
+    }
+    try {
+      const resolved = session && session.req ? session.req.resolve(spec) : null;
+      if (resolved) {
+        return import(path.isAbsolute(resolved) ? pathToFileURL(resolved).href : resolved);
+      }
+    } catch (_) {}
+    return import(spec);
+  };
+}
+
+// Node's vm.Script rejects native `import()` without `--experimental-vm-modules`
+// (especially inside packaged Electron where fuses disable CLI flags). Route
+// dynamic `import(expr)` calls to a context helper backed by host `import()`.
+function rewriteDynamicImport(src) {
+  return String(src || '').replace(/(?<![.\w$])import\s*\(/g, '__akronDynamicImport(');
+}
+
 // Evaluate a JavaScript snippet in the persistent session. Returns
 // { ok, output } where output is the combined console output + completion value.
 async function evalJS({ code, timeout = 30000, cwd, sessionId, reset = false }) {
-  const src = String(code == null ? '' : code);
-  if (!src.trim()) return { ok: true, output: '' };
+  const rawSrc = String(code == null ? '' : code);
+  if (!rawSrc.trim()) return { ok: true, output: '' };
   const ms = clampTimeout(timeout);
   const session = getSession(sessionId, cwd, reset);
   const { ctx, sandbox } = session;
   const logs = makeCapture(sandbox);
+  sandbox.__akronDynamicImport = makeImportModuleDynamically(session);
+  const src = rewriteDynamicImport(rawSrc);
 
   let result;
   let asyncMode = false;
   try {
-    result = vm.runInContext(src, ctx, { timeout: ms, filename: 'repl.js' });
+    const scriptObj = new vm.Script(src, { filename: 'repl.js' });
+    result = scriptObj.runInContext(ctx, { timeout: ms });
   } catch (e) {
     const isAwaitSyntax =
       e && e.name === 'SyntaxError' &&
@@ -164,7 +195,8 @@ async function evalJS({ code, timeout = 30000, cwd, sessionId, reset = false }) 
       ? `(async () => (${trimmed}))()`
       : `(async () => {\n${rewritten}\n})()`;
     try {
-      result = vm.runInContext(wrapped, ctx, { timeout: ms, filename: 'repl.js' });
+      const asyncScript = new vm.Script(wrapped, { filename: 'repl.js' });
+      result = asyncScript.runInContext(ctx, { timeout: ms });
     } catch (e2) {
       const text = (logs.length ? logs.join('\n') + '\n' : '') + 'Error: ' + (e2 && e2.message ? e2.message : String(e2));
       return { ok: false, output: text.slice(0, MAX_OUTPUT) };

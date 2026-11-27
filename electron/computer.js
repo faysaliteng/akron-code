@@ -557,6 +557,32 @@ function normalizePngToLogicalWidth(file, targetWidth) {
   } catch (_) {}
 }
 
+async function captureDisplayViaElectron(displayIdx = activeDisplayIndex) {
+  let el = null;
+  try { el = require('electron'); } catch (_) { el = null; }
+  if (!el || !el.desktopCapturer || !el.nativeImage) {
+    return { ok: false, error: 'desktopCapturer unavailable (not in Electron main process)' };
+  }
+  try {
+    const pts = screenPointsSync(displayIdx);
+    const scale = Math.max(1, pts.scale || 1);
+    const sources = await el.desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: {
+        width: Math.max(1, Math.round(pts.width * scale)),
+        height: Math.max(1, Math.round(pts.height * scale)),
+      },
+    });
+    const src = sources[displayIdx] || sources[0];
+    if (!src || !src.thumbnail || src.thumbnail.isEmpty()) {
+      return { ok: false, error: 'no screen source / empty pixels from desktopCapturer' };
+    }
+    return { ok: true, image: src.thumbnail, pts, scale };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  }
+}
+
 async function screenshot(opts = {}) {
   gate();
   const dir = opts.dir || path.join(os.tmpdir(), 'autobot-computer');
@@ -580,8 +606,19 @@ async function screenshot(opts = {}) {
 
   const displayFlag = dispIdx > 0 ? `-D ${dispIdx + 1} ` : '';
   const { err } = await execP(`/usr/sbin/screencapture ${displayFlag}-x "${file}"`, { timeout: 20000 });
-  if (err) throw new Error('screencapture failed (grant Screen Recording permission): ' + err.message);
   const size = screenPointsSync(dispIdx);
+  let haveShot = !err && fs.existsSync(file) && fs.statSync(file).size > 0;
+  if (!haveShot) {
+    const viaEl = await captureDisplayViaElectron(dispIdx);
+    if (!viaEl.ok) {
+      throw new Error(`screenshot failed: screencapture (${err ? err.message : 'empty file'}); desktopCapturer fallback (${viaEl.error || 'failed'}) — grant Screen Recording permission to Akron Code.`);
+    }
+    const png = viaEl.image.toPNG();
+    if (!png || !png.length) {
+      throw new Error(`screenshot failed: screencapture (${err ? err.message : 'empty file'}); desktopCapturer fallback (empty PNG).`);
+    }
+    fs.writeFileSync(file, png);
+  }
   if (opts.normalizeToLogical !== false && size.scale > 1 && size.width > 0) {
     normalizePngToLogicalWidth(file, size.width);
   }
@@ -617,7 +654,25 @@ async function zoom({ x1 = 0, y1 = 0, x2 = 400, y2 = 300, dir } = {}) {
     winLinux.linuxScreenshot(file, { x: rx, y: ry, w: rw, h: rh }, null);
   } else {
     const { err } = await execP(`/usr/sbin/screencapture -x -R ${rx},${ry},${rw},${rh} "${file}"`, { timeout: 20000 });
-    if (err) throw new Error('screencapture zoom failed: ' + err.message);
+    const haveShot = !err && fs.existsSync(file) && fs.statSync(file).size > 0;
+    if (!haveShot) {
+      const viaEl = await captureDisplayViaElectron(activeDisplayIndex);
+      if (!viaEl.ok) {
+        throw new Error(`zoom failed: screencapture (${err ? err.message : 'empty file'}); desktopCapturer fallback (${viaEl.error || 'failed'}).`);
+      }
+      const imgSize = viaEl.image.getSize();
+      const s = viaEl.pts && viaEl.pts.width ? (imgSize.width / viaEl.pts.width) : (viaEl.scale || 1);
+      const cx = Math.max(0, Math.min(imgSize.width - 1, Math.round(rx * s)));
+      const cy = Math.max(0, Math.min(imgSize.height - 1, Math.round(ry * s)));
+      const cw = Math.max(1, Math.min(imgSize.width - cx, Math.round(rw * s)));
+      const ch = Math.max(1, Math.min(imgSize.height - cy, Math.round(rh * s)));
+      const cropped = viaEl.image.crop({ x: cx, y: cy, width: cw, height: ch });
+      const png = cropped && !cropped.isEmpty() ? cropped.toPNG() : viaEl.image.toPNG();
+      if (!png || !png.length) {
+        throw new Error(`zoom failed: screencapture (${err ? err.message : 'empty file'}); desktopCapturer fallback (empty cropped PNG).`);
+      }
+      fs.writeFileSync(file, png);
+    }
   }
   const buf = fs.readFileSync(file);
   lastShot = file;
@@ -635,19 +690,31 @@ async function appScreenshotViaElectron(target, file) {
   try {
     const sources = await el.desktopCapturer.getSources({
       types: ['window'],
-      thumbnailSize: { width: Math.max(1, target.width * 2), height: Math.max(1, target.height * 2) },
+      thumbnailSize: { width: Math.max(1, (target.width || 800) * 2), height: Math.max(1, (target.height || 600) * 2) },
     });
     const wantName = String(target.app || '').toLowerCase();
     const wantTitle = String(target.title || '').toLowerCase();
-    let src = sources.find((s) => String(s.name || '').toLowerCase() === (target.title || target.app || '').toLowerCase());
+    let src = target.windowId ? sources.find((s) => String(s.id || '').includes(`:${target.windowId}:`) || String(s.id || '').endsWith(`:${target.windowId}`)) : null;
+    if (!src && wantTitle) src = sources.find((s) => String(s.name || '').toLowerCase() === wantTitle);
     if (!src && wantTitle) src = sources.find((s) => String(s.name || '').toLowerCase().includes(wantTitle));
     if (!src && wantName) src = sources.find((s) => String(s.name || '').toLowerCase().includes(wantName));
-    if (!src) src = sources[0];
-    if (!src || !src.thumbnail || src.thumbnail.isEmpty()) {
-      return { ok: false, error: 'no matching window source / empty pixels' };
+    let png = src && src.thumbnail && !src.thumbnail.isEmpty() ? src.thumbnail.toPNG() : null;
+    if ((!png || !png.length) && target.width > 0 && target.height > 0) {
+      const screenFb = await captureDisplayViaElectron(activeDisplayIndex);
+      if (screenFb.ok && screenFb.image) {
+        const imgSize = screenFb.image.getSize();
+        const s = screenFb.pts && screenFb.pts.width ? (imgSize.width / screenFb.pts.width) : (screenFb.scale || 1);
+        const cx = Math.max(0, Math.min(imgSize.width - 1, Math.round((target.x || 0) * s)));
+        const cy = Math.max(0, Math.min(imgSize.height - 1, Math.round((target.y || 0) * s)));
+        const cw = Math.max(1, Math.min(imgSize.width - cx, Math.round(target.width * s)));
+        const ch = Math.max(1, Math.min(imgSize.height - cy, Math.round(target.height * s)));
+        const cropped = screenFb.image.crop({ x: cx, y: cy, width: cw, height: ch });
+        if (cropped && !cropped.isEmpty()) png = cropped.toPNG();
+      } else if (!src || !src.thumbnail || src.thumbnail.isEmpty()) {
+        return { ok: false, error: `no matching window source; screen crop fallback (${screenFb.error || 'empty'})` };
+      }
     }
-    const png = src.thumbnail.toPNG();
-    if (!png || !png.length) return { ok: false, error: 'empty PNG from desktopCapturer' };
+    if (!png || !png.length) return { ok: false, error: 'no matching window source / empty PNG from desktopCapturer' };
     fs.writeFileSync(file, png);
     if (target.width > 0) { try { normalizePngToLogicalWidth(file, target.width); } catch (_) {} }
     return { ok: true };
@@ -689,7 +756,9 @@ async function appScreenshot({ app = '', windowId = null, title = '', dir } = {}
     if (!haveShot) {
       const viaElectron = await appScreenshotViaElectron(target, file);
       if (!viaElectron.ok) {
-        throw new Error('app screenshot failed: ' + (err ? err.message : viaElectron.error || 'could not create image from window') + ' — grant Screen Recording to Akron Code in System Settings › Privacy & Security.');
+        const scMsg = err ? err.message : 'screencapture returned empty image';
+        const fbMsg = viaElectron.error || 'could not create image from window';
+        throw new Error(`app screenshot failed: screencapture (${scMsg}); desktopCapturer fallback (${fbMsg}) — grant Screen Recording to Akron Code in System Settings › Privacy & Security.`);
       }
       haveShot = true;
     }

@@ -1462,7 +1462,12 @@ function sanitizeHistory(messages, opts = {}) {
       const parts = m.content.filter((p) => p && typeof p === 'object' && (p.type === 'text' || p.type === 'image_url' || p.type === 'image' || typeof p.text === 'string'));
       out.push({ role: 'user', content: parts.length ? parts : str(m.content) });
     } else {
-      out.push({ role: 'user', content: str(m.content) });
+      const userText = str(m.content);
+      const prevMsg = out[out.length - 1];
+      if (prevMsg && prevMsg.role === 'user' && typeof prevMsg.content === 'string' && prevMsg.content === userText) {
+        continue;
+      }
+      out.push({ role: 'user', content: userText });
     }
     lastAssistantCalls = null;
   }
@@ -2290,6 +2295,7 @@ async function runAgent(opts) {
   let planNudges = 0;
   let hookNudges = 0;
   let autoContinueNudges = 0;
+  let blankPostToolRetries = 0;
   let todoWriteUsedInTurn = false;
   let activeTodos = [];
   let ranSwarmInTurn = false;
@@ -2846,6 +2852,16 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     }
 
     if (!calls.length) {
+      // If a model ends immediately after tool results with completely blank content
+      // (no text, no tool calls), recover cleanly inside the loop instead of pushing
+      // an empty assistant turn that collapses consecutive user turns.
+      const prevTurn = messages[messages.length - 1];
+      const afterToolMsg = prevTurn && (prevTurn.role === 'tool' || prevTurn._syntheticImageRead || (prevTurn.role === 'user' && /^TOOL RESULT\b/i.test(String(prevTurn.content || ''))));
+      if (depth === 0 && step >= 1 && !String(message.content || '').trim() && afterToolMsg && blankPostToolRetries < 2) {
+        blankPostToolRetries++;
+        emit({ type: 'thinking', text: ' (continuing after tool results…)' });
+        continue;
+      }
       // Safety net: if this turn produced visible code but never touched a file
       // or the Artifact tool, materialize it so the "website" actually exists.
       let extraNote = '';
@@ -2853,14 +2869,31 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         const created = autoCaptureArtifacts(message.content || '', currentCwd, emit);
         if (created.length) extraNote = `\n\n(Saved ${created.join(', ')} to your project so it renders live.)`;
       }
-      messages.push({ role: 'assistant', content: (message.content || '') + extraNote });
+      const assistantText = (message.content || '') + extraNote;
+      if (assistantText.trim()) {
+        messages.push({
+          role: 'assistant',
+          content: assistantText,
+          ...(Array.isArray(message._anthropicThinkingBlocks) && message._anthropicThinkingBlocks.length
+            ? { _anthropicThinkingBlocks: message._anthropicThinkingBlocks }
+            : {}),
+        });
+      }
+      const pushContinuationUserMsg = (contentText) => {
+        const prev = messages[messages.length - 1];
+        if (prev && prev.role === 'user' && /^\[(?:auto-continue|plan-mode|hook)\]/i.test(String(prev.content || '').trim())) {
+          messages[messages.length - 1] = { role: 'user', content: contentText };
+          return;
+        }
+        messages.push({ role: 'user', content: contentText });
+      };
       // Plan mode contract: the turn has to end on ExitPlanMode or
       // AskUserQuestion, never on a prose "shall I proceed?". If the model just
       // talked, push it back onto the tool instead of ending the turn.
       if (permissionMode === 'plan' && !planEnded && planNudges < 3) {
         planNudges++;
         emit({ type: 'notice', text: 'Plan mode — the turn must end with ExitPlanMode or AskUserQuestion.' });
-        messages.push({ role: 'user', content: `[plan-mode] Do not ask for approval in prose. Write the plan to ${PLAN_FILE_REL} if you have not, then call ExitPlanMode {"plan": "<the plan>"} (or AskUserQuestion if you genuinely cannot decide).` });
+        pushContinuationUserMsg(`[plan-mode] Do not ask for approval in prose. Write the plan to ${PLAN_FILE_REL} if you have not, then call ExitPlanMode {"plan": "<the plan>"} (or AskUserQuestion if you genuinely cannot decide).`);
         continue;
       }
       // Autonomous completion gate: on long-horizon auto builds, finish open TodoWrite items
@@ -2878,16 +2911,10 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           if (incompleteTodos.length > 0) {
             const openList = incompleteTodos.slice(0, 6).map((t) => `- [${t.status || 'pending'}] ${t.content || t.id}`).join('\n');
             emit({ type: 'notice', text: `Autonomous loop — ${incompleteTodos.length} todo item(s) still open; continuing…` });
-            messages.push({
-              role: 'user',
-              content: `[auto-continue] Do not stop yet — these TodoWrite tasks are still not completed:\n${openList}\n\nExecute the remaining tasks now with tools, verify everything runs cleanly, update TodoWrite to completed, and then report the final result.`,
-            });
+            pushContinuationUserMsg(`[auto-continue] Do not stop yet — these TodoWrite tasks are still not completed:\n${openList}\n\nExecute the remaining tasks now with tools, verify everything runs cleanly, update TodoWrite to completed, and then report the final result.`);
           } else {
             emit({ type: 'notice', text: 'Autonomous loop — executing proposed next step instead of stopping early…' });
-            messages.push({
-              role: 'user',
-              content: '[auto-continue] Do not ask for permission to continue mid-task. Execute the next build/cleanup/verification step you just proposed right now using tools, verify it passes, and then present the completed summary.',
-            });
+            pushContinuationUserMsg('[auto-continue] Do not ask for permission to continue mid-task. Execute the next build/cleanup/verification step you just proposed right now using tools, verify it passes, and then present the completed summary.');
           }
           continue;
         }
@@ -2901,15 +2928,18 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           for (const m of v.systemMessages || []) emit({ type: 'notice', text: m });
           if (v.stop && nudges < 3) {
             nudges++;
-            messages.push({ role: 'user', content: `[hook] ${v.reason || 'Continue — the Stop hook says the work is not finished.'}` });
+            pushContinuationUserMsg(`[hook] ${v.reason || 'Continue — the Stop hook says the work is not finished.'}`);
             continue;
           }
           if (v.additionalContext && hookNudges < 5) {
             hookNudges++;
-            messages.push({ role: 'user', content: `[hook] ${v.additionalContext}` });
+            pushContinuationUserMsg(`[hook] ${v.additionalContext}`);
             continue;
           }
         }
+      }
+      if (!assistantText.trim()) {
+        messages.push({ role: 'assistant', content: '' });
       }
       emit({ type: 'done', messages, usage: { ...usageTotals } });
       return messages;
@@ -2923,6 +2953,9 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         role: 'assistant',
         content: message.content || '',
         tool_calls: calls.map((tc) => ({ id: tc.id, type: 'function', function: { name: tc.function.name, arguments: tc.function.arguments } })),
+        ...(Array.isArray(message._anthropicThinkingBlocks) && message._anthropicThinkingBlocks.length
+          ? { _anthropicThinkingBlocks: message._anthropicThinkingBlocks }
+          : {}),
       });
     }
 
@@ -3398,22 +3431,30 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       // Never escape the project folder.
       name = name.replace(/\\/g, '/').replace(/^\/+/, '');
       let filePath = null;
+      let storedRelName = name;
       try {
         const dir = currentCwd || process.cwd();
         filePath = path.resolve(dir, name);
         if (!filePath.startsWith(path.resolve(dir))) filePath = path.join(dir, path.basename(name));
+        // Guard against silently clobbering an existing workspace file when
+        // overwrite is not explicitly requested (P2 #18).
+        if (args.overwrite !== true && fs.existsSync(filePath) && !/^\.autobot[\\/]artifacts[\\/]/i.test(name)) {
+          const safeArt = path.join(dir, '.autobot', 'artifacts', path.basename(name));
+          filePath = safeArt;
+          storedRelName = path.relative(dir, safeArt).replace(/\\/g, '/');
+        }
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
         fs.writeFileSync(filePath, content, 'utf8');
       } catch (e) {
         filePath = null;
       }
-      emit({ type: 'artifact', name, language: language || 'text', content, path: filePath || undefined });
+      emit({ type: 'artifact', name: storedRelName, language: language || 'text', content, path: filePath || undefined });
       // A renderable artifact is also the deliverable preview: ask the renderer
       // to mount the browser pane on the file so the site is visibly there.
-      if (filePath && /\.(html?|svg)$/i.test(name)) emit({ type: 'preview', url: filePath });
+      if (filePath && /\.(html?|svg)$/i.test(storedRelName)) emit({ type: 'preview', url: filePath });
       return filePath
-        ? `Artifact "${name}" written to ${filePath} (${Buffer.byteLength(content)} bytes). It is the file the browser pane opens.`
-        : `Artifact "${name}" created in chat (could not write to disk).`;
+        ? `Artifact "${storedRelName}" written to ${filePath} (${Buffer.byteLength(content)} bytes). It is the file the browser pane opens.`
+        : `Artifact "${storedRelName}" created in chat (could not write to disk).`;
     };
     const requestSecret = async (name) => `No secret "${name}" found in the secrets store. Provide the value directly to continue.`;
 

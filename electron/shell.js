@@ -6,6 +6,13 @@ const path = require('path');
 // and powers the Bash tool's background mode + KillShell.
 // Each shell is a long-lived zsh process with a PTY-like I/O buffer.
 
+function stripAnsi(s) {
+  return String(s == null ? '' : s)
+    .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\))/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '');
+}
+
 class ShellManager {
   constructor() {
     this.shells = new Map(); // id -> { proc, buffer, listeners, cwd }
@@ -23,7 +30,7 @@ class ShellManager {
     const args = process.platform === 'win32' ? ['-NoLogo', '-NoProfile', '-Command', '-'] : ['-i', '-s'];
     const proc = spawn(shell, args, {
       cwd: cwd || process.cwd(),
-      env: { ...process.env, TERM: 'xterm-256color', PS1: '' },
+      env: { ...process.env, TERM: 'xterm-256color', PS1: '', PS2: '', PROMPT: '', PROMPT2: '', RPROMPT: '' },
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
       windowsHide: true,
@@ -79,20 +86,20 @@ class ShellManager {
       // echo marker so we know when the command finished
       const tail = process.platform === 'win32'
         ? `\nWrite-Output ""\nWrite-Output "${marker}"\n`
-        : `; echo "\n${marker}\n"\n`;
+        : `; printf '\\n%s\\n' '${marker}'\n`;
       entry.proc.stdin.write(command + tail);
       const poll = setInterval(() => {
         if (entry.buffer.includes(marker)) {
           clearInterval(poll);
           clearTimeout(timer);
           entry.listeners = entry.listeners.filter((l) => l !== onData);
-          const out = entry.buffer.replace(marker, '').trim();
+          const out = stripAnsi(entry.buffer.replace(marker, '')).replace(/^(?:dquote>\s*)+/gm, '').trim();
           entry.buffer = out; // strip marker from raw buffer so read() is clean
           resolve(out || '(no output)');
         } else if (entry.exited) {
           clearInterval(poll);
           cleanup();
-          resolve(entry.buffer + '\n[shell exited]');
+          resolve(stripAnsi(entry.buffer) + '\n[shell exited]');
         }
       }, 80);
     });
@@ -117,7 +124,7 @@ class ShellManager {
 
   read(id) {
     const entry = this.shells.get(id);
-    return entry ? entry.buffer : '';
+    return entry ? stripAnsi(entry.buffer).replace(/^(?:dquote>\s*)+/gm, '') : '';
   }
 
   async list() {
@@ -142,4 +149,4 @@ class ShellManager {
   }
 }
 
-module.exports = { ShellManager };
+module.exports = { ShellManager, stripAnsi };

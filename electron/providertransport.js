@@ -220,7 +220,39 @@ const TRANSPORT_LABEL = {
   antigravity: 'Google Antigravity',
 };
 
-function httpError(transport, res, text) {
+function parseRetryAfterMs(res) {
+  try {
+    const getH = (k) => (res && res.headers && typeof res.headers.get === 'function' ? res.headers.get(k) : null);
+    const ra = getH('retry-after') || getH('x-ratelimit-reset-after');
+    if (ra != null && String(ra).trim() !== '') {
+      const secs = Number(ra);
+      if (Number.isFinite(secs) && secs > 0) return { raw: String(ra), ms: Math.max(1000, Math.min(secs * 1000, 300000)) };
+      const ts = Date.parse(String(ra));
+      if (Number.isFinite(ts) && ts > Date.now()) {
+        return { raw: String(ra), ms: Math.max(1000, Math.min(ts - Date.now(), 300000)) };
+      }
+    }
+    const resetEpoch = Number(getH('x-ratelimit-reset'));
+    if (Number.isFinite(resetEpoch) && resetEpoch > 0) {
+      const targetMs = resetEpoch > 1e12 ? resetEpoch : resetEpoch * 1000;
+      if (targetMs > Date.now()) return { raw: String(resetEpoch), ms: Math.max(1000, Math.min(targetMs - Date.now(), 300000)) };
+    }
+  } catch (_) {}
+  return { raw: null, ms: 0 };
+}
+
+function logRateLimitDiagnostic(entry) {
+  try {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const dir = process.env.AKRON_RATE_LOG_DIR || path.join(os.homedir(), '.autobot', 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, 'rate-limits.jsonl'), JSON.stringify({ t: new Date().toISOString(), ...entry }) + '\n', 'utf8');
+  } catch (_) {}
+}
+
+function httpError(transport, res, text, meta = {}) {
   const body = String(text || '');
   // A 401 (or a 403 that names authentication) is a credential problem, not a
   // provider blip: retrying it five times burns ~37 s and blames the network.
@@ -245,9 +277,22 @@ function httpError(transport, res, text) {
   // the body alone rarely says which. `Response.url` is the final URL after
   // redirects, so a proxy that rewrote the request is visible here too.
   if (res && typeof res.url === 'string' && res.url) err.endpoint = res.url;
-  const ra = res.headers && res.headers.get ? res.headers.get('retry-after') : null;
-  const secs = Number(ra);
-  if (Number.isFinite(secs) && secs > 0) err.retryAfterMs = Math.min(secs * 1000, 60000);
+  const parsedRa = parseRetryAfterMs(res);
+  if (parsedRa.raw) err.retryAfter = parsedRa.raw;
+  if (parsedRa.ms > 0) err.retryAfterMs = parsedRa.ms;
+  if (res.status === 429) {
+    err.rawBody = body.slice(0, 600);
+    logRateLimitDiagnostic({
+      status: 429,
+      transport: String(transport || ''),
+      model: String((meta && meta.model) || ''),
+      oauthProvider: String((meta && meta.oauthProvider) || ''),
+      endpoint: err.endpoint || '',
+      retryAfter: parsedRa.raw || null,
+      retryAfterMs: parsedRa.ms || 0,
+      body: body.slice(0, 600),
+    });
+  }
   return err;
 }
 
@@ -384,6 +429,18 @@ function anthropicAuth(provider) {
  * assistant tool calls become `tool_use` blocks. Consecutive same-role turns are
  * merged because Anthropic rejects two adjacent user messages.
  */
+function concatDedupBlocks(prevBlocks, nextBlocks) {
+  const out = Array.isArray(prevBlocks) ? prevBlocks.slice() : [];
+  for (const b of (Array.isArray(nextBlocks) ? nextBlocks : [])) {
+    const prev = out[out.length - 1];
+    if (b && b.type === 'text' && prev && prev.type === 'text' && String(prev.text || '') === String(b.text || '')) {
+      continue;
+    }
+    out.push(b);
+  }
+  return out;
+}
+
 function toAnthropicBody(provider, messages, tools, maxTokens) {
   const systemParts = [];
   const rawMsgs = [];
@@ -392,7 +449,7 @@ function toAnthropicBody(provider, messages, tools, maxTokens) {
 
   const pushMsg = (role, content) => {
     const last = rawMsgs[rawMsgs.length - 1];
-    if (last && last.role === role) last.content = last.content.concat(content);
+    if (last && last.role === role) last.content = concatDedupBlocks(last.content, content);
     else rawMsgs.push({ role, content });
   };
 
@@ -506,7 +563,7 @@ function toAnthropicBody(provider, messages, tools, maxTokens) {
     }
 
     const last = out[out.length - 1];
-    if (last && last.role === cur.role) last.content = last.content.concat(cur.content);
+    if (last && last.role === cur.role) last.content = concatDedupBlocks(last.content, cur.content);
     else if (cur.content.length) out.push(cur);
   }
 
@@ -1871,7 +1928,7 @@ module.exports = {
   adapters: ADAPTERS,
   // exported for tests
   _internal: {
-    sseEvents, toAnthropicBody, anthropicAuth, anthropicFinish, sanitizeToolCallId,
+    httpError, sseEvents, toAnthropicBody, anthropicAuth, anthropicFinish, sanitizeToolCallId,
     toCodexInput, toCodexTools, toGeminiContents, geminiFinish, responsesChat,
     googleModels, googleModelList, ANTIGRAVITY_UA,
     toGeminiSchema, toGeminiDeclarations,

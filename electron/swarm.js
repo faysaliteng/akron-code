@@ -71,10 +71,19 @@ function inferModelTier(model, fallback) {
   return fallback || 'heavy';
 }
 
+function isSmallParamModel(modelId) {
+  return /\b([1-9]|[12][0-9]|3[0-5])b\b/i.test(String(modelId || ''));
+}
+
 function isFrontier(p) {
   if (!p) return false;
   if (p.frontier === true) return true;
-  const s = [p.model, p.name].filter(Boolean).join(' ');
+  if (p.frontier === false) return false;
+  const base = String(p.baseURL || '');
+  const modelStr = String(p.model || '').trim();
+  const isFreeLlm = /:(3001|31415)\b/.test(base);
+  if (isSmallParamModel(modelStr)) return false;
+  const s = isFreeLlm ? modelStr : [modelStr, p.name].filter(Boolean).join(' ');
   return FRONTIER_RE.test(s);
 }
 
@@ -116,6 +125,10 @@ function buildRoster(opts = {}) {
     if (seen.has(key)) return;
     seen.add(key);
     const inferredTier = inferModelTier(p.model || p.name, fallbackTier);
+    // When a model is clearly a small/fast variant (e.g. haiku / flash / mini / nano),
+    // prefer its inferred 'small' tier over a generic default 'heavy' tag from auto-import.
+    const rawTier = p.tier ? normalizeTier(p.tier, inferredTier) : inferredTier;
+    const effectiveTier = (rawTier === 'heavy' && inferredTier === 'small') ? 'small' : rawTier;
     roster.push({
       id: p.id || key,
       name: p.name || p.model || 'model',
@@ -142,7 +155,7 @@ function buildRoster(opts = {}) {
       maxConcurrent: Number(p.maxConcurrent) > 0 ? Number(p.maxConcurrent) : undefined,
       contextWindow: Number(p.contextWindow) || 0,
       frontier: isFrontier(p),
-      tier: normalizeTier(p.tier, inferredTier),
+      tier: effectiveTier,
       jobRole: router.normalizeRole(p.jobRole || p.role) || null,
       role,
     });
@@ -197,8 +210,10 @@ function pickProvider(roster, tier, index, opts = {}) {
     : null;
   const isBusyFn = opts && typeof opts.isBusy === 'function' ? opts.isBusy : null;
   const checkDeconflict = Boolean(busySet || isBusyFn);
+  const isHealthy = (r) => r && (!gate || typeof gate.usable !== 'function' || gate.usable(r));
   const isBusy = (r) => {
     if (!r) return false;
+    if (!isHealthy(r)) return true;
     if (busySet && busySet.has(String(r.model || '').trim().toLowerCase())) return true;
     if (isBusyFn && isBusyFn(r)) return true;
     return false;
@@ -218,10 +233,12 @@ function pickProvider(roster, tier, index, opts = {}) {
 
   // Several rows of the same tier: spread parallel workers across them
   // (worker i gets row i mod n) instead of piling every worker onto the first.
-  const exacts = roster.filter((r) => r.tier === want);
+  const healthyPool = roster.filter(isHealthy);
+  const pool = healthyPool.length ? healthyPool : roster;
+  const exacts = pool.filter((r) => r.tier === want);
   if (exacts.length) return exacts[idx % exacts.length];
   const rank = TIER_RANK[want];
-  const sorted = [...roster].sort((a, b) => {
+  const sorted = [...pool].sort((a, b) => {
     const da = Math.abs(TIER_RANK[a.tier] - rank);
     const db = Math.abs(TIER_RANK[b.tier] - rank);
     if (da !== db) return da - db;
@@ -706,7 +723,15 @@ async function swarm(goal, opts = {}) {
   const chainFor = (tier, index, roleHint, model, deconflict = false) => {
     if (poolOrch) {
       const role = router.normalizeRole(roleHint) || router.tierToRole(tier) || 'coder';
-      return router.orchestratorFor(poolOrch, role, poolBase, { index, preferModel: model || undefined });
+      const scoped = router.orchestratorFor(poolOrch, role, poolBase, { index, preferModel: model || undefined });
+      if (scoped && Array.isArray(scoped.providers) && scoped.providers.length > 1) {
+        const healthy = scoped.providers.filter((p) => gate.usable(p));
+        const cooling = scoped.providers.filter((p) => !gate.usable(p));
+        if (healthy.length && cooling.length) {
+          return { ...scoped, providers: healthy.concat(cooling) };
+        }
+      }
+      return scoped;
     }
     const base = (model && roster.find((r) => r.model === model))
       || (deconflict
@@ -718,7 +743,12 @@ async function swarm(goal, opts = {}) {
     if (!base) return null;
     if (deconflict && base.model) activeSwarmModels.add(String(base.model).toLowerCase());
     const rest = roster.filter((r) => r !== base);
-    const providers = [base].concat(rest.filter((r) => r.tier === base.tier), rest.filter((r) => r.tier !== base.tier));
+    const orderedRest = [
+      ...rest.filter((r) => gate.usable(r) && r.tier === base.tier),
+      ...rest.filter((r) => gate.usable(r) && r.tier !== base.tier),
+      ...rest.filter((r) => !gate.usable(r)),
+    ];
+    const providers = [base].concat(orderedRest);
     return { enabled: true, providers, activeIndex: 0, role: 'pinned' };
   };
 

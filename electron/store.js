@@ -149,6 +149,14 @@ function parseSkillFrontmatter(text) {
 // ---- Skill discovery (bundled + Claude Code + custom) ----
 let _skillsCache = null;
 
+const FOREIGN_CLAUDE_SKILL_NAMES = new Set(['built-in-browser', 'chrome-browser', 'computer-use']);
+
+function isForeignProductSkill(name, rawContent, source) {
+  if (source !== 'claude') return false;
+  if (!FOREIGN_CLAUDE_SKILL_NAMES.has(String(name || '').toLowerCase())) return false;
+  return /\bmcp__(?:Claude_Browser|claude-in-chrome|computer-use)__/i.test(String(rawContent || ''));
+}
+
 function addDirSkills(list, seen, dir, source) {
   if (!fs.existsSync(dir)) return;
   let entries;
@@ -156,9 +164,14 @@ function addDirSkills(list, seen, dir, source) {
   for (const e of entries) {
     const skillFile = path.join(dir, e, 'SKILL.md');
     if (!fs.existsSync(skillFile)) continue;
+    let raw = '';
     let fm = null;
-    try { fm = parseSkillFrontmatter(fs.readFileSync(skillFile, 'utf8')); } catch (_) {}
+    try {
+      raw = fs.readFileSync(skillFile, 'utf8');
+      fm = parseSkillFrontmatter(raw);
+    } catch (_) {}
     const name = (fm && fm.name) || e;
+    if (isForeignProductSkill(name, raw, source) || isForeignProductSkill(e, raw, source)) continue;
     if (seen.has(name)) continue;
     seen.add(name);
     list.push({
@@ -421,4 +434,5 @@ module.exports = {
   setOrchestrator,
   getFeatures,
   setFeatures,
+  _internal: { isForeignProductSkill },
 };

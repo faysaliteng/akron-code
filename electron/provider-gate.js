@@ -27,6 +27,33 @@ function keyOf(p) {
   return String(p.baseURL || '').replace(/\/+$/, '').replace('://localhost', '://127.0.0.1') + '|' + String(p.model || '');
 }
 
+// Some subscriptions meter usage per ACCOUNT, not per model: Google's
+// Antigravity / Cloud Code quota is shared by every Gemini model on the same
+// login. A 429 on one model there must cool its siblings too, otherwise the
+// failover loop just burns the same allowance on the next Gemini row.
+const SHARED_QUOTA = /^(antigravity|google|gemini|cloudcode|gemini-cli)\b/i;
+
+function accountKeyOf(p) {
+  if (!p || p.gateKey) return '';
+  const op = String(p.oauthProvider || '');
+  if (!op || !SHARED_QUOTA.test(op)) return '';
+  return 'acct|' + op;
+}
+
+function slot(k) {
+  let x = state.get(k);
+  if (!x) {
+    x = { until: 0, strikes: 0, deadUntil: 0, deadWhy: '', inflight: 0, waiters: [] };
+    state.set(k, x);
+  }
+  return x;
+}
+
+function acct(p) {
+  const k = accountKeyOf(p);
+  return k ? slot(k) : null;
+}
+
 function s(p) {
   const k = keyOf(p);
   let x = state.get(k);
@@ -41,7 +68,10 @@ const now = () => Date.now();
 
 function isDead(p) { return s(p).deadUntil > now(); }
 function deadReason(p) { return s(p).deadWhy || ''; }
-function coolingFor(p) { return Math.max(0, s(p).until - now()); }
+function coolingFor(p) {
+  const a = acct(p);
+  return Math.max(0, s(p).until - now(), a ? a.until - now() : 0);
+}
 function usable(p) { return !isDead(p) && coolingFor(p) === 0; }
 function inflight(p) { return s(p).inflight || 0; }
 function keyFor(p) { return keyOf(p); }
@@ -54,6 +84,15 @@ function rateLimited(p, retryAfterMs) {
   const guess = Math.min(10000 * Math.pow(2, x.strikes - 1), 300000);
   const ra = Number(retryAfterMs) > 0 ? Math.min(Number(retryAfterMs), 15 * 60000) : 0;
   x.until = Math.max(x.until, now() + (ra || guess));
+  const a = acct(p);
+  if (a) {
+    // Account-wide strikes so the backoff keeps growing even when callers
+    // alternate between sibling models on the same login.
+    a.strikes = Math.min(a.strikes + 1, 8);
+    const ag = Math.min(10000 * Math.pow(2, a.strikes - 1), 300000);
+    a.until = Math.max(a.until, now() + (ra || ag));
+    x.until = Math.max(x.until, a.until);
+  }
   return x.until;
 }
 
@@ -61,6 +100,8 @@ function ok(p) {
   const x = s(p);
   x.strikes = 0;
   x.until = 0;
+  const a = acct(p);
+  if (a) { a.strikes = 0; a.until = 0; }
 }
 
 function markDead(p, why, ms) {
@@ -181,6 +222,6 @@ function snapshot() {
 function reset() { state.clear(); }
 
 module.exports = {
-  keyOf, keyFor, usable, isDead, deadReason, coolingFor, inflight, rateLimited, ok, markDead, capOf, hasCapacity,
+  keyOf, keyFor, accountKeyOf, usable, isDead, deadReason, coolingFor, inflight, rateLimited, ok, markDead, capOf, hasCapacity,
   tryAcquire, acquire, order, soonestReset, retryHintMs, snapshot, reset,
 };

@@ -272,12 +272,23 @@ async function autoConnectMcp(cwd) {
   let cfg;
   try { cfg = require('./claudeconfig').loadMcpServers(cwd); } catch (_) { return; }
   const entries = Object.entries((cfg && cfg.servers) || {});
+  const matchesExistingServer = (e, cCfg) => {
+    if (!e) return false;
+    if (String(e.name || '') !== String(cCfg.name || '') || String(e.type || '') !== String(cCfg.transport || '')) return false;
+    if (cCfg.url) return String(e.url || '') === String(cCfg.url);
+    return String(e.command || '') === String(cCfg.command || '')
+      && JSON.stringify(e.args || []) === JSON.stringify(cCfg.args || []);
+  };
   for (const [name, def] of entries) {
     const key = `${cwd || ''}::${name}`;
     if (autoMcp.has(key) || autoMcpTried.has(key)) continue;
     if (!def || typeof def !== 'object') continue;
     // Skip servers the user disabled in the config (`"disabled": true`).
     if (def.disabled) continue;
+    if (!feat.reaDisabled && mcp.servers.has('rea') && typeof rea.isReaServerConfig === 'function' && rea.isReaServerConfig(name, def)) {
+      autoMcp.set(key, 'rea');
+      continue;
+    }
     const transport = String(def.type || def.transport || (def.url ? 'http' : 'stdio')).toLowerCase();
     const connectCfg = {
       name,
@@ -286,6 +297,11 @@ async function autoConnectMcp(cwd) {
       ...(def.command ? { command: def.command, args: def.args || [], env: { ...process.env, ...(def.env || {}) } } : {}),
     };
     if (!connectCfg.url && !connectCfg.command) continue;
+    const dupEntry = [...mcp.servers.entries()].find(([, e]) => matchesExistingServer(e, connectCfg));
+    if (dupEntry) {
+      autoMcp.set(key, dupEntry[0]);
+      continue;
+    }
     try {
       const info = await mcp.connect(connectCfg);
       const entry = mcp.servers.get(info.serverId);

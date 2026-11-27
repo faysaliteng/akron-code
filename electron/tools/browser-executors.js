@@ -276,7 +276,7 @@ module.exports = function buildBrowserAndCuExecutors({ truncate }) {
     if (!r.ok) return 'Browser error: ' + r.error;
     return r.found ? `Element "${selector}" appeared after ${r.waited}ms.` : `Timed out after ${r.waited}ms waiting for "${selector}".`;
   },
-  async browser_screenshot({ fullPage }) {
+  async browser_screenshot({ fullPage }, execCtx = {}) {
     const r = await browser.screenshot(!!fullPage);
     if (!r.ok) return 'Browser error: ' + r.error;
     let previewDataUrl = '';
@@ -298,11 +298,24 @@ module.exports = function buildBrowserAndCuExecutors({ truncate }) {
         }
       }
     } catch (_) {}
+    if (execCtx && typeof execCtx.emit === 'function' && previewDataUrl) {
+      try {
+        execCtx.emit({
+          type: 'mediaArtifact',
+          kind: 'image',
+          files: r.path ? [r.path] : [],
+          cachePath,
+          previewDataUrl,
+          width: r.width,
+          height: r.height,
+          format: 'png',
+        });
+      } catch (_) {}
+    }
     return JSON.stringify({
       ok: true,
       path: r.path,
       cachePath,
-      previewDataUrl,
       width: r.width,
       height: r.height,
       fullPage: !!fullPage,

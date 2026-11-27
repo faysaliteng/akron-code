@@ -85,6 +85,7 @@ function makeExecutor(spec) {
 
     const payload = JSON.stringify(args || {});
     let cmd, argv;
+    let useInlineReplFallback = false;
     if (spec.runtime === 'bash') {
       if (process.platform === 'win32') {
         cmd = 'powershell.exe';
@@ -97,8 +98,21 @@ function makeExecutor(spec) {
       cmd = process.platform === 'win32' ? 'python' : 'python3';
       argv = ['-c', spec.script];
     } else {
-      cmd = process.execPath;
-      argv = ['-e', spec.script];
+      const nodeBin = require('./paths').resolveNodeBinary();
+      if (nodeBin) {
+        cmd = nodeBin;
+        argv = ['-e', spec.script];
+      } else {
+        useInlineReplFallback = true;
+      }
+    }
+
+    if (useInlineReplFallback) {
+      const wrappedCode = `process.env.TOOL_ARGS_JSON = ${JSON.stringify(payload)};\n${spec.script}`;
+      require('./repl').evalJS({ code: wrappedCode, timeout: spec.timeoutMs, cwd, reset: true })
+        .then((r) => resolve({ content: clipOut((r && r.output) || '(no output)'), isError: !(r && r.ok) }))
+        .catch((e) => resolve({ content: `Custom tool "${spec.name}" error: ${e && e.message ? e.message : String(e)}`, isError: true }));
+      return;
     }
 
     let child;
@@ -133,14 +147,18 @@ function makeExecutor(spec) {
       settled = true;
       clearTimeout(timer);
       if (abortSignal) abortSignal.removeEventListener('abort', onAbort);
-      const combined = [out.trimEnd(), err.trimEnd()].filter(Boolean).join('\n');
+      const outClean = out.trimEnd();
+      const errClean = err.trimEnd();
+      const combined = [outClean, errClean ? (outClean ? `[stderr]\n${errClean}` : errClean) : ''].filter(Boolean).join('\n');
       const tail = timedOut
         ? `\n[timed out after ${Math.round(spec.timeoutMs / 1000)}s — killed]`
         : aborted
           ? '\n[aborted — killed]'
           : (code && code !== 0 ? `\n[exit code ${code}]` : (sig ? `\n[killed by ${sig}]` : ''));
-      const text = clipOut((combined || '(no output)') + tail);
-      resolve({ content: text, isError: Boolean(timedOut || aborted || (code && code !== 0)) });
+      const failed = Boolean(timedOut || aborted || (code && code !== 0) || sig);
+      const fallbackMsg = failed && !combined ? `Error (exit ${code != null ? code : (sig || 'spawn')}): custom tool produced no output` : (combined || '(no output)');
+      const text = clipOut(fallbackMsg + (combined || !failed ? tail : ''));
+      resolve({ content: text, isError: failed });
     };
 
     const onAbort = () => { aborted = true; killTree(); setTimeout(() => done(1, 'SIGKILL'), 200); };

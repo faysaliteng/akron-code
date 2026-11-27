@@ -103,17 +103,31 @@ function collectPostEditDiagnostics(fp, _cwd = null) {
     } else {
       const loader = esbuildLoaderFor(ext);
       if (loader) {
+        let esbuild = null;
         try {
-          const esbuild = require('esbuild');
-          esbuild.transformSync(raw, { loader, sourcefile: fp, logLevel: 'silent' });
-        } catch (e) {
-          const errs = Array.isArray(e && e.errors) ? e.errors : [];
-          if (errs.length) {
-            for (const er of errs.slice(0, 5)) {
-              const loc = er.location ? `L${er.location.line}:${er.location.column}` : '';
-              issues.push(`[Syntax error${loc ? ' ' + loc : ''}] ${er.text}`);
+          esbuild = require('esbuild');
+        } catch (_) {
+          esbuild = null;
+        }
+        if (esbuild && typeof esbuild.transformSync === 'function') {
+          try {
+            esbuild.transformSync(raw, { loader, sourcefile: fp, logLevel: 'silent' });
+          } catch (e) {
+            const errs = Array.isArray(e && e.errors) ? e.errors : [];
+            if (errs.length) {
+              for (const er of errs.slice(0, 5)) {
+                const loc = er.location ? `L${er.location.line}:${er.location.column}` : '';
+                issues.push(`[Syntax error${loc ? ' ' + loc : ''}] ${er.text}`);
+              }
+            } else {
+              issues.push(`[Syntax error] ${e && e.message ? e.message.split('\n')[0] : String(e)}`);
             }
-          } else {
+          }
+        } else if ((ext === '.js' || ext === '.cjs') && !/^\s*(?:import|export)\b/m.test(raw)) {
+          try {
+            const vm = require('vm');
+            new vm.Script(raw, { filename: fp });
+          } catch (e) {
             issues.push(`[Syntax error] ${e && e.message ? e.message.split('\n')[0] : String(e)}`);
           }
         }

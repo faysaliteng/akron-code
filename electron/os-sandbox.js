@@ -42,11 +42,44 @@ const PROFILES = {
 };
 
 const DANGEROUS_PATTERNS = [
-  { re: /\brm\s+-[^\n]*r[^\n]*f[^\n]*\s+(?:\/(?:\s|$|\*)|~(?:\/|$)|\$HOME\b)/i, reason: 'Blocked destructive recursive delete targeting root or home directory' },
   { re: /:\(\)\s*\{\s*:\|\:\s*&\s*\}\s*;\s*:/, reason: 'Blocked fork-bomb shell pattern' },
   { re: /\bmkfs(?:\.\w+)?\s+\/dev\//i, reason: 'Blocked disk formatting command' },
   { re: /\bdd\b[^\n]*\bof=\/dev\/(?:disk|sd|nvme|hd)/i, reason: 'Blocked raw block device overwrite' },
 ];
+
+function hasDestructiveRecursiveRm(sub) {
+  const segs = String(sub || '').split(/\s*(?:&&|\|\||;|\||\n)\s*/);
+  for (const seg of segs) {
+    const tokens = seg.trim().split(/\s+/).filter(Boolean);
+    if (!tokens.length) continue;
+    const cmdName = path.basename(tokens[0]).toLowerCase();
+    if (cmdName !== 'rm') continue;
+    let hasRecursive = false;
+    const targets = [];
+    for (let i = 1; i < tokens.length; i++) {
+      const tok = tokens[i];
+      if (tok === '--') {
+        targets.push(...tokens.slice(i + 1));
+        break;
+      }
+      if (tok.startsWith('--')) {
+        if (/^--recursive$/i.test(tok)) hasRecursive = true;
+      } else if (tok.startsWith('-') && tok.length > 1) {
+        if (/[rR]/.test(tok.slice(1))) hasRecursive = true;
+      } else {
+        targets.push(tok);
+      }
+    }
+    if (!hasRecursive) continue;
+    for (const rawTarget of targets) {
+      const target = unquote(rawTarget);
+      if (/^(?:\/+|\/\*+|~+|~\/+|~\/\*+|\$HOME\/?|\$\{HOME\}\/?)$/i.test(target)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 const CREDENTIAL_PATH_RE = /(?:~\/|\$HOME\/|\/Users\/[^/\s]+\/|\/home\/[^/\s]+\/|\/root\/|%USERPROFILE%[\\/])(?:\.ssh\/id_|\.aws\/credentials|\.gnupg\/|\.autobot\/secrets\.json|\.autobot\/oauth\.json|\.autobot\/oauth-mirror)/i;
 
@@ -111,6 +144,9 @@ function canonicalizeShellCommand(cmd) {
 function checkCanonicalCommand(cmd, { profile = 'workspace-write', protectCredentials = true } = {}) {
   const parsed = canonicalizeShellCommand(cmd);
   for (const sub of parsed.subcommands) {
+    if (hasDestructiveRecursiveRm(sub)) {
+      return { ok: false, reason: 'Blocked destructive recursive delete targeting root or home directory', subcommand: sub };
+    }
     for (const rule of DANGEROUS_PATTERNS) {
       if (rule.re.test(sub)) {
         return { ok: false, reason: rule.reason, subcommand: sub };

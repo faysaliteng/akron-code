@@ -615,7 +615,7 @@ function cronList() {
 function cronDelete(args) {
   const id = String(args.id || args.taskId || args.task_id || '');
   if (!id) return { content: 'Error: id required.', isError: true };
-  const r = scheduler.remove(id);
+  const r = scheduler.remove(id, { purge: true });
   if (!r || r.ok === false) return { content: `No cron task "${id}"${r && r.error ? ' — ' + r.error : ''}.`, isError: true };
   return `Deleted cron task ${id}.`;
 }

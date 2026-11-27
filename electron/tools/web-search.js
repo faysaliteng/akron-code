@@ -123,6 +123,68 @@ async function searchBingRss(query, timeoutMs = 10000) {
   return hits;
 }
 
+const SEARCH_STOP_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'about', 'what',
+  'when', 'where', 'which', 'how', 'why', 'are', 'was', 'were', 'has', 'have',
+  'had', 'not', 'but', 'can', 'will', 'use', 'using', 'used', 'all', 'any',
+]);
+
+function queryKeywords(query) {
+  return String(query || '')
+    .toLowerCase()
+    .split(/[^a-z0-9._-]+/i)
+    .map((t) => t.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, ''))
+    .filter((t) => t.length >= 2 && !SEARCH_STOP_WORDS.has(t));
+}
+
+function scoreHit(hit, keywords) {
+  if (!keywords.length) return 1;
+  const hay = `${hit.title || ''} ${hit.url || ''} ${hit.snippet || ''}`.toLowerCase();
+  let matched = 0;
+  for (const kw of keywords) {
+    if (hay.includes(kw)) matched++;
+  }
+  return matched / keywords.length;
+}
+
+function unwrapDdgUrl(rawUrl) {
+  let url = String(rawUrl || '').trim();
+  const ud = /[?&]uddg=([^&]+)/.exec(url);
+  if (ud) {
+    try { url = decodeURIComponent(ud[1]); } catch (_) {}
+  }
+  if (url.startsWith('//')) url = 'https:' + url;
+  return url;
+}
+
+async function searchDuckDuckGoHtml(query, timeoutMs = 10000) {
+  const hits = [];
+  const res = await fetch('https://html.duckduckgo.com/html/', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      accept: 'text/html,application/xhtml+xml',
+      'accept-language': 'en-US,en;q=0.9',
+    },
+    body: new URLSearchParams({ q: query, kl: 'us-en' }).toString(),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok || res.status === 202) return hits;
+  const html = await res.text();
+  if (/anomaly-modal|challenge-form|bot detection/i.test(html)) return hits;
+  const blockRe = /<a[^>]*class=["'][^"']*result__a[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>[\s\S]{0,1200}?(?:class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div)>)?/gi;
+  let m;
+  while ((m = blockRe.exec(html)) && hits.length < 10) {
+    const url = unwrapDdgUrl(m[1]);
+    if (!url || !/^https?:\/\//i.test(url) || /duckduckgo\.com\/y\.js/i.test(url)) continue;
+    const title = stripTags(m[2]);
+    const snippet = stripTags(m[3] || '').slice(0, 260);
+    if (title) hits.push({ title, url, snippet, source: 'ddg-html' });
+  }
+  return hits;
+}
+
 async function searchDuckDuckGoLite(query, timeoutMs = 10000) {
   const hits = [];
   const res = await fetch('https://lite.duckduckgo.com/lite/', {
@@ -133,21 +195,20 @@ async function searchDuckDuckGoLite(query, timeoutMs = 10000) {
       accept: 'text/html,application/xhtml+xml',
       'accept-language': 'en-US,en;q=0.9',
     },
-    body: new URLSearchParams({ q: query }).toString(),
+    body: new URLSearchParams({ q: query, kl: 'us-en' }).toString(),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!res.ok) return hits;
+  if (!res.ok || res.status === 202) return hits;
   const html = await res.text();
+  if (/anomaly-modal|challenge-form|bot detection/i.test(html)) return hits;
   // Match result links in DDG Lite table
-  const linkRe = /<a[^>]*class=["']result-link["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-  const snipRe = /<td[^>]*class=["']result-snippet["'][^>]*>([\s\S]*?)<\/td>/gi;
+  const linkRe = /<a[^>]*class=["'][^"']*result-link[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  const snipRe = /<td[^>]*class=["'][^"']*result-snippet[^"']*["'][^>]*>([\s\S]*?)<\/td>/gi;
   const links = [];
   let m;
   while ((m = linkRe.exec(html)) && links.length < 10) {
-    let url = m[1];
-    const ud = /uddg=([^&]+)/.exec(url);
-    if (ud) { try { url = decodeURIComponent(ud[1]); } catch (_) {} }
-    if (url.startsWith('//')) url = 'https:' + url;
+    const url = unwrapDdgUrl(m[1]);
+    if (/duckduckgo\.com\/y\.js/i.test(url)) continue;
     links.push({ title: stripTags(m[2]), url });
   }
   const snippets = [];
@@ -203,6 +264,18 @@ async function searchBraveOrTavily(query, timeoutMs = 10000) {
 async function searchFallbackJsonApis(query, timeoutMs = 10000) {
   const hits = [];
   const tasks = [
+    fetch('https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&site=stackoverflow&pagesize=4&q=' + encodeURIComponent(query), {
+      headers: { 'user-agent': 'AkronCode/1.5' },
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        for (const item of (j && j.items) || []) {
+          if (item && item.link && item.title) {
+            hits.push({ title: stripTags(item.title), url: item.link, snippet: `StackOverflow (score ${item.score || 0}, answers ${item.answer_count || 0})`, source: 'stackoverflow' });
+          }
+        }
+      }).catch(() => {}),
     fetch('https://hn.algolia.com/api/v1/search?hitsPerPage=4&query=' + encodeURIComponent(query), { signal: AbortSignal.timeout(timeoutMs) })
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
@@ -212,7 +285,7 @@ async function searchFallbackJsonApis(query, timeoutMs = 10000) {
         }
       }).catch(() => {}),
     fetch('https://en.wikipedia.org/w/api.php?action=query&list=search&utf8=1&format=json&srlimit=4&srsearch=' + encodeURIComponent(query), {
-      headers: { 'user-agent': 'AkronCode/1.4 (+https://akronlogic.com)' },
+      headers: { 'user-agent': 'AkronCode/1.5 (+https://akronlogic.com)' },
       signal: AbortSignal.timeout(timeoutMs),
     })
       .then((r) => (r.ok ? r.json() : null))
@@ -225,7 +298,7 @@ async function searchFallbackJsonApis(query, timeoutMs = 10000) {
         }
       }).catch(() => {}),
     fetch('https://api.github.com/search/repositories?per_page=4&q=' + encodeURIComponent(query), {
-      headers: { 'user-agent': 'AkronCode/1.4', accept: 'application/vnd.github+json' },
+      headers: { 'user-agent': 'AkronCode/1.5', accept: 'application/vnd.github+json' },
       signal: AbortSignal.timeout(timeoutMs),
     })
       .then((r) => (r.ok ? r.json() : null))
@@ -239,21 +312,42 @@ async function searchFallbackJsonApis(query, timeoutMs = 10000) {
   return hits;
 }
 
+function rankAndFilterHits(hits, query, { minScore = 0.25 } = {}) {
+  const kws = queryKeywords(query);
+  const seen = new Set();
+  const scored = [];
+  for (const h of hits || []) {
+    if (!h || !h.url || seen.has(h.url)) continue;
+    seen.add(h.url);
+    const s = scoreHit(h, kws);
+    if (kws.length > 0 && s < minScore && h.source !== 'tavily' && h.source !== 'brave' && h.source !== 'searxng') {
+      continue;
+    }
+    scored.push({ ...h, _score: s });
+  }
+  scored.sort((a, b) => b._score - a._score);
+  return scored;
+}
+
 async function webSearch({ query, allowed_domains, blocked_domains } = {}) {
   const q = String(query || '').trim();
   if (!q) return 'Error: query required';
   try {
-    let hits = (await searchBraveOrTavily(q)) || [];
-    if (!hits.length) {
-      try { hits = await searchBingRss(q); } catch (_) { hits = []; }
+    let rawHits = (await searchBraveOrTavily(q)) || [];
+    if (!rawHits.length) {
+      const [ddgH, ddgL, bing] = await Promise.all([
+        searchDuckDuckGoHtml(q).catch(() => []),
+        searchDuckDuckGoLite(q).catch(() => []),
+        searchBingRss(q).catch(() => []),
+      ]);
+      rawHits = rankAndFilterHits([...ddgH, ...ddgL, ...bing], q, { minScore: 0.2 });
     }
-    if (!hits.length) {
-      try { hits = await searchDuckDuckGoLite(q); } catch (_) { hits = []; }
+    if (!rawHits.length) {
+      const jsonHits = await searchFallbackJsonApis(q);
+      rawHits = rankAndFilterHits(jsonHits, q, { minScore: 0.2 });
+      if (!rawHits.length && jsonHits.length) rawHits = jsonHits;
     }
-    if (!hits.length) {
-      hits = await searchFallbackJsonApis(q);
-    }
-    const filtered = hits
+    const filtered = rawHits
       .filter((h) => h && h.url && hostMatchesFilter(h.url, allowed_domains, blocked_domains))
       .slice(0, 8);
     if (!filtered.length) return '(no results)';
@@ -329,5 +423,5 @@ module.exports = {
   webFetch,
   isPrivateIpAddress,
   assertPublicFetchTarget,
-  _internal: { searchDuckDuckGoLite, searchFallbackJsonApis, hostMatchesFilter, stripTags },
+  _internal: { searchDuckDuckGoLite, searchDuckDuckGoHtml, searchFallbackJsonApis, hostMatchesFilter, stripTags, rankAndFilterHits, queryKeywords, scoreHit },
 };

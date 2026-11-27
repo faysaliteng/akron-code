@@ -396,7 +396,16 @@ async function runWorkflow(opts = {}) {
     // agents; it does not touch the machine directly.
   };
 
-  const body = normalizeScript(script);
+  const hadExportDefault = /(?:^|\n)\s*export\s+default\s+/.test(String(script || ''));
+  let body = hadExportDefault
+    ? String(script || '')
+        .replace(/\bexport\s+const\s+meta\s*=/, 'const meta =')
+        .replace(/\bexport\s+default\s+/g, 'const __wfDefault = ')
+        .replace(/\bexport\s+(?=(?:async\s+)?(?:function|const|let|var|class)\b)/g, '')
+    : normalizeScript(script);
+  if (hadExportDefault) {
+    body += '\n; if (typeof __wfDefault === "function") return await __wfDefault(args); if (typeof __wfDefault !== "undefined") return __wfDefault;';
+  }
   // Top-level `return` is legal because the script runs inside an async closure.
   const wrapped = `(async () => {\n${body}\n})()`;
 
@@ -411,6 +420,10 @@ async function runWorkflow(opts = {}) {
     error = e && e.message ? e.message : String(e);
   }
   const durationMs = Date.now() - startedAt;
+
+  if (!error && agentCalls === 0 && cacheHits === 0 && result === undefined) {
+    error = 'Workflow script completed without calling agent() or returning a value. Invoke agent()/parallel()/pipeline() or return a result.';
+  }
 
   log({ type: error ? 'error' : 'done', error, durationMs, agentCalls, cacheHits });
   emit({ type: 'workflow', phase: currentPhase, status: error ? 'error' : 'done', error, agentCalls, cacheHits });

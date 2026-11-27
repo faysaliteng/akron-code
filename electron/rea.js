@@ -221,6 +221,9 @@ function resolveNodeRuntime(opts = {}) {
   const candidates = [];
   if (process.env.AKRON_REA_NODE) candidates.push(process.env.AKRON_REA_NODE);
 
+  const envNode = require('./paths').resolveNodeBinary();
+  if (envNode && !candidates.includes(envNode)) candidates.push(envNode);
+
   // Volta exact node image binaries (bypasses Volta's shim pinning to older project node if any)
   try {
     const voltaNodes = path.join(home, '.volta', 'tools', 'image', 'node');
@@ -572,11 +575,19 @@ function resetCaches() {
   cachedInstall = null;
 }
 
+function isReaServerConfig(name, def = {}) {
+  const n = String(name || '').trim().toLowerCase();
+  if (n === 'rea' || n === 'rea-agents') return true;
+  const cmdLine = [def && def.command, ...((def && Array.isArray(def.args) ? def.args : []))].join(' ');
+  return /(?:^|[/\\\s"'])(?:rea-agents|rea\.mjs|rea\s+mcp\b)/i.test(cmdLine);
+}
+
 module.exports = {
   REA_BUILTIN_PROMPTS,
   expandReaPrompt,
   enrichProcessPath,
   isSupportedNodeVersion,
+  isReaServerConfig,
   resolveNodeRuntime,
   resolveReaInstallation,
   ensureConnected,

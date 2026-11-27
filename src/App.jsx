@@ -1065,6 +1065,7 @@ export default function App() {
   // Auto-dispatch the first unpaused queued message once idle and its conversation queue isn't paused.
   useEffect(() => {
     if (streaming || !queued.length) return;
+    if (streamingRef.current || runActiveRef.current) return;
     const { next, rest } = pickNextRunnableQueued(queued, queuePausedByConv);
     if (!next) return;
     setQueued(rest);
