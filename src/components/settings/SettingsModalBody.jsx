@@ -11,6 +11,7 @@ import { ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSec
 import { syncProviderForOrchestratorToggle } from '../../utils/settingsPersistence.js';
 import { hasConfiguredOrchestratorModels, ORCH_SETUP_NOTICE } from '../../utils/tutorialPresets.js';
 import { OrchPaidProvidersPanel } from './OrchPaidProvidersPanel.jsx';
+import { AgentsMdSection } from './AgentsMdSection.jsx';
 import { ParadevIntegrationCard } from './ParadevIntegrationCard.jsx';
 import { MemoryView, ProjectsView, McpView, NotebooksView } from '../../features/WorkspacePanels.jsx';
 import { SkillsViewBody, PluginsViewBody } from '../chat/WorkspaceViews.jsx';
@@ -920,8 +921,36 @@ export function SettingsModalBody({
                   </div>
                   <p className="muted">{T('code.permissions.hint')}</p>
                   <label className="check"><input type="checkbox" checked={!!features.trustedFolders} onChange={(e) => saveFeat({ ...features, trustedFolders: e.target.checked })} /> Trusted folders (pre-approve shell exec in these dirs)</label>
-                  <label className="check"><input type="checkbox" checked={!!features.computerUse} onChange={(e) => saveFeat({ ...features, computerUse: e.target.checked })} /> Computer Use (screen + mouse/keyboard via OS automation)</label>
+                  <label className="check"><input type="checkbox" checked={!!features.computerUse} onChange={(e) => saveFeat({ ...features, computerUse: e.target.checked })} /> Computer Use (3-OS screen + mouse glide + keyboard + emerald HUD)</label>
                   <label className="check"><input type="checkbox" checked={!!features.computerUseTeach} onChange={(e) => saveFeat({ ...features, computerUseTeach: e.target.checked })} /> Computer Use — teach &amp; watch/record</label>
+                  <div style={{ display: 'flex', gap: 8, margin: '6px 0 10px', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn-mini"
+                      data-testid="cu-preview-hud-btn"
+                      onClick={async () => {
+                        try {
+                          const r = await window.autobot?.computerUsePreviewHud?.();
+                          if (setNotice) setNotice(r && r.previewed ? 'Previewing Computer Use HUD + Stop pill…' : 'HUD preview ready (macOS/Win11/Linux desktop).');
+                        } catch (_) {}
+                      }}
+                    >
+                      Preview Emerald Screen HUD
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-mini"
+                      data-testid="cu-doctor-btn"
+                      onClick={async () => {
+                        try {
+                          const d = await window.autobot?.computerUseDoctor?.();
+                          if (setNotice && d) setNotice(`Computer Use (${d.platform}): ${d.ready ? 'Ready' : 'Check OS permissions'} · ${d.screen?.width || 0}x${d.screen?.height || 0}`);
+                        } catch (_) {}
+                      }}
+                    >
+                      Check 3-OS Driver Status
+                    </button>
+                  </div>
                   <label className="check"><input type="checkbox" checked={!!features.chrome} onChange={(e) => saveFeat({ ...features, chrome: e.target.checked })} /> Chrome control (CDP)</label>
                   {features.chrome && (
                     <div className="row">
@@ -964,10 +993,17 @@ export function SettingsModalBody({
               </>
             )}
 
+            {section === 'agentsmd' && (
+              <AgentsMdSection cwd={cwd} setNotice={setNotice} />
+            )}
+
             {section === 'memory' && (
               <>
                 <div className="settings-card">
-                  <h3><Icon name="Memory" size={14} /> Long-Term Memory</h3>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <h3 style={{ margin: 0 }}><Icon name="Memory" size={14} /> Long-Term Memory</h3>
+                    <button type="button" className="btn-mini" onClick={() => setSection('agentsmd')}>Edit AGENTS.md →</button>
+                  </div>
                   <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} convs={convs} provider={provider} onJumpToMessage={onJumpToMessage} />
                 </div>
                 <div className="settings-card">

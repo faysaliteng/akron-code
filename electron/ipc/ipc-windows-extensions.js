@@ -129,7 +129,7 @@ function createQuickWindow() {
     alwaysOnTop: true, skipTaskbar: true, show: false,
     backgroundColor: '#30302e',
     ...windowIconProps(),
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
+    webPreferences: { preload: path.join(__dirname, '..', 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
   });
   quickWin.loadFile(path.join(__dirname, 'quick.html'));
   quickWin.once('ready-to-show', () => { quickWin.show(); quickWin.focus(); });
@@ -576,6 +576,8 @@ ipcMain.handle('autobot:computerUseRevoke', (e, tier) => {
   return res;
 });
 ipcMain.handle('autobot:computerUsePermissions', (e, ask) => (ask ? computeruse.requestOsPermissions() : computeruse.probePermissions()));
+ipcMain.handle('autobot:computerUseDoctor', async () => (typeof computer.doctor === 'function' ? computer.doctor() : { ok: false }));
+ipcMain.handle('autobot:computerUsePreviewHud', async () => (typeof computer.previewHud === 'function' ? computer.previewHud() : { ok: false }));
 ipcMain.handle('autobot:openComputerPanel', (e, payload) => createComputerPanel(payload || {}));
 
 // The floating Computer Use panel: the live screen preview the user watches
@@ -599,7 +601,7 @@ function createComputerPanel(payload = {}) {
     frame: false, resizable: true, movable: true, hasShadow: true,
     alwaysOnTop: !!saved.pinned, skipTaskbar: true, show: false,
     backgroundColor: '#1b1b19',
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
+    webPreferences: { preload: path.join(__dirname, '..', 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
   });
   computerPanelWin.loadFile(path.join(__dirname, '..', 'computer-panel.html'));
   computerPanelWin.once('ready-to-show', () => { computerPanelWin.show(); });

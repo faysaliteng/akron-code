@@ -15,14 +15,21 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const winLinux = require('./computer-win-linux');
+const hud = require('./computer-hud');
 
 let enabled = true;
 let lastShot = null;
 let activeDisplayIndex = 0;
+let lastCursorPos = null;
+let lastCaptureMeta = null;
 
 function setEnabled(v) { enabled = !!v; return enabled; }
 function isEnabled() { return enabled; }
-function gate() { if (!enabled) throw new Error('Computer control is disabled. Enable it in Settings → Features.'); }
+function gate() {
+  if (!enabled) throw new Error('Computer control is disabled. Enable it in Settings → Features.');
+  hud.assertNotStopped();
+}
+hud.onStop(() => { try { releaseLock(); } catch (_) {} });
 
 // ── Single-session physical input lock (prevents multi-agent cursor wars) ──
 function lockFilePath() {
@@ -141,15 +148,31 @@ function buildMacMouseOps(kind, opts = {}) {
   const up = btn === 1 ? '$.kCGEventRightMouseUp' : btn === 2 ? '$.kCGEventOtherMouseUp' : '$.kCGEventLeftMouseUp';
   const dragEvt = btn === 1 ? '$.kCGEventRightMouseDragged' : btn === 2 ? '$.kCGEventOtherMouseDragged' : '$.kCGEventLeftMouseDragged';
 
-  if (kind === 'move') return `post($.kCGEventMouseMoved, ${x}, ${y}, 0, 0);`;
+  const glideOps = (opts.glideFrom && (kind === 'move' || kind === 'click'))
+    ? winLinux.computeGlidePoints(opts.glideFrom.x, opts.glideFrom.y, x, y, { maxSteps: 12 })
+      .slice(0, -1)
+      .map((pt) => `post($.kCGEventMouseMoved, ${pt.x}, ${pt.y}, 0, 0);\n  delay(0.011);`)
+      .join('\n  ')
+    : '';
+
+  if (kind === 'move') return `${glideOps ? glideOps + '\n  ' : ''}post($.kCGEventMouseMoved, ${x}, ${y}, 0, 0);`;
   if (kind === 'down') return `post(${down}, ${x}, ${y}, ${btn}, 1);`;
   if (kind === 'up') return `post(${up}, ${x}, ${y}, ${btn}, 1);`;
   if (kind === 'drag') {
-    return `post($.kCGEventMouseMoved, ${x}, ${y}, 0, 0);\n  post(${down}, ${x}, ${y}, ${btn}, 1);\n  post(${dragEvt}, ${x2}, ${y2}, ${btn}, 1);\n  post(${up}, ${x2}, ${y2}, ${btn}, 1);`;
+    const startGlide = opts.glideFrom
+      ? winLinux.computeGlidePoints(opts.glideFrom.x, opts.glideFrom.y, x, y, { maxSteps: 8 })
+        .slice(0, -1)
+        .map((pt) => `post($.kCGEventMouseMoved, ${pt.x}, ${pt.y}, 0, 0);\n  delay(0.010);`)
+        .join('\n  ')
+      : '';
+    const dragSteps = winLinux.computeGlidePoints(x, y, x2, y2, { maxSteps: 12 })
+      .map((pt) => `post(${dragEvt}, ${pt.x}, ${pt.y}, ${btn}, 1);\n  delay(0.012);`)
+      .join('\n  ');
+    return `${startGlide ? startGlide + '\n  ' : ''}post($.kCGEventMouseMoved, ${x}, ${y}, 0, 0);\n  post(${down}, ${x}, ${y}, ${btn}, 1);\n  delay(0.025);\n  ${dragSteps}\n  post(${up}, ${x2}, ${y2}, ${btn}, 1);`;
   }
   const clicks = opts.triple ? 3 : (opts.double ? 2 : 1);
-  if (clicks === 1) return `post(${down}, ${x}, ${y}, ${btn}, 1);\n  post(${up}, ${x}, ${y}, ${btn}, 1);`;
-  const lines = [];
+  if (clicks === 1) return `${glideOps ? glideOps + '\n  ' : ''}post(${down}, ${x}, ${y}, ${btn}, 1);\n  post(${up}, ${x}, ${y}, ${btn}, 1);`;
+  const lines = glideOps ? [glideOps] : [];
   for (let c = 1; c <= clicks; c++) {
     lines.push(`post(${down}, ${x}, ${y}, ${btn}, ${c});`);
     lines.push(`post(${up}, ${x}, ${y}, ${btn}, ${c});`);
@@ -157,25 +180,49 @@ function buildMacMouseOps(kind, opts = {}) {
   return lines.join('\n  ');
 }
 
+function resolvePoint(rawX, rawY) {
+  let x = Math.round(Number(rawX) || 0);
+  let y = Math.round(Number(rawY) || 0);
+  if (lastCaptureMeta && (lastCaptureMeta.originX || lastCaptureMeta.originY)) {
+    const ox = Number(lastCaptureMeta.originX) || 0;
+    const oy = Number(lastCaptureMeta.originY) || 0;
+    const w = Number(lastCaptureMeta.width) || 0;
+    const h = Number(lastCaptureMeta.height) || 0;
+    if (x >= 0 && y >= 0 && (!w || x <= w) && (!h || y <= h)) {
+      x += ox;
+      y += oy;
+    }
+  }
+  return { x, y };
+}
+
 /** Mouse move/click/drag/down/up in 1x logical screen points across macOS, Windows, and Linux. */
 async function mouse(kind, opts = {}, platform = process.platform) {
   gate();
-  const x = Math.round(Number(opts.x) || 0);
-  const y = Math.round(Number(opts.y) || 0);
-  const x2 = Math.round(Number(opts.x2 != null ? opts.x2 : x));
-  const y2 = Math.round(Number(opts.y2 != null ? opts.y2 : y));
+  const p1 = resolvePoint(opts.x, opts.y);
+  const p2 = opts.x2 != null || opts.y2 != null ? resolvePoint(opts.x2 != null ? opts.x2 : opts.x, opts.y2 != null ? opts.y2 : opts.y) : p1;
+  const x = p1.x;
+  const y = p1.y;
+  const x2 = p2.x;
+  const y2 = p2.y;
   const btn = mapMouseButton(opts.button);
+  const glideFrom = opts.noGlide ? null : (lastCursorPos || null);
+  const hudLabel = kind === 'drag' ? 'Dragging' : (kind === 'move' ? 'Moving' : (opts.double ? 'Double-click' : (opts.button === 'right' ? 'Right-click' : 'Clicking')));
+  await hud.showAction({ displayIndex: activeDisplayIndex, x: kind === 'drag' ? x2 : x, y: kind === 'drag' ? y2 : y, label: hudLabel, ripple: kind === 'click' || kind === 'drag' }).catch(() => {});
 
   if (platform === 'win32') {
-    winLinux.runPS(winLinux.buildWinMousePs(kind, { ...opts, x, y, x2, y2, btn }));
+    winLinux.runPS(winLinux.buildWinMousePs(kind, { ...opts, x, y, x2, y2, btn, glideFrom }));
+    lastCursorPos = { x: kind === 'drag' ? x2 : x, y: kind === 'drag' ? y2 : y };
     return { ok: true, kind, x, y, button: btn === 1 ? 'right' : btn === 2 ? 'middle' : 'left', platform };
   }
   if (platform === 'linux') {
-    winLinux.linuxMouse(kind, { ...opts, x, y, x2, y2, btn });
+    winLinux.linuxMouse(kind, { ...opts, x, y, x2, y2, btn, glideFrom });
+    lastCursorPos = { x: kind === 'drag' ? x2 : x, y: kind === 'drag' ? y2 : y };
     return { ok: true, kind, x, y, button: btn === 1 ? 'right' : btn === 2 ? 'middle' : 'left', platform };
   }
-  const ops = buildMacMouseOps(kind, { ...opts, x, y, x2, y2 });
+  const ops = buildMacMouseOps(kind, { ...opts, x, y, x2, y2, glideFrom });
   await jxa(JXA_MOUSE(ops));
+  lastCursorPos = { x: kind === 'drag' ? x2 : x, y: kind === 'drag' ? y2 : y };
   return { ok: true, kind, x, y, button: btn === 1 ? 'right' : btn === 2 ? 'middle' : 'left', platform };
 }
 
@@ -189,21 +236,29 @@ async function mouseUp(x, y, button = 'left') { return mouse('up', { x, y, butto
 
 async function cursorPosition(platform = process.platform) {
   gate();
+  let pos = null;
   if (platform === 'win32') {
-    const out = winLinux.runPS(`${winLinux.WIN_USER32_PREAMBLE || ''}\nAdd-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class CurPos { [StructLayout(LayoutKind.Sequential)] public struct PT { public int X; public int Y; } [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); [DllImport("user32.dll")] public static extern bool GetCursorPos(out PT p); }' -ErrorAction SilentlyContinue\n[CurPos]::SetProcessDPIAware() | Out-Null\n$p = New-Object CurPos+PT\n[CurPos]::GetCursorPos([ref]$p) | Out-Null\nConvertTo-Json @{ x = $p.X; y = $p.Y } -Compress`);
-    return JSON.parse(out);
-  }
-  if (platform === 'linux') {
+    const out = winLinux.runPS(`${winLinux.WIN_USER32_PREAMBLE || ''}\n[AkronWin32]::EnableDpi() | Out-Null\n$p = New-Object AkronWin32+POINT\n[AkronWin32]::GetCursorPos([ref]$p) | Out-Null\nConvertTo-Json @{ x = $p.X; y = $p.Y } -Compress`);
+    pos = JSON.parse(out);
+  } else if (platform === 'linux') {
     if (winLinux.linuxHas('xdotool')) {
       const out = winLinux.linuxExec('xdotool', ['getmouselocation', '--shell']);
       const mx = /X=(\d+)/.exec(out);
       const my = /Y=(\d+)/.exec(out);
-      return { x: mx ? Number(mx[1]) : 0, y: my ? Number(my[1]) : 0 };
+      pos = { x: mx ? Number(mx[1]) : 0, y: my ? Number(my[1]) : 0 };
+    } else {
+      try {
+        const el = require('electron');
+        if (el && el.screen && el.screen.getCursorScreenPoint) pos = el.screen.getCursorScreenPoint();
+      } catch (_) {}
+      pos = pos || { x: 0, y: 0 };
     }
-    return { x: 0, y: 0 };
+  } else {
+    const out = await jxa(`ObjC.import('CoreGraphics'); const ev = $.CGEventCreate(null); const p = $.CGEventGetLocation(ev); JSON.stringify({ x: Math.round(p.x), y: Math.round(p.y) });`);
+    pos = JSON.parse(out);
   }
-  const out = await jxa(`ObjC.import('CoreGraphics'); const ev = $.CGEventCreate(null); const p = $.CGEventGetLocation(ev); JSON.stringify({ x: Math.round(p.x), y: Math.round(p.y) });`);
-  return JSON.parse(out);
+  if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) lastCursorPos = { x: pos.x, y: pos.y };
+  return pos;
 }
 
 async function scroll(direction = 'down', amount = 3, opts = {}) {
@@ -215,19 +270,16 @@ async function scroll(direction = 'down', amount = 3, opts = {}) {
   if (opts && opts.x != null && opts.y != null) {
     await move(opts.x, opts.y);
   }
+  await hud.showAction({ displayIndex: activeDisplayIndex, x: lastCursorPos?.x, y: lastCursorPos?.y, label: `Scrolling ${direction}` }).catch(() => {});
   if (process.platform === 'win32') {
     const delta = (vertical ? d : -d) * n * 120;
     const flag = vertical ? '0x0800' : '0x01000';
-    winLinux.runPS(`Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Scr { [DllImport("user32.dll")] public static extern void mouse_event(uint f, int dx, int dy, int d, UIntPtr e); }' -ErrorAction SilentlyContinue\n[Scr]::mouse_event(${flag}, 0, 0, ${delta}, [UIntPtr]::Zero)\n"ok"`);
+    winLinux.runPS(`${winLinux.WIN_USER32_PREAMBLE || ''}\n[AkronWin32]::EnableDpi() | Out-Null\n[AkronWin32]::mouse_event(${flag}, 0, 0, ${delta}, [UIntPtr]::Zero)\n"ok"`);
     return { ok: true, direction, amount: n };
   }
   if (process.platform === 'linux') {
-    if (winLinux.linuxHas('xdotool')) {
-      const btn = direction === 'up' ? '4' : direction === 'down' ? '5' : direction === 'left' ? '6' : '7';
-      winLinux.linuxExec('xdotool', ['click', '--repeat', String(n), btn]);
-      return { ok: true, direction, amount: n };
-    }
-    throw new Error('xdotool required for Linux scrolling.');
+    winLinux.linuxScroll(direction, n);
+    return { ok: true, direction, amount: n };
   }
   const dy = vertical ? d * n : 0;
   const dx = vertical ? 0 : d * n;
@@ -320,44 +372,52 @@ $.CGEventPost($.kCGHIDEventTap, up);
   return 'ok';
 }
 
-async function type(text, platform = process.platform) {
+async function typeViaClipboard(text, platform = process.platform) {
+  let saved = null;
+  try { saved = await clipboardRead(); } catch (_) { saved = null; }
+  await clipboardWrite(text);
+  try {
+    await wait(25);
+    await key(platform === 'darwin' ? 'command+v' : 'ctrl+v', platform);
+    await wait(90);
+    return 'pasted';
+  } finally {
+    if (typeof saved === 'string') {
+      try { await clipboardWrite(saved); } catch (_) {}
+    }
+  }
+}
+
+async function type(text, platform = process.platform, opts = {}) {
   gate();
   const s = String(text);
+  if (!s) return 'typed';
+  await hud.showAction({ displayIndex: activeDisplayIndex, x: lastCursorPos?.x, y: lastCursorPos?.y, label: 'Typing' }).catch(() => {});
+  const usePaste = opts.viaClipboard === true || (opts.viaClipboard !== false && (s.includes('\n') || s.length > 120));
+  if (usePaste) {
+    try { return await typeViaClipboard(s, platform); } catch (_) {}
+  }
   if (platform === 'win32') {
-    if (/[^\x00-\x7F]/.test(s)) {
-      winLinux.runPS('Set-Clipboard -Value ([Console]::In.ReadToEnd())', { input: s });
-      return key('ctrl+v');
-    }
-    winLinux.runPS(`Add-Type -AssemblyName System.Windows.Forms\n$txt = [Console]::In.ReadToEnd()\n$escaped = $txt -replace '([+^%~(){}\\[\\]])', '{$1}'\n[System.Windows.Forms.SendKeys]::SendWait($escaped)\n"ok"`, { input: s });
+    winLinux.runPS(winLinux.buildWinUnicodeTypePs(), { input: s });
     return 'typed';
   }
   if (platform === 'linux') {
-    if (winLinux.linuxHas('xdotool')) {
-      winLinux.linuxExec('xdotool', ['type', '--clearmodifiers', '--delay', '8', s]);
-      return 'typed';
-    }
-    if (winLinux.linuxHas('ydotool')) {
-      winLinux.linuxExec('ydotool', ['type', s]);
-      return 'typed';
-    }
-    throw new Error('xdotool or ydotool required for typing on Linux.');
+    winLinux.linuxType(s);
+    return 'typed';
   }
   return macCgType(s);
 }
 
 async function key(keys, platform = process.platform) {
   gate();
+  await hud.showAction({ displayIndex: activeDisplayIndex, x: lastCursorPos?.x, y: lastCursorPos?.y, label: `Key ${keys}` }).catch(() => {});
   if (platform === 'win32') {
     winLinux.runPS(winLinux.buildWinKeyPs(keys, 0));
     return 'ok';
   }
   if (platform === 'linux') {
-    const combo = String(keys || '').split('+').map(winLinux.linuxKeyToken).filter(Boolean).join('+');
-    if (winLinux.linuxHas('xdotool')) {
-      winLinux.linuxExec('xdotool', ['key', '--clearmodifiers', combo]);
-      return 'ok';
-    }
-    throw new Error('xdotool required for key chords on Linux.');
+    winLinux.linuxKey(keys, 0);
+    return 'ok';
   }
   return macCgKey(keys, 0);
 }
@@ -365,15 +425,13 @@ async function key(keys, platform = process.platform) {
 async function holdKey(keys, durationMs = 500) {
   gate();
   const ms = Math.min(Math.max(50, Number(durationMs) || 500), 10000);
+  await hud.showAction({ displayIndex: activeDisplayIndex, x: lastCursorPos?.x, y: lastCursorPos?.y, label: `Hold ${keys}` }).catch(() => {});
   if (process.platform === 'win32') {
     winLinux.runPS(winLinux.buildWinKeyPs(keys, ms));
     return { ok: true, keys, durationMs: ms };
   }
   if (process.platform === 'linux') {
-    const combo = String(keys || '').split('+').map(winLinux.linuxKeyToken).filter(Boolean).join('+');
-    winLinux.linuxExec('xdotool', ['keydown', combo]);
-    await wait(ms);
-    winLinux.linuxExec('xdotool', ['keyup', combo]);
+    winLinux.linuxKey(keys, ms);
     return { ok: true, keys, durationMs: ms };
   }
   await macCgKey(keys, ms);
@@ -517,25 +575,43 @@ async function clipboardWrite(text) {
 // ── Screenshots, Retina 1x Scaling, Zoom & App-Scoped Capture ──────────────────
 
 function screenPointsSync(displayIdx = activeDisplayIndex) {
-  if (process.platform === 'win32') return winLinux.winScreenPointsSync();
+  try {
+    const el = require('electron');
+    if (el && el.screen && el.app && el.app.isReady && el.app.isReady()) {
+      const all = el.screen.getAllDisplays();
+      if (Array.isArray(all) && all.length) {
+        const idx = Math.max(0, Math.min(Number(displayIdx) || 0, all.length - 1));
+        const d = all[idx] || el.screen.getPrimaryDisplay();
+        const b = d.bounds || { x: 0, y: 0, width: 1280, height: 800 };
+        return {
+          width: Math.round(b.width),
+          height: Math.round(b.height),
+          originX: Math.round(b.x || 0),
+          originY: Math.round(b.y || 0),
+          scale: Math.round((d.scaleFactor || 1) * 100) / 100,
+          displayCount: all.length,
+          displayIndex: idx,
+        };
+      }
+    }
+  } catch (_) {}
+  if (process.platform === 'win32') return winLinux.winScreenPointsSync(displayIdx);
   if (process.platform === 'linux') return winLinux.linuxScreenPointsSync();
   try {
     const r = spawnSync('/usr/bin/osascript', ['-l', 'JavaScript', '-e',
       `ObjC.import('CoreGraphics');
-       const maxD = 8; const out = $.malloc(4 * maxD); const cnt = $.malloc(4);
        let id = $.CGMainDisplayID();
-       const ids = ObjC.wrap($.CGGetActiveDisplayList ? [] : []);
        const b = $.CGDisplayBounds(id);
        const s = $.CGDisplayPixelsWide(id) / (b.size.width || 1);
-       JSON.stringify({ width: b.size.width, height: b.size.height, scale: Math.round(s * 100) / 100, displayCount: 1 });`],
+       JSON.stringify({ width: b.size.width, height: b.size.height, originX: b.origin.x || 0, originY: b.origin.y || 0, scale: Math.round(s * 100) / 100, displayCount: 1 });`],
       { timeout: 10000 });
     const out = String(r.stdout || '').trim();
     if (out) {
       const o = JSON.parse(out);
-      return { width: Math.round(o.width), height: Math.round(o.height), scale: o.scale || 1, displayIndex: displayIdx };
+      return { width: Math.round(o.width), height: Math.round(o.height), originX: Math.round(o.originX || 0), originY: Math.round(o.originY || 0), scale: o.scale || 1, displayCount: o.displayCount || 1, displayIndex: displayIdx };
     }
   } catch (_) {}
-  return { width: 1280, height: 800, scale: 1, displayIndex: displayIdx };
+  return { width: 1280, height: 800, originX: 0, originY: 0, scale: 1, displayCount: 1, displayIndex: displayIdx };
 }
 
 async function screenSize() {
@@ -614,48 +690,73 @@ async function screenshot(opts = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `shot-${Date.now()}.png`);
   const dispIdx = opts.displayIndex != null ? Number(opts.displayIndex) : activeDisplayIndex;
-
-  if (process.platform === 'win32') {
-    const dim = winLinux.winScreenshot(file, null, dispIdx);
-    const buf = fs.readFileSync(file);
-    lastShot = file;
-    return { path: file, size: buf.length, width: dim.width, height: dim.height, scale: 1, nativeScale: 1, displayIndex: dispIdx, b64: buf.toString('base64') };
-  }
-  if (process.platform === 'linux') {
-    winLinux.linuxScreenshot(file, null, null);
-    const size = screenPointsSync(dispIdx);
-    const buf = fs.readFileSync(file);
-    lastShot = file;
-    return { path: file, size: buf.length, width: size.width, height: size.height, scale: 1, nativeScale: 1, displayIndex: dispIdx, b64: buf.toString('base64') };
-  }
-
-  const capArgs = [];
-  if (dispIdx > 0) capArgs.push('-D', String(dispIdx + 1));
-  capArgs.push('-x', file);
-  const { err } = await execFileP('/usr/sbin/screencapture', capArgs, { timeout: 20000 });
   const size = screenPointsSync(dispIdx);
-  let haveShot = !err && fs.existsSync(file) && fs.statSync(file).size > 0;
-  if (!haveShot) {
-    const viaEl = await captureDisplayViaElectron(dispIdx);
-    if (!viaEl.ok) {
-      throw new Error(`screenshot failed: screencapture (${err ? err.message : 'empty file'}); desktopCapturer fallback (${viaEl.error || 'failed'}) — grant Screen Recording permission to Akron Code.`);
+
+  await hud.withHiddenForCapture(async () => {
+    if (process.platform === 'win32') {
+      try {
+        const dim = winLinux.winScreenshot(file, null, dispIdx);
+        size.width = dim.width || size.width;
+        size.height = dim.height || size.height;
+        size.originX = dim.originX != null ? dim.originX : (size.originX || 0);
+        size.originY = dim.originY != null ? dim.originY : (size.originY || 0);
+      } catch (winErr) {
+        const viaEl = await captureDisplayViaElectron(dispIdx);
+        if (!viaEl.ok) throw winErr;
+        fs.writeFileSync(file, viaEl.image.toPNG());
+      }
+      return;
     }
-    const png = viaEl.image.toPNG();
-    if (!png || !png.length) {
-      throw new Error(`screenshot failed: screencapture (${err ? err.message : 'empty file'}); desktopCapturer fallback (empty PNG).`);
+    if (process.platform === 'linux') {
+      try {
+        winLinux.linuxScreenshot(file, null, null);
+      } catch (linErr) {
+        const viaEl = await captureDisplayViaElectron(dispIdx);
+        if (!viaEl.ok) throw linErr;
+        fs.writeFileSync(file, viaEl.image.toPNG());
+      }
+      return;
     }
-    fs.writeFileSync(file, png);
-  }
-  if (opts.normalizeToLogical !== false && size.scale > 1 && size.width > 0) {
-    normalizePngToLogicalWidth(file, size.width);
-  }
+
+    const capArgs = [];
+    if (dispIdx > 0) capArgs.push('-D', String(dispIdx + 1));
+    capArgs.push('-x', file);
+    const { err } = await execFileP('/usr/sbin/screencapture', capArgs, { timeout: 20000 });
+    let haveShot = !err && fs.existsSync(file) && fs.statSync(file).size > 0;
+    if (!haveShot) {
+      const viaEl = await captureDisplayViaElectron(dispIdx);
+      if (!viaEl.ok) {
+        throw new Error(`screenshot failed: screencapture (${err ? err.message : 'empty file'}); desktopCapturer fallback (${viaEl.error || 'failed'}) — grant Screen Recording permission to Akron Code.`);
+      }
+      const png = viaEl.image.toPNG();
+      if (!png || !png.length) {
+        throw new Error(`screenshot failed: screencapture (${err ? err.message : 'empty file'}); desktopCapturer fallback (empty PNG).`);
+      }
+      fs.writeFileSync(file, png);
+    }
+    if (opts.normalizeToLogical !== false && size.scale > 1 && size.width > 0) {
+      normalizePngToLogicalWidth(file, size.width);
+    }
+  });
+
   const buf = fs.readFileSync(file);
   lastShot = file;
+  lastCaptureMeta = {
+    displayIndex: dispIdx,
+    originX: size.originX || 0,
+    originY: size.originY || 0,
+    width: size.width,
+    height: size.height,
+    scale: size.scale || 1,
+  };
+  await hud.showAction({ displayIndex: dispIdx, x: lastCursorPos?.x, y: lastCursorPos?.y, label: 'Viewing Screen' }).catch(() => {});
   return {
     path: file,
     size: buf.length,
     width: size.width,
     height: size.height,
+    originX: size.originX || 0,
+    originY: size.originY || 0,
     scale: 1,
     nativeScale: size.scale,
     displayIndex: dispIdx,
@@ -675,17 +776,11 @@ async function zoom({ x1 = 0, y1 = 0, x2 = 400, y2 = 300, dir } = {}) {
   fs.mkdirSync(outDir, { recursive: true });
   const file = path.join(outDir, `zoom-${Date.now()}.png`);
 
-  if (process.platform === 'win32') {
-    winLinux.winScreenshot(file, { x: rx, y: ry, w: rw, h: rh }, activeDisplayIndex);
-  } else if (process.platform === 'linux') {
-    winLinux.linuxScreenshot(file, { x: rx, y: ry, w: rw, h: rh }, null);
-  } else {
-    const { err } = await execFileP('/usr/sbin/screencapture', ['-x', '-R', `${rx},${ry},${rw},${rh}`, file], { timeout: 20000 });
-    const haveShot = !err && fs.existsSync(file) && fs.statSync(file).size > 0;
-    if (!haveShot) {
+  await hud.withHiddenForCapture(async () => {
+    const cropViaElectron = async (origErrMsg) => {
       const viaEl = await captureDisplayViaElectron(activeDisplayIndex);
       if (!viaEl.ok) {
-        throw new Error(`zoom failed: screencapture (${err ? err.message : 'empty file'}); desktopCapturer fallback (${viaEl.error || 'failed'}).`);
+        throw new Error(`zoom failed: ${origErrMsg}; desktopCapturer fallback (${viaEl.error || 'failed'}).`);
       }
       const imgSize = viaEl.image.getSize();
       const s = viaEl.pts && viaEl.pts.width ? (imgSize.width / viaEl.pts.width) : (viaEl.scale || 1);
@@ -695,12 +790,22 @@ async function zoom({ x1 = 0, y1 = 0, x2 = 400, y2 = 300, dir } = {}) {
       const ch = Math.max(1, Math.min(imgSize.height - cy, Math.round(rh * s)));
       const cropped = viaEl.image.crop({ x: cx, y: cy, width: cw, height: ch });
       const png = cropped && !cropped.isEmpty() ? cropped.toPNG() : viaEl.image.toPNG();
-      if (!png || !png.length) {
-        throw new Error(`zoom failed: screencapture (${err ? err.message : 'empty file'}); desktopCapturer fallback (empty cropped PNG).`);
-      }
+      if (!png || !png.length) throw new Error(`zoom failed: ${origErrMsg}; empty cropped PNG.`);
       fs.writeFileSync(file, png);
+    };
+
+    if (process.platform === 'win32') {
+      try { winLinux.winScreenshot(file, { x: rx, y: ry, w: rw, h: rh }, activeDisplayIndex); }
+      catch (e) { await cropViaElectron(e.message); }
+    } else if (process.platform === 'linux') {
+      try { winLinux.linuxScreenshot(file, { x: rx, y: ry, w: rw, h: rh }, null); }
+      catch (e) { await cropViaElectron(e.message); }
+    } else {
+      const { err } = await execFileP('/usr/sbin/screencapture', ['-x', '-R', `${rx},${ry},${rw},${rh}`, file], { timeout: 20000 });
+      const haveShot = !err && fs.existsSync(file) && fs.statSync(file).size > 0;
+      if (!haveShot) await cropViaElectron(`screencapture (${err ? err.message : 'empty file'})`);
     }
-  }
+  });
   const buf = fs.readFileSync(file);
   lastShot = file;
   return { path: file, size: buf.length, region: { x: rx, y: ry, width: rw, height: rh }, b64: buf.toString('base64') };
@@ -858,16 +963,7 @@ async function axFind({ app = '', query = '', role = '', maxResults = 40 } = {})
     return winLinux.winAxFind({ app, query, role, maxResults });
   }
   if (process.platform === 'linux') {
-    return (await listWindowsStructured()).slice(0, maxResults).map((w) => ({
-      role: 'window',
-      title: `${w.app}: ${w.title}`,
-      x: w.x,
-      y: w.y,
-      width: w.width,
-      height: w.height,
-      centerX: Math.round(w.x + w.width / 2),
-      centerY: Math.round(w.y + w.height / 2),
-    }));
+    return winLinux.linuxAxFind({ app, query, role, maxResults });
   }
   // If targeting Akron Code itself, read its live DOM/ARIA accessibility tree directly without requiring macOS assistive access.
   if (app && /akron/i.test(String(app))) {
@@ -955,8 +1051,11 @@ async function appMenu({ app = '', menuPath = [] } = {}) {
   gate();
   const segments = Array.isArray(menuPath) ? menuPath.map(String).filter(Boolean) : String(menuPath || '').split('>').map((s) => s.trim()).filter(Boolean);
   if (segments.length < 2) throw new Error('appMenu requires menuPath with at least [menuName, itemName], e.g. ["File", "Save"]');
+  if (process.platform === 'win32') {
+    return winLinux.winAppMenu({ app, menuPath: segments });
+  }
   if (process.platform !== 'darwin') {
-    throw new Error('Native app menu traversal is currently supported on macOS; use keyboard shortcuts via `mcp__computer__key` on Windows/Linux.');
+    throw new Error('Native app menu traversal is supported on macOS & Windows; use keyboard shortcuts via `mcp__computer__key` on Linux.');
   }
   const appExpr = app ? `process ${JSON.stringify(String(app))}` : 'first application process whose frontmost is true';
   const menuTop = JSON.stringify(segments[0]);
@@ -1020,11 +1119,40 @@ async function permission(prompt) {
   return { granted: status === 'granted', status };
 }
 
+async function doctor() {
+  const screen = screenPointsSync(activeDisplayIndex);
+  if (process.platform === 'darwin') {
+    let axGranted = false;
+    try { axGranted = !!(await permission(false)).granted; } catch (_) {}
+    let desktopCapturerOk = false;
+    try { desktopCapturerOk = !!(await captureDisplayViaElectron(0)).ok; } catch (_) {}
+    return {
+      ok: true,
+      platform: 'darwin',
+      ready: axGranted || desktopCapturerOk,
+      permissions: { accessibility: axGranted, screenCapture: desktopCapturerOk },
+      screen,
+      hud: hud.status(),
+      drivers: {
+        input: 'CoreGraphics CGEventPost + 60Hz cubic glide',
+        capture: 'screencapture + Electron desktopCapturer (1x logical)',
+        accessibility: 'System Events AX + Akron DOM AX',
+      },
+    };
+  }
+  const plat = winLinux.probeWinLinuxCapabilities(process.platform);
+  return { ok: true, ...plat, screen, hud: hud.status() };
+}
+
+async function previewHud(durationMs = 1800) {
+  return hud.previewHud(durationMs);
+}
+
 module.exports = {
   setEnabled, isEnabled, acquireLock, releaseLock,
   screenshot, lastScreenshot, screenSize, screenPointsSync, switchDisplay, zoom, appScreenshot,
   click, move, drag, mouseDown, mouseUp, cursorPosition, scroll, type, key, holdKey, wait,
   openApp, activateApp, frontmostApp, listWindows, listWindowsStructured, axFind, appMenu, batch,
-  clipboardRead, clipboardWrite, permission,
-  _internal: { mapMouseButton, buildMacMouseOps },
+  clipboardRead, clipboardWrite, permission, doctor, previewHud, hud,
+  _internal: { mapMouseButton, buildMacMouseOps, computeGlidePoints: winLinux.computeGlidePoints, resolvePoint },
 };

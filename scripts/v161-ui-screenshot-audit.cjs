@@ -115,6 +115,13 @@ if (process.argv.includes('--worker')) {
     safe('autobot:debugLogGet', () => ({ ok: true, config: {}, entries: [], logPath: '' }));
     safe('autobot:debugLogSetConfig', () => ({ ok: true, config: {} }));
     safe('autobot:debugLogClear', () => ({ ok: true }));
+    let mockAgentsMd = '# Custom AGENTS.md\nOld line';
+    const defAgentsMd = '# Akron Code Agent Instructions (AGENTS.md)\nDefault standing rules.';
+    safe('autobot:agentsMdGet', () => ({ ok: true, globalPath: '~/.autobot/AGENTS.md', globalExists: true, globalContent: mockAgentsMd, projectPath: REPO + '/AGENTS.md', projectExists: false, projectContent: '', defaultContent: defAgentsMd }));
+    safe('autobot:agentsMdSave', (_e, p) => { mockAgentsMd = String((p && p.content) || ''); return { ok: true, globalPath: '~/.autobot/AGENTS.md', globalExists: true, globalContent: mockAgentsMd, projectPath: REPO + '/AGENTS.md', projectExists: false, projectContent: '', defaultContent: defAgentsMd }; });
+    safe('autobot:agentsMdReset', () => { mockAgentsMd = defAgentsMd; return { ok: true, globalPath: '~/.autobot/AGENTS.md', globalExists: true, globalContent: mockAgentsMd, projectPath: REPO + '/AGENTS.md', projectExists: false, projectContent: '', defaultContent: defAgentsMd }; });
+    safe('autobot:computerUseDoctor', () => ({ ok: true, platform: process.platform, ready: true, screen: { width: 1440, height: 900 } }));
+    safe('autobot:computerUsePreviewHud', () => ({ ok: true, previewed: false }));
   }
 
   app.whenReady().then(async () => {
@@ -324,6 +331,25 @@ if (process.argv.includes('--worker')) {
       };
     })()`);
     rec('Unconfigured Orchestrator blocks activation & opens Settings -> Orchestrator', emptyOrchGuard.setupBanner && emptyOrchGuard.autoDetectBtn && emptyOrchGuard.oauthBar && emptyOrchGuard.paidPanel && !/^Orch\b/.test(emptyOrchGuard.pillText), JSON.stringify(emptyOrchGuard));
+
+    // 5. AGENTS.md editable tab + Reset to Default button in Settings
+    const agentsMdAudit = await win.webContents.executeJavaScript(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const navBtns = Array.from(document.querySelectorAll('.settings-sidebar button, .settings-nav button, nav button, aside button'));
+      const agentsNav = navBtns.find((b) => /AGENTS\\.md/i.test((b.textContent || '').trim()));
+      if (agentsNav) agentsNav.click();
+      await sleep(180);
+      const sec = document.querySelector('[data-testid="agents-md-section"]');
+      const ta = document.querySelector('[data-testid="agents-md-textarea"]');
+      const saveBtn = document.querySelector('[data-testid="agents-md-save-btn"]');
+      const resetBtn = document.querySelector('[data-testid="agents-md-reset-btn"]');
+      const beforeVal = ta ? ta.value : '';
+      if (resetBtn) resetBtn.click();
+      await sleep(150);
+      const afterResetVal = ta ? ta.value : '';
+      return { hasSec: !!sec, hasTa: !!ta, hasSave: !!saveBtn, hasReset: !!resetBtn, beforeVal, afterResetVal };
+    })()`);
+    rec('Settings AGENTS.md editor renders and Reset to Default restores default template', agentsMdAudit.hasSec && agentsMdAudit.hasTa && agentsMdAudit.hasSave && agentsMdAudit.hasReset && agentsMdAudit.beforeVal.includes('# Custom AGENTS.md') && agentsMdAudit.afterResetVal.includes('Akron Code Agent Instructions'), JSON.stringify(agentsMdAudit));
 
     rec('Zero uncaught console errors', results.consoleErrors.length === 0, results.consoleErrors.join('; '));
 

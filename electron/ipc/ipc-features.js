@@ -2731,4 +2731,29 @@ ipcMain.handle('autobot:orchAutoDetectModels', async () => {
   }
 });
 
+// ---- AGENTS.md Global & Workspace Editor ----
+ipcMain.handle('autobot:agentsMdGet', (_e, cwd) => {
+  try {
+    return require('../memory').getAgentsMdState(cwd || '');
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+
+ipcMain.handle('autobot:agentsMdSave', (_e, payload = {}) => {
+  try {
+    return require('../memory').saveAgentsMd(payload || {});
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+
+ipcMain.handle('autobot:agentsMdReset', (_e, payload = {}) => {
+  try {
+    return require('../memory').resetAgentsMd(payload || {});
+  } catch (err) {
+    return { ok: false, error: oneLine(err) };
+  }
+});
+
 };

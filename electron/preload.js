@@ -360,7 +360,12 @@ contextBridge.exposeInMainWorld('autobot', {
   computerUseGrant: (tier, opts) => ipcRenderer.invoke('autobot:computerUseGrant', tier, opts),
   computerUseRevoke: (tier) => ipcRenderer.invoke('autobot:computerUseRevoke', tier),
   computerUsePermissions: (ask) => ipcRenderer.invoke('autobot:computerUsePermissions', !!ask),
+  computerUseDoctor: () => ipcRenderer.invoke('autobot:computerUseDoctor'),
+  computerUsePreviewHud: () => ipcRenderer.invoke('autobot:computerUsePreviewHud'),
   openComputerPanel: (payload) => ipcRenderer.invoke('autobot:openComputerPanel', payload || {}),
+  agentsMdGet: (cwd) => ipcRenderer.invoke('autobot:agentsMdGet', cwd),
+  agentsMdSave: (payload) => ipcRenderer.invoke('autobot:agentsMdSave', payload),
+  agentsMdReset: (payload) => ipcRenderer.invoke('autobot:agentsMdReset', payload),
   onComputerUse: (cb) => {
     const handler = (event, evt) => { if (evt && evt.type === 'computerUse') cb(evt.state); };
     ipcRenderer.on('autobot:event', handler);
