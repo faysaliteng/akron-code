@@ -11,10 +11,10 @@
 
 <p align="center">
   <a href="https://github.com/faysaliteng/akron-code/releases/latest">
-    <img src="https://img.shields.io/badge/Release-v1.3.0-10b981?style=for-the-badge" alt="Release v1.3.0" />
+    <img src="https://img.shields.io/badge/Release-v1.4.0-10b981?style=for-the-badge" alt="Release v1.4.0" />
   </a>
   <a href="./VERIFICATION.md">
-    <img src="https://img.shields.io/badge/Verified-125%2F125%20Test%20Suites%20%C2%B7%2070%2F70%20Evals-059669?style=for-the-badge" alt="125/125 Test Suites · 70/70 Evals" />
+    <img src="https://img.shields.io/badge/Verified-136%2F136%20Test%20Suites%20%C2%B7%2070%2F70%20Evals-059669?style=for-the-badge" alt="136/136 Test Suites · 70/70 Evals" />
   </a>
   <a href="https://github.com/faysaliteng/akron-code/releases/latest">
     <img src="https://img.shields.io/badge/Platforms-macOS%20%7C%20Windows%20%7C%20Linux-111827?style=for-the-badge" alt="Cross-Platform Desktop" />
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/faysaliteng/akron-code/releases/latest"><strong>⬇️ Download v1.3.0</strong></a>
+  <a href="https://github.com/faysaliteng/akron-code/releases/latest"><strong>⬇️ Download v1.4.0</strong></a>
   ·
   <a href="#how-it-works">How It Works</a>
   ·
@@ -49,16 +49,16 @@
 
 ---
 
-## Downloads (Official Releases `v1.3.0`)
+## Downloads (Official Releases `v1.4.0`)
 
-All desktop installers are hardened with **6/6 Electron Fuses** + cryptographic **SHA-256 Brand Seal** integrity verification, paired with `latest*.yml` auto-updater manifests and `SHA256SUMS.txt` on the [**GitHub Releases Page**](https://github.com/faysaliteng/akron-code/releases/latest).
+All desktop installers are hardened with **6/6 Electron Fuses** + cryptographic **SHA-256 Brand Seal** integrity verification, paired with `latest*.yml` auto-updater manifests and `SHA256SUMS.txt` on the [**GitHub Releases Page**](https://github.com/faysaliteng/akron-code/releases/latest) (ad-hoc / unsigned locally without paid Developer ID or EV Authenticode certificates).
 
 | Platform / Component | Artifacts | Highlights |
 |---|---|---|
-| **macOS (Apple Silicon)** | `AkronCode-1.3.0-arm64.dmg` · `AkronCode-1.3.0-arm64.zip` | Top-level `Akron Code.app` + standalone `Akron Browser Bot/` folder, ad-hoc signed, `RunAsNode=false` Fuse, ASAR integrity verified |
-| **Windows 11 / 10 (x64 & ARM64)** | `AkronCode-1.3.0-win-setup-x64.exe` · `AkronCode-1.3.0-win-setup-arm64.exe` | NSIS Setup (`NSIS_EXIT=0`, Desktop & Start Menu shortcuts), native dark titlebar overlay (`Ctrl+` shortcuts), ConPTY `node-pty`, Toast XML, AUMID |
-| **Windows Portable (x64)** | `AkronCode-1.3.0-win-portable-x64.exe` | Zero-install single portable executable |
-| **Linux (x64)** | `AkronCode-1.3.0-linux-x86_64.AppImage` · `AkronCode-1.3.0-linux-x64.tar.gz` | Single-file `AppImage` + portable `.tar.gz` archive (`npmRebuild: false`, ASAR + Fuses hardened) |
+| **macOS (Apple Silicon)** | `AkronCode-1.4.0-arm64.dmg` · `AkronCode-1.4.0-arm64.zip` | Top-level `Akron Code.app` + standalone `Akron Browser Bot/` folder, ad-hoc signed, `RunAsNode=false` Fuse, ASAR integrity verified |
+| **Windows 11 / 10 (x64 & ARM64)** | `AkronCode-1.4.0-win-setup-x64.exe` · `AkronCode-1.4.0-win-setup-arm64.exe` | NSIS Setup, native dark titlebar overlay (`Ctrl+` shortcuts), ConPTY `node-pty`, PowerShell/UIAutomation Computer Use 2.0, Toast XML, AUMID |
+| **Windows Portable (x64)** | `AkronCode-1.4.0-win-portable-x64.exe` | Zero-install single portable executable |
+| **Linux (x64)** | `AkronCode-1.4.0-linux-x86_64.AppImage` · `AkronCode-1.4.0-linux-x64.tar.gz` | Single-file `AppImage` + portable `.tar.gz` archive (`npmRebuild: false`, `xdotool`/`ydotool`/`grim` Computer Use 2.0, ASAR + Fuses hardened) |
 | **Standalone Akron Browser Bot (`1.6.7`)** | `AkronBrowserBot-1.6.7.crx` · `AkronBrowserBot-1.6.7.zip` | Deterministic RSA-2048 signed CRX3 (`Cr24`) + unpacked MV3 bundle auto-synced to user-accessible OS folder & `:8766` seamless handoff bridge |
 | **Companion Terminal CLI & Daemon** | `./bin/akron.js` (`npm link` → `akron`) | Multi-turn `akron` REPL & `akron -p` coding agent (`--continue`/`--yolo`/`--stream-json`), `akron daemon`, `akron review --adversarial`, `akron doctor`, `akron eval` |
 
@@ -97,7 +97,7 @@ Every major AI company wants you trapped inside its own **Four Walled Gardens**:
 ```mermaid
 flowchart TD
   UI["Akron Code UI (3-Mode Picker · UI Design Studio · Monaco IDE · Notebooks · Debugger · Markmap)"] --> Preload["Context-Isolated Preload Bridge"]
-  Preload --> Main["Electron Main Process & Agent Harness (v1.3.0)"]
+  Preload --> Main["Electron Main Process & Agent Harness (v1.4.0)"]
 
   Main --> Vault["1. OAuth 2.1 PKCE Vault & AES-256-GCM SecretStore"]
   Main --> Brain["2. DeepSeek V4.1 Flash Dispatcher (OpenRouter Free / DeepSeek API / FreeLLMAPI)"]
@@ -118,7 +118,7 @@ flowchart TD
 
 ---
 
-### Why Akron Code (`v1.3.0` Head-to-Head Matrix)
+### Why Akron Code (`v1.4.0` Head-to-Head Matrix)
 
 | Capability | **Akron Code v1.3** | **Claude.app** | **ChatGPT / Codex.app** | **Google Antigravity** | **Cursor** |
 |---|---|---|---|---|---|
@@ -142,7 +142,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   UI["Akron Code Desktop UI (React 18 · Monaco · Notebooks · Debugger · Markmap · Appearance Studio)"] --> Preload["Context-Isolated Preload Bridge (contextIsolation: true)"]
-  Preload --> Main["Electron Main Process & Agent Harness (v1.3.0)"]
+  Preload --> Main["Electron Main Process & Agent Harness (v1.4.0)"]
 
   Main --> Brand["Brand Guard & 6/6 Electron Fuses (SHA-256 Assets + ASAR Integrity)"]
   Main --> Auth["OAuth Auto-Heal & AES-256-GCM Secret Store (Claude · Codex · Gemini · Grok · Keyring)"]

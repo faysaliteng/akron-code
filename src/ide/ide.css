@@ -451,6 +451,10 @@
   flex: 0 0 auto; min-width: 300px; max-width: 620px;
   display: flex; flex-direction: column; min-height: 0;
   border-left: 1px solid var(--border); background: var(--bg-000);
+  --chat-side-pad: 12px;
+  --chat-max-w: 100%;
+  --output-max-w: 100%;
+  --output-body-pad: 2px;
 }
 .ide-dock-head {
   display: flex; align-items: center; gap: 8px; padding: 7px 10px;
@@ -463,11 +467,59 @@
   border-radius: 999px; padding: 2px 7px; font-size: 10.5px; cursor: pointer; white-space: nowrap;
 }
 .ide-ctx-pill.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
-.ide-dock-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.ide-dock-body .inputbar { padding: 0 12px 12px; }
+.ide-dock-body {
+  flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: hidden;
+  --chat-side-pad: 12px;
+  --chat-max-w: 100%;
+  --output-max-w: 100%;
+  --output-body-pad: 2px;
+}
+.ide-dock-body .chat { padding: 0 12px 12px !important; overflow-x: hidden; }
+.ide-dock-body .conv-toolbar { margin: 0 -12px 8px; padding: 6px 12px; gap: 6px; }
+.ide-dock-body .conv-ws-prefix { display: none; }
+.ide-dock-body .inputbar { padding: 0 10px 10px !important; }
+.ide-dock-body .errorbar:not(.floating-modal-toast),
+.ide-dock-body .noticebar,
+.ide-dock-body .perm-dock,
+.ide-dock-body .question-dock,
+.ide-dock-body .paused-banner,
+.ide-dock-body .sticky-live-bar,
+.ide-dock-body .mc-panel,
+.ide-dock-body .mc-panel.inline {
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+}
 .ide-dock-body .cwdbar { min-width: 0; overflow: hidden; }
 .ide-dock-body .cwd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ide-dock-body .msg { padding: 10px 14px; }
+.ide-dock-body .msg { max-width: 100%; padding: 10px 2px; }
+.ide-dock-body .mc-panel.inline .mc-head {
+  flex-wrap: wrap;
+  row-gap: 6px;
+  padding: 7px 10px;
+}
+.ide-dock-body .mc-panel.inline .mc-badges {
+  margin-left: 0;
+  max-width: 100%;
+}
+.ide-dock-body .mc-panel.inline .mc-open-pane {
+  margin-left: auto;
+}
+.ide-dock-body .mc-phases {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+.ide-dock-body .mc-phase {
+  flex: 1 1 calc(50% - 4px);
+  min-width: 82px;
+}
+.ide-dock-body .mc-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+.ide-dock-body .composer-bottom {
+  flex-wrap: wrap;
+  gap: 6px;
+}
 
 /* Quick Open Modal */
 .ide-quickopen-backdrop {

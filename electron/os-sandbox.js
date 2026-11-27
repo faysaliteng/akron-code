@@ -48,7 +48,7 @@ const DANGEROUS_PATTERNS = [
   { re: /\bdd\b[^\n]*\bof=\/dev\/(?:disk|sd|nvme|hd)/i, reason: 'Blocked raw block device overwrite' },
 ];
 
-const CREDENTIAL_PATH_RE = /(?:~\/|\$HOME\/|\/Users\/[^/\s]+\/|\/home\/[^/\s]+\/|\/root\/)(?:\.ssh\/id_|\.aws\/credentials|\.gnupg\/|\.autobot\/secrets)/i;
+const CREDENTIAL_PATH_RE = /(?:~\/|\$HOME\/|\/Users\/[^/\s]+\/|\/home\/[^/\s]+\/|\/root\/|%USERPROFILE%[\\/])(?:\.ssh\/id_|\.aws\/credentials|\.gnupg\/|\.autobot\/secrets\.json|\.autobot\/oauth\.json|\.autobot\/oauth-mirror)/i;
 
 function unquote(s) {
   const t = String(s || '').trim();
@@ -165,6 +165,13 @@ function buildSeatbeltProfile({
       lines.push(`(allow file-write* (subpath "${sbEscape(path.resolve(w))}"))`);
     }
     lines.push('(allow file-write* (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr"))');
+    // Seatbelt evaluates rules in order (last-match-wins): keep critical config/credential guards after cwd/.autobot allows.
+    lines.push(`(deny file-write* (subpath "${sbEscape(path.join(absCwd, '.git', 'hooks'))}"))`);
+    lines.push(`(deny file-write* (literal "${sbEscape(path.join(absCwd, '.git', 'config'))}"))`);
+    lines.push(`(deny file-write* (literal "${sbEscape(path.join(absCwd, '.claude', 'settings.json'))}"))`);
+    lines.push(`(deny file-write* (literal "${sbEscape(path.join(home, '.autobot', 'secrets.json'))}"))`);
+    lines.push(`(deny file-write* (literal "${sbEscape(path.join(home, '.autobot', 'oauth.json'))}"))`);
+    lines.push(`(deny file-write* (subpath "${sbEscape(path.join(home, '.autobot', 'oauth-mirror'))}"))`);
   }
   for (const w of denyWrite || []) {
     lines.push(`(deny file-write* (subpath "${sbEscape(w)}"))`);
@@ -238,7 +245,16 @@ function wrapWithProfile(cmd, {
         '--proc', '/proc',
         '--tmpfs', '/tmp',
       ];
-      if (prof !== 'read-only') args.push('--bind', absCwd, absCwd);
+      if (prof !== 'read-only') {
+        args.push('--bind', absCwd, absCwd);
+        for (const roTarget of [
+          path.join(absCwd, '.git', 'hooks'),
+          path.join(absCwd, '.git', 'config'),
+          path.join(absCwd, '.claude', 'settings.json'),
+        ]) {
+          if (fs.existsSync(roTarget)) args.push('--ro-bind', roTarget, roTarget);
+        }
+      }
       if (!netAllowed) args.push('--unshare-net');
       args.push(defaultPosixShell(), '-c', String(cmd));
       return {

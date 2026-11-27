@@ -9,7 +9,12 @@
 // it, and (c) any model can drive the pane even when it has never been opened
 // (ensureGuest asks the renderer to mount the pane and waits for registration).
 // It mirrors the capability surface of Claude Desktop's browser relay locally.
-const { webContents } = require('electron');
+let webContents = null;
+try {
+  if (process.versions && process.versions.electron) ({ webContents } = require('electron'));
+} catch (_) {
+  webContents = null;
+}
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -24,6 +29,7 @@ function setEnsurePane(fn) { ensurePaneFn = typeof fn === 'function' ? fn : null
 function setTabCommand(fn) { tabCommandFn = typeof fn === 'function' ? fn : null; }
 
 function register(id) {
+  if (!webContents) return false;
   const n = Number(id);
   if (!Number.isFinite(n)) return false;
   const wc = webContents.fromId(n);
@@ -438,8 +444,8 @@ async function waitFor(selector, timeoutMs) {
 
 // Capture a PNG of the visible viewport and save it to a temp file. Returns the
 // path (the agent can Read it) plus dimensions.
-async function screenshot(fullPage) {
-  const g = await ensureGuest();
+async function screenshot(fullPage, webContentsId) {
+  const g = (webContentsId != null ? resolveGuestById(webContentsId) : null) || (await ensureGuest());
   if (!g) return { ok: false, error: 'Browser pane is not open' };
   try {
     if (fullPage) {
@@ -463,7 +469,7 @@ async function screenshot(fullPage) {
           const file = path.join(os.tmpdir(), 'akronbot-shot-' + Date.now() + '.png');
           fs.writeFileSync(file, img.toPNG());
           const sz = img.getSize();
-          return { ok: true, path: file, width: sz.width, height: sz.height };
+          return { ok: true, path: file, dataUrl: img.toDataURL(), width: sz.width, height: sz.height };
         }
       } catch (e) { /* fall through to viewport capture */ }
     }
@@ -471,7 +477,7 @@ async function screenshot(fullPage) {
     const file = path.join(os.tmpdir(), 'akronbot-shot-' + Date.now() + '.png');
     fs.writeFileSync(file, img.toPNG());
     const sz = img.getSize();
-    return { ok: true, path: file, width: sz.width, height: sz.height };
+    return { ok: true, path: file, dataUrl: img.toDataURL(), width: sz.width, height: sz.height };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -672,7 +678,7 @@ const INSPECT_INJECT_SCRIPT = `(function () {
 })()`;
 
 function resolveGuestById(webContentsId) {
-  if (webContentsId != null && Number.isFinite(Number(webContentsId))) {
+  if (webContents && webContentsId != null && Number.isFinite(Number(webContentsId))) {
     const wc = webContents.fromId(Number(webContentsId));
     if (wc && !wc.isDestroyed()) return wc;
   }
@@ -695,13 +701,14 @@ async function captureElementRect(webContentsId, rect) {
   const wc = resolveGuestById(webContentsId);
   if (!wc) return { ok: false, error: 'Browser pane is not open' };
   try {
-    const clip = {
-      x: Math.max(0, Math.round(Number(rect && rect.x) || 0)),
-      y: Math.max(0, Math.round(Number(rect && rect.y) || 0)),
-      width: Math.max(1, Math.min(2400, Math.round(Number(rect && rect.width) || 100))),
-      height: Math.max(1, Math.min(2400, Math.round(Number(rect && rect.height) || 60))),
-    };
-    const img = await wc.capturePage(clip);
+    const img = rect
+      ? await wc.capturePage({
+          x: Math.max(0, Math.round(Number(rect.x) || 0)),
+          y: Math.max(0, Math.round(Number(rect.y) || 0)),
+          width: Math.max(1, Math.min(2400, Math.round(Number(rect.width) || 100))),
+          height: Math.max(1, Math.min(2400, Math.round(Number(rect.height) || 60))),
+        })
+      : await wc.capturePage();
     const sz = img.getSize();
     return { ok: true, dataUrl: img.toDataURL(), width: sz.width, height: sz.height };
   } catch (e) {

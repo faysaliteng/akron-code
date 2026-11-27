@@ -294,20 +294,19 @@ const SLASH_COMMANDS = {
 const executors = {
   async bash({ command, cwd, timeout, description, run_in_background, dangerouslyDisableSandbox }, execCtx) {
     if (!command) return 'Error: command required';
+    if (!dangerouslyDisableSandbox) {
+      const canonical = osSandbox.checkCanonicalCommand(command, {
+        profile: 'workspace-write',
+        protectCredentials: true,
+      });
+      if (!canonical.ok) return `Sandbox blocked: ${canonical.reason}`;
+    }
     // Example's Bash runs either to completion or detached. A detached job must
     // outlive the tool call and be addressable by TaskOutput / KillShell.
     if (run_in_background) {
-      const job = bg.startShell({ command, cwd: resolveDir(cwd) });
+      const job = bg.startShell({ command, cwd: resolveDir(cwd), dangerouslyDisableSandbox });
       const label = description ? ` (${description})` : '';
       return `Started background shell ${job.id}${label}.\nPoll: TaskOutput {"task_id":"${job.id}","block":true,"timeout":30000}\nStop:  KillShell {"shell_id":"${job.id}"}`;
-    }
-    if (dangerouslyDisableSandbox) { /* accepted: explicit permission-gated bypass */ }
-    else {
-      const canonical = osSandbox.checkCanonicalCommand(command, {
-        profile: 'workspace-write',
-        protectCredentials: !!sandbox.load().sandbox.enabled,
-      });
-      if (!canonical.ok) return `Sandbox blocked: ${canonical.reason}`;
     }
     // Claude Code semantics: `timeout` is in MILLISECONDS (default 2 min, max 10 min).
     const t = clampBashTimeout(timeout);
@@ -491,23 +490,25 @@ const executors = {
     try { fp = resolvePath(target, cwd); } catch (e) { return 'Error writing file: ' + e.message; }
     const wr = sandbox.isWriteAllowed(fp);
     if (wr !== true) return 'Error: ' + wr.reason;
-    try {
-      fs.mkdirSync(path.dirname(fp), { recursive: true });
-      const body = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
-      // Guard against the classic "model wrote a fragment" failure: a file that
-      // only contains a placeholder is worse than no file at all.
-      fs.writeFileSync(fp, body, 'utf8');
-      const st = fs.statSync(fp);
-      editGuard.recordFileRead(_readMtimes, fp, body, st);
-      const size = st.size;
-      const warn = /(\/\/\s*rest of (the )?(code|file)|\.\.\.\s*(rest|omitted)|<placeholder>)/i.test(body)
-        ? ' WARNING: content contains a placeholder — rewrite the file with its COMPLETE contents.'
-        : '';
-      const diag = quickSyntaxDiagnostic(fp) || editGuard.collectPostEditDiagnostics(fp, cwd);
-      return `Wrote ${size} bytes to ${fp}.${warn}${diag}`;
-    } catch (e) {
-      return 'Error writing file (path=' + (p || '?') + '): ' + e.message;
-    }
+    return editGuard.withFileLock(fp, async () => {
+      try {
+        fs.mkdirSync(path.dirname(fp), { recursive: true });
+        const body = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+        // Guard against the classic "model wrote a fragment" failure: a file that
+        // only contains a placeholder is worse than no file at all.
+        fs.writeFileSync(fp, body, 'utf8');
+        const st = fs.statSync(fp);
+        editGuard.recordFileRead(_readMtimes, fp, body, st);
+        const size = st.size;
+        const warn = /(\/\/\s*rest of (the )?(code|file)|\.\.\.\s*(rest|omitted)|<placeholder>)/i.test(body)
+          ? ' WARNING: content contains a placeholder — rewrite the file with its COMPLETE contents.'
+          : '';
+        const diag = quickSyntaxDiagnostic(fp) || editGuard.collectPostEditDiagnostics(fp, cwd);
+        return `Wrote ${size} bytes to ${fp}.${warn}${diag}`;
+      } catch (e) {
+        return 'Error writing file (path=' + (p || '?') + '): ' + e.message;
+      }
+    });
   },
 
   async edit_file({ path: p, file_path: _fp, old_string, new_string, cwd, replace_all, _readMtimes }) {
@@ -517,36 +518,38 @@ const executors = {
     try { fp = resolvePath(target, cwd); } catch (e) { return 'Error editing file: ' + e.message; }
     const we = sandbox.isWriteAllowed(fp);
     if (we !== true) return 'Error: ' + we.reason;
-    try {
-      const stale = editGuard.checkStaleRead(_readMtimes, fp);
-      if (!stale.ok) return stale.error;
-      let raw;
-      try { raw = fs.readFileSync(fp, 'utf8'); }
-      catch (e) {
-        // Claude Code: an empty old_string on a missing file creates it.
-        if (e.code === 'ENOENT' && old_string === '' && new_string != null) {
-          fs.mkdirSync(path.dirname(fp), { recursive: true });
-          fs.writeFileSync(fp, String(new_string), 'utf8');
-          editGuard.recordFileRead(_readMtimes, fp, String(new_string));
-          return `Created ${fp}${quickSyntaxDiagnostic(fp) || editGuard.collectPostEditDiagnostics(fp, cwd)}`;
+    return editGuard.withFileLock(fp, async () => {
+      try {
+        const stale = editGuard.checkStaleRead(_readMtimes, fp);
+        if (!stale.ok) return stale.error;
+        let raw;
+        try { raw = fs.readFileSync(fp, 'utf8'); }
+        catch (e) {
+          // Claude Code: an empty old_string on a missing file creates it.
+          if (e.code === 'ENOENT' && old_string === '' && new_string != null) {
+            fs.mkdirSync(path.dirname(fp), { recursive: true });
+            fs.writeFileSync(fp, String(new_string), 'utf8');
+            editGuard.recordFileRead(_readMtimes, fp, String(new_string));
+            return `Created ${fp}${quickSyntaxDiagnostic(fp) || editGuard.collectPostEditDiagnostics(fp, cwd)}`;
+          }
+          return `Error editing file: cannot read ${fp} (${e.code || e.message}). Use the Write tool to create it first.`;
         }
-        return `Error editing file: cannot read ${fp} (${e.code || e.message}). Use the Write tool to create it first.`;
+        if (old_string === undefined || old_string === null || old_string === '') {
+          return 'Error: Edit requires a non-empty "old_string" copied exactly from the file (use Read first), plus "new_string".';
+        }
+        const r = applyEdit(raw, String(old_string), new_string, !!replace_all);
+        if (r.error) return editErrorText(r, fp, raw);
+        fs.writeFileSync(fp, r.raw, 'utf8');
+        editGuard.recordFileRead(_readMtimes, fp, r.raw);
+        const diag = quickSyntaxDiagnostic(fp) || editGuard.collectPostEditDiagnostics(fp, cwd);
+        if (replace_all) return `Replaced ${r.count} occurrence${r.count === 1 ? '' : 's'} in ${fp}${diag}`;
+        return (r.fuzzy
+          ? `Replaced 1 occurrence in ${fp} (matched after ignoring whitespace differences).`
+          : `Replaced 1 occurrence in ${fp}`) + diag;
+      } catch (e) {
+        return 'Error editing file: ' + e.message;
       }
-      if (old_string === undefined || old_string === null || old_string === '') {
-        return 'Error: Edit requires a non-empty "old_string" copied exactly from the file (use Read first), plus "new_string".';
-      }
-      const r = applyEdit(raw, String(old_string), new_string, !!replace_all);
-      if (r.error) return editErrorText(r, fp, raw);
-      fs.writeFileSync(fp, r.raw, 'utf8');
-      editGuard.recordFileRead(_readMtimes, fp, r.raw);
-      const diag = quickSyntaxDiagnostic(fp) || editGuard.collectPostEditDiagnostics(fp, cwd);
-      if (replace_all) return `Replaced ${r.count} occurrence${r.count === 1 ? '' : 's'} in ${fp}${diag}`;
-      return (r.fuzzy
-        ? `Replaced 1 occurrence in ${fp} (matched after ignoring whitespace differences).`
-        : `Replaced 1 occurrence in ${fp}`) + diag;
-    } catch (e) {
-      return 'Error editing file: ' + e.message;
-    }
+    });
   },
 
   async multi_edit({ path: p, file_path: _fp, edits, cwd, _readMtimes }) {
@@ -556,40 +559,42 @@ const executors = {
     try { fp = resolvePath(target, cwd); } catch (e) { return 'Error multi-editing file: ' + e.message; }
     const we = sandbox.isWriteAllowed(fp);
     if (we !== true) return 'Error: ' + we.reason;
-    try {
-      if (!Array.isArray(edits) || !edits.length) {
-        return 'Error: MultiEdit requires a non-empty "edits" array of {old_string, new_string} pairs.';
-      }
-      const stale = editGuard.checkStaleRead(_readMtimes, fp);
-      if (!stale.ok) return stale.error;
-      let raw;
-      try { raw = fs.readFileSync(fp, 'utf8'); }
-      catch (e) {
-        return `Error multi-editing file: cannot read ${fp} (${e.code || e.message}). Use the Write tool to create it first.`;
-      }
-      const original = raw;
-      // Sequential and all-or-nothing: each edit sees the result of the
-      // previous ones, and nothing is written unless every edit applies.
-      for (let i = 0; i < edits.length; i++) {
-        const e = edits[i];
-        const label = `edit #${i + 1} of ${edits.length}`;
-        if (!e || typeof e.old_string !== 'string' || e.old_string === '') {
-          return `Error: ${label} is missing a non-empty "old_string". No changes were applied.`;
+    return editGuard.withFileLock(fp, async () => {
+      try {
+        if (!Array.isArray(edits) || !edits.length) {
+          return 'Error: MultiEdit requires a non-empty "edits" array of {old_string, new_string} pairs.';
         }
-        const r = applyEdit(raw, e.old_string, e.new_string, !!e.replace_all);
-        if (r.error) {
-          const msg = editErrorText(r, fp, original, label);
-          return msg.replace('The file is unchanged.', 'No changes were applied (MultiEdit is all-or-nothing).')
-            + (/No changes were applied/.test(msg) ? '' : ' No changes were applied (MultiEdit is all-or-nothing).');
+        const stale = editGuard.checkStaleRead(_readMtimes, fp);
+        if (!stale.ok) return stale.error;
+        let raw;
+        try { raw = fs.readFileSync(fp, 'utf8'); }
+        catch (e) {
+          return `Error multi-editing file: cannot read ${fp} (${e.code || e.message}). Use the Write tool to create it first.`;
         }
-        raw = r.raw;
+        const original = raw;
+        // Sequential and all-or-nothing: each edit sees the result of the
+        // previous ones, and nothing is written unless every edit applies.
+        for (let i = 0; i < edits.length; i++) {
+          const e = edits[i];
+          const label = `edit #${i + 1} of ${edits.length}`;
+          if (!e || typeof e.old_string !== 'string' || e.old_string === '') {
+            return `Error: ${label} is missing a non-empty "old_string". No changes were applied.`;
+          }
+          const r = applyEdit(raw, e.old_string, e.new_string, !!e.replace_all);
+          if (r.error) {
+            const msg = editErrorText(r, fp, original, label);
+            return msg.replace('The file is unchanged.', 'No changes were applied (MultiEdit is all-or-nothing).')
+              + (/No changes were applied/.test(msg) ? '' : ' No changes were applied (MultiEdit is all-or-nothing).');
+          }
+          raw = r.raw;
+        }
+        fs.writeFileSync(fp, raw, 'utf8');
+        editGuard.recordFileRead(_readMtimes, fp, raw);
+        return `Applied ${edits.length} edit${edits.length === 1 ? '' : 's'} to ${fp}${quickSyntaxDiagnostic(fp) || editGuard.collectPostEditDiagnostics(fp, cwd)}`;
+      } catch (e) {
+        return 'Error multi-editing file: ' + e.message;
       }
-      fs.writeFileSync(fp, raw, 'utf8');
-      editGuard.recordFileRead(_readMtimes, fp, raw);
-      return `Applied ${edits.length} edit${edits.length === 1 ? '' : 's'} to ${fp}${quickSyntaxDiagnostic(fp) || editGuard.collectPostEditDiagnostics(fp, cwd)}`;
-    } catch (e) {
-      return 'Error multi-editing file: ' + e.message;
-    }
+    });
   },
 
   async glob({ pattern, path: basePath, cwd }) {
@@ -706,49 +711,14 @@ const executors = {
     return text;
   },
 
-  async web_fetch({ url }) {
-    const hostOk = sandbox.isHostAllowed(url);
-    if (hostOk !== true) return 'Error: ' + hostOk.reason;
-    if (!url || !/^https?:\/\//i.test(url)) return 'Error: absolute http(s) URL required';
-    try {
-      const res = await fetch(url, { redirect: 'follow', headers: { 'user-agent': 'AkronBot/1.0' } });
-      const ct = res.headers.get('content-type') || '';
-      if (ct.includes('text/html')) {
-        const html = await res.text();
-        const text = html
-          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-          .replace(/<[^>]+>/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-        return untrusted.wrapUntrusted(truncate(text.slice(0, 30000)), { source: 'WebFetch', url });
-      }
-      return untrusted.wrapUntrusted(truncate(await res.text()), { source: 'WebFetch', url });
-    } catch (e) {
-      return 'Error fetching URL: ' + e.message;
-    }
+  async web_fetch({ url, prompt }) {
+    const webSearchMod = require('./tools/web-search');
+    return webSearchMod.webFetch({ url, prompt, sandbox, truncate });
   },
 
-  async web_search({ query }) {
-    if (!query) return 'Error: query required';
-    try {
-      const u = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query);
-      const res = await fetch(u, { headers: { 'user-agent': 'Mozilla/5.0 (AUTOBOT)' } });
-      const html = await res.text();
-      const hits = [];
-      const re = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-      let m;
-      while ((m = re.exec(html)) && hits.length < 8) {
-        const title = m[2].replace(/<[^>]+>/g, '').trim();
-        let url = m[1];
-        const ud = /uddg=([^&]+)/.exec(url);
-        if (ud) url = decodeURIComponent(ud[1]);
-        hits.push(`${title}\n  ${url}`);
-      }
-      return hits.length ? untrusted.wrapUntrusted(hits.join('\n\n'), { source: 'WebSearch', url: query }) : '(no results)';
-    } catch (e) {
-      return 'Error searching: ' + e.message;
-    }
+  async web_search({ query, allowed_domains, blocked_domains }) {
+    const webSearchMod = require('./tools/web-search');
+    return webSearchMod.webSearch({ query, allowed_domains, blocked_domains });
   },
 
   async todo_write({ todos }) {
@@ -761,16 +731,111 @@ const executors = {
     return 'TODOS:\n' + lines.join('\n');
   },
 
-  // ---- Notebooks ----
-  async notebook_read({ name }) {
-    if (!name) return 'Error: notebook name required';
+  // ---- Notebooks (.ipynb real file editing + legacy stored notebooks) ----
+  async notebook_read({ name, notebook_path, path: p, cwd }) {
+    const targetPath = notebook_path || (p && /\.ipynb$/i.test(p) ? p : '');
+    if (targetPath) {
+      const fp = resolvePath(targetPath, cwd);
+      const rd = sandbox.isReadAllowed(fp);
+      if (rd !== true) return 'Error: ' + rd.reason;
+      const nb = JSON.parse(fs.readFileSync(fp, 'utf8'));
+      const cells = Array.isArray(nb.cells) ? nb.cells : [];
+      return cells.map((c, i) => `### Cell ${i} [id=${c.id || i}] (${c.cell_type || 'code'})\n${Array.isArray(c.source) ? c.source.join('') : (c.source || '')}`).join('\n\n') || '(empty notebook)';
+    }
+    if (!name) return 'Error: notebook_path or notebook name required';
     const nb = store.getNotebook(name);
     if (!nb.cells || !nb.cells.length) return `Notebook "${name}" is empty.`;
     return nb.cells.map((c, i) => `### Cell ${i} (${c.language || 'text'})\n${c.source || ''}`).join('\n\n');
   },
 
-  async notebook_edit({ name, cells }) {
-    if (!name) return 'Error: notebook name required';
+  async notebook_edit({ notebook_path, path: p, cell_id, new_source, cell_type, edit_mode = 'replace', name, cells, cwd, _readMtimes, _takeCheckpoint }) {
+    const targetPath = notebook_path || (p && /\.ipynb$/i.test(p) ? p : '');
+    if (targetPath) {
+      let fp;
+      try { fp = resolvePath(targetPath, cwd); } catch (e) { return 'Error editing notebook: ' + e.message; }
+      const we = sandbox.isWriteAllowed(fp);
+      if (we !== true) return 'Error: ' + we.reason;
+      return editGuard.withFileLock(fp, async () => {
+        const stale = editGuard.checkStaleRead(_readMtimes, fp);
+        if (!stale.ok) return stale.error;
+        if (typeof _takeCheckpoint === 'function') {
+          try { _takeCheckpoint('NotebookEdit', { file_path: fp }); } catch (_) {}
+        }
+        let nb;
+        if (fs.existsSync(fp)) {
+          nb = JSON.parse(fs.readFileSync(fp, 'utf8'));
+        } else {
+          if (edit_mode === 'delete') return `Error: notebook not found: ${fp}`;
+          nb = { cells: [], metadata: { kernelspec: { display_name: 'Python 3', language: 'python', name: 'python3' } }, nbformat: 4, nbformat_minor: 5 };
+        }
+        if (!Array.isArray(nb.cells)) nb.cells = [];
+        const mode = String(edit_mode || 'replace').toLowerCase();
+        const findIdx = () => {
+          if (cell_id == null || cell_id === '') return -1;
+          const byId = nb.cells.findIndex((c) => c && String(c.id || '') === String(cell_id));
+          if (byId >= 0) return byId;
+          const numIdx = Number(cell_id);
+          if (Number.isInteger(numIdx) && numIdx >= 0 && numIdx < nb.cells.length) return numIdx;
+          return -1;
+        };
+        const toSourceLines = (txt) => {
+          const s = String(txt == null ? '' : txt);
+          if (!s) return [];
+          const parts = s.split('\n');
+          return parts.map((line, i) => (i < parts.length - 1 ? line + '\n' : line));
+        };
+        if (mode === 'delete') {
+          const idx = findIdx();
+          if (idx < 0) return `Error: cell_id "${cell_id}" not found in ${fp}`;
+          nb.cells.splice(idx, 1);
+        } else if (mode === 'insert') {
+          if (new_source === undefined || new_source === null) return 'Error: new_source required for insert';
+          const ctype = cell_type || 'code';
+          const newCell = {
+            id: `cell-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+            cell_type: ctype,
+            metadata: {},
+            source: toSourceLines(new_source),
+            ...(ctype === 'code' ? { execution_count: null, outputs: [] } : {}),
+          };
+          const afterIdx = findIdx();
+          const insertAt = afterIdx >= 0 ? afterIdx + 1 : 0;
+          nb.cells.splice(insertAt, 0, newCell);
+        } else {
+          if (new_source === undefined || new_source === null) return 'Error: new_source required for replace';
+          let idx = findIdx();
+          if (idx < 0) {
+            if (nb.cells.length === 0) {
+              nb.cells.push({
+                id: cell_id || `cell-${Date.now().toString(36)}`,
+                cell_type: cell_type || 'code',
+                metadata: {},
+                source: [],
+                ...((cell_type || 'code') === 'code' ? { execution_count: null, outputs: [] } : {}),
+              });
+              idx = 0;
+            } else if (cell_id == null || cell_id === '') {
+              idx = 0;
+            } else {
+              return `Error: cell_id "${cell_id}" not found in ${fp}`;
+            }
+          }
+          const cell = nb.cells[idx];
+          if (cell_type) cell.cell_type = cell_type;
+          cell.source = toSourceLines(new_source);
+          if (cell.cell_type === 'code') {
+            if (!Array.isArray(cell.outputs)) cell.outputs = [];
+            if (!('execution_count' in cell)) cell.execution_count = null;
+          }
+        }
+        fs.mkdirSync(path.dirname(fp), { recursive: true });
+        const serialized = JSON.stringify(nb, null, 2) + '\n';
+        fs.writeFileSync(fp, serialized, 'utf8');
+        editGuard.recordFileRead(_readMtimes, fp, serialized);
+        return `Edited notebook ${fp} (${mode}, ${nb.cells.length} cells).`;
+      });
+    }
+    if (!name) return 'Error: notebook_path (or legacy notebook name) required';
     if (!Array.isArray(cells)) return 'Error: cells array required';
     const nb = store.writeNotebook(name, cells);
     return `Saved notebook "${name}" with ${nb.cells.length} cells.`;
@@ -1046,17 +1111,20 @@ const executors = {
   ...require('./tools/browser-executors')({ truncate }),
 
   async apply_patch({ patch, input, cwd, _readMtimes, _takeCheckpoint }) {
-    const res = applyPatchMod.applyPatchToWorkspace({
-      patch: patch || input || '',
-      cwd: resolveDir(cwd),
-      resolvePath: (p, d) => resolvePath(p, d),
-      readMtimes: _readMtimes || null,
-      sandboxMod: sandbox,
-      editGuard,
-      takeCheckpoint: _takeCheckpoint || null,
+    const dir = resolveDir(cwd);
+    return editGuard.withFileLock(dir + '::__apply_patch__', async () => {
+      const res = applyPatchMod.applyPatchToWorkspace({
+        patch: patch || input || '',
+        cwd: dir,
+        resolvePath: (p, d) => resolvePath(p, d),
+        readMtimes: _readMtimes || null,
+        sandboxMod: sandbox,
+        editGuard,
+        takeCheckpoint: _takeCheckpoint || null,
+      });
+      if (!res.ok) return { content: 'Error: ' + res.error, isError: true };
+      return res.content;
     });
-    if (!res.ok) return { content: 'Error: ' + res.error, isError: true };
-    return res.content;
   },
 
   async shadow_check({ cwd, timeout }) {
@@ -1203,15 +1271,31 @@ const toolDefinitions = [
   // ---- Visualize (charts) ----
   { name: 'mcp__visualize__visualize', description: '[visualize] Render a chart (bar/line/pie/scatter/area) from data as an SVG artifact.', parameters: { type: 'object', properties: { type: { type: 'string', description: 'bar | line | pie | scatter | area' }, title: { type: 'string' }, labels: { type: 'array', items: { type: 'string' } }, data: { type: 'array', items: { type: 'number' } } } } },
 
-  // ---- Computer Use ----
-  { name: 'mcp__computer__screenshot', description: '[computer] Capture the screen to a PNG file and return its path/size.', parameters: { type: 'object', properties: { dir: { type: 'string' } } } },
-  { name: 'mcp__computer__click', description: '[computer] Click at screen coordinates (x, y). button: left|right|middle.', parameters: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, button: { type: 'string' }, double: { type: 'boolean' } }, required: ['x', 'y'] } },
+  // ---- Computer Use 2.0 (3-OS Screen + Zoom + App-Scoped + AX + Batch) ----
+  { name: 'mcp__computer__screenshot', description: '[computer] Capture the screen to a 1x logical-resolution PNG and attach it visually so (x,y) pixel coords match click(x,y) 1:1.', parameters: { type: 'object', properties: { dir: { type: 'string' }, displayIndex: { type: 'number', description: 'Optional 0-based monitor index' } } } },
+  { name: 'mcp__computer__zoom', description: '[computer] Capture a full-resolution cropped screenshot of rectangle [x1,y1,x2,y2] for inspecting small UI text or controls.', parameters: { type: 'object', properties: { x1: { type: 'number' }, y1: { type: 'number' }, x2: { type: 'number' }, y2: { type: 'number' }, dir: { type: 'string' } }, required: ['x1', 'y1', 'x2', 'y2'] } },
+  { name: 'mcp__computer__app_screenshot', description: '[computer] Capture a specific application window without taking over the whole screen.', parameters: { type: 'object', properties: { app: { type: 'string' }, windowId: { type: 'number' }, title: { type: 'string' }, dir: { type: 'string' } } } },
+  { name: 'mcp__computer__click', description: '[computer] Click at logical screen coordinates (x, y). button: left|right|middle.', parameters: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, button: { type: 'string' }, double: { type: 'boolean' }, triple: { type: 'boolean' } }, required: ['x', 'y'] } },
   { name: 'mcp__computer__move', description: '[computer] Move the mouse to (x, y).', parameters: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] } },
-  { name: 'mcp__computer__drag', description: '[computer] Drag from (x1,y1) to (x2,y2).', parameters: { type: 'object', properties: { x1: { type: 'number' }, y1: { type: 'number' }, x2: { type: 'number' }, y2: { type: 'number' } }, required: ['x1', 'y1', 'x2', 'y2'] } },
-  { name: 'mcp__computer__scroll', description: '[computer] Scroll (direction: up|down|left|right).', parameters: { type: 'object', properties: { direction: { type: 'string' }, amount: { type: 'number' } } } },
-  { name: 'mcp__computer__type', description: '[computer] Type text via keystroke.', parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
-  { name: 'mcp__computer__key', description: '[computer] Press a key chord (e.g. "cmd+c", "enter").', parameters: { type: 'object', properties: { keys: { type: 'string' } }, required: ['keys'] } },
-  { name: 'mcp__computer__screen_size', description: '[computer] Get the screen dimensions.', parameters: { type: 'object', properties: {} } },
+  { name: 'mcp__computer__drag', description: '[computer] Drag from (x1,y1) to (x2,y2).', parameters: { type: 'object', properties: { x1: { type: 'number' }, y1: { type: 'number' }, x2: { type: 'number' }, y2: { type: 'number' }, button: { type: 'string' } }, required: ['x1', 'y1', 'x2', 'y2'] } },
+  { name: 'mcp__computer__mouse_down', description: '[computer] Press and hold mouse button at (x, y).', parameters: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, button: { type: 'string' } }, required: ['x', 'y'] } },
+  { name: 'mcp__computer__mouse_up', description: '[computer] Release mouse button at (x, y).', parameters: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, button: { type: 'string' } }, required: ['x', 'y'] } },
+  { name: 'mcp__computer__cursor_position', description: '[computer] Get current cursor (x, y) position.', parameters: { type: 'object', properties: {} } },
+  { name: 'mcp__computer__scroll', description: '[computer] Scroll (direction: up|down|left|right), optionally moving cursor to (x,y) first.', parameters: { type: 'object', properties: { direction: { type: 'string' }, amount: { type: 'number' }, x: { type: 'number' }, y: { type: 'number' } } } },
+  { name: 'mcp__computer__type', description: '[computer] Type text via keystroke (supports Unicode).', parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
+  { name: 'mcp__computer__key', description: '[computer] Press a key chord (e.g. "cmd+c", "ctrl+v", "enter").', parameters: { type: 'object', properties: { keys: { type: 'string' } }, required: ['keys'] } },
+  { name: 'mcp__computer__hold_key', description: '[computer] Hold a key down for durationMs.', parameters: { type: 'object', properties: { keys: { type: 'string' }, durationMs: { type: 'number' } }, required: ['keys'] } },
+  { name: 'mcp__computer__wait', description: '[computer] Wait ms (10-30000) for UI animation or load.', parameters: { type: 'object', properties: { ms: { type: 'number' } } } },
+  { name: 'mcp__computer__screen_size', description: '[computer] Get the logical screen dimensions and scale.', parameters: { type: 'object', properties: {} } },
+  { name: 'mcp__computer__switch_display', description: '[computer] Switch target monitor index (0-based).', parameters: { type: 'object', properties: { displayIndex: { type: 'number' } }, required: ['displayIndex'] } },
+  { name: 'mcp__computer__open_app', description: '[computer] Launch or open an application by name or path.', parameters: { type: 'object', properties: { app: { type: 'string' } }, required: ['app'] } },
+  { name: 'mcp__computer__activate_app', description: '[computer] Focus/activate a running application or window.', parameters: { type: 'object', properties: { app: { type: 'string' } }, required: ['app'] } },
+  { name: 'mcp__computer__list_windows', description: '[computer] List all visible desktop windows with windowId, app, title, pos, and size.', parameters: { type: 'object', properties: {} } },
+  { name: 'mcp__computer__ax_find', description: '[computer] Query native OS Accessibility tree UI elements ({ role, title, x, y, width, height, centerX, centerY }).', parameters: { type: 'object', properties: { app: { type: 'string' }, query: { type: 'string' }, role: { type: 'string' }, maxResults: { type: 'number' } } } },
+  { name: 'mcp__computer__app_menu', description: '[computer] Trigger a native application menu bar item by path (e.g. ["File", "Save"]).', parameters: { type: 'object', properties: { app: { type: 'string' }, menuPath: { type: 'array', items: { type: 'string' } } }, required: ['menuPath'] } },
+  { name: 'mcp__computer__clipboard_read', description: '[computer] Read system clipboard text.', parameters: { type: 'object', properties: {} } },
+  { name: 'mcp__computer__clipboard_write', description: '[computer] Write text to the system clipboard.', parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
+  { name: 'mcp__computer__batch', description: '[computer] Execute a sequence of mouse/key/type/wait actions in one atomic batch, optionally taking a screenshotAfter.', parameters: { type: 'object', properties: { actions: { type: 'array', items: { type: 'object' } }, screenshotAfter: { type: 'boolean' }, dir: { type: 'string' } }, required: ['actions'] } },
 
   // ---- Chrome (CDP) ----
   { name: 'mcp__chrome__list_tabs', description: '[chrome] List open Chrome tabs (requires Chrome started with --remote-debugging-port=9222).', parameters: { type: 'object', properties: {} } },
@@ -1378,15 +1462,31 @@ const executorsByTool = {
   mcp__skills__list_skills: 'list_skills',
   mcp__skills__load_skill: 'load_skill',
 
-  // ---- Computer Use / Chrome ----
+  // ---- Computer Use 2.0 / Chrome ----
   mcp__computer__screenshot: 'computer_screenshot',
+  mcp__computer__zoom: 'computer_zoom',
+  mcp__computer__app_screenshot: 'computer_app_screenshot',
   mcp__computer__click: 'computer_click',
   mcp__computer__move: 'computer_move',
   mcp__computer__drag: 'computer_drag',
+  mcp__computer__mouse_down: 'computer_mouse_down',
+  mcp__computer__mouse_up: 'computer_mouse_up',
+  mcp__computer__cursor_position: 'computer_cursor_position',
   mcp__computer__scroll: 'computer_scroll',
   mcp__computer__type: 'computer_type',
   mcp__computer__key: 'computer_key',
+  mcp__computer__hold_key: 'computer_hold_key',
+  mcp__computer__wait: 'computer_wait',
   mcp__computer__screen_size: 'computer_screen_size',
+  mcp__computer__switch_display: 'computer_switch_display',
+  mcp__computer__open_app: 'computer_open_app',
+  mcp__computer__activate_app: 'computer_activate_app',
+  mcp__computer__list_windows: 'computer_list_windows',
+  mcp__computer__ax_find: 'computer_ax_find',
+  mcp__computer__app_menu: 'computer_app_menu',
+  mcp__computer__clipboard_read: 'computer_clipboard_read',
+  mcp__computer__clipboard_write: 'computer_clipboard_write',
+  mcp__computer__batch: 'computer_batch',
   mcp__chrome__list_tabs: 'chrome_list_tabs',
   mcp__chrome__navigate: 'chrome_navigate',
   mcp__chrome__evaluate: 'chrome_evaluate',
@@ -1996,6 +2096,10 @@ async function runToolInner(name, args, ctx) {
       if (ctx.allowRichRead) finalArgs._allowRichRead = true;
     }
     if (!finalArgs.cwd && ctx.cwd) finalArgs.cwd = ctx.cwd;
+    if (execName === 'notebook_edit') {
+      if (ctx.readMtimes instanceof Map) finalArgs._readMtimes = ctx.readMtimes;
+      if (typeof ctx.takeCheckpoint === 'function') finalArgs._takeCheckpoint = ctx.takeCheckpoint;
+    }
     if (execName === 'apply_patch') {
       if (ctx.readMtimes instanceof Map) finalArgs._readMtimes = ctx.readMtimes;
       if (typeof ctx.takeCheckpoint === 'function') finalArgs._takeCheckpoint = ctx.takeCheckpoint;

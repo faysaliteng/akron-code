@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Icon } from '../Icon.jsx';
 
 export function formatRelativeAge(ts, now = Date.now()) {
@@ -38,12 +38,40 @@ export function ProjectsSidebar({
   onDeleteConv,
   onTogglePinConv,
   onRenameConv,
+  onArchiveConv,
   onOpenProjectSettings,
   onUnstickConv,
 }) {
   const [menuConvId, setMenuConvId] = useState(null);
+  const [renamingConvId, setRenamingConvId] = useState(null);
+  const [renameDraft, setRenameDraft] = useState('');
   const [hoverInfo, setHoverInfo] = useState(null);
   const [collapsedGroups, setCollapsedGroups] = useState({});
+  const treeRef = useRef(null);
+
+  useEffect(() => {
+    if (!menuConvId) return undefined;
+    const onDocDown = (e) => {
+      if (e.target && e.target.closest && e.target.closest('.conv-menu-pop, .conv-menu-trigger')) return;
+      setMenuConvId(null);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setMenuConvId(null);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuConvId]);
+
+  const commitRename = (cid) => {
+    const trimmed = String(renameDraft || '').trim();
+    if (trimmed && onRenameConv) onRenameConv(cid, trimmed);
+    setRenamingConvId(null);
+    setRenameDraft('');
+  };
 
   const pinnedSet = useMemo(() => new Set(Array.isArray(pinnedProjectCwds) ? pinnedProjectCwds : []), [pinnedProjectCwds]);
 
@@ -87,7 +115,7 @@ export function ProjectsSidebar({
   }, [convs, projects, pinnedSet]);
 
   return (
-    <div className="proj-tree" data-testid="projects-sidebar">
+    <div ref={treeRef} className="proj-tree" data-testid="projects-sidebar">
       {groups.map((grp) => {
         const isCollapsed = !!collapsedGroups[grp.key];
         return (
@@ -142,9 +170,10 @@ export function ProjectsSidebar({
               return (
                 <div
                   key={c.id}
-                  className={'conv proj-conv-row ' + (c.id === activeId && panel === 'chats' ? 'on' : '')}
-                  onClick={() => onSelectConv(c.id)}
+                  className={'conv proj-conv-row ' + (c.id === activeId && panel === 'chats' ? 'on ' : '') + (menuConvId === c.id ? 'menu-open' : '')}
+                  onClick={() => { if (renamingConvId !== c.id) onSelectConv(c.id); }}
                   onMouseEnter={(e) => {
+                    if (menuConvId || renamingConvId) return;
                     const rect = e.currentTarget.getBoundingClientRect();
                     setHoverInfo({
                       top: Math.max(48, Math.min(window.innerHeight - 160, rect.top)),
@@ -168,7 +197,25 @@ export function ProjectsSidebar({
                       <span className={'health-dot ' + hStatus} title={sh ? `Health: ${hStatus} (${sh.score})` : 'Healthy'} />
                     </>
                   )}
-                  <div className="conv-title">{c.title || 'Untitled'}</div>
+                  {renamingConvId === c.id ? (
+                    <input
+                      type="text"
+                      className="conv-rename-input"
+                      data-testid="conv-rename-input"
+                      value={renameDraft}
+                      autoFocus
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setRenameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === 'Enter') { e.preventDefault(); commitRename(c.id); }
+                        else if (e.key === 'Escape') { e.preventDefault(); setRenamingConvId(null); setRenameDraft(''); }
+                      }}
+                      onBlur={() => commitRename(c.id)}
+                    />
+                  ) : (
+                    <div className="conv-title">{c.title || 'Untitled'}</div>
+                  )}
                   {(hStatus === 'bad' || hStatus === 'warn') && onUnstickConv && (
                     <button
                       type="button"
@@ -187,24 +234,49 @@ export function ProjectsSidebar({
                     type="button"
                     className="proj-mini-btn conv-menu-trigger"
                     title="Conversation options"
-                    onClick={(e) => { e.stopPropagation(); setMenuConvId((cur) => (cur === c.id ? null : c.id)); }}
+                    aria-label="Conversation options"
+                    aria-expanded={menuConvId === c.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setHoverInfo(null);
+                      setMenuConvId((cur) => (cur === c.id ? null : c.id));
+                    }}
                   >
                     <Icon name="DotsVertical" size={12} />
                   </button>
                   {menuConvId === c.id && (
-                    <div className="conv-menu-pop" onClick={(e) => e.stopPropagation()}>
+                    <div className="conv-menu-pop" role="menu" onClick={(e) => e.stopPropagation()}>
                       {onTogglePinConv && (
-                        <button type="button" onClick={() => { setMenuConvId(null); onTogglePinConv(c.id); }}>
-                          {c.pinned ? 'Unpin conversation' : 'Pin conversation'}
+                        <button type="button" role="menuitem" onClick={() => { setMenuConvId(null); onTogglePinConv(c.id); }}>
+                          <Icon name={c.pinned ? 'PinSlash' : 'Pin'} size={13} />
+                          <span>{c.pinned ? 'Unpin conversation' : 'Pin conversation'}</span>
                         </button>
                       )}
                       {onRenameConv && (
-                        <button type="button" onClick={() => { setMenuConvId(null); onRenameConv(c.id); }}>
-                          Rename…
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setMenuConvId(null);
+                            setHoverInfo(null);
+                            setRenameDraft(c.title || '');
+                            setRenamingConvId(c.id);
+                          }}
+                        >
+                          <Icon name="Edit" size={13} />
+                          <span>Rename…</span>
                         </button>
                       )}
-                      <button type="button" onClick={() => { setMenuConvId(null); onDeleteConv(c.id); }}>
-                        Delete conversation
+                      {onArchiveConv && (
+                        <button type="button" role="menuitem" onClick={() => { setMenuConvId(null); onArchiveConv(c.id); }}>
+                          <Icon name="Archive" size={13} />
+                          <span>{c.archived ? 'Unarchive conversation' : 'Archive conversation'}</span>
+                        </button>
+                      )}
+                      <div className="conv-menu-sep" />
+                      <button type="button" role="menuitem" className="danger" onClick={() => { setMenuConvId(null); onDeleteConv(c.id); }}>
+                        <Icon name="Trash" size={13} />
+                        <span>Delete conversation</span>
                       </button>
                     </div>
                   )}
@@ -215,7 +287,7 @@ export function ProjectsSidebar({
         );
       })}
 
-      {hoverInfo && (
+      {hoverInfo && !menuConvId && !renamingConvId && (
         <div className="proj-hover-card" style={{ top: hoverInfo.top }} data-testid="proj-hover-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, marginBottom: 4 }}>
             <strong style={{ fontSize: 12.5, color: 'var(--text-000)' }}>{hoverInfo.title}</strong>

@@ -82,6 +82,10 @@ function startShell({ command, cwd, shell = process.platform === 'win32' ? 'powe
     if (wrapped.note) append(job, `[${wrapped.note}]\n`);
   } catch (e) {
     append(job, `[sandbox] ${e.message}\n`);
+    finish(job, 'failed', e);
+    job.stop = () => {};
+    job.done = Promise.resolve();
+    return job;
   }
   const child = spawn(file, args, {
     cwd: cwd || process.cwd(),
@@ -149,12 +153,25 @@ function startAgent({ label, description, model, run, controller, onStop } = {})
 
 // ── Monitor jobs ───────────────────────────────────────────────────────────
 // Each stdout line is an event; `onLine` receives them live.
-function startMonitor({ command, description, timeoutMs = 300000, persistent = false, cwd, onLine, onExit } = {}) {
+function startMonitor({ command, description, timeoutMs = 300000, persistent = false, cwd, dangerouslyDisableSandbox, onLine, onExit } = {}) {
   const job = create('monitor', { command, description });
-  const shFile = process.platform === 'win32' ? 'powershell.exe' : require('./paths').defaultPosixShell();
-  const shArgs = process.platform === 'win32'
+  let shFile = process.platform === 'win32' ? 'powershell.exe' : require('./paths').defaultPosixShell();
+  let shArgs = process.platform === 'win32'
     ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String(command)]
     : ['-l', '-c', String(command)];
+  try {
+    const sandbox = require('./sandbox');
+    const wrapped = sandbox.wrapShell(command, { dangerouslyDisableSandbox });
+    shFile = wrapped.file;
+    shArgs = wrapped.args;
+    if (wrapped.note) append(job, `[${wrapped.note}]\n`);
+  } catch (e) {
+    append(job, `[sandbox] ${e.message}\n`);
+    finish(job, 'failed', e);
+    job.stop = () => {};
+    job.done = Promise.resolve();
+    return job;
+  }
   const child = spawn(shFile, shArgs, {
     cwd: cwd || process.cwd(),
     env: process.env,

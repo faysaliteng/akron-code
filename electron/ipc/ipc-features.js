@@ -1903,7 +1903,7 @@ ipcMain.handle('autobot:browserHover', (e, selector, index) => browser.hover(sel
 ipcMain.handle('autobot:browserSelect', (e, selector, value) => browser.select(selector, value));
 ipcMain.handle('autobot:browserScroll', (e, direction, amount, selector) => browser.scroll(direction, amount, selector));
 ipcMain.handle('autobot:browserWaitFor', (e, selector, timeoutMs) => browser.waitFor(selector, timeoutMs));
-ipcMain.handle('autobot:browserScreenshot', (e, fullPage) => browser.screenshot(fullPage));
+ipcMain.handle('autobot:browserScreenshot', (e, fullPage, webContentsId) => browser.screenshot(fullPage, webContentsId));
 ipcMain.handle('autobot:browserSyncTabs', (e, state) => browser.syncTabs(state));
 ipcMain.handle('autobot:browserListTabs', () => browser.listTabs());
 

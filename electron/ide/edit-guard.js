@@ -201,9 +201,29 @@ async function runShadowCheck(cwd, { timeoutMs = 30000 } = {}) {
   };
 }
 
+const _fileLocks = new Map();
+
+/** Serialize async file mutations targeting the same resolved path across concurrent subagents/Swarm workers. */
+async function withFileLock(filePath, fn) {
+  const key = filePath ? path.resolve(String(filePath)) : '__default__';
+  const prev = _fileLocks.get(key) || Promise.resolve();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const tail = prev.catch(() => {}).then(() => gate);
+  _fileLocks.set(key, tail);
+  await prev.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (_fileLocks.get(key) === tail) _fileLocks.delete(key);
+  }
+}
+
 module.exports = {
   recordFileRead,
   checkStaleRead,
   collectPostEditDiagnostics,
   runShadowCheck,
+  withFileLock,
 };

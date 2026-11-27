@@ -2783,14 +2783,11 @@ export default function App() {
               onSelectConv={selectConv}
               onNewChatInProject={(projCwd) => { if (projCwd) setCwd(projCwd); newChat(); }}
               onDeleteConv={deleteConv}
-              onTogglePinConv={(cid) => setConvs((cs) => cs.map((c) => (c.id === cid ? { ...c, pinned: !c.pinned } : c)))}
-              onRenameConv={(cid) => {
-                const cur = convs.find((c) => c.id === cid);
-                const nextTitle = typeof window !== 'undefined' && window.prompt ? window.prompt('Rename conversation', (cur && cur.title) || '') : '';
-                if (nextTitle && nextTitle.trim()) {
-                  setConvs((cs) => cs.map((c) => (c.id === cid ? { ...c, title: nextTitle.trim() } : c)));
-                }
+              onTogglePinConv={(cid) => pinConv(cid)}
+              onRenameConv={(cid, nextTitle) => {
+                if (nextTitle && String(nextTitle).trim()) renameConv(cid, nextTitle);
               }}
+              onArchiveConv={archiveConv}
               onOpenProjectSettings={(grp) => { if (grp && grp.cwd) setCwd(grp.cwd); openSettingsAt('project'); }}
               onUnstickConv={(cid, sh) => {
                 selectConv(cid);
@@ -2910,10 +2907,11 @@ export default function App() {
                   cwd={cwd}
                   previewUrl={previewUrl}
                   onClose={() => setSessionPane((p) => ({ ...p, type: null }))}
-                  onAttachInspect={(items) => {
+                  onAttachInspect={(items, kind) => {
                     if (!items || !items.length) return;
                     setAttachments((a) => [...a, ...items]);
-                    setNotice('Inspected element attached to composer');
+                    const isShot = kind === 'screenshot' || (items.length === 1 && items[0].isImage);
+                    setNotice(isShot ? 'Browser screenshot attached to composer' : 'Inspected element attached to composer');
                     setTimeout(() => { try { inputRef.current && inputRef.current.focus(); } catch (_) {} }, 50);
                   }}
                 />

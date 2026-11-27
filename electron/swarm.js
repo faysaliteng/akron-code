@@ -16,10 +16,11 @@ const TIER_RANK = { small: 0, heavy: 1, critical: 2 };
 const router = require('./orch-router');
 const gate = require('./provider-gate');
 
-// The supervisor plans and reviews; it must not start building. Plan gets a
-// read-only surface; review may also run commands to verify the deliverable.
+// The supervisor plans and reviews; it must not start building during planning.
+// During review it may run commands and repair integration defects / missing pieces.
 const PLAN_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'ListDir', 'TodoWrite']);
-const REVIEW_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'ListDir', 'Bash', 'TodoWrite']);
+const READONLY_REVIEW_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'ListDir', 'Bash', 'TodoWrite']);
+const REVIEW_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'LS', 'ListDir', 'Bash', 'TodoWrite']);
 const MAX_CONCURRENCY = 8;
 const MAX_ROUNDS_PER_MEMBER = 3;
 const MAX_DYNAMIC_WORKERS = 6;
@@ -324,13 +325,13 @@ USER GOAL:
 {GOAL}`;
 
 const SUPERVISOR_MERGE_PROMPT = `You are the SUPERVISOR (lead) of a multi-agent team that has just
-finished its subtasks. Read every result below and produce the single final answer
-for the user. Rules:
-- Be complete: include the file paths that were created and what works.
-- Call out anything that failed or was skipped, plainly.
-- Do not invent work that no agent reported doing.
-- If the subtasks produce a deliverable (website/code), state where it lives and
-  that it is on disk.
+finished its subtasks. Inspect the created files, run real build/syntax/smoke verification
+checks with Bash, fix any broken imports, missing glue code, or failed subtask gaps with
+Write/Edit/MultiEdit, and produce the complete verified answer for the user. Rules:
+- Actively verify on disk (Read/Glob/Bash) before claiming anything works.
+- If a worker subtask failed or left a cross-file integration bug, repair it yourself now.
+- Call out anything that genuinely cannot run cleanly (e.g. missing external paid credentials).
+- State exact created file paths, how to start/test it, and verified test output.
 {FILES}
 SUBTASK RESULTS:
 {RESULTS}`;
@@ -1001,6 +1002,45 @@ async function swarm(goal, opts = {}) {
     if (!results[i]) results[i] = { id: String(tasks[i].id), name: memberNameFor(tasks[i]), title: tasks[i].title, tier: tasks[i].tier, model: tasks[i].model, status: tasks[i].__killed ? 'killed' : 'stopped', ms: 0, result: '(not started — the swarm was stopped)', round: 0 };
   }
 
+  // ---- 2a. Automatic failed-worker retry wave on alternate healthy models ----
+  if (opts.retryFailed !== false && !(opts.signal && opts.signal.aborted)) {
+    const failedIndices = [];
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r && r.status === 'error' && !(tasks[i] && tasks[i].__killed)) {
+        failedIndices.push(i);
+      }
+    }
+    if (failedIndices.length) {
+      emit({ type: 'swarm', phase: 'retry', count: failedIndices.length, tasks: failedIndices.map((i) => tasks[i].id) });
+      await pool(failedIndices, async (i) => {
+        if (opts.signal && opts.signal.aborted) return;
+        const task = tasks[i];
+        const prevModel = String((results[i] && results[i].model) || '').trim().toLowerCase();
+        const altCandidates = roster.filter((c) => {
+          const cm = String(c.model || '').trim().toLowerCase();
+          return cm && cm !== prevModel && (!gate || typeof gate.usable !== 'function' || gate.usable(c));
+        });
+        const altBase = altCandidates.length
+          ? (pickProvider(altCandidates, task.tier, i + 1) || altCandidates[0])
+          : pickProvider(roster, task.tier, i + 1);
+        const retryTask = { ...task };
+        if (altBase) {
+          const rest = roster.filter((c) => c !== altBase);
+          retryTask.provider = altBase;
+          retryTask.chain = { enabled: true, providers: [altBase].concat(rest), activeIndex: 0, role: 'retry' };
+        }
+        const recoveryBrief = `PREVIOUS ATTEMPT FAILED ON "${(results[i] && results[i].model) || 'unknown'}" WITH:\n${String((results[i] && results[i].result) || '').slice(0, 600)}\n\nRecover cleanly and complete the full subtask cleanly using tools.`;
+        const retried = await runOne(retryTask, (rounds.get(memberNameFor(task)) || 1) + 1, recoveryBrief);
+        if (retried && retried.status === 'done') {
+          results[i] = retried;
+        } else if (retried && results[i]) {
+          results[i] = { ...retried, result: `${results[i].result}\n\n[Backup retry on ${(retried && retried.model) || 'alternate'} (${retried.status})]: ${String(retried.result || '').slice(0, 500)}` };
+        }
+      });
+    }
+  }
+
   // ---- 2b. Stall monitor + mention wake-ups (event waves) ----
   // Antigravity wakes a member whenever a post addresses it (by `to` or an
   // @mention) and re-briefs a member whose turn ended without reporting. Run
@@ -1070,21 +1110,25 @@ async function swarm(goal, opts = {}) {
     const files = done.filter((r) => /\.(html?|css|js|jsx|tsx|ts|json|md|py)\b/i.test(r.result)).length
       ? '\nThe team reported creating files. Verify the key files exist (Read/Glob, or run the tests with Bash) and make sure the final answer names the entry file.\n' : '';
     try {
-      const out = await runAgent({
-        provider: supervisor,
-        orchestrator: supervisorOrch,
-        messages: [{
-          role: 'user',
-          content: SUPERVISOR_MERGE_PROMPT
-            .replace('{FILES}', files)
-            .replace('{RESULTS}', report + boardBlock)
-            .replace('{GOAL}', String(goal)) + (plan.synthesis ? `\n\nMERGE INSTRUCTION FROM THE PLAN: ${plan.synthesis}` : ''),
-        }],
-        maxSteps: 24,
-        cwd: opts.cwd,
-        signal: opts.signal,
-        useMemory: false,
-        toolAllow: REVIEW_TOOLS,
+        const hasWorkerErrors = done.some((r) => r && r.status === 'error');
+        const effectiveReviewTools = (opts.readOnly === true || opts.permissionMode === 'plan')
+          ? READONLY_REVIEW_TOOLS
+          : ((opts.allowReviewRepair === true || hasWorkerErrors) ? REVIEW_TOOLS : READONLY_REVIEW_TOOLS);
+        const out = await runAgent({
+          provider: supervisor,
+          orchestrator: supervisorOrch,
+          messages: [{
+            role: 'user',
+            content: SUPERVISOR_MERGE_PROMPT
+              .replace('{FILES}', files)
+              .replace('{RESULTS}', report + boardBlock)
+              .replace('{GOAL}', String(goal)) + (plan.synthesis ? `\n\nMERGE INSTRUCTION FROM THE PLAN: ${plan.synthesis}` : ''),
+          }],
+          maxSteps: 40,
+          cwd: opts.cwd,
+          signal: opts.signal,
+          useMemory: false,
+          toolAllow: effectiveReviewTools,
         emit: (evt) => { if (evt && evt.type === 'done') return; emit({ ...evt, subagent: 'supervisor', role: 'supervisor' }); },
       });
       const last = [...out].reverse().find((m) => m.role === 'assistant' && m.content);
@@ -1120,6 +1164,6 @@ async function swarm(goal, opts = {}) {
 module.exports = {
   TIER_RANK, normalizeTier, buildRoster, pickProvider, rosterSummary, isFrontier,
   extractJSON, normalizePlan, swarm, decompose,
-  createBoard, boardTools, STALL_NOTE, PLAN_TOOLS, REVIEW_TOOLS, MAX_CONCURRENCY,
+  createBoard, boardTools, STALL_NOTE, PLAN_TOOLS, READONLY_REVIEW_TOOLS, REVIEW_TOOLS, MAX_CONCURRENCY,
   SUPERVISOR_PLAN_PROMPT, SUPERVISOR_MERGE_PROMPT,
 };

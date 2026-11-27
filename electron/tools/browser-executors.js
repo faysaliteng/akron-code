@@ -6,26 +6,56 @@ const untrusted = require('../untrusted');
 
 module.exports = function buildBrowserAndCuExecutors({ truncate }) {
   return {
-  // ---- Computer Use ----
-  async computer_screenshot({ dir }) {
-    const r = await computer.screenshot({ dir });
-    return `Screenshot saved: ${r.path} (${r.size} bytes)`;
+  // ---- Computer Use 2.0 (Multimodal vision + 3-OS + App-scoped + AX + Batch) ----
+  async computer_screenshot({ dir, displayIndex }) {
+    const r = await computer.screenshot({ dir, displayIndex });
+    return {
+      content: `Screenshot saved: ${r.path} (${r.width}x${r.height} logical pts, scale=1, nativeScale=${r.nativeScale || 1}, ${r.size} bytes). Use (x, y) coordinates directly in [0..${r.width}] x [0..${r.height}].`,
+      imageDataUrl: `data:image/png;base64,${r.b64}`,
+    };
   },
-  async computer_click({ x, y, button, double }) {
-    await computer.click(Number(x), Number(y), button, !!double);
-    return `Clicked at (${x}, ${y}).`;
+  async computer_zoom({ x1, y1, x2, y2, dir }) {
+    const r = await computer.zoom({ x1, y1, x2, y2, dir });
+    return {
+      content: `Zoom crop saved: ${r.path} (region x=${r.region.x}, y=${r.region.y}, ${r.region.width}x${r.region.height}, ${r.size} bytes).`,
+      imageDataUrl: `data:image/png;base64,${r.b64}`,
+    };
+  },
+  async computer_app_screenshot({ app, windowId, title, dir }) {
+    const r = await computer.appScreenshot({ app, windowId, title, dir });
+    return {
+      content: `App window screenshot (${r.window.app} | ${r.window.title}): ${r.path} (${r.window.width}x${r.window.height} at pos=${r.window.x},${r.window.y}, ${r.size} bytes).`,
+      imageDataUrl: `data:image/png;base64,${r.b64}`,
+    };
+  },
+  async computer_click({ x, y, button, double, triple }) {
+    await computer.click(Number(x), Number(y), button, !!double, { triple: !!triple });
+    const kind = triple ? 'Triple-clicked' : double ? 'Double-clicked' : 'Clicked';
+    return `${kind} (${button || 'left'}) at (${x}, ${y}).`;
   },
   async computer_move({ x, y }) {
     await computer.move(Number(x), Number(y));
     return `Moved mouse to (${x}, ${y}).`;
   },
-  async computer_drag({ x1, y1, x2, y2 }) {
-    await computer.drag(Number(x1), Number(y1), Number(x2), Number(y2));
+  async computer_drag({ x1, y1, x2, y2, button }) {
+    await computer.drag(Number(x1), Number(y1), Number(x2), Number(y2), button || 'left');
     return `Dragged from (${x1},${y1}) to (${x2},${y2}).`;
   },
-  async computer_scroll({ direction, amount }) {
-    await computer.scroll(direction, amount);
-    return 'Scrolled.';
+  async computer_mouse_down({ x, y, button }) {
+    await computer.mouseDown(Number(x), Number(y), button || 'left');
+    return `Mouse down (${button || 'left'}) at (${x}, ${y}).`;
+  },
+  async computer_mouse_up({ x, y, button }) {
+    await computer.mouseUp(Number(x), Number(y), button || 'left');
+    return `Mouse up (${button || 'left'}) at (${x}, ${y}).`;
+  },
+  async computer_cursor_position() {
+    const p = await computer.cursorPosition();
+    return JSON.stringify(p);
+  },
+  async computer_scroll({ direction, amount, x, y }) {
+    await computer.scroll(direction, amount, { x, y });
+    return `Scrolled ${direction || 'down'} (${amount || 3}).`;
   },
   async computer_type({ text }) {
     await computer.type(text);
@@ -33,11 +63,59 @@ module.exports = function buildBrowserAndCuExecutors({ truncate }) {
   },
   async computer_key({ keys }) {
     await computer.key(keys);
-    return 'Key pressed.';
+    return `Key pressed (${keys}).`;
+  },
+  async computer_hold_key({ keys, durationMs }) {
+    const r = await computer.holdKey(keys, durationMs);
+    return `Held "${r.keys}" for ${r.durationMs}ms.`;
+  },
+  async computer_wait({ ms }) {
+    const r = await computer.wait(ms);
+    return `Waited ${r.waitedMs}ms.`;
   },
   async computer_screen_size() {
     const s = await computer.screenSize();
-    return `Screen: ${s.width}x${s.height}`;
+    return `Screen: ${s.width}x${s.height} (nativeScale=${s.scale || 1}, display=${s.displayIndex || 0})`;
+  },
+  async computer_switch_display({ displayIndex }) {
+    const r = await computer.switchDisplay(displayIndex);
+    return JSON.stringify(r);
+  },
+  async computer_open_app({ app }) {
+    const r = await computer.openApp(app);
+    return `Opened app: ${r.opened}`;
+  },
+  async computer_activate_app({ app }) {
+    return String(await computer.activateApp(app));
+  },
+  async computer_list_windows() {
+    return String(await computer.listWindows());
+  },
+  async computer_ax_find({ app, query, role, maxResults }) {
+    const items = await computer.axFind({ app, query, role, maxResults });
+    return JSON.stringify(items, null, 2);
+  },
+  async computer_app_menu({ app, menuPath }) {
+    await computer.appMenu({ app, menuPath });
+    return `Triggered menu: ${Array.isArray(menuPath) ? menuPath.join(' -> ') : menuPath}`;
+  },
+  async computer_clipboard_read() {
+    return String(await computer.clipboardRead());
+  },
+  async computer_clipboard_write({ text }) {
+    await computer.clipboardWrite(text);
+    return 'Clipboard updated.';
+  },
+  async computer_batch({ actions, screenshotAfter, dir }) {
+    const r = await computer.batch({ actions, screenshotAfter: !!screenshotAfter, dir });
+    const summary = `Executed ${r.executed.length} actions: ${r.executed.join(', ')}`;
+    if (r.screenshot && r.screenshot.b64) {
+      return {
+        content: `${summary}\nPost-batch screenshot: ${r.screenshot.path} (${r.screenshot.width}x${r.screenshot.height})`,
+        imageDataUrl: `data:image/png;base64,${r.screenshot.b64}`,
+      };
+    }
+    return summary;
   },
 
   // ---- Chrome (CDP) ----

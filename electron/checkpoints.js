@@ -202,4 +202,96 @@ function computeTurnDiffs(conv, checkpointId, cwd) {
   return diffs;
 }
 
-module.exports = { ROOT, snapshotFile, listCheckpoints, restore, removeCheckpoint, computeTurnDiffs, computeLineDiff, snapDir };
+const { execFileSync } = require('child_process');
+
+function listWorkspaceFilesQuick(cwd, limit = 1500) {
+  const out = new Map();
+  if (!cwd || !fs.existsSync(cwd)) return out;
+  const skip = new Set(['node_modules', '.git', 'dist', 'build', 'release', '.next', '.cache', 'venv', '.venv', 'target']);
+  const walk = (dir, depth) => {
+    if (depth > 6 || out.size >= limit) return;
+    let ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of ents) {
+      if (out.size >= limit) break;
+      if (e.isDirectory()) {
+        if (!skip.has(e.name)) walk(path.join(dir, e.name), depth + 1);
+      } else if (e.isFile()) {
+        const full = path.join(dir, e.name);
+        try {
+          const st = fs.statSync(full);
+          if (st.size <= 2 * 1024 * 1024) out.set(full, `${st.size}:${Math.floor(st.mtimeMs)}`);
+        } catch (_) {}
+      }
+    }
+  };
+  walk(path.resolve(cwd), 0);
+  return out;
+}
+
+/** Capture lightweight pre-execution snapshot of workspace file stats + small pre-edit contents for Bash/ApplyPatch rewind. */
+function captureWorkspaceState(cwd) {
+  const dir = cwd ? path.resolve(cwd) : '';
+  const stats = listWorkspaceFilesQuick(dir);
+  let gitDirty = new Set();
+  try {
+    const por = execFileSync('git', ['status', '--porcelain', '-uall'], { cwd: dir, encoding: 'utf8', timeout: 2500 });
+    for (const ln of String(por || '').split(/\r?\n/)) {
+      if (ln.length > 3) gitDirty.add(path.resolve(dir, ln.slice(3).trim()));
+    }
+  } catch (_) {}
+  const preBytes = new Map();
+  for (const fp of gitDirty) {
+    try {
+      const st = fs.statSync(fp);
+      if (st.isFile() && st.size <= 512 * 1024) preBytes.set(fp, fs.readFileSync(fp));
+    } catch (_) {}
+  }
+  return { cwd: dir, at: Date.now(), stats, preBytes };
+}
+
+/** Record any workspace files created or modified after a Bash/ApplyPatch turn so restore() reverts them cleanly. */
+function snapshotWorkspaceChanges(conv, turn, cwd, beforeState) {
+  if (!beforeState || !cwd) return [];
+  const afterStats = listWorkspaceFilesQuick(cwd);
+  const changed = [];
+  for (const [fp, sig] of afterStats.entries()) {
+    const prevSig = beforeState.stats.get(fp);
+    if (!prevSig) {
+      // Newly created file: record with existed: false so restore() unlinks it
+      const dir = snapDir(conv, turn);
+      fs.mkdirSync(dir, { recursive: true });
+      const metaFile = path.join(dir, 'meta.json');
+      let meta = { id: path.basename(dir), conv: conv || 'default', turn, at: new Date().toISOString(), files: [] };
+      try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch (_) {}
+      const abs = path.resolve(fp);
+      if (!meta.files.some((f) => f.path === abs)) {
+        const rec = { path: abs, backup: null, existed: false };
+        meta.files.push(rec);
+        fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
+        changed.push(rec);
+      }
+    } else if (prevSig !== sig) {
+      const preBuf = beforeState.preBytes.get(fp);
+      if (preBuf) {
+        const dir = snapDir(conv, turn);
+        fs.mkdirSync(dir, { recursive: true });
+        const metaFile = path.join(dir, 'meta.json');
+        let meta = { id: path.basename(dir), conv: conv || 'default', turn, at: new Date().toISOString(), files: [] };
+        try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch (_) {}
+        const abs = path.resolve(fp);
+        if (!meta.files.some((f) => f.path === abs)) {
+          const backup = `${meta.files.length}-${safeName(abs)}`;
+          fs.writeFileSync(path.join(dir, backup), preBuf);
+          const rec = { path: abs, backup, existed: true };
+          meta.files.push(rec);
+          fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
+          changed.push(rec);
+        }
+      }
+    }
+  }
+  return changed;
+}
+
+module.exports = { ROOT, snapshotFile, listCheckpoints, restore, removeCheckpoint, computeTurnDiffs, computeLineDiff, snapDir, captureWorkspaceState, snapshotWorkspaceChanges };

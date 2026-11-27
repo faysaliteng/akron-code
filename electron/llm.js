@@ -194,6 +194,7 @@ const SYSTEM_PROMPT = `You are Akron Code, the Akron Agent by AkronLogic (akronl
 - For anything multi-step, call TodoWrite first, then execute the steps one by one.
 - Never claim something is done until a tool result proves it. Verify with ls / Read / running the build.
 - Keep working until the task is genuinely complete. Do not stop after a plan, and do not stop after one partial edit.
+- For long-horizon complex projects: build complete, real working modules end-to-end (real API routes, real state persistence, real interactive UI, real input validation) rather than leaving mock stubs or stopping mid-project to ask "Next step: Want me to do that?". Keep updating TodoWrite, fix any syntax/runtime/test error you encounter, verify the running build/server, and only present your final summary after all TodoWrite items are completed and verified.
 - If the user asks for something a tool can do, CALL THE TOOL. Never invent tool output.
 
 ## Writing files — CRITICAL
@@ -1360,7 +1361,7 @@ function sanitizeHistory(messages, opts = {}) {
       continue;
     }
     if (role === 'tool' || role === 'function') {
-      const content = truncate(str(m.content), 8000);
+      const content = truncate(str(m.content), 24000);
       const name = m.name || (m.function && m.function.name) || 'tool';
       if (supportsTools && m.tool_call_id && lastAssistantCalls && lastAssistantCalls.has(m.tool_call_id)) {
         out.push({ role: 'tool', tool_call_id: m.tool_call_id, name, content });
@@ -1451,6 +1452,9 @@ function sanitizeHistory(messages, opts = {}) {
     const asks = [];
     const notes = [];
     const toolsSeen = new Set();
+    const filesTouched = new Set();
+    const recentCommands = [];
+    let lastTodoSummary = [];
     for (const m of dropped) {
       const flat = str(m.content).replace(/\s+/g, ' ').trim();
       if (m.role === 'user' && flat && !/^TOOL RESULT/i.test(flat)) asks.push(flat.slice(0, 160));
@@ -1459,12 +1463,25 @@ function sanitizeHistory(messages, opts = {}) {
       if (Array.isArray(m.tool_calls)) {
         for (const tc of m.tool_calls) {
           const n = (tc && tc.function && tc.function.name) || (tc && tc.name);
-          if (n) toolsSeen.add(n);
+          if (!n) continue;
+          toolsSeen.add(n);
+          const args = loose(tc.function ? tc.function.arguments : tc.arguments);
+          if (/^(Write|Edit|MultiEdit|ApplyPatch|NotebookEdit)$/i.test(n)) {
+            const p = args.path || args.file_path || args.filePath || args.notebook_path;
+            if (p && filesTouched.size < 30) filesTouched.add(String(p));
+          } else if (n === 'TodoWrite' && Array.isArray(args.todos)) {
+            lastTodoSummary = args.todos.slice(0, 20).map((t) => `[${t.status || 'pending'}] ${String(t.content || t.id || '').slice(0, 90)}`);
+          } else if (n === 'Bash' && args.command) {
+            recentCommands.push(String(args.command).replace(/\s+/g, ' ').trim().slice(0, 80));
+          }
         }
       }
     }
     const digest = [
       asks.length ? 'Requests: ' + [...new Set(asks)].slice(-8).map((a) => `"${a}"`).join(' · ') : '',
+      filesTouched.size ? 'Files created/modified: ' + [...filesTouched].join(', ') : '',
+      lastTodoSummary.length ? 'Checklist state: ' + lastTodoSummary.join(' | ') : '',
+      recentCommands.length ? 'Recent commands: ' + recentCommands.slice(-5).join(' ; ') : '',
       notes.length ? 'Progress: ' + notes.slice(-6).join(' · ') : '',
       toolsSeen.size ? 'Tools used: ' + [...toolsSeen].slice(0, 24).join(', ') : '',
     ].filter(Boolean).join('\n');
@@ -1639,6 +1656,7 @@ async function runAgent(opts) {
       gate,
       store: opts.store,
       callClassifier: opts.callClassifier || ((cp, cMsgs, maxTok, sig) => chatOnce({ provider: cp, messages: cMsgs, maxTokens: maxTok, signal: sig })),
+      swarm: opts.swarm === true,
       signal: opts.signal,
     });
     const head = normalizeProvider({ ...autoRes.chosen, routingMode: '' });
@@ -2218,6 +2236,10 @@ async function runAgent(opts) {
   let planEnded = false;
   let planNudges = 0;
   let hookNudges = 0;
+  let autoContinueNudges = 0;
+  let todoWriteUsedInTurn = false;
+  let activeTodos = [];
+  let ranSwarmInTurn = false;
   let subSpawnCount = 0;
 
   // Snapshot a file before a mutating tool touches it, so /rewind can restore
@@ -2501,7 +2523,11 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           phase: 'args',
         });
       };
-      const wireMessages = contextPipeline.maskOlderToolOutputs(messages, { keepRecentSteps: 4 });
+      const fillRatio = historyBudget > 0 ? (historyChars() / historyBudget) : 0;
+      const maskOpts = fillRatio < 0.45
+        ? { keepRecentSteps: 28, minChars: 12000 }
+        : (fillRatio < 0.75 ? { keepRecentSteps: 12, minChars: 4000 } : { keepRecentSteps: 5, minChars: 1400 });
+      const wireMessages = contextPipeline.maskOlderToolOutputs(messages, maskOpts);
       return chatWithFailover({
         list: providerList,
         getIndex,
@@ -2776,6 +2802,35 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         emit({ type: 'notice', text: 'Plan mode — the turn must end with ExitPlanMode or AskUserQuestion.' });
         messages.push({ role: 'user', content: `[plan-mode] Do not ask for approval in prose. Write the plan to ${PLAN_FILE_REL} if you have not, then call ExitPlanMode {"plan": "<the plan>"} (or AskUserQuestion if you genuinely cannot decide).` });
         continue;
+      }
+      // Autonomous completion gate: on long-horizon auto builds, finish open TodoWrite items
+      // and execute proposed verification steps instead of stopping to ask "Want me to do that?".
+      if (depth === 0 && permissionMode === 'auto' && opts._disableAutoContinue !== true && step >= 1) {
+        const incompleteTodos = todoWriteUsedInTurn
+          ? activeTodos.filter((t) => t && String(t.status || '').toLowerCase() !== 'completed')
+          : [];
+        const replyTail = String(message.content || '').trim();
+        const prematureBailout = (wroteSomething || ranSwarmInTurn)
+          && /\b(want me to|would you like me to|shall i|should i proceed|next step:\s*i can)\b[\s\S]{0,220}\?\s*$/i.test(replyTail);
+        const maxAutoWaves = incompleteTodos.length > 0 ? 8 : 3;
+        if ((incompleteTodos.length > 0 || prematureBailout) && autoContinueNudges < maxAutoWaves) {
+          autoContinueNudges++;
+          if (incompleteTodos.length > 0) {
+            const openList = incompleteTodos.slice(0, 6).map((t) => `- [${t.status || 'pending'}] ${t.content || t.id}`).join('\n');
+            emit({ type: 'notice', text: `Autonomous loop — ${incompleteTodos.length} todo item(s) still open; continuing…` });
+            messages.push({
+              role: 'user',
+              content: `[auto-continue] Do not stop yet — these TodoWrite tasks are still not completed:\n${openList}\n\nExecute the remaining tasks now with tools, verify everything runs cleanly, update TodoWrite to completed, and then report the final result.`,
+            });
+          } else {
+            emit({ type: 'notice', text: 'Autonomous loop — executing proposed next step instead of stopping early…' });
+            messages.push({
+              role: 'user',
+              content: '[auto-continue] Do not ask for permission to continue mid-task. Execute the next build/cleanup/verification step you just proposed right now using tools, verify it passes, and then present the completed summary.',
+            });
+          }
+          continue;
+        }
       }
       // Stop hook: Claude Code fires this when the turn ends. It may add a
       // system message, or `continue: false` to force the loop to keep going
@@ -3397,6 +3452,10 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       requestSecret,
       readMtimes: agentReadMtimes,
       allowRichRead: true,
+      takeCheckpoint: (toolOrPath, maybeArgs) => {
+        if (typeof toolOrPath === 'string' && !maybeArgs) takeCheckpoint('ApplyPatch', { path: toolOrPath });
+        else takeCheckpoint(toolOrPath, maybeArgs);
+      },
     };
 
     // A tool call whose JSON was sliced by the output limit must never run with
@@ -3487,6 +3546,10 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         if (toolAllow && !isAllowed(p.name)) return { content: `Tool "${p.name}" is not available to this sub-agent.`, isError: true };
         const pre = await beforeTool(p.name, p.args);
         if (pre.blocked) return { content: pre.planGate ? pre.reason : `Blocked by hook: ${pre.reason}`, isError: true };
+        if (p.name === 'TodoWrite' && Array.isArray(pre.args && pre.args.todos)) {
+          todoWriteUsedInTurn = true;
+          activeTodos = pre.args.todos.map((t) => ({ ...t }));
+        }
         const r = await runTool(p.name, pre.args, ctx);
         const rawContent = typeof r === 'string' ? r : r.content;
         const imageDataUrl = (r && typeof r === 'object' && r.imageDataUrl) ? r.imageDataUrl : null;
@@ -3558,8 +3621,18 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         return;
       }
       args = pre.args;
+      if (name === 'TodoWrite' && Array.isArray(args && args.todos)) {
+        todoWriteUsedInTurn = true;
+        activeTodos = args.todos.map((t) => ({ ...t }));
+      } else if (name === 'Swarm') {
+        ranSwarmInTurn = true;
+      }
       // Record the pre-change state of any file this mutating tool will touch.
       if (WRITE_TOOLS.has(name)) takeCheckpoint(name, args);
+      let _bashPreSnap = null;
+      if (name === 'Bash' && opts.convId && !(args && args.run_in_background)) {
+        try { _bashPreSnap = require('./checkpoints').captureWorkspaceState(args.cwd || currentCwd); } catch (_) {}
+      }
       // Route virtual mcp__* names (built-in equivalents) to runTool first;
       // only unknown mcp__* (external MCP servers) go to callMcpTool.
       // Any executor may throw (an MCP server error, a child provider failure,
@@ -3581,16 +3654,27 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             if (r && typeof r === 'object' && !Array.isArray(r) && 'content' in r && typeof r.content === 'string') {
               result = r.content;
               isError = !!r.isError;
+              if (r.imageDataUrl) imageDataUrl = r.imageDataUrl;
             } else {
               result = typeof r === 'string' ? r : JSON.stringify(r);
               if (r && typeof r === 'object' && r.isError) isError = true;
             }
           }
-        } else {
+      } else {
           const r = await runTool(name, args, { ...ctx, currentToolId: tc.id });
           result = typeof r === 'string' ? r : r.content;
           isError = typeof r === 'object' && Boolean(r.isError);
           if (r && typeof r === 'object' && r.imageDataUrl) imageDataUrl = r.imageDataUrl;
+          if (_bashPreSnap && opts.convId) {
+            try {
+              const ck = require('./checkpoints');
+              const recs = ck.snapshotWorkspaceChanges(opts.convId, opts.turnId || 'turn', args.cwd || currentCwd, _bashPreSnap);
+              for (const rec of recs) {
+                wroteSomething = true;
+                emit({ type: 'checkpoint', id: String(opts.turnId || 'turn'), path: rec.path, existed: !!rec.existed, at: Date.now() });
+              }
+            } catch (_) {}
+          }
         }
       } catch (e) {
         if (opts.signal && opts.signal.aborted) throw e;

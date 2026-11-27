@@ -35,6 +35,11 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
   const [inspectMode, setInspectMode] = useState(false);
   const [inspectedEl, setInspectedEl] = useState(null);
   const [devToolsOpen, setDevToolsOpen] = useState(false);
+  const [shotBusy, setShotBusy] = useState(false);
+  const [lastShot, setLastShot] = useState(null);
+  const [cropMode, setCropMode] = useState(false);
+  const [cropDrag, setCropDrag] = useState(null);
+  const stageRef = useRef(null);
   const inspectModeRef = useRef(false);
   inspectModeRef.current = inspectMode;
   const webviews = useRef({});
@@ -163,16 +168,17 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
   }, [enterInspectMode, exitInspectMode]);
 
   useEffect(() => {
-    if (!inspectMode) return undefined;
+    if (!inspectMode && !cropMode) return undefined;
     const onEsc = (e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        exitInspectMode();
+        if (cropMode) { setCropMode(false); setCropDrag(null); }
+        else exitInspectMode();
       }
     };
     window.addEventListener('keydown', onEsc, true);
     return () => window.removeEventListener('keydown', onEsc, true);
-  }, [inspectMode, exitInspectMode]);
+  }, [inspectMode, cropMode, exitInspectMode]);
 
   const bindWebview = (id) => (el) => {
     if (!el || webviews.current[id]) return;
@@ -371,6 +377,96 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
     if (r && r.ok) { note('Cookies, cache and storage cleared'); reload(); }
     else note((r && r.error) || 'Could not clear data');
   };
+  const attachShotPayload = useCallback((shot, modeLabel = 'Viewport') => {
+    if (!shot || !shot.ok) return false;
+    const slug = String((active && active.title) || 'browser').replace(/[^\w.-]+/g, '-').slice(0, 48) || 'browser';
+    const fileName = `${slug}-${modeLabel === 'Region' ? 'region' : (modeLabel === 'Full Page' ? 'fullpage' : 'screenshot')}.png`;
+    if (onAttachInspect && shot.dataUrl) {
+      onAttachInspect([{
+        name: fileName,
+        path: shot.path || fileName,
+        isImage: true,
+        mimeType: 'image/png',
+        dataUrl: shot.dataUrl,
+      }], 'screenshot');
+    }
+    setLastShot({
+      dataUrl: shot.dataUrl || '',
+      path: shot.path || '',
+      width: Number(shot.width) || 0,
+      height: Number(shot.height) || 0,
+      mode: modeLabel,
+    });
+    note(shot.path ? `Saved ${shot.path}` : `${modeLabel} screenshot attached to chat`);
+    return true;
+  }, [active, onAttachInspect]);
+
+  const captureBrowserScreenshot = useCallback(async (fullPage = false) => {
+    if (shotBusy) return;
+    setShotBusy(true);
+    setCropMode(false);
+    setCropDrag(null);
+    try {
+      const wv = webviews.current[activeIdRef.current];
+      let wid = null;
+      try { wid = wv ? wv.getWebContentsId() : null; } catch (_) {}
+      let res = window.autobot && window.autobot.browserScreenshot
+        ? await window.autobot.browserScreenshot(Boolean(fullPage), wid)
+        : null;
+      if ((!res || !res.ok || !res.dataUrl) && wid && window.autobot && window.autobot.browserCaptureElement) {
+        res = await window.autobot.browserCaptureElement(wid, null);
+      }
+      if (!attachShotPayload(res, fullPage ? 'Full Page' : 'Viewport')) {
+        note((res && res.error) || 'Screenshot failed');
+      }
+    } catch (e) {
+      note((e && e.message) || 'Screenshot failed');
+    } finally {
+      setShotBusy(false);
+    }
+  }, [shotBusy, attachShotPayload]);
+
+  const startCropMode = useCallback(() => {
+    if (inspectModeRef.current) exitInspectMode();
+    setCropDrag(null);
+    setCropMode(true);
+  }, [exitInspectMode]);
+
+  const onCropMouseDown = (e) => {
+    if (!cropMode || !stageRef.current) return;
+    e.preventDefault();
+    const r = stageRef.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(r.width, e.clientX - r.left));
+    const y = Math.max(0, Math.min(r.height, e.clientY - r.top));
+    setCropDrag({ x0: x, y0: y, x1: x, y1: y });
+  };
+  const onCropMouseMove = (e) => {
+    if (!cropDrag || !stageRef.current) return;
+    const r = stageRef.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(r.width, e.clientX - r.left));
+    const y = Math.max(0, Math.min(r.height, e.clientY - r.top));
+    setCropDrag((d) => (d ? { ...d, x1: x, y1: y } : null));
+  };
+  const onCropMouseUp = async () => {
+    if (!cropDrag) return;
+    const x = Math.round(Math.min(cropDrag.x0, cropDrag.x1));
+    const y = Math.round(Math.min(cropDrag.y0, cropDrag.y1));
+    const width = Math.round(Math.abs(cropDrag.x1 - cropDrag.x0));
+    const height = Math.round(Math.abs(cropDrag.y1 - cropDrag.y0));
+    setCropDrag(null);
+    setCropMode(false);
+    if (width < 12 || height < 12) return;
+    const wv = webviews.current[activeIdRef.current];
+    if (!wv || !window.autobot || !window.autobot.browserCaptureElement) return;
+    try {
+      const wid = wv.getWebContentsId();
+      const res = await window.autobot.browserCaptureElement(wid, { x, y, width, height });
+      attachShotPayload(res, 'Region');
+    } catch (e) {
+      note((e && e.message) || 'Region screenshot failed');
+    }
+  };
+
   const openDevTools = async () => {
     const wv = webviews.current[activeId];
     if (!wv) return note('Developer tools unavailable');
@@ -506,6 +602,17 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
         </form>
         <button
           type="button"
+          data-testid="browser-screenshot-btn"
+          className={'icon-btn browser-screenshot-btn' + (cropMode ? ' on' : '')}
+          onClick={(e) => (e.shiftKey ? startCropMode() : captureBrowserScreenshot(false))}
+          disabled={shotBusy}
+          title="Capture Screenshot to Chat (Shift+Click to drag & crop region)"
+          aria-pressed={cropMode}
+        >
+          <Icon name="Camera" size={15} />
+        </button>
+        <button
+          type="button"
           className={'icon-btn browser-inspect-btn' + (inspectMode ? ' on' : '')}
           onClick={toggleInspectMode}
           title={inspectMode ? 'Exit Inspect Mode (Esc)' : 'Inspect Element'}
@@ -589,7 +696,7 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
         </div>
       )}
 
-      <div className={'browser-stage' + (responsive ? ' responsive' : '')}>
+      <div ref={stageRef} className={'browser-stage' + (responsive ? ' responsive' : '')}>
         {tabs.map((t) => (
           <webview
             key={t.id + ':' + partition}
@@ -600,6 +707,44 @@ export function BrowserViewBody({ cwd, previewUrl, onClose, onAttachInspect }) {
             partition={partition}
           />
         ))}
+        {cropMode && (
+          <div
+            className="browser-crop-overlay"
+            onMouseDown={onCropMouseDown}
+            onMouseMove={onCropMouseMove}
+            onMouseUp={onCropMouseUp}
+          >
+            <div className="browser-crop-hint">Drag to capture region to Chat · Press Esc to cancel</div>
+            {cropDrag && (
+              <div
+                className="browser-crop-box"
+                style={{
+                  left: Math.min(cropDrag.x0, cropDrag.x1),
+                  top: Math.min(cropDrag.y0, cropDrag.y1),
+                  width: Math.abs(cropDrag.x1 - cropDrag.x0),
+                  height: Math.abs(cropDrag.y1 - cropDrag.y0),
+                }}
+              />
+            )}
+          </div>
+        )}
+        {lastShot && (
+          <div className="browser-shot-toast" role="status" data-testid="browser-shot-toast">
+            <div className="bst-top">
+              {lastShot.dataUrl && <img className="bst-thumb" src={lastShot.dataUrl} alt="Browser screenshot preview" />}
+              <div className="bst-meta">
+                <span className="bst-title">✓ Attached to Chat ({lastShot.mode})</span>
+                <span className="bst-sub">{lastShot.width && lastShot.height ? `${lastShot.width}×${lastShot.height}` : 'PNG'}</span>
+              </div>
+              <button type="button" className="icon-btn" onClick={() => setLastShot(null)} title="Dismiss"><Icon name="X" size={12} /></button>
+            </div>
+            <div className="bst-actions">
+              <button type="button" className="bic-btn" onClick={startCropMode}><Icon name="Frame" size={12} /> Select Area</button>
+              <button type="button" className="bic-btn" onClick={() => captureBrowserScreenshot(true)} disabled={shotBusy}>Full Page</button>
+              <button type="button" className="bic-btn" onClick={saveShot}><Icon name="Download" size={12} /> Save…</button>
+            </div>
+          </div>
+        )}
         {inspectedEl && (
           <div className="browser-inspect-card" role="region" aria-label="Inspected element details">
             <div className="bic-head">

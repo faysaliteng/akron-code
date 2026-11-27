@@ -1,3 +1,37 @@
+# Akron Code (`v1.4.0`) — Production Release Verification (2026-11-27)
+
+**Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.4.0`)
+
+## v1.4.0 Production Gate Summary
+
+| Gate | Command / Platform | Result |
+|---|---|---|
+| Static Syntax / JSX Check | `npm run typecheck` | ✅ `TYPECHECK_OK: verified 367 JS/JSX/MJS/CJS files with 0 syntax/transform errors.` |
+| Full Unit & Integration Suite | `npm test` (`test/*.test.js`) | ✅ **136 / 136 test files passed (0 failures)** |
+| Deterministic Benchmark Evals | `npm run eval:all` | ✅ `EVAL_ALL: 70/70 passed (100%) in 155ms` |
+| Cross-Platform Audit | `node test/cross-platform-audit.test.js` | ✅ `CROSS_PLATFORM_AUDIT_ALL_PASS` (`0` `.map` files, `0` hardcoded user paths) |
+| Cryptographic Brand Seal | `npm run brand:seal && npm run brand:check` | ✅ `BRAND_SEAL_OK 12` |
+| Line Budget Check | `wc -l electron/main.js src/App.jsx` | ✅ `1515` (`< 1600`) and `3422` (`< 3500`) |
+| Live Electron UI E2E & Screenshot Visual Audit | `./node_modules/.bin/electron test/live/verify-ui-fixes.cjs` | ✅ `UI_FIXES_E2E_OK` (`sidebar-menu-icons.png`, `browser-screenshot-and-narrow-badge.png`, `ide-dock-fixed.png` visually inspected: sidebar menu icons + zero hover overlap, built-in Browser `Camera` Screenshot + Region Crop toast & composer attachment, narrow-pane wrapped model badge `111px` unclipped, IDE dock `12px` pad & unclipped `Details ->`) |
+| Packaged macOS ARM64 Build + Fuses + Codesign + Cold Boot | `npm run dist:mac && ./verify-release.sh` & `/Applications/Akron Code.app` | ✅ `VERIFY_RELEASE_DONE` (`6/6` Electron Fuses, `codesign OK`, `0` `.map` files, single Spotlight `/Applications/Akron Code.app`, `COLD_BOOT_OK` `"consoleErrorCount":0`) |
+| Windows x64/ARM64 Packaging + Fuses (`akron-builder`) | `electron-builder --win nsis portable --x64` & `--win nsis --arm64` | ✅ Emitted `AkronCode-1.4.0-win-setup-{x64,arm64}.exe` + `win-portable-x64.exe` with `6/6` Electron Fuses & `ELECTRONASAR` integrity |
+| Linux x64 Packaging + Fuses | `electron-builder --linux AppImage tar.gz --x64` | ✅ Emitted `AkronCode-1.4.0-linux-x86_64.AppImage` + `linux-x64.tar.gz` with Linux Fuses (`RunAsNode=0`, `OnlyLoadFromAsar=1`) |
+| Live Real-Linux OS Execution (`ssh seventrip`, Ubuntu 6.8 x86_64 / Node `v20.20.1`) | `akron doctor`, `computer-use-v2`, `sandbox-bg-security`, `session-db-wal`, `long-horizon-and-ui-v140` | ✅ `akron doctor` (9/9 checks including `@vscode/ripgrep-linux-x64`), `5/5` Computer Use 2.0, `7/7` Sandbox Security, `1/1` WAL SQLite, `5/5` Long-Horizon & UI passed on live Linux kernel (note: installers packaged prior to final 3-line standalone-Node `electron/browser.js` CLI require guard, identical inside Electron) |
+
+### Verified Release Artifact Checksums (`v1.4.0` — `release/SHA256SUMS.txt`)
+
+- `AkronCode-1.4.0-arm64.dmg`: `9efce094e6bb7cd9662b14a8fb2e354ca56105abc5b6068a141ebc363ebd691d`
+- `AkronCode-1.4.0-arm64.zip`: `17a7684862826e65c24a087fb1d17a5f4d3db094e689dff5cd7489c398d8d4ec`
+- `AkronCode-1.4.0-win-setup-x64.exe`: `957a7e8e4e7c8834acc41be841ff5e96c2fbbcf8c4e2f06c989ef0016ab4656b`
+- `AkronCode-1.4.0-win-setup-arm64.exe`: `cd99e0c165b4ee26e51b18705df6b3aaef61780cb16cf727aff7207d414a3c1a`
+- `AkronCode-1.4.0-win-portable-x64.exe`: `4733865af83f3d7e5680b1f540e7bab263ba7ba1429708a9dca07a8d0c8dc6c2`
+- `AkronCode-1.4.0-linux-x86_64.AppImage`: `f209f89c3c89259ea6cde0697d97deae473cf3416aa03c426c7ea1c847b20df0`
+- `AkronCode-1.4.0-linux-x64.tar.gz`: `f66175a6d62c7edb08e7f8e88f6d7efb0976fe785146d45775f8f69756bf3328`
+- `AkronBrowserBot-1.6.7.crx`: `a9275e0f9449990115fbb8589da1062f0c8abf308f2a94cbac4d2782c2fa343c`
+- `AkronBrowserBot-1.6.7.zip`: `ba1e136b8cceb10ea8657f1a9d065d001e8006dbe1c7fe27929b18ec0c918f3e`
+
+---
+
 # Akron Code (`v1.3.0`) — Production Release Verification (2026-11-27)
 
 **Repository:** `faysaliteng/akron-code` · **Product:** **Akron Code** by Akronlogic.com (`1.3.0`)

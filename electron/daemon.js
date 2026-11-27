@@ -74,30 +74,47 @@ function daemonStatus({ dataDir = defaultDataDir() } = {}) {
 
 async function runScheduledTaskInDaemon(task) {
   const workDir = task.cwd || process.cwd();
-  const { provider, orchestrator, tools, cwd } = await providerHydrate.resolveRuntimeForTurn({
+  const runtime = await providerHydrate.resolveRuntimeForTurn({
     modelOverride: task.model || '',
+  });
+  const history = await llm.runAgent({
+    provider: runtime.provider,
+    orchestrator: runtime.orchestrator,
+    messages: [{ role: 'user', content: String(task.prompt || '') }],
     cwd: workDir,
+    maxSteps: 12,
+    permissionMode: 'auto',
+    approveTool: async () => true,
+    hydrateProvider: runtime.hydrateProvider,
+    oauthAccounts: runtime.oauthAccounts,
+    ollamaModels: runtime.ollamaModels,
+    autoRouterConfig: runtime.autoRouterConfig,
   });
-  const res = await llm.runAgent({
-    prompt: task.prompt,
-    cwd,
-    provider,
-    orchestrator,
-    tools,
-    autoApprove: true,
-    maxTurns: 12,
-  });
+  const lastAssistant = Array.isArray(history)
+    ? [...history].reverse().find((m) => m && m.role === 'assistant' && m.content)
+    : null;
+  const text = lastAssistant ? String(lastAssistant.content) : '';
   return {
-    ok: !res?.error,
-    summary: String(res?.text || res?.error || '').slice(0, 1200),
-    model: res?.model || provider?.model || 'auto',
+    ok: !!text,
+    summary: text.slice(0, 1200) || '(task finished with no output)',
+    model: (runtime.provider && runtime.provider.model) || 'auto',
   };
 }
 
 async function runWebhookReviewInDaemon({ cwd, diffSummary, pr, prompt }) {
-  const { provider } = await providerHydrate.resolveRuntimeForTurn({ cwd });
-  if (typeof duetReview.runDuetReview === 'function' && provider && (provider.apiKey || provider.type === 'ollama')) {
-    const rev = await duetReview.runDuetReview({ cwd, diffText: diffSummary, adversarial: true });
+  const runtime = await providerHydrate.resolveRuntimeForTurn({});
+  const provider = runtime && runtime.provider;
+  const isOllama = provider && /11434/.test(String(provider.baseURL || '')) && provider.model;
+  const hasCreds = Boolean(provider && (provider.apiKey || provider.oauthProvider || provider.accessToken || isOllama));
+  if (typeof duetReview.runDuetReview === 'function' && hasCreds) {
+    const rev = await duetReview.runDuetReview({
+      cwd,
+      diffText: diffSummary,
+      primaryProvider: provider,
+      orchestrator: runtime.orchestrator,
+      hydrateProvider: runtime.hydrateProvider,
+      adversarial: true,
+    });
     if (rev && rev.ok) return rev;
   }
   const summary = pr

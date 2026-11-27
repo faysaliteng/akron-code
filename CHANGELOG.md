@@ -2,6 +2,26 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.4.0] - 2026-11-27
+
+### Added & Upgraded
+- **Long-Horizon Complex Project Engine (`electron/task-router.js`, `electron/llm.js`, `electron/swarm.js`)**:
+  - Upgraded `Auto` routing so multi-file build prompts (`make|create|website|platform|dashboard|server|admin|fullstack`), Swarm turns, and active coding session follow-ups never downgrade to `fast`/`haiku`.
+  - Switched mid-run `maskOlderToolOutputs` to context-pressure adaptive windowing (preserving up to 28 recent steps verbatim under 45% context fill), enriched `sanitizeHistory` compaction digests with `Files created/modified`, `Checklist state` (`TodoWrite`), and `Recent commands`, and added an autonomous completion gate (continuing open `TodoWrite` tasks and premature `"Want me to do that?"` endings up to completion).
+  - Upgraded `swarm.js` with an automatic failed-worker retry wave on alternate healthy models and conditional `Write`/`Edit`/`MultiEdit` repair tools for Supervisor recovery when any worker fails (`READONLY_REVIEW_TOOLS` preserved for read-only/all-pass runs).
+- **3-OS Computer Use 2.0 (`electron/computer.js`, `electron/computer-win-linux.js`, `electron/tools.js`)**:
+  - Exposed 24 `mcp__computer__*` tools including `zoom` region crop, `app_screenshot`, `ax_find`, `app_menu`, `list_windows`, `ax_snapshot`, `open_app`, `activate_app`, `clipboard_read`/`write`, `triple_click`, `hold_key`, `cursor_position`, `switch_display`, and `batch`.
+  - Fixed `btn === 1` / `btn === 2` right/middle-click dispatch, normalized screenshots to `1x` logical Retina display points, added inline multimodal `imageDataUrl` vision responses, single-session `~/.autobot/computer.lock`, plus zero-`node-gyp` native Windows 11/10 (PowerShell/C# `user32.dll` + `UIAutomationClient`) and Linux (`xdotool`/`ydotool`/`wmctrl`/`grim`) backends.
+- **Built-In Browser 1-Click Screenshot & UI Design Fixes (`src/components/browser/BrowserPaneView.jsx`, `src/ide/ide.css`, `src/components/sidebar/ProjectsSidebar.jsx`, `src/styles.css`)**:
+  - Added Antigravity-style `Camera` Screenshot button (`data-testid="browser-screenshot-btn"`) to `.browser-toolbar` with 1-click capture-to-chat, drag-to-crop `Select Area` overlay, `Full Page` capture, and `Save…` PNG card.
+  - Fixed `.response-actions` / `.response-model-badge` flex wrapping so narrow chat columns (with Browser/Review/Terminal open) never crush model badges or clip timestamps.
+  - Fixed `[IDE]` Agent dock horizontal padding (`12px`) and `Swarm Mission Control` wrapping, added icons to left sidebar conversation `⋮` menus (`Pin`, `Rename…`, `Archive`, `Delete`), replaced broken `window.prompt` with inline `<input data-testid="conv-rename-input">`, and suppressed hover-card overlap while menus/renames are active.
+
+### Security & Protocol Fixes
+- **Fail-Closed Background Shell & Seatbelt Hardening (`electron/tools.js`, `electron/bg.js`, `electron/os-sandbox.js`)**: Validated `osSandbox.checkCanonicalCommand(..., { protectCredentials: true })` before background `Bash`/`Monitor` execution, aborted unsandboxed fallback spawns on policy denial, and explicitly denied writes inside `.git/hooks`, `.git/config`, `.claude/settings.json`, `~/.autobot/secrets.json`, and `~/.autobot/oauth.json`.
+- **Live Multi-Source `WebSearch` & SSRF-Safe `WebFetch` (`electron/tools/web-search.js`)**: Implemented multi-tier search (`Tavily`/`Brave`/`SearXNG` -> Bing RSS -> DuckDuckGo Lite -> Wikipedia `query=search` + HN Algolia + GitHub API) and manual redirect-hop IP checking blocking loopback/link-local/RFC1918 SSRF targets.
+- **Real `.ipynb` `NotebookEdit`, MCP Vision/SSE, Anthropic Extended Thinking, Codex Transport & Checkpoints (`electron/tools.js`, `electron/mcp.js`, `electron/providertransport.js`, `electron/checkpoints.js`, `electron/daemon.js`)**: Added real `.ipynb` cell edit + `editGuard.withFileLock`, MCP `imageDataUrl` forwarding + multi-frame SSE parsing + timeouts, Anthropic `thinking` budget & signed block replay with automatic fallback, Codex `max_output_tokens` + `reasoning.encrypted_content`, `Bash`/`ApplyPatch` rewind workspace snapshots, and `daemon.js` `runAgent` contract fix.
+
 ## [1.3.0] - 2026-11-27
 
 ### Added

@@ -290,7 +290,7 @@ contextBridge.exposeInMainWorld('autobot', {
   browserSelect: (selector, value) => ipcRenderer.invoke('autobot:browserSelect', selector, value),
   browserScroll: (direction, amount, selector) => ipcRenderer.invoke('autobot:browserScroll', direction, amount, selector),
   browserWaitFor: (selector, timeoutMs) => ipcRenderer.invoke('autobot:browserWaitFor', selector, timeoutMs),
-  browserScreenshot: (fullPage) => ipcRenderer.invoke('autobot:browserScreenshot', fullPage),
+  browserScreenshot: (fullPage, webContentsId) => ipcRenderer.invoke('autobot:browserScreenshot', fullPage, webContentsId),
   browserSyncTabs: (state) => ipcRenderer.invoke('autobot:browserSyncTabs', state),
   browserListTabs: () => ipcRenderer.invoke('autobot:browserListTabs'),
   browserInspectSet: (webContentsId, enabled) => ipcRenderer.invoke('autobot:browserInspectSet', webContentsId, enabled),

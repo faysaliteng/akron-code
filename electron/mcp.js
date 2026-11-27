@@ -5,26 +5,43 @@ const { spawn } = require('child_process');
 // Transports: stdio (spawn), SSE, and streamable-HTTP.
 // JSON-RPC 2.0; tool/resource calls mapped back to the agent.
 
-async function parseSSE(res) {
+async function parseSSE(res, targetId = null) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
-  const dataLines = [];
+  const frames = [];
+  const flushFrame = (block) => {
+    const lines = block.split(/\r?\n/);
+    const data = [];
+    for (const ln of lines) {
+      const t = ln.trim();
+      if (t.startsWith('data:')) data.push(t.slice(5).trim());
+    }
+    const payload = data.filter(Boolean).join('\n');
+    if (!payload || payload === '[DONE]') return;
+    try { frames.push(JSON.parse(payload)); } catch (_) { frames.push({ _raw: payload }); }
+  };
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf('\n')) !== -1) {
-      const line = buf.slice(0, nl);
-      buf = buf.slice(nl + 1);
-      const t = line.trim();
-      if (t.startsWith('data:')) dataLines.push(t.slice(5).trim());
+    let sep;
+    while ((sep = buf.search(/\r?\n\r?\n/)) !== -1) {
+      const block = buf.slice(0, sep);
+      const nlMatch = buf.slice(sep).match(/^\r?\n\r?\n/);
+      buf = buf.slice(sep + (nlMatch ? nlMatch[0].length : 2));
+      flushFrame(block);
     }
   }
-  const payload = dataLines.filter(Boolean).join('\n');
-  if (!payload || payload === '[DONE]') return null;
-  try { return JSON.parse(payload); } catch { return { _raw: payload }; }
+  buf += decoder.decode();
+  if (buf.trim()) flushFrame(buf);
+  if (!frames.length) return null;
+  if (targetId != null) {
+    const match = frames.find((f) => f && typeof f === 'object' && f.id === targetId && (Object.prototype.hasOwnProperty.call(f, 'result') || Object.prototype.hasOwnProperty.call(f, 'error')));
+    if (match) return match;
+  }
+  const rpc = [...frames].reverse().find((f) => f && typeof f === 'object' && (Object.prototype.hasOwnProperty.call(f, 'result') || Object.prototype.hasOwnProperty.call(f, 'error')));
+  return rpc || frames[frames.length - 1];
 }
 
 class MCPClient {
@@ -62,8 +79,14 @@ class MCPClient {
       type: 'http', url, headers, nextId: 1, tools: [], fullTools: [], prompts: [], name: cfg.name || url,
       pending: new Map(), stderr: () => '', sessionId: null,
     };
-    const post = async (body) => {
-      const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    const post = async (body, timeoutMs = 60000) => {
+      const limit = Number(timeoutMs) > 0 ? Number(timeoutMs) : 60000;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(limit),
+      });
       if (!res.ok) {
         const t = await res.text().catch(() => '');
         const www = res.headers.get('www-authenticate') || '';
@@ -76,7 +99,7 @@ class MCPClient {
       const sid = res.headers.get('mcp-session-id');
       if (sid) { entry.sessionId = sid; headers['mcp-session-id'] = sid; }
       const ct = res.headers.get('content-type') || '';
-      const msg = ct.includes('text/event-stream') ? await parseSSE(res) : await res.json();
+      const msg = ct.includes('text/event-stream') ? await parseSSE(res, body && body.id) : await res.json();
       if (msg && typeof msg === 'object' && Object.prototype.hasOwnProperty.call(msg, 'jsonrpc')) {
         if (msg.error) throw new Error(msg.error.message || 'MCP error');
         return msg.result !== undefined ? msg.result : msg;
@@ -217,7 +240,7 @@ class MCPClient {
     if (!entry) return Promise.reject(new Error('server not found'));
     if (entry.type === 'http') {
       const id = entry.nextId++;
-      return entry.post({ jsonrpc: '2.0', id, method, params });
+      return entry.post({ jsonrpc: '2.0', id, method, params }, timeoutMs);
     }
     if (entry.exited) return Promise.reject(new Error('MCP server already exited'));
     const id = entry.nextId++;
@@ -344,13 +367,27 @@ class MCPClient {
     if (!entry) throw new Error('server not found');
     const result = await this._request(serverId, 'tools/call', { name, arguments: args || {} });
     const content = (result && result.content) || [];
-    return content
+    let firstImageDataUrl = null;
+    const text = content
       .map((c) => {
         if (c.type === 'text') return c.text;
-        if (c.type === 'image') return `[image: ${c.mimeType || 'image'}]`;
+        if (c.type === 'image') {
+          if (!firstImageDataUrl && c.data) {
+            firstImageDataUrl = `data:${c.mimeType || 'image/png'};base64,${c.data}`;
+          }
+          return `[image: ${c.mimeType || 'image/png'}]`;
+        }
         return JSON.stringify(c);
       })
       .join('\n');
+    if (firstImageDataUrl) {
+      return {
+        content: text || '[MCP image captured]',
+        imageDataUrl: firstImageDataUrl,
+        isError: !!(result && result.isError),
+      };
+    }
+    return text;
   }
 
   disconnect(serverId) {

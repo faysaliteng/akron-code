@@ -415,6 +415,17 @@ function toAnthropicBody(provider, messages, tools, maxTokens) {
     }
     if (role === 'assistant') {
       const blocks = [];
+      const canReplayThinking = Array.isArray(m._anthropicThinkingBlocks) && m._anthropicThinkingBlocks.length > 0;
+      if (canReplayThinking) {
+        for (const tb of m._anthropicThinkingBlocks) {
+          if (!tb || typeof tb !== 'object') continue;
+          if (tb.type === 'thinking' && tb.thinking && tb.signature) {
+            blocks.push({ type: 'thinking', thinking: tb.thinking, signature: tb.signature });
+          } else if (tb.type === 'redacted_thinking' && tb.data) {
+            blocks.push({ type: 'redacted_thinking', data: tb.data });
+          }
+        }
+      }
       if (typeof m.content === 'string' && m.content) blocks.push({ type: 'text', text: m.content });
       else if (Array.isArray(m.content)) {
         for (const p of m.content) {
@@ -504,12 +515,28 @@ function toAnthropicBody(provider, messages, tools, maxTokens) {
       systemParts.unshift({ type: 'text', text: CC_IDENTITY });
     }
   }
+  const wantMax = Number(maxTokens) > 0 ? Number(maxTokens) : 32000;
+  const rLevel = String((provider && provider.reasoningLevel) || '').toLowerCase();
+  const thinkingBudgets = { low: 2048, medium: 8192, high: 16384 };
+  const supportsThinking = /claude-(?:opus|sonnet|haiku|fable)-[3-9]|claude-3-[57]-sonnet/i.test(String(provider && provider.model || ''));
+  // Only enable Anthropic extended thinking when all prior assistant tool-use turns either don't exist
+  // or carry signed thinking blocks; otherwise Anthropic rejects unsigned prior turns with 400.
+  const hasUnsignedToolTurn = out.some((bm) => bm.role === 'assistant'
+    && Array.isArray(bm.content)
+    && bm.content.some((b) => b && b.type === 'tool_use')
+    && !bm.content.some((b) => b && (b.type === 'thinking' || b.type === 'redacted_thinking')));
+  const budgetTokens = (!provider._disableThinking && supportsThinking && thinkingBudgets[rLevel] && !hasUnsignedToolTurn)
+    ? thinkingBudgets[rLevel]
+    : 0;
   const body = {
     model: provider.model,
-    max_tokens: Number(maxTokens) > 0 ? Number(maxTokens) : 32000,
+    max_tokens: budgetTokens ? Math.max(wantMax, budgetTokens + 4096) : wantMax,
     stream: true,
     messages: out,
   };
+  if (budgetTokens) {
+    body.thinking = { type: 'enabled', budget_tokens: budgetTokens };
+  }
   if (systemParts.length) body.system = systemParts;
   if (tools && tools.length) {
     body.tools = tools.map((t) => {
@@ -598,6 +625,18 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   }, 'anthropic');
 
   let res = await post(headers);
+    if (!res.ok && body.thinking && res.status === 400) {
+    const rejectedThink = await res.text().catch(() => '');
+    if (/thinking|signature|budget_tokens|redacted_thinking/i.test(rejectedThink)) {
+      const noThinkBody = { ...body };
+      delete noThinkBody.thinking;
+      res = await fetchWithTimeout(base + '/v1/messages', {
+        method: 'POST', headers, body: JSON.stringify(noThinkBody), signal,
+      }, 'anthropic');
+    } else {
+      throw httpError('anthropic', res, rejectedThink);
+    }
+  }
   if (!res.ok && bigTurn && res.status === 400) {
     const rejected = await res.text().catch(() => '');
     // The endpoint refused a turn sized for a window larger than the default.
@@ -718,6 +757,7 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   }
 
   const accs = new Map(); // block index -> tool acc
+  const thinkBlocks = new Map(); // block index -> { type, thinking, signature, data }
   for await (const ev of sseEvents(opened.stream)) {
     const type = ev.type;
     if (type === 'content_block_start') {
@@ -727,6 +767,10 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
         accs.set(ev.index, acc);
         message.tool_calls.push(acc);
         if (onToolDelta) onToolDelta(toolDeltaPayload(acc));
+      } else if (block.type === 'thinking') {
+        thinkBlocks.set(ev.index, { type: 'thinking', thinking: block.thinking || '', signature: block.signature || '' });
+      } else if (block.type === 'redacted_thinking' && block.data) {
+        thinkBlocks.set(ev.index, { type: 'redacted_thinking', data: block.data });
       }
     } else if (type === 'content_block_delta') {
       const d = ev.delta || {};
@@ -734,7 +778,12 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
         message.content += d.text;
         onDelta(d.text);
       } else if (d.type === 'thinking_delta' && d.thinking) {
+        const tb = thinkBlocks.get(ev.index);
+        if (tb && tb.type === 'thinking') tb.thinking += d.thinking;
         onDelta(d.thinking, true);
+      } else if (d.type === 'signature_delta' && d.signature) {
+        const tb = thinkBlocks.get(ev.index);
+        if (tb && tb.type === 'thinking') tb.signature += d.signature;
       } else if (d.type === 'input_json_delta') {
         const acc = accs.get(ev.index);
         if (acc) {
@@ -755,6 +804,9 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
       err.transient = e.type === 'overloaded_error' || e.type === 'api_error';
       throw err;
     }
+  }
+  if (thinkBlocks.size) {
+    message._anthropicThinkingBlocks = [...thinkBlocks.values()].filter((tb) => (tb.type === 'thinking' && tb.thinking && tb.signature) || (tb.type === 'redacted_thinking' && tb.data));
   }
   if (!message.finish_reason) message.finish_reason = message.tool_calls.length ? 'tool_calls' : 'stop';
   if (!message.model) message.model = String(provider.model || '');
@@ -1001,8 +1053,12 @@ async function codexChat(provider, messages, tools, onDelta, signal, maxTokensOv
     reasoning: codexReasoning(provider.reasoningLevel),
     store: false,
     stream: true,
-    include: [],
+    include: ['reasoning.encrypted_content'],
   };
+  const maxOut = Number(maxTokensOverride || provider.maxTokens) > 0
+    ? Number(maxTokensOverride || provider.maxTokens)
+    : 0;
+  if (maxOut) body.max_output_tokens = maxOut;
   const headers = {
     'content-type': 'application/json',
     accept: 'text/event-stream',

@@ -224,14 +224,36 @@ const CLASSIFIER_SYSTEM_PROMPT = [
   '- planner (5): complex multi-file architecture, security audit, reverse engineering, deep root-cause analysis',
 ].join('\n');
 
-const ARCH_SIGNAL_RE = /\b(architect(?:ure)?|security\s+audit|reverse[\s-]engineer(?:ing)?|root[\s-]cause|threat\s+model|multi[\s-]file|redesign|migration|race\s+condition|deadlock|memory\s+leak|decompile|vulnerability|binary|asar|system\s+design)\b/i;
-const CODER_SIGNAL_RE = /\b(write|implement|refactor|debug|fix|edit|patch|test|unit\s+test|build|component|function|class|api|endpoint|bug|error|typescript|javascript|react|python|rust|go|sql|css|html|bash)\b/i;
+const ARCH_SIGNAL_RE = /\b(architect(?:ure)?|security\s+audit|reverse[\s-]engineer(?:ing)?|root[\s-]cause|threat\s+model|multi[\s-]file|redesign|migration|race\s+condition|deadlock|memory\s+leak|decompile|vulnerability|binary|asar|system\s+design|full[- ]?stack\s+(?:app|platform|website|system)|production[- ]ready|multi[- ]agent|end[- ]to[- ]end\s+(?:app|platform|build))\b/i;
+const CODER_SIGNAL_RE = /\b(write|implement|refactor|debug|fix|edit|patch|test|unit\s+test|build|make|create|develop|website|webapp|web\s+app|app|application|platform|portal|dashboard|project|saas|frontend|backend|server|database|admin|auth|login|payment|wallet|full[- ]?stack|live\s+site|component|function|class|api|endpoint|bug|error|typescript|javascript|react|python|rust|go|sql|css|html|bash)\b/i;
 const FILE_PATH_RE = /(?:[\w.-]+\/)+[\w.-]+|\b[\w-]+\.(?:js|jsx|ts|tsx|mjs|cjs|py|rs|go|java|cpp|c|json|md|yml|yaml|css|html|sh)\b/gi;
 const STACK_TRACE_RE = /\bat\s+\S+\s*\(|Traceback\s*\(|TypeError:|ReferenceError:|SyntaxError:|ENOENT|ECONNREFUSED|Error:/i;
 const VIDEO_GEN_RE = /\b(generate|create|make|render|produce|animate)\s+(?:(?:a|an|the|some)\s+)?(?:[a-z0-9-]+\s+){0,4}(video|clip|animation|reel|mp4)\b/i;
 const IMAGE_GEN_RE = /\b(generate|create|draw|design|paint|illustrate|render)\s+(?:(?:a|an|the|some)\s+)?(?:[a-z0-9-]+\s+){0,4}(image|logo|icon|illustration|artwork|banner|wallpaper|poster|avatar|picture|photo)\b/i;
 const AUDIO_GEN_RE = /\b(generate|synthesize|create|narrate|read\s+aloud)\s+(?:(?:a|an|the|some)\s+)?(?:[a-z0-9-]+\s+){0,4}(voiceover|speech|tts|audio\s+clip|narration)\b/i;
 const TRIVIAL_GREETING_RE = /^(hi|hello|hey|yo|thanks|thank you|thx|ok|okay|who are you|what model|status|ping|test)\b/i;
+const CONTINUATION_PROMPT_RE = /^(?:try\s*again|continue|go\s*ahead|do\s*it|proceed|keep\s*going|resume|fix\s*it|finish\s*it|run\s*it|test\s*again|yes|yep|sure|\?+|\.+)$/i;
+
+function hasActiveEngineeringContext(messages) {
+  const arr = Array.isArray(messages) ? messages : [];
+  if (arr.length < 2) return false;
+  let codingTurns = 0;
+  for (const m of arr) {
+    if (!m) continue;
+    if (Array.isArray(m.tool_calls) && m.tool_calls.some((tc) => /^(Write|Edit|MultiEdit|ApplyPatch|Bash|Swarm|Task|Agent|NotebookEdit)$/i.test(String(tc && tc.function && tc.function.name || '')))) {
+      return true;
+    }
+    if (m.role === 'tool' && /^(Write|Edit|MultiEdit|ApplyPatch|Bash|Swarm|Task|Agent)$/i.test(String(m.name || ''))) {
+      return true;
+    }
+    if (m.role === 'assistant' && typeof m.content === 'string') {
+      if (m.content.length > 260 && (CODER_SIGNAL_RE.test(m.content) || /```/.test(m.content))) codingTurns++;
+    } else if (m.role === 'user' && typeof m.content === 'string' && !CONTINUATION_PROMPT_RE.test(m.content.trim())) {
+      if (CODER_SIGNAL_RE.test(m.content) || ARCH_SIGNAL_RE.test(m.content)) codingTurns++;
+    }
+  }
+  return codingTurns >= 2;
+}
 
 function extractLatestUserPrompt(messages) {
   const arr = Array.isArray(messages) ? messages : [];
@@ -390,7 +412,7 @@ function classifyHeuristic({ messages = [], attachments = [], estimatedTokens } 
     const hasFile = new RegExp(FILE_PATH_RE.source, 'i').test(text);
     const hasTrace = STACK_TRACE_RE.test(text);
     const hasCodingVerb = CODER_SIGNAL_RE.test(text) || ARCH_SIGNAL_RE.test(text);
-    if (!hasFence && !hasFile && !hasTrace && !hasCodingVerb && TRIVIAL_GREETING_RE.test(text)) {
+    if (!hasFence && !hasFile && !hasTrace && !hasCodingVerb && !hasActiveEngineeringContext(messages) && TRIVIAL_GREETING_RE.test(text)) {
       return {
         tier: 'small',
         role: 'fast',
@@ -1584,6 +1606,7 @@ async function classifyAndSelect({
   gate = null,
   store = null,
   timeoutMs = 3500,
+  swarm = false,
   signal = null,
 } = {}) {
   if (signal && signal.aborted) throw new Error('aborted');
@@ -1593,6 +1616,7 @@ async function classifyAndSelect({
   const hasAttImg = Array.isArray(attachments)
     && attachments.some((a) => a && (a.isImage || /^image\//i.test(String(a.mimeType || ''))));
   const hasImages = hasAttImg || orchRouter.hasImages(messages);
+  const activeEng = hasActiveEngineeringContext(messages);
 
   const effAutoCfg = autoRouterConfig
     ? resolveAutoRouterConfig({ autoRouterConfig, env: {} })
@@ -1651,6 +1675,29 @@ async function classifyAndSelect({
     }
   }
 
+  // Never downgrade an active multi-step engineering continuation or Swarm turn to fast/haiku.
+  if (swarm === true && (!classification || classification.role === 'fast' || classification.role === 'coder')) {
+    const hasPlanner = roster && Array.isArray(roster.planner) && roster.planner.length > 0;
+    const minRole = hasPlanner ? 'planner' : 'coder';
+    classification = {
+      ...(classification || {}),
+      role: minRole,
+      tier: hasPlanner ? 'critical' : 'heavy',
+      complexity: Math.max(hasPlanner ? 5 : 4, Number(classification && classification.complexity) || 4),
+      model: '',
+      reason: 'Swarm multi-agent orchestration',
+    };
+  } else if (activeEng && classification && classification.role === 'fast') {
+    classification = {
+      ...classification,
+      role: 'coder',
+      tier: 'heavy',
+      complexity: Math.max(3, Number(classification.complexity) || 3),
+      model: '',
+      reason: 'Active coding session continuation',
+    };
+  }
+
   return selectModelForTier({
     classification,
     provider,
@@ -1664,7 +1711,7 @@ async function classifyAndSelect({
   });
 }
 
-module.exports = {
+  module.exports = {
   DEFAULT_AUTO_ROUTER_CONFIG,
   AUTO_SWITCH_SOURCES,
   DEEPSEEK_ROUTER_SYSTEM_PROMPT,
@@ -1674,6 +1721,7 @@ module.exports = {
   CLASSIFIER_SYSTEM_PROMPT,
   extractLatestUserPrompt,
   estimateConversationTokens,
+  hasActiveEngineeringContext,
   isCandidateUsable,
   candidateSourcePriority,
   resolveAutoRouterConfig,
