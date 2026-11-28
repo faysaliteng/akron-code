@@ -452,3 +452,39 @@ test('swarm: the DeepSeek Flash dispatcher picks the supervisor among usable fro
   const bogus = { dispatchWithDeepSeekFlash: async () => ({ model: 'not-available' }) };
   assert.strictEqual(await swarm.pickSupervisorWithDispatcher('x', roster, { autoRouterConfig: { hasKey: true }, taskRouter: bogus }), null);
 });
+
+test('Windows: child processes start hidden (no console window flashes)', () => {
+  const { install } = require('../electron/win-hide-console');
+  const seen = [];
+  const fake = { spawn: (...a) => seen.push(a), execFile: (...a) => seen.push(a), execFileSync: (...a) => seen.push(a) };
+  assert.strictEqual(install({ platform: 'darwin', target: fake }), false);
+  assert.strictEqual(install({ platform: 'win32', target: fake }), true);
+  assert.strictEqual(install({ platform: 'win32', target: fake }), false); // once only
+  fake.spawn('git', ['status'], { cwd: 'C:/x' });
+  fake.execFile('agy.exe', ['--version'], () => {});
+  fake.execFileSync('git', ['diff'], { windowsHide: false });
+  assert.strictEqual(seen[0][2].windowsHide, true);
+  assert.strictEqual(seen[0][2].cwd, 'C:/x');
+  assert.strictEqual(seen[1][2].windowsHide, true);
+  assert.strictEqual(typeof seen[1][3], 'function');
+  assert.strictEqual(seen[2][2].windowsHide, false); // an explicit choice is kept
+});
+
+test('a failed turn keeps its reason in the conversation (not only a 5s toast)', () => {
+  const esbuild = require('esbuild');
+  const raw = fs.readFileSync(path.join(__dirname, '..', 'src/hooks/useSessionRuns.js'), 'utf8');
+  const code = esbuild.transformSync(raw, { loader: 'jsx', format: 'cjs' }).code;
+  const mod = { exports: {} };
+  const req = (s) => (s === 'react' ? { useCallback: (f) => f, useRef: (v) => ({ current: v }), useState: (i) => [i, () => {}] }
+    : s.endsWith('appHelpers.jsx') ? { uid: () => 'id1' } : require(s));
+  new Function('require', 'module', 'exports', code)(req, mod, mod.exports);
+  const { buildCommittedAssistantMessage } = mod.exports;
+  const empty = { live: { content: '', tools: [], segments: [] }, startedAt: Date.now() };
+  assert.strictEqual(buildCommittedAssistantMessage(empty), null);
+  const failed = buildCommittedAssistantMessage(empty, 'no provider is configured');
+  assert.ok(failed && /This reply failed:\*\* no provider is configured/.test(failed.content));
+  assert.strictEqual(failed.error, 'no provider is configured');
+  const partial = buildCommittedAssistantMessage({ live: { content: 'Half an answer', tools: [], segments: [{ type: 'text', text: 'Half an answer' }] } }, 'timed out');
+  assert.ok(partial.content.startsWith('Half an answer\n\n⚠️'));
+  assert.strictEqual(partial.segments.length, 2);
+});

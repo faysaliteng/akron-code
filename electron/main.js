@@ -1,4 +1,4 @@
-'use strict';
+'use strict'; require('./win-hide-console').install(); // Windows: no console window per child process
 const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, globalShortcut, nativeImage, protocol, session, screen, clipboard } = require('electron');
 const secretstore = require('./secretstore');
 if (process.platform !== 'darwin' || !secretstore.hasLegacySafeStorage()) {

@@ -21,9 +21,18 @@ export function emptySessionRun(convId, runId = null, initialLive = null) {
  * Pure helper to merge/commit one finished or cancelled run's streamed assistant
  * message into a conversation list. Exported for direct unit testing.
  */
-export function buildCommittedAssistantMessage(run) {
+export function buildCommittedAssistantMessage(run, errorText = '') {
   if (!run) return null;
-  const l = run.live;
+  const err = String(errorText || '').trim();
+  // A failed turn keeps its reason in the chat; a toast alone vanished after
+  // 5 s and left the user's message looking ignored.
+  const l = err
+    ? (() => {
+      const base = run.live || { content: '', tools: [], segments: [] };
+      const note = `${base.content ? '\n\n' : ''}⚠️ **This reply failed:** ${err}`;
+      return { ...base, content: (base.content || '') + note, segments: [...(base.segments || []), { type: 'text', text: note }] };
+    })()
+    : run.live;
   const subAgents = Array.isArray(run.subAgents) ? run.subAgents : [];
   const hasTeam = subAgents.length > 0;
   if (!l || (!l.content && !(l.tools && l.tools.length) && !(l.checkpoints && l.checkpoints.length) && !hasTeam)) {
@@ -42,6 +51,7 @@ export function buildCommittedAssistantMessage(run) {
     segments: l.segments,
     checkpoints: l.checkpoints || [],
     checkpointId: l.checkpointId || null,
+    error: err || undefined,
     model: l.model || '',
     autoRouted: l.autoRouted || undefined,
     modelsUsed: Array.isArray(l.modelsUsed) && l.modelsUsed.length ? l.modelsUsed : undefined,
@@ -109,7 +119,7 @@ export function useSessionRuns({ activeId, setConvs, setPermissionQueue, setQues
     });
   }, [setRunsSync]);
 
-  const commitSessionLive = useCallback((convIdOrRunId, explicitRunId = null) => {
+  const commitSessionLive = useCallback((convIdOrRunId, explicitRunId = null, errorText = '') => {
     const prevMap = runsByConvRef.current;
     const convId = (convIdOrRunId && prevMap[convIdOrRunId])
       ? convIdOrRunId
@@ -141,7 +151,7 @@ export function useSessionRuns({ activeId, setConvs, setPermissionQueue, setQues
       setQuestionQueue((q) => q.filter((x) => !x.runId || x.runId !== finishedRunId));
     }
 
-    const msg = buildCommittedAssistantMessage(committedRun);
+    const msg = buildCommittedAssistantMessage(committedRun, errorText);
     if (msg && setConvs) {
       const hasTeam = Array.isArray(committedRun.subAgents) && committedRun.subAgents.length > 0;
       setConvs((cs) => cs.map((c) => (c.id === convId ? {

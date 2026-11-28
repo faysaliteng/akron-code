@@ -33,6 +33,8 @@ All notable changes to **Akron Code** are documented here.
 - Browser pane only treats a server running inside the project as its dev server.
 - Swarm applies workers' changes as uncommitted edits by default (opt in to auto-commit with `swarmAutoCommit`).
 
+- **Windows: no more console windows flashing.** Akron's child processes (git, node, PowerShell, the CLI runtimes, ripgrep, MCP servers) now start hidden; a black console used to pop up at launch and during git, MCP and Computer Use work (`electron/win-hide-console.js`).
+- **A failed reply stays in the chat with its reason** (e.g. "no provider is configured") instead of only a toast that disappeared after 5 seconds.
 ### Design
 - Swarm runs: no second "Orchestrating swarm…" card under the worker panel, "Write & update files" waits while workers run instead of spinning beside them, and the supervisor card says *supervising* (not *planning*) once the plan is made.
 - Six theme colours were never defined (error states, muted text, borders, small radii); account status pills show in full; Settings sections open at the top; per-message subagent/task counts; titles cut at a word; Mission Control idle count; duplicate tool rows; stale plan banner; IDE status bar model.

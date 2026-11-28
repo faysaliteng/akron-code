@@ -258,7 +258,7 @@ export function useAutobotEventStream({
           setPermError('');
           setPermissionQueue((q) => q.filter((p) => evt.runId && p.runId && p.runId !== evt.runId));
           setQuestionQueue((q) => q.filter((x) => evt.runId && x.runId && x.runId !== evt.runId));
-          commitSessionLive(targetConv, evt.runId);
+          commitSessionLive(targetConv, evt.runId, cleanErr(evt.message));
           if (!targetConv || targetConv === activeIdRef.current) setError(cleanErr(evt.message));
           else setNotice(`${cleanErr(evt.message)}`);
           sendDesktopNotification('errors', 'Akron Code · Error', cleanErr(evt.message), settingsRef.current, { convId: targetConv });
