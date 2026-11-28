@@ -82,7 +82,7 @@ jobs:
           APP_PATH="$APP_PATH" node -e "
           const { getCurrentFuseWire, FuseV1Options } = require('@electron/fuses');
           getCurrentFuseWire(process.env.APP_PATH).then(w => {
-            const ok = w[FuseV1Options.RunAsNode]===48 && w[FuseV1Options.OnlyLoadAppFromAsar]===49 && w[FuseV1Options.EnableEmbeddedAsarIntegrityValidation]===49;
+            const ok = w[FuseV1Options.RunAsNode]===48 && w[FuseV1Options.EnableCookieEncryption]===49 && w[FuseV1Options.EnableNodeOptionsEnvironmentVariable]===48 && w[FuseV1Options.EnableNodeCliInspectArguments]===48 && w[FuseV1Options.OnlyLoadAppFromAsar]===49;
             console.log('MAC_FUSES_OK:', ok, w);
             if (!ok) process.exit(1);
           });
@@ -121,7 +121,7 @@ jobs:
           node -e "
           const { getCurrentFuseWire, FuseV1Options } = require('@electron/fuses');
           getCurrentFuseWire(process.env.WIN_EXE).then(w => {
-            const ok = w[FuseV1Options.RunAsNode]===48 && w[FuseV1Options.OnlyLoadAppFromAsar]===49 && w[FuseV1Options.EnableEmbeddedAsarIntegrityValidation]===49;
+            const ok = w[FuseV1Options.RunAsNode]===48 && w[FuseV1Options.EnableCookieEncryption]===49 && w[FuseV1Options.EnableNodeOptionsEnvironmentVariable]===48 && w[FuseV1Options.EnableNodeCliInspectArguments]===48 && w[FuseV1Options.OnlyLoadAppFromAsar]===49;
             console.log('WIN_FUSES_OK:', ok, w);
             if (!ok) process.exit(1);
           });
@@ -136,7 +136,7 @@ jobs:
           LINUX_BIN="$UNPACKED_DIR/akronbot" LINUX_RES="$UNPACKED_DIR/resources" node -e "
           const { getCurrentFuseWire, FuseV1Options } = require('@electron/fuses');
           getCurrentFuseWire(process.env.LINUX_BIN).then(w => {
-            const ok = w[FuseV1Options.RunAsNode]===48 && w[FuseV1Options.OnlyLoadAppFromAsar]===49 && w[FuseV1Options.EnableEmbeddedAsarIntegrityValidation]===49;
+            const ok = w[FuseV1Options.RunAsNode]===48 && w[FuseV1Options.EnableCookieEncryption]===49 && w[FuseV1Options.EnableNodeOptionsEnvironmentVariable]===48 && w[FuseV1Options.EnableNodeCliInspectArguments]===48 && w[FuseV1Options.OnlyLoadAppFromAsar]===49;
             console.log('LINUX_FUSES_OK:', ok, w);
             if (!ok) process.exit(1);
           });
