@@ -389,7 +389,17 @@ function activeAccount(provId) {
 }
 
 const AUTH_PROBE_CACHE_TTL_MS = 60 * 1000;
+// A probe launches the provider's CLI (`agy models` alone is ~2.4s), so a chat
+// turn must never wait on one to relearn what it knew minutes ago. A result
+// older than the TTL but younger than this is answered from cache at once and
+// refreshed in the background. Measured 2026-11-28: with 61 pool rows and one
+// signed-out provider, un-cached probes cost ~52s before every single turn.
+const AUTH_PROBE_STALE_OK_MS = 30 * 60 * 1000;
 const _authProbeCache = new Map();
+// One real probe per provider at a time: concurrent callers share its promise.
+const _authProbeFlights = new Map();
+// Tests only: replaces the CLI launch so caching/dedupe can be asserted.
+let _authProbeTestHook = null;
 function invalidateAuthProbeCache(provId = '') {
   if (!provId) { _authProbeCache.clear(); return; }
   const p = provider(provId);
@@ -529,17 +539,53 @@ async function resolveCliPathForProvider(prov, opts = {}) {
   return '';
 }
 
+/**
+ * Is this provider's CLI signed in?
+ *
+ *   fresh cache (< TTL)            -> cached answer, no CLI launch
+ *   stale cache (< STALE_OK)       -> cached answer now, one background refresh
+ *   no cache, or `opts.force`      -> a real probe, shared by concurrent callers
+ *
+ * `force` is for moments the answer is known to have changed (the user just
+ * signed in or out, or pressed Import / Auto-heal). Injected `execCli` /
+ * `resolveBin` (tests) always run a private, un-cached probe.
+ */
 async function probeCliAuthStatus(provId, opts = {}) {
   const p = provider(provId);
   if (!p) return { ok: false, loggedIn: false, error: `unknown provider ${provId}` };
+  if (opts.execCli || opts.resolveBin) return runCliAuthProbe(p, opts);
 
-  const canCache = !opts.force && !opts.execCli && !opts.resolveBin;
-  if (canCache) {
-    const cached = _authProbeCache.get(p.id);
-    if (cached && (Date.now() - cached.ts) < AUTH_PROBE_CACHE_TTL_MS) {
+  const startProbe = () => {
+    const inFlight = _authProbeFlights.get(p.id);
+    if (inFlight) return inFlight;
+    const run = _authProbeTestHook
+      ? Promise.resolve(_authProbeTestHook(p.id)).then((val) => {
+        if (val && val.ok !== false) _authProbeCache.set(p.id, { ts: Date.now(), val });
+        return val;
+      })
+      : runCliAuthProbe(p, opts);
+    const flight = run.finally(() => {
+      if (_authProbeFlights.get(p.id) === flight) _authProbeFlights.delete(p.id);
+    });
+    _authProbeFlights.set(p.id, flight);
+    return flight;
+  };
+
+  if (opts.force) return startProbe();
+  const cached = _authProbeCache.get(p.id);
+  if (cached) {
+    const age = Date.now() - cached.ts;
+    if (age < AUTH_PROBE_CACHE_TTL_MS) return cached.val;
+    if (age < AUTH_PROBE_STALE_OK_MS) {
+      startProbe().catch(() => {});
       return cached.val;
     }
   }
+  return startProbe();
+}
+
+async function runCliAuthProbe(p, opts = {}) {
+  const canCache = !opts.execCli && !opts.resolveBin;
   const cacheOut = (val) => {
     if (canCache && val && val.ok !== false) _authProbeCache.set(p.id, { ts: Date.now(), val });
     return val;
@@ -716,14 +762,44 @@ async function probeCliAuthStatus(provId, opts = {}) {
   return cacheOut({ ok: true, bin, loggedIn, account: path.basename(bin), label: cleanCliLabel(`${p.label} CLI`), plan: 'CLI Subscription' });
 }
 
+/**
+ * Reconcile the saved account records with what each provider CLI reports.
+ *
+ * Probes are answered from the auth-probe cache unless `opts.force` is set, and
+ * run in parallel across providers. This is called on the turn path (pool
+ * hydration, auto-heal after a failed resolve), so it must be cheap to repeat:
+ * it used to force a fresh probe of every provider on every call.
+ */
 async function syncCliAccounts(onlyProvId, opts = {}) {
   const targets = onlyProvId ? [onlyProvId] : providerIds();
   const imported = [];
   const healed = [];
+  const provs = [];
   for (const rawId of targets) {
     const p = provider(rawId);
-    if (!p) continue;
-    const probe = await probeCliAuthStatus(p.id, { ...opts, force: true }).catch(() => ({ ok: false, loggedIn: false }));
+    if (p && !provs.includes(p)) provs.push(p);
+  }
+  const injected = Boolean(opts.execCli || opts.resolveBin);
+  const probeOpts = { ...opts, force: opts.force === true };
+  const probeOne = (p) => probeCliAuthStatus(p.id, probeOpts).catch(() => ({ ok: false, loggedIn: false }));
+  let probes;
+  if (injected) {
+    // Injected executors (tests) keep the original one-at-a-time ordering.
+    probes = [];
+    for (const p of provs) probes.push(await probeOne(p));
+  } else {
+    probes = await Promise.all(provs.map(probeOne));
+  }
+  for (let i = 0; i < provs.length; i++) {
+    const p = provs[i];
+    const probe = probes[i];
+    // Writing the account record invalidates the probe cache (correct for a
+    // user-driven change); here the record is being written *from* that probe,
+    // so keep it, or the very next call would launch the CLI again.
+    const keptProbe = _authProbeCache.get(p.id);
+    const restoreProbe = () => {
+      if (keptProbe && !_authProbeCache.has(p.id)) _authProbeCache.set(p.id, keptProbe);
+    };
     if (probe && probe.loggedIn) {
       if (p.id === 'antigravity' && probe.account === 'agy') {
         const db = readDb();
@@ -743,6 +819,7 @@ async function syncCliAccounts(onlyProvId, opts = {}) {
       });
       imported.push(rec.id);
       healed.push(rec.id);
+      restoreProbe();
     } else if (probe && probe.ok !== false && !probe.loggedIn) {
       const db = readDb();
       let dirty = false;
@@ -752,10 +829,7 @@ async function syncCliAccounts(onlyProvId, opts = {}) {
           dirty = true;
         }
       }
-      if (dirty) {
-        writeDb(db);
-        invalidateAuthProbeCache(p.id);
-      }
+      if (dirty) writeDb(db);
     }
   }
   return { ok: true, imported, healed };
@@ -805,7 +879,8 @@ async function authorize(provId, opts = {}) {
         reject(new Error(`${p.label} CLI sign-in exited with code ${code}`));
         return;
       }
-      const res = await syncCliAccounts(p.id, opts);
+      // The CLI's own sign-in just finished: the cached answer is now wrong.
+      const res = await syncCliAccounts(p.id, { ...opts, force: true });
       const acct = getAccount(p.id) || {
         provider: p.id,
         account: 'cli',
@@ -1005,14 +1080,23 @@ module.exports = {
   invalidateAuthProbeCache,
   syncCliAccounts,
   // Safe compatibility aliases for existing IPC callers:
-  importLocal: syncCliAccounts,
-  autoHealAccount: async (provId) => syncCliAccounts(provId),
-  autoHealAll: async (opts) => syncCliAccounts(null, opts),
+  // `importLocal` and `adoptClaudeFromCli` are explicit user actions, so they
+  // re-probe. The auto-heal aliases run on the turn path and use the cache
+  // unless the caller passes `{ force: true }`.
+  importLocal: async (provId, opts) => syncCliAccounts(provId, { ...(opts || {}), force: true }),
+  autoHealAccount: async (provId, opts) => syncCliAccounts(provId, opts || {}),
+  autoHealAll: async (opts) => syncCliAccounts(null, opts || {}),
   adoptClaudeFromCli: async () => {
-    await syncCliAccounts('claude');
+    await syncCliAccounts('claude', { force: true });
     return publicRecord(getAccount('claude'), 'claude');
   },
   ensureToken: async () => ({ accessToken: '' }),
   replayRotationJournal: () => null,
-  _internal: { readDb, writeDb, slotKey, slug, publicRecord, purgeLegacyTokenMirror },
+  _internal: {
+    readDb, writeDb, slotKey, slug, publicRecord, purgeLegacyTokenMirror,
+    setAuthProbeTestHook: (fn) => { _authProbeTestHook = typeof fn === 'function' ? fn : null; },
+    ageAuthProbeCache: (ms) => { for (const e of _authProbeCache.values()) e.ts -= Number(ms) || 0; },
+    AUTH_PROBE_CACHE_TTL_MS,
+    AUTH_PROBE_STALE_OK_MS,
+  },
 };

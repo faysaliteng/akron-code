@@ -34,7 +34,11 @@ export function buildCommittedAssistantMessage(run) {
     id: uid(),
     role: 'assistant',
     content: l.content || '',
-    tools: l.tools || [],
+    // A step still "running" when the turn is committed (Stop, Send-now, an
+    // error) will never get its result: do not save it as a spinner forever.
+    tools: (l.tools || []).map((t) => (t && t.status === 'running'
+      ? { ...t, status: 'error', result: t.result || 'Interrupted before this step reported a result.' }
+      : t)),
     segments: l.segments,
     checkpoints: l.checkpoints || [],
     checkpointId: l.checkpointId || null,

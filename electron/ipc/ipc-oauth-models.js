@@ -1319,7 +1319,8 @@ async function startCliLogin(event, providerId, opts = {}) {
             emitEvent({ phase: 'done', ok: true, account: rec });
             sendLegacy('autobot:providerReconnectResult', flowId, { ok: true, account: rec });
           } else {
-            await providerOauth.syncCliAccounts(prov.id).catch(() => {});
+            // The CLI sign-in flow just succeeded, so re-probe instead of trusting the cache.
+            await providerOauth.syncCliAccounts(prov.id, { force: true }).catch(() => {});
             const rec = (providerOauth.getAccount && providerOauth.getAccount(prov.id))
               || providerOauth.addAccount(prov.id, { account: 'cli', label: `${prov.label} CLI`, plan: 'CLI Subscription', source: 'cli' });
             poolNoticeDeduper.reset();
@@ -1531,7 +1532,7 @@ ipcMain.handle('autobot:providerAdoptClaude', async () => {
   ipcMain.handle('autobot:providerAutoHeal', async (_e, opts) => {
     try {
       const res = providerOauth.autoHealAll
-        ? await providerOauth.autoHealAll({ importMissing: !(opts && opts.importMissing === false) })
+        ? await providerOauth.autoHealAll({ importMissing: !(opts && opts.importMissing === false), force: true })
         : { ok: false, healed: [], imported: [] };
       if ((res.healed && res.healed.length) || (res.imported && res.imported.length)) {
         poolNoticeDeduper.reset();

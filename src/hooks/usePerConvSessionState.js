@@ -201,19 +201,54 @@ export function usePerConvSessionState({
     });
   }, [providerRef, orchRef, swarmRef]);
 
-  const resetDraftSessionConfig = useCallback((autoRoutingForNew) => {
+  // A new chat starts from the chat the user was just in (model, routing mode,
+  // orchestrator row, Swarm), like Claude's New chat. Without a seed it fell
+  // back to the oldest saved global default, which can be a model whose
+  // account has since run out of credit. The project folder is not copied.
+  const resetDraftSessionConfig = useCallback((autoRoutingForNew, seedCfg = null) => {
     setSessionConfigs((prev) => {
       const defaults = { provider: providerRef.current, orchestrator: orchRef.current, swarmEnabled: swarmRef.current };
       const { [DRAFT_CONV_KEY]: _old, ...rest } = prev || {};
-      const nextMap = autoRoutingForNew
-        ? updateConvSessionConfig(rest, null, { provider: { ...providerRef.current, routingMode: 'auto' }, orchEnabled: false }, defaults)
-        : rest;
+      let nextMap = rest;
+      if (seedCfg && typeof seedCfg === 'object' && seedCfg.provider) {
+        nextMap = updateConvSessionConfig(nextMap, null, {
+          provider: { ...seedCfg.provider },
+          orchEnabled: Boolean(seedCfg.orchEnabled),
+          orchActiveIndex: seedCfg.orchActiveIndex,
+          executorModel: seedCfg.executorModel,
+          swarmEnabled: Boolean(seedCfg.swarmEnabled),
+        }, defaults);
+      }
+      if (autoRoutingForNew) {
+        const base = (seedCfg && seedCfg.provider) || providerRef.current;
+        nextMap = updateConvSessionConfig(nextMap, null, { provider: { ...base, routingMode: 'auto' }, orchEnabled: false }, defaults);
+      }
       sessionConfigsRef.current = nextMap;
       return nextMap;
     });
   }, [providerRef, orchRef, swarmRef]);
 
+  // Fork / Split: the copy keeps the source chat's model, routing, Swarm and
+  // project folder instead of falling back to global defaults and a new folder.
+  const cloneSessionConfig = useCallback((srcId, dstId) => {
+    if (!srcId || !dstId) return;
+    const defaults = { provider: providerRef.current, orchestrator: orchRef.current, swarmEnabled: swarmRef.current };
+    const src = resolveConvSessionConfig({ convId: srcId, sessionConfigs: sessionConfigsRef.current, convs: convsRef.current, defaults });
+    setSessionConfigs((prev) => {
+      const updated = updateConvSessionConfig(prev, dstId, { ...src, provider: { ...src.provider } }, defaults);
+      sessionConfigsRef.current = updated;
+      return updated;
+    });
+    const dir = cwdByConvRef.current[srcId] || src.cwd || '';
+    if (dir) {
+      setCwdByConv((m) => ({ ...m, [dstId]: dir }));
+      saveJSON('autobot:workspace:' + dstId, dir);
+      try { window.autobot.setWorkspace?.(dstId, dir); } catch (_) {}
+    }
+  }, [providerRef, orchRef, swarmRef, convsRef]);
+
   return {
+    cloneSessionConfig,
     cwdByConv,
     cwdByConvRef,
     getSessionBundle,

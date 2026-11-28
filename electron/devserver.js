@@ -10,7 +10,8 @@
 const fs = require('fs');
 const path = require('path');
 const net = require('net');
-const { spawn } = require('child_process');
+const os = require('os');
+const { spawn, execFileSync } = require('child_process');
 
 const CANDIDATES = [
   { port: 5173, framework: 'Vite' },
@@ -18,6 +19,7 @@ const CANDIDATES = [
   { port: 4321, framework: 'Astro' },
   { port: 3000, framework: 'Next.js' },
   { port: 3001, framework: 'Next.js' },
+  { port: 4173, framework: 'Vite preview' },
   { port: 4200, framework: 'Angular' },
   { port: 8080, framework: 'dev server' },
   { port: 8000, framework: 'dev server' },
@@ -72,15 +74,100 @@ function frameworkFrom(pkg, port) {
     ['vue', 'Vue'], ['webpack', 'Webpack'], ['parcel', 'Parcel'],
   ];
   for (const [dep, name] of known) if (deps[dep]) return name;
-  return hit ? hit.framework : 'dev server';
+  // The port's usual framework is a guess; only use it when there is no
+  // package.json to say otherwise (a plain Node server on :3000 is not Next.js).
+  return hit && !pkg ? hit.framework : 'dev server';
+}
+
+// Who is listening, and where was it started? An open port only counts as
+// "this project's dev server" when its process runs inside the project folder.
+// Measured: FreeLLMAPI.app (cwd "/") on :3001 was shown as "npm run dev ·
+// Next.js :3001", and Start refused to run the real server because a port was
+// "already" up. Returns null when ownership cannot be read (Windows, no lsof):
+// callers then keep the old port-only behaviour.
+function listenersByOwner() {
+  if (process.platform === 'win32') return null;
+  let out = '';
+  try {
+    out = execFileSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpcn'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch (e) {
+    if (e && typeof e.stdout === 'string' && e.stdout) out = e.stdout; else return null;
+  }
+  const byPid = new Map(); // pid -> Set(ports)
+  const cmdOf = new Map();
+  let pid = 0;
+  for (const line of out.split('\n')) {
+    if (line[0] === 'p') { pid = Number(line.slice(1)) || 0; continue; }
+    if (line[0] === 'c' && pid) { cmdOf.set(pid, line.slice(1)); continue; }
+    if (line[0] === 'n' && pid) {
+      const m = /:(\d+)$/.exec(line);
+      if (m) { if (!byPid.has(pid)) byPid.set(pid, new Set()); byPid.get(pid).add(Number(m[1])); }
+    }
+  }
+  if (!byPid.size) return [];
+  let cwdOut = '';
+  try {
+    cwdOut = execFileSync('lsof', ['-a', '-p', [...byPid.keys()].join(','), '-d', 'cwd', '-Fpn'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch (e) {
+    if (e && typeof e.stdout === 'string' && e.stdout) cwdOut = e.stdout; else return null;
+  }
+  const cwdOf = new Map();
+  pid = 0;
+  for (const line of cwdOut.split('\n')) {
+    if (line[0] === 'p') pid = Number(line.slice(1)) || 0;
+    else if (line[0] === 'n' && pid) cwdOf.set(pid, line.slice(1));
+  }
+  const rows = [];
+  for (const [p, ports] of byPid) for (const port of ports) rows.push({ pid: p, port, cwd: cwdOf.get(p) || '', command: cmdOf.get(p) || '' });
+  return rows;
+}
+
+// Agent CLIs (and Akron itself) also run inside the project folder and may hold
+// a local control port; they are never the user's dev server.
+const NOT_A_DEV_SERVER = /^(claude|codex|agy|antigravity|gemini|grok|kimi|copilot|zcode|rea|akron|electron|language_server)/i;
+
+function httpServesPage(port, timeoutMs = 800) {
+  return new Promise((resolve) => {
+    const req = require('http').get({ host: '127.0.0.1', port, path: '/', timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve(res.statusCode > 0 && res.statusCode < 400);
+    });
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
+  });
+}
+
+function insideProject(procCwd, projectCwd) {
+  if (!procCwd || !projectCwd) return false;
+  const a = path.resolve(procCwd);
+  const b = path.resolve(projectCwd);
+  if (a === path.parse(a).root || a === os.homedir()) return false; // apps launched from Finder run in "/"
+  return a === b || a.startsWith(b + path.sep);
 }
 
 async function detect(cwd) {
   const pkg = readPackage(cwd);
   const script = pickScript(pkg);
-  const results = await Promise.all(CANDIDATES.map((c) => probePort(c.port)));
-  const idx = results.indexOf(true);
-  const port = idx >= 0 ? CANDIDATES[idx].port : null;
+  const owners = cwd ? listenersByOwner() : null;
+  let port = null;
+  if (owners) {
+    // 1. A server started from this project, on whatever port it chose.
+    const mine = owners.filter((r) => insideProject(r.cwd, cwd) && !NOT_A_DEV_SERVER.test(r.command)).map((r) => r.port);
+    const known = CANDIDATES.map((c) => c.port).filter((p) => mine.includes(p));
+    if (known.length) {
+      port = known[0];
+    } else {
+      // An unusual port must actually serve a page to count.
+      for (const p of [...new Set(mine)].sort((x, y) => x - y)) {
+        if (await httpServesPage(p)) { port = p; break; }
+      }
+    }
+  } else {
+    // Ownership unknown: probe the usual ports, as before.
+    const results = await Promise.all(CANDIDATES.map((c) => probePort(c.port)));
+    const idx = results.indexOf(true);
+    port = idx >= 0 ? CANDIDATES[idx].port : null;
+  }
   return {
     ok: true,
     cwd: cwd || null,

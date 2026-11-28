@@ -1219,7 +1219,7 @@ async function chatWithFailover(opts) {
           // Out of credit is per account, not per minute.
           if (isCreditExhausted(e)) {
             if (nx) {
-              gate.markDead(p, 'out of credit', 30 * 60000);
+              gate.markAccountDead(p, 'out of credit', 30 * 60000);
               try { require('./debug-logger').record('warn', 'llm-failover', 'credit-exhausted', `${label(p)} -> ${label(nx)}`); } catch (_) {}
               emit({ type: 'orchestrator', from: label(p), to: label(nx), reason: humanizeLLMError(e).slice(0, 200) });
               continue;
@@ -1235,7 +1235,7 @@ async function chatWithFailover(opts) {
             // A spent subscription allowance carries its own reset time.
             if (e && e.retryHopeless) {
               if (!nx) throw e;
-              gate.markDead(p, 'allowance spent', 60 * 60000);
+              gate.markAccountDead(p, 'allowance spent', 60 * 60000);
               continue;
             }
             // A router saying this model cannot call tools at all (FreeLLMAPI:
@@ -2237,6 +2237,26 @@ async function runAgent(opts) {
     : '';
   const trivialTurn = depth === 0 && typeof swarm.isTrivialConversationalPrompt === 'function' && swarm.isTrivialConversationalPrompt(lastUserFastText);
 
+  // Subscription CLIs (Claude / Codex / Antigravity / Grok) run their own tool
+  // set and never see Akron's Swarm tool, so with Swarm ON nothing was ever
+  // split (measured: the model replied "the Swarm tool isn't available").
+  // For those, Akron calls Swarm itself when the task warrants it: the user
+  // asked for parallel work, or the router scores it as a large job.
+  let hostSwarmGoal = '';
+  if (opts.swarm === true && depth === 0 && !trivialTurn && allAllowedDefs.has('Swarm')
+    && opts._disableHostSwarm !== true && cliRunner.isCliProvider(provider) && lastUserFastText.trim()
+    && String(opts.permissionMode || opts.permissions || 'auto') !== 'plan') {
+    let big = /\b(swarm|in parallel|parallel (?:agents?|workers?|tasks?)|workers?\b|team of agents|multi[- ]agent|sub-?agents?)\b/i.test(lastUserFastText);
+    if (!big) {
+      try {
+        const sc = taskRouter.scorePromptComplexity(lastUserFastText, messages);
+        big = Boolean(sc && Number(sc.complexity) >= 4);
+      } catch (_) {}
+    }
+    if (big) hostSwarmGoal = lastUserFastText.trim();
+  }
+  let hostSwarmCallId = '';
+
   if (opts.swarm === true && depth === 0 && !trivialTurn && allAllowedDefs.has('Swarm')) {
     messages[0].content += `\n\n<swarm_mode_active>\nSwarm mode is ON. For any non-trivial build, multi-file implementation, audit, or research task with 2 or more independent workstreams, call \`Swarm\` {"goal": "..."} (optionally passing "tasks") or spawn parallel \`Task\` workers right away after at most ONE quick directory check rather than doing every file sequentially yourself.\n</swarm_mode_active>`;
   }
@@ -2321,6 +2341,7 @@ async function runAgent(opts) {
       if (v.blocked || v.stop) {
         const why = v.reason || 'Blocked by UserPromptSubmit hook';
         emit({ type: 'notice', text: `Prompt blocked: ${why}` });
+        emit({ type: 'delta', text: `Prompt blocked: ${why}` }); // show it in the reply, not only as a toast
         emit({ type: 'done', messages, blocked: true });
         return messages;
       }
@@ -2689,7 +2710,9 @@ async function runAgent(opts) {
   // agent retry the same Write until the turn died).
   const PLAN_FILE_REL = String(opts.planFile || 'PLAN.md');
   let permissionMode = String(opts.permissionMode || opts.permissions || 'auto');
-  let planPrevMode = 'auto';
+  // The mode to return to when a plan is approved: the user's own mode from
+  // before they chose Plan (sent by the renderer), not always 'auto'.
+  let planPrevMode = ['auto', 'ask', 'acceptEdits', 'bypass'].includes(String(opts.planPrevMode)) ? String(opts.planPrevMode) : 'auto';
   const PLAN_SAFE = new Set([
     'Read', 'ReadDocument', 'read_document', 'Glob', 'Grep', 'LS', 'Search', 'ListDir', 'ListFiles',
     'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion', 'ExitPlanMode',
@@ -2722,7 +2745,11 @@ Work the phases in order:
   2. Design — write the complete plan to ${PLAN_FILE_REL} (the only writable file).
   3. Review — re-read your plan critically: missing files, risky steps, how you will verify.
   4. Implement / Verify — these happen ONLY after the user approves the plan.
-Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve it. Never ask for approval in prose, and never edit source before approval.
+${cliRunner.isCliProvider(provider)
+    // A subscription CLI has no ExitPlanMode in this mode (measured: it kept
+    // running ToolSearch for it). Its final reply is what Akron shows for approval.
+    ? 'Finish the turn by replying with the complete plan as your final message. Do not search for an ExitPlanMode tool: Akron shows your final reply to the user as the plan to approve. Never edit source before approval.'
+    : 'Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve it. Never ask for approval in prose, and never edit source before approval.'}
 </plan-mode>`;
   // Install/remove the plan-mode system block as the mode flips mid-run, so the
   // model is never told "plan mode is active" after the user approved.
@@ -3035,8 +3062,31 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         }
       }
     };
+    if (hostSwarmCallId && step > 0) {
+      // The Swarm we started has finished: its supervisor already merged and
+      // verified the workers' output, so end the turn with that answer
+      // instead of paying for another model call that cannot see it.
+      const swarmMsg = [...messages].reverse().find((m) => m && m.role === 'tool' && m.tool_call_id === hostSwarmCallId);
+      const raw = String((swarmMsg && swarmMsg.content) || '');
+      const fin = /\bFINAL ANSWER\s*\n+([\s\S]+)$/.exec(raw);
+      const answer = (fin ? fin[1] : raw).trim() || 'The swarm finished without a final answer.';
+      emit({ type: 'delta', text: answer });
+      messages.push({ role: 'assistant', content: answer });
+      emit({ type: 'done', messages, usage: { ...usageTotals } });
+      return messages;
+    }
     try {
-      message = await chatRound(toolMode, outCeiling || undefined);
+      if (hostSwarmGoal && step === 0) {
+        hostSwarmCallId = 'host_swarm_' + Date.now().toString(36);
+        emit({ type: 'notice', text: 'Swarm is on — splitting this task across parallel workers.' });
+        message = {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{ id: hostSwarmCallId, type: 'function', function: { name: 'Swarm', arguments: JSON.stringify({ goal: hostSwarmGoal }) } }],
+        };
+      } else {
+        message = await chatRound(toolMode, outCeiling || undefined);
+      }
     } catch (e) {
       // Two different reasons to stop using native tool calls, both recoverable:
       //   • the endpoint rejects the tools schema (capability mismatch), and
@@ -3093,10 +3143,11 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             type: 'notice',
             text: `${prose}. Plain chat is unavailable as well, so I stopped this turn — switch to another account or provider, or wait for the allowance to reset, and I will resume from here.`,
           });
-          messages.push({
-            role: 'assistant',
-            content: `I could not run this turn. ${prose}. Nothing was changed on disk beyond what is shown above, and the conversation is intact — switch account or provider and send the same request again.`,
-          });
+          const stopText = `I could not run this turn. ${prose}. Nothing was changed on disk beyond what is shown above, and the conversation is intact — switch account or provider and send the same request again.`;
+          messages.push({ role: 'assistant', content: stopText });
+          // The chat bubble is built from streamed deltas; without this the
+          // turn ended with an empty reply and only a passing toast.
+          emit({ type: 'delta', text: stopText });
           emit({ type: 'done', messages, usage: { ...usageTotals } });
           return messages;
         }
@@ -3246,6 +3297,28 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       // Plan mode contract: the turn has to end on ExitPlanMode or
       // AskUserQuestion, never on a prose "shall I proceed?". If the model just
       // talked, push it back onto the tool instead of ending the turn.
+      // A subscription CLI (Claude / Codex / Antigravity / Grok) runs its own
+      // tools and cannot call our ExitPlanMode, so nudging it only bought full
+      // extra turns (measured: 3 nudges, 11s -> 44.6s, and the plan never
+      // reached the approval card). Its reply IS the plan: hand it to the same
+      // approval flow ExitPlanMode uses.
+      if (permissionMode === 'plan' && !planEnded && message.cliHandledTools && depth === 0) {
+        planEnded = true;
+        const planText = String(message.content || '').trim();
+        if (planText && typeof opts.exitPlanMode === 'function') {
+          let verdict = '';
+          try { verdict = String(await opts.exitPlanMode({ plan: planText }) || ''); } catch (_) { verdict = ''; }
+          const approved = /approved/i.test(verdict) && !/not approved|rejected/i.test(verdict);
+          if (approved) {
+            setPermissionMode(planPrevMode || 'auto');
+            emit({ type: 'planMode', active: false });
+            emit({ type: 'notice', text: 'Plan approved — plan mode is off, implementing now.' });
+            pushContinuationUserMsg(`[plan-approved] The user approved the plan above${/:\s*\S/.test(verdict) ? ` with this note: ${verdict}` : ''}. Implement it now, then verify it works.`);
+            continue;
+          }
+          emit({ type: 'notice', text: 'Plan not approved — staying in plan mode. Send changes to the plan or approve it to implement.' });
+        }
+      }
       if (permissionMode === 'plan' && !planEnded && planNudges < 3) {
         planNudges++;
         emit({ type: 'notice', text: 'Plan mode — the turn must end with ExitPlanMode or AskUserQuestion.' });
@@ -3890,6 +3963,8 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         ...subOpts,
       }),
       mcpClient: opts.mcpClient || null,
+      // MCP tool definitions of this turn, so Swarm can hand a worker one server.
+      extraTools: Array.isArray(opts.extraTools) ? opts.extraTools : [],
       callTool: opts.callMcpTool || null,
       mcpCallTool: opts.callMcpTool
         ? (srv, tl, a) => opts.callMcpTool(srv ? `mcp__${srv}__${tl}` : tl, a || {})

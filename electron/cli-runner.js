@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
+const { isReaRequested } = require('./rea-gate');
 
 let _defaultRuntimesGetter = null;
 function setDefaultRuntimesGetter(fn) {
@@ -31,8 +32,33 @@ function invalidateCliBinaryCache(kind = '') {
   }
 }
 
-let _lastMcpConfigJson = '';
-let _lastMcpConfigPath = '';
+/**
+ * MCP servers a CLI turn should start. Every server listed is connected by the
+ * CLI before it answers (measured: two remote paradev servers cost Claude CLI
+ * 1.4-2.7s on a plain "hi"), so a server only rides along when the user's own
+ * words name it (its id, or a word of a hyphenated id, e.g. "paradev"), or
+ * mention MCP in general. `prompt === undefined` keeps every server.
+ */
+function selectMcpServersForPrompt(servers, prompt) {
+  const all = servers && typeof servers === 'object' ? servers : {};
+  if (prompt === undefined || prompt === null) return all;
+  const text = String(prompt || '').toLowerCase();
+  if (!text) return {};
+  if (/(?:^|[^a-z0-9_])mcp(?![a-z0-9])/.test(text)) return all;
+  const out = {};
+  for (const [id, def] of Object.entries(all)) {
+    const words = new Set([String(id).toLowerCase(), ...String(id).toLowerCase().split(/[-_\s]+/)]);
+    if (def && def.name) words.add(String(def.name).toLowerCase());
+    for (const w of words) {
+      if (w.length < 3) continue;
+      const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp('(?:^|[^a-z0-9_])' + esc + '(?![a-z0-9_])').test(text)) { out[id] = def; break; }
+    }
+  }
+  return out;
+}
+
+const _writtenMcpConfigs = new Set();
 function writeIsolatedMcpConfigFile(opts = {}) {
   let servers = opts.mcpServers;
   if (!servers) {
@@ -45,15 +71,24 @@ function writeIsolatedMcpConfigFile(opts = {}) {
       servers = {};
     }
   }
+  if (Object.prototype.hasOwnProperty.call(opts, 'prompt')) servers = selectMcpServersForPrompt(servers, opts.prompt);
   const payload = JSON.stringify({ mcpServers: servers || {} });
-  const target = path.join(os.tmpdir(), `akron-mcp-${process.pid}.json`);
-  if (payload !== _lastMcpConfigJson || _lastMcpConfigPath !== target || !fs.existsSync(target)) {
+  // One file per distinct server set: a CLI that is still starting must never
+  // read a config another turn rewrote underneath it.
+  const digest = require('node:crypto').createHash('sha1').update(payload).digest('hex').slice(0, 10);
+  const target = path.join(os.tmpdir(), `akron-mcp-${process.pid}-${digest}.json`);
+  if (!_writtenMcpConfigs.has(target) || !fs.existsSync(target)) {
     fs.writeFileSync(target, payload, { mode: 0o600 });
-    _lastMcpConfigJson = payload;
-    _lastMcpConfigPath = target;
+    _writtenMcpConfigs.add(target);
   }
   return target;
 }
+
+// Claude Code tools that publish to claude.ai instead of using Akron's own
+// preview pane. Inside Akron a "live preview" must open in Akron, not upload
+// the user's file to their claude.ai account. Must use the `=` form: the
+// variadic `--disallowedTools a b` swallows the following arguments.
+const CLAUDE_CLI_DISALLOWED_TOOLS = '--disallowedTools=Artifact,ArtifactComments,ArtifactData';
 
 const CLI_DEFS = {
   claude: { cliId: 'claude-code', bins: ['claude'] },
@@ -475,7 +510,7 @@ function getCopilotMcpFlags(prompt = '', opts = {}) {
   if (!needsGhMcp && opts.disableBuiltinMcps !== false) {
     args.push('--disable-builtin-mcps');
   }
-  const needsRea = /\b(reverse[\s-]?engineer|decompile|disassembl|ghidra|radare|rizin|macho|apktool|frida|firmware)\b/i.test(pText);
+  const needsRea = isReaRequested(pText);
   try {
     const cfgPath = opts.copilotMcpConfig || path.join(os.homedir(), '.copilot', 'mcp-config.json');
     if (fs.existsSync(cfgPath)) {
@@ -569,6 +604,7 @@ function buildCliInvocation(kind, provider, prompt, systemPrompt, opts = {}) {
       args.push('--permission-mode', pm);
     }
     if (opts.noSessionPersistence !== false) args.push('--no-session-persistence');
+    args.push(CLAUDE_CLI_DISALLOWED_TOOLS);
     return args;
   }
 
@@ -607,7 +643,8 @@ function buildCliInvocation(kind, provider, prompt, systemPrompt, opts = {}) {
 
   if (kind === 'copilot') {
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
-    const args = ['-p', fullPrompt, '--output-format', 'json', '--no-color', '-C', cwd, ...getCopilotMcpFlags(fullPrompt)];
+    // Gate MCP servers on what the user typed, not on the system prompt (which describes REA on every turn).
+    const args = ['-p', fullPrompt, '--output-format', 'json', '--no-color', '-C', cwd, ...getCopilotMcpFlags(prompt)];
     const cModel = normalizeCopilotModelSlug(model);
     if (cModel && !opts.omitModel) args.push('--model', cModel);
     const perm = String(opts.permissions || 'auto').toLowerCase();
@@ -731,7 +768,10 @@ function parseNdjsonEvent(ev, state, emitEvt, onDelta, onToolDelta) {
       const r = ev.result;
       if (r.status && r.status !== 'SUCCESS') {
         state.cliError = String(r.error || `Antigravity CLI exited with status ${r.status}`);
-      } else if (typeof r.response === 'string' && r.response) {
+      } else {
+        state.turnComplete = true;
+      }
+      if (!state.cliError && typeof r.response === 'string' && r.response) {
         state.resultText = r.response;
         if (!state.streamedText && !state.finalText) {
           onDelta(r.response, false);
@@ -773,6 +813,16 @@ function parseNdjsonEvent(ev, state, emitEvt, onDelta, onToolDelta) {
       emitEvt({ type: 'tool', id: b.id || '', name: b.name || '', args: b.input || {} });
     } else if (e.type === 'message_start' && e.message && e.message.model) {
       state.model = String(e.message.model);
+    } else if (e.type === 'message_delta' && e.delta && e.delta.stop_reason === 'end_turn' && !ev.parent_tool_use_id) {
+      // Top-level (not a sub-agent's) final message: the answer is complete.
+      state.turnComplete = true;
+      if (e.usage) {
+        state.usage = {
+          input_tokens: Number(e.usage.input_tokens) || 0,
+          output_tokens: Number(e.usage.output_tokens) || 0,
+          total_tokens: (Number(e.usage.input_tokens) || 0) + (Number(e.usage.output_tokens) || 0),
+        };
+      }
     } else if (e.type === 'message_delta' && e.usage) {
       state.usage = {
         input_tokens: Number(e.usage.input_tokens) || 0,
@@ -1024,7 +1074,10 @@ async function selfHealOutdatedCli(resolved, { runtimes = null, selfHealUpdate =
   return null;
 }
 
-const WARM_POOL_TTL_MS = 90 * 1000;
+// Idle pre-started CLI workers. A cold Antigravity start is ~2.3s and a cold
+// Claude start ~0.3s + MCP connects, so keep one ready across normal pauses
+// between messages, not just 90s.
+const WARM_POOL_TTL_MS = Number(process.env.AKRON_WARM_CLI_TTL_MS) || 10 * 60 * 1000;
 const _warmPool = new Map(); // poolKey -> entry
 const _warmPoolFlights = new Map();
 
@@ -1105,8 +1158,8 @@ function warmSpecForKind(kind, binToRun, provider, { cwd, permissions, mcpConfig
     const pm = mapPermissionMode('claude', perm);
     if (pm === 'bypassPermissions') args.push('--permission-mode', 'bypassPermissions', '--allow-dangerously-skip-permissions');
     else if (pm) args.push('--permission-mode', pm);
-    args.push('--setting-sources', '', '--strict-mcp-config', '--mcp-config', mcpConfigFile || writeIsolatedMcpConfigFile());
-    args.push('--no-session-persistence');
+    args.push('--setting-sources', '', '--strict-mcp-config', '--mcp-config', mcpConfigFile || writeIsolatedMcpConfigFile({ prompt: '' }));
+    args.push('--no-session-persistence', CLAUDE_CLI_DISALLOWED_TOOLS);
     return { protocol: 'claude-stream-json', args };
   }
 
@@ -1170,7 +1223,7 @@ async function warmCliWorker(provider, opts = {}) {
 
   const task = (async () => {
     try {
-      const mcpConfigFile = kind === 'claude' ? writeIsolatedMcpConfigFile({ includeInternalRea: false }) : '';
+      const mcpConfigFile = kind === 'claude' ? writeIsolatedMcpConfigFile({ includeInternalRea: false, prompt: '' }) : '';
       const spec = warmSpecForKind(kind, resolved.bin, provider, { cwd, permissions, mcpConfigFile });
       if (!spec) {
         // Pre-warm OS page cache & trust config for non-persistent CLIs (grok, kimi, gemini)
@@ -1364,6 +1417,12 @@ async function runCliTurn({
   }
 
   const { systemPrompt, prompt } = formatMessagesPrompt(messages);
+  // Only what the user typed decides which MCP servers / plugins a turn needs.
+  const userText = (Array.isArray(messages) ? messages : [])
+    .filter((m) => m && m.role === 'user')
+    .map((m) => (typeof m.content === 'string' ? m.content
+      : (Array.isArray(m.content) ? m.content.map((p) => (p && typeof p.text === 'string' ? p.text : '')).join('\n') : '')))
+    .join('\n');
   const effectiveSpawn = spawnImpl || spawn;
   const runOnce = async (omitModel, binToRun = resolved.bin) => {
     const binBase = path.basename(String(binToRun || '')).toLowerCase();
@@ -1371,7 +1430,16 @@ async function runCliTurn({
       ensureGeminiTrustedFolder(cwd);
     }
     const modelStr = String((provider && provider.model) || '').trim();
-    const wantWarm = !omitModel && (!spawnImpl || forceWarmPool === true);
+    // The warm Claude worker starts with no MCP servers, so a turn that names
+    // one (or asks for REA) takes the cold path, which configures them.
+    let turnNeedsMcp = false;
+    if (resolved.kind === 'claude' && inheritGlobalClaudePlugins !== true) {
+      try {
+        const sel = JSON.parse(fs.readFileSync(writeIsolatedMcpConfigFile({ includeRea: isReaRequested(userText), prompt: userText }), 'utf8'));
+        turnNeedsMcp = Object.keys((sel && sel.mcpServers) || {}).length > 0;
+      } catch (_) {}
+    }
+    const wantWarm = !omitModel && !turnNeedsMcp && (!spawnImpl || forceWarmPool === true);
     let warm = wantWarm ? acquireWarmWorker(resolved.kind, binToRun, cwd, modelStr, permissions) : null;
     let acpSessionId = '';
     if (warm && warm.protocol === 'copilot-acp') {
@@ -1430,8 +1498,8 @@ async function runCliTurn({
         omitModel,
       });
       if (resolved.kind === 'claude' && inheritGlobalClaudePlugins !== true) {
-        const needsRea = /\b(reverse[\s-]?engineer|decompile|disassembl|ghidra|radare|rizin|macho|apktool|frida|firmware)\b/i.test(prompt);
-        const mcpCfg = writeIsolatedMcpConfigFile({ includeRea: needsRea });
+        const needsRea = isReaRequested(userText);
+        const mcpCfg = writeIsolatedMcpConfigFile({ includeRea: needsRea, prompt: userText });
         if (!args.includes('--setting-sources')) args.push('--setting-sources', '');
         if (!args.includes('--strict-mcp-config')) args.push('--strict-mcp-config', '--mcp-config', mcpCfg);
         if ((singleTurn || fastTurn) && !args.includes('--disable-slash-commands')) {
@@ -1490,8 +1558,61 @@ async function runCliTurn({
       if (timer && typeof timer.unref === 'function') timer.unref();
     }
 
+    // Same as Akron's own Write tool: when a CLI writes an .html/.svg file,
+    // open it in Akron's preview pane once the write has succeeded.
+    const pendingPreview = new Map(); // tool id -> absolute path
+    let lastPreview = '';
     const forwardEmit = (e) => {
+      try {
+        if (e && (e.type === 'tool_use' || e.type === 'tool') && e.id) {
+          const fp = extractFileEditPath(e.name, e.args || {});
+          if (fp && /\.(html?|svg)$/i.test(fp)) pendingPreview.set(e.id, path.isAbsolute(fp) ? fp : path.resolve(cwd, fp));
+        } else if (e && e.type === 'toolResult' && e.id && pendingPreview.has(e.id)) {
+          const abs = pendingPreview.get(e.id);
+          pendingPreview.delete(e.id);
+          if (!e.isError && abs !== lastPreview && fs.existsSync(abs)) {
+            lastPreview = abs;
+            emit({ type: 'preview', url: abs });
+          }
+        }
+      } catch (_) {}
       try { emit(e); } catch (_) {}
+    };
+
+    const finishSuccess = () => {
+      const content = state.streamedText || state.resultText || state.finalText || '';
+      emit({ type: 'done_usage', usage: state.usage, model: state.model });
+      if (!omitModel && (!spawnImpl || forceWarmPool === true)) {
+        const wTimer = setImmediate(() => {
+          warmCliWorker(provider, { cwd, permissions, runtimes, resolveBin, userRuntimesDir, spawnImpl, forceWarmPool }).catch(() => {});
+        });
+        if (wTimer && typeof wTimer.unref === 'function') wTimer.unref();
+      }
+      resolve({
+        role: 'assistant',
+        content,
+        tool_calls: [],
+        cliHandledTools: !singleTurn,
+        finish_reason: 'stop',
+        model: state.model,
+        usage: state.usage,
+      });
+    };
+
+    // The model's final message is complete (Claude: top-level end_turn;
+    // Antigravity: a successful `result`). The CLI keeps running after that
+    // (Claude writes a post-turn summary, ~2-3.5s), and none of it changes the
+    // answer, so end the turn now and let the process exit on its own.
+    const settleAtEndOfTurn = () => {
+      if (settled || !state.turnComplete || state.cliError || state.rateLimitError) return;
+      if (signal && signal.aborted) return;
+      settled = true;
+      cleanup();
+      try { if (child.stdout) child.stdout.resume(); } catch (_) {}
+      const reaper = setTimeout(() => killChildTree(child), 60000);
+      if (reaper && typeof reaper.unref === 'function') reaper.unref();
+      child.once('close', () => clearTimeout(reaper));
+      finishSuccess();
     };
 
     const handleLine = (line) => {
@@ -1564,6 +1685,7 @@ async function runCliTurn({
           return;
         }
         parseNdjsonEvent(parsed, state, forwardEmit, onDelta, onToolDelta);
+        settleAtEndOfTurn();
       } catch (_) {}
     };
 
@@ -1607,6 +1729,7 @@ async function runCliTurn({
       cleanup();
       if (settled) return;
       if (buf.trim()) handleLine(buf);
+      if (settled) return; // the last line carried the end-of-turn marker
       settled = true;
 
       if (signal && signal.aborted) {
@@ -1652,23 +1775,7 @@ async function runCliTurn({
         return;
       }
 
-      const content = state.streamedText || state.resultText || state.finalText || '';
-      emit({ type: 'done_usage', usage: state.usage, model: state.model });
-      if (!omitModel && (!spawnImpl || forceWarmPool === true)) {
-        const wTimer = setImmediate(() => {
-          warmCliWorker(provider, { cwd, permissions, runtimes, resolveBin, userRuntimesDir, spawnImpl, forceWarmPool }).catch(() => {});
-        });
-        if (wTimer && typeof wTimer.unref === 'function') wTimer.unref();
-      }
-      resolve({
-        role: 'assistant',
-        content,
-        tool_calls: [],
-        cliHandledTools: !singleTurn,
-        finish_reason: 'stop',
-        model: state.model,
-        usage: state.usage,
-      });
+      finishSuccess();
     });
   });
   };
@@ -1872,6 +1979,7 @@ module.exports = {
   resolveUserDataRuntime,
   invalidateCliBinaryCache,
   writeIsolatedMcpConfigFile,
+  selectMcpServersForPrompt,
   warmCliWorker,
   clearWarmCliPool,
   getWarmCliPoolStats,

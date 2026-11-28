@@ -52,9 +52,12 @@ jobs:
           - os: ubuntu-latest
             platform: linux-x64
             cmd: npm run build && npx electron-builder --linux AppImage tar.gz --x64 --config.compression=normal --publish never
-          - os: ubuntu-latest
+          # Native ARM64 runner: node-pty ships no Linux prebuilds and the CLI
+          # runtimes are fetched for the host arch, so an ARM64 build made on an
+          # x64 runner carried x64 binaries (broken terminal / CLIs on ARM).
+          - os: ubuntu-24.04-arm
             platform: linux-arm64
-            cmd: npm run build && npx electron-builder --linux tar.gz --arm64 --config.compression=normal --publish never
+            cmd: npm run build && npx electron-builder --linux AppImage tar.gz --arm64 --config.compression=normal --publish never
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -149,7 +152,7 @@ jobs:
           if (!res.ok) process.exit(1);
           "
           rm -rf ./release/_linux_asar_check
-          if [ "${{ matrix.platform }}" = "linux-x64" ]; then
+          if [ "${{ matrix.platform }}" = "linux-x64" ] || [ "${{ matrix.platform }}" = "linux-arm64" ]; then
             if ! command -v xvfb-run >/dev/null 2>&1 || ldd "$UNPACKED_DIR/akronbot" | grep -q "not found"; then
               sudo apt-get update
               sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libgbm1 libasound2t64 || sudo apt-get install -y xvfb libgtk-3-0 libnss3 libgbm1 libasound2

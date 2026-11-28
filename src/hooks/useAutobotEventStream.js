@@ -60,6 +60,14 @@ export function useAutobotEventStream({
                 case 'tool': {
                   const args = evt.args || {};
                   const shortArg = String(args.path || args.file_path || args.command || args.pattern || args.query || args.text || '').replace(/\s+/g, ' ').slice(0, 80);
+                  const seen = evt.id ? (p.log || []).findIndex((e) => e.id === evt.id) : -1;
+                  if (seen >= 0) {
+                    // Second announcement of the same call: fill in its argument only.
+                    if (!shortArg) return a;
+                    const log = (p.log || []).slice();
+                    log[seen] = { ...log[seen], arg: shortArg };
+                    return { ...a, progress: { ...p, currentTool: { name: evt.name, arg: shortArg }, log } };
+                  }
                   const entry = { kind: 'tool', id: evt.id || '', name: evt.name, arg: shortArg, at: Date.now() };
                   const log = [...(p.log || []), entry].slice(-20);
                   return { ...a, progress: { ...p, tools: p.tools + 1, currentTool: { name: evt.name, arg: shortArg }, log, last: p.last || ('using ' + evt.name) } };
@@ -173,6 +181,13 @@ export function useAutobotEventStream({
         case 'tool': {
           const tid = evt.id || uid();
           patchLive((base) => {
+            // CLI providers announce a call twice: when it starts (no args yet)
+            // and again with the full arguments. Same id -> same row.
+            if (evt.id && (base.tools || []).some((t) => t.id === evt.id)) {
+              const hasArgs = evt.args && typeof evt.args === 'object' && Object.keys(evt.args).length > 0;
+              if (!hasArgs) return base;
+              return { ...base, tools: base.tools.map((t) => (t.id === evt.id ? { ...t, args: evt.args } : t)) };
+            }
             const segments = (base.segments || []).slice();
             const last = segments[segments.length - 1];
             if (last && last.type === 'tools') segments[segments.length - 1] = { type: 'tools', ids: [...last.ids, tid] };
@@ -320,7 +335,8 @@ export function useAutobotEventStream({
           if (evt.mode) setPermissions(evt.mode);
           break;
         case 'planMode':
-          setPlanMode(evt.active ? { active: true, file: evt.file || 'PLAN.md' } : null);
+          // The banner belongs to the chat on screen, not to one running in the background.
+          if (!targetConv || targetConv === activeIdRef.current) setPlanMode(evt.active ? { active: true, file: evt.file || 'PLAN.md' } : null);
           break;
         case 'orchestrator':
           if (evt.orchestrator && typeof setOrchestrator === 'function') {

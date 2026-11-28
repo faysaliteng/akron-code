@@ -101,14 +101,16 @@ export function MissionControlPane({
   }, [summaryList, healthMap, filter]);
 
   const counts = useMemo(() => {
-    let active = 0; let waiting = 0; let stuck = 0;
+    let active = 0; let waiting = 0; let stuck = 0; let idle = 0;
     for (const s of summaryList) {
       const h = healthMap[s.id];
       if (s.streaming) active++;
       if (s.waitingApproval) waiting++;
       if (h && (h.status === 'bad' || h.status === 'warn')) stuck++;
+      // Same rule as the Idle filter below.
+      if (!s.streaming && !s.waitingApproval && (!h || h.status === 'ok')) idle++;
     }
-    return { total: summaryList.length, active, waiting, stuck };
+    return { total: summaryList.length, active, waiting, stuck, idle };
   }, [summaryList, healthMap]);
 
   const estimatedSavedUsd = useMemo(() => {
@@ -152,7 +154,7 @@ export function MissionControlPane({
           { id: 'active', label: `Active (${counts.active})` },
           { id: 'waiting', label: `Needs Approval (${counts.waiting})` },
           { id: 'stuck', label: `Warn / Stuck (${counts.stuck})` },
-          { id: 'idle', label: 'Idle' },
+          { id: 'idle', label: `Idle (${counts.idle})` },
         ].map((f) => (
           <button
             key={f.id}

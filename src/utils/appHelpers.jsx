@@ -1555,3 +1555,50 @@ h1{font-size:22px;margin:0 0 4px} .meta{color:#888;font-size:12px;margin-bottom:
 // and folder the agent is working in, how much of the context window is spent,
 // and which connectors are attached. It is a view over state that already
 // exists — nothing here invents a number.
+
+// Chat titles from the first message: one line, cut at a word boundary with an
+// ellipsis ("...creates swarm_a.txt cont" read like a typo).
+export function clipTitle(text, max = 48) {
+  const one = String(text || '').replace(/\s+/g, ' ').trim();
+  if (one.length <= max) return one;
+  const cut = one.slice(0, max);
+  const sp = cut.lastIndexOf(' ');
+  return (sp >= max * 0.6 ? cut.slice(0, sp) : cut).replace(/[\s,.;:!?-]+$/, '') + '…';
+}
+
+// Chats are one localStorage entry; screenshots and pasted files inside it can
+// push it past the storage quota, after which every save failed SILENTLY and a
+// reload went back to the last snapshot that fit. Save in full when possible,
+// otherwise save a copy with the bulky payloads of older messages trimmed, and
+// report what happened so the UI can say so.
+const BIG_FIELD = 48 * 1024;
+const BIG_TOOL_RESULT = 8 * 1024;
+export function compactConvsForStorage(convs, { keepRecent = 6 } = {}) {
+  const trimStr = (s, n) => (typeof s === 'string' && s.length > n ? s.slice(0, n) + '\n…[trimmed to keep chats saving]' : s);
+  return (Array.isArray(convs) ? convs : []).map((c) => {
+    if (!c || !Array.isArray(c.messages)) return c;
+    const n = c.messages.length;
+    const messages = c.messages.map((m, i) => {
+      if (!m || i >= n - keepRecent) return m;
+      const out = { ...m };
+      if (Array.isArray(m.attachments)) {
+        out.attachments = m.attachments.map((a) => {
+          if (!a) return a;
+          const big = (typeof a.dataUrl === 'string' && a.dataUrl.length > BIG_FIELD) || (typeof a.content === 'string' && a.content.length > BIG_FIELD);
+          return big ? { name: a.name, size: a.size, isImage: a.isImage, isText: a.isText, trimmed: true } : a;
+        });
+      }
+      if (Array.isArray(m.tools)) out.tools = m.tools.map((t) => (t && typeof t.result === 'string' && t.result.length > BIG_TOOL_RESULT ? { ...t, result: trimStr(t.result, BIG_TOOL_RESULT) } : t));
+      return out;
+    });
+    const archived = Array.isArray(c.archivedMessages) && c.archivedMessages.length > 100 ? c.archivedMessages.slice(-100) : c.archivedMessages;
+    return { ...c, messages, ...(archived !== c.archivedMessages ? { archivedMessages: archived } : {}) };
+  });
+}
+
+export function saveConvsJSON(key, convs) {
+  try { localStorage.setItem(key, JSON.stringify(convs)); return { ok: true }; } catch (_) {}
+  try { localStorage.setItem(key, JSON.stringify(compactConvsForStorage(convs))); return { ok: true, compacted: true }; } catch (_) {}
+  try { localStorage.setItem(key, JSON.stringify(compactConvsForStorage(convs, { keepRecent: 1 }))); return { ok: true, compacted: true }; } catch (_) {}
+  return { ok: false };
+}

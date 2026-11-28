@@ -2,6 +2,36 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.7.0] - 2026-11-28
+
+### Speed
+- **Replies are 5–10× faster.** A plain "hi" took 37 s – 2 min; it now takes ~3–8 s. Before each message Akron re-checked every provider CLI's sign-in once per orchestrator pool row (61 rows) and one provider at a time (~52 s per message). Sign-in checks are now cached, shared and run in parallel (`electron/provider-oauth.js`).
+- CLI turns end on the model's final answer instead of waiting for the CLI to exit (Claude CLI spent 2–3.5 s writing a post-turn summary) (`electron/cli-runner.js`).
+- MCP servers and plugins only start for a CLI turn when your message names them; REA stays dormant until asked for (`electron/rea-gate.js`).
+- Warm CLI workers stay ready for 10 minutes instead of 90 seconds; out-of-credit accounts are skipped account-wide instead of per model (`electron/provider-gate.js`).
+- The packaged app drops ~110 MB of UI libraries that Vite already bundles (Monaco, Mermaid), which speeds the first launch of each new build.
+
+### Subscription models (Claude, Gemini/Antigravity, Codex, Grok)
+- **Swarm now works with subscription CLI models**: Akron starts the Swarm itself for large or explicitly parallel tasks (supervisor plans, workers run in parallel worktrees, supervisor merges).
+- **Plan mode works end to end**: the CLI model's plan goes to the approval card; approving switches back to your previous mode and implements it. The run's live mode is honoured when approving tools after plan approval.
+- HTML/SVG files written by CLI models open in Akron's preview; Claude CLI no longer publishes them to claude.ai.
+- The Swarm supervisor can give each worker only the tools it needs (`electron/swarm-tools.js`).
+
+### Fixed
+- Admin/login password prompt at launch: secrets no longer live in the macOS keychain, and builds without an Apple Team ID use Chromium's mock keychain, so a new build never asks again (`electron/keychain-policy.js`, `electron/secretstore.js`).
+- Stop pressed in the first second was ignored; Stop now pauses the queue; interrupted steps no longer spin forever; deleting a chat stops its run and queue.
+- Reloading the window mid-run re-attaches to the running turn; queued messages from a previous session wait for you instead of sending themselves.
+- Chats with many screenshots kept saving silently failing; older bulky attachments are now trimmed and you are told.
+- Computer Use approval no longer hangs when two chats ask at once.
+- New chat, Fork and Split keep the current chat's model, routing, Swarm setting and folder.
+- MCP: duplicate servers per chat, crashed servers never restarted, project `.mcp.json` servers never auto-connected.
+- "Trusted folders" honours the shell-safety check; failed turns show their reason in the chat.
+- Browser pane only treats a server running inside the project as its dev server.
+- Swarm applies workers' changes as uncommitted edits by default (opt in to auto-commit with `swarmAutoCommit`).
+
+### Design
+- Six theme colours were never defined (error states, muted text, borders, small radii); account status pills show in full; Settings sections open at the top; per-message subagent/task counts; titles cut at a word; Mission Control idle count; duplicate tool rows; stale plan banner; IDE status bar model.
+
 ## [1.6.9] - 2026-11-28
 
 ### Fixed & Verified Live

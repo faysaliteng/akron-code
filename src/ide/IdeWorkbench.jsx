@@ -971,7 +971,7 @@ export function IdeWorkbench({
         onToggleEol={toggleActiveTabEol}
         ghostEnabled={ghostEnabled}
         onToggleGhost={() => setGhostEnabled((v) => !v)}
-        modelLabel={(provider && provider.model) || 'auto'}
+        modelLabel={(provider && provider.routingMode === 'auto') ? 'Auto' : ((provider && provider.model) || 'auto')}
         contextPct={contextPct}
         onOpenProviders={onOpenSettings}
         Icon={Icon}

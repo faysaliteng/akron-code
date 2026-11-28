@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { formatFooterModelSummary } from '../../utils/sessionModelState.js';
 import { Icon } from '../Icon.jsx';
 import { LOCALES } from '../../i18n.js';
@@ -49,6 +49,11 @@ export function SettingsModalBody({
   useEffect(() => {
     if (initialSection) setSection(initialSection);
   }, [initialSection]);
+  // A new section opens at its top, not at the previous section's scroll offset.
+  const bodyRef = useRef(null);
+  useEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+  }, [section]);
 
   // Editing an endpoint/model by hand means this is no longer a signed-in
   // subscription selection — drop the OAuth binding so the gateway path wins.
@@ -332,7 +337,7 @@ export function SettingsModalBody({
             </div>
           </header>
 
-          <div className="settings-body">
+          <div className="settings-body" ref={bodyRef}>
             <div className="settings-body-inner">
             {section === 'providers' && (
               <>

@@ -116,7 +116,9 @@ function getDependenciesStatus({ lspRoot = DEFAULT_LSP_ROOT } = {}) {
 
   const rootDir = path.join(__dirname, '..');
   const bundled = [
-    { id: 'monaco', label: 'Monaco Editor (Offline Workers)', ok: checkModuleResolvable('monaco-editor'), detail: 'Built-in ES workers & IntelliSense' },
+    // Monaco ships compiled into dist/ (vendor-monaco + inline workers); the
+    // packaged app no longer carries its 80 MB node_modules copy.
+    { id: 'monaco', label: 'Monaco Editor (Offline Workers)', ok: checkModuleResolvable('monaco-editor') || (() => { try { return fs.readdirSync(path.join(rootDir, 'dist', 'assets')).some((f) => /^vendor-monaco-.*\.js$/.test(f)); } catch (_) { return false; } })(), detail: 'Built-in ES workers & IntelliSense' },
     { id: 'xterm', label: 'xterm.js + Search/WebLinks/Serialize', ok: checkModuleResolvable('@xterm/xterm') && checkModuleResolvable('@xterm/addon-search') && checkModuleResolvable('@xterm/addon-web-links') && checkModuleResolvable('@xterm/addon-serialize'), detail: 'Interactive terminal + addons' },
     { id: 'ripgrep', label: 'Ripgrep Search (@vscode/ripgrep)', ok: !!rgBin, detail: rgBin || 'JS fallback active' },
     { id: 'watcher', label: 'File Watcher (@parcel/watcher)', ok: parcelWatcherOk, detail: parcelWatcherOk ? 'Native @parcel/watcher active' : 'fs.watch fallback active' },

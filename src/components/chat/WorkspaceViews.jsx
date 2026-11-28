@@ -543,6 +543,10 @@ function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, t
   const changedSummary = useMemo(() => summarizeChangedFiles(allTools, allCheckpoints), [allTools, allCheckpoints]);
   const wsLeaf = String(cwd || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Akron Code';
   const subCount = (subAgents && subAgents.length) || 0;
+  // Per-message footers: a reply shows its OWN sub-agents; background tasks are
+  // chat-wide, so they show once, under the latest reply (they used to repeat on every reply).
+  let lastAssistantIdx = -1;
+  for (let k = (messages || []).length - 1; k >= 0; k--) { if (messages[k] && messages[k].role === 'assistant') { lastAssistantIdx = k; break; } }
   const bgTasksCount = allCheckpoints.length + allTools.filter((t) => t && (t.name === 'Bash' || t.name === 'Task' || t.name === 'Agent' || t.name === 'Swarm' || t.background)).length;
 
   const turnPrompts = useMemo(() => {
@@ -788,7 +792,7 @@ function ChatViewInner({ MessageComponent, renderLiveSegments, messages, live, t
           {welcomeExtra}
         </div>
       )}
-      {MessageComponent && messages.map((m, i) => <MessageComponent key={m.id} m={m} convId={convId} cwd={cwd} idx={i} turnLabel={turnPrompts[i]} subAgentCount={subCount} taskCount={bgTasksCount} uiSettings={uiSettings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} onOpenMediaStudio={onOpenMediaStudio} onConfigureMediaKey={onConfigureMediaKey} />)}
+      {MessageComponent && messages.map((m, i) => <MessageComponent key={m.id} m={m} convId={convId} cwd={cwd} idx={i} turnLabel={turnPrompts[i]} subAgentCount={Array.isArray(m.subAgents) ? m.subAgents.length : 0} taskCount={i === lastAssistantIdx ? bgTasksCount : 0} uiSettings={uiSettings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} onOpenReview={onOpenReview} onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} onOpenRunLog={onToggleRunLog} onPromptAction={onPromptAction} onOpenInIde={onOpenInIde} onOpenMediaStudio={onOpenMediaStudio} onConfigureMediaKey={onConfigureMediaKey} />)}
       {Boolean((subAgents && subAgents.length > 0) || swarmInfo) && (
         <MissionControl subAgents={subAgents} swarmInfo={swarmInfo} swarmBoard={swarmBoard} inline onOpenSubagents={() => onTogglePane && onTogglePane('subagents')} />
       )}

@@ -128,7 +128,7 @@ const STRINGS = {
     // Permissions dropdown — Claude Desktop parity (title + description + shortcut number)
     'perm.sessionHead': 'Permissions · this session',
     'perm.auto': 'Auto',
-    'perm.autoDesc': 'Example decides when to ask for approval',
+    'perm.autoDesc': 'Akron decides when to ask for approval',
     'perm.manual': 'Manual',
     'perm.manualDesc': 'Always ask before making changes',
     'perm.acceptEdits': 'Accept edits',
@@ -249,7 +249,7 @@ const STRINGS = {
 
     'perm.sessionHead': 'অনুমতি · এই সেশন',
     'perm.auto': 'স্বয়ংক্রিয়',
-    'perm.autoDesc': 'কখন জিজ্ঞাসা করবে তা Example ঠিক করে',
+    'perm.autoDesc': 'কখন জিজ্ঞাসা করবে তা Akron ঠিক করে',
     'perm.manual': 'ম্যানুয়াল',
     'perm.manualDesc': 'পরিবর্তনের আগে সবসময় জিজ্ঞাসা করুন',
     'perm.acceptEdits': 'সম্পাদনা গ্রহণ',

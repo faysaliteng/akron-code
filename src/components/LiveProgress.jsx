@@ -185,6 +185,10 @@ function toolDelta(t) {
   return { added: 0, removed: 0 };
 }
 
+// Files a subscription CLI writes for its own bookkeeping (Claude Code's plan
+// mode saves plans to ~/.claude/plans/*.md). They are not project changes.
+const CLI_INTERNAL_PATH = /[\\/]\.claude[\\/]plans[\\/]/;
+
 export function summarizeChangedFiles(tools = [], checkpoints = []) {
   const byPath = new Map();
   for (const t of tools || []) {
@@ -192,7 +196,7 @@ export function summarizeChangedFiles(tools = [], checkpoints = []) {
     const nm = String(t.name || '');
     if (nm !== 'Write' && nm !== 'Edit' && nm !== 'MultiEdit' && nm !== 'StrReplace') continue;
     const raw = (t.args && (t.args.file_path || t.args.path)) || '';
-    if (!raw) continue;
+    if (!raw || CLI_INTERNAL_PATH.test(String(raw))) continue;
     const key = String(raw);
     const short = key.replace(/\\/g, '/').split('/').slice(-2).join('/') || key;
     const d = toolDelta(t);
@@ -204,7 +208,7 @@ export function summarizeChangedFiles(tools = [], checkpoints = []) {
   }
   for (const cp of checkpoints || []) {
     const raw = cp && cp.path ? String(cp.path) : '';
-    if (!raw) continue;
+    if (!raw || CLI_INTERNAL_PATH.test(raw)) continue;
     const short = raw.replace(/\\/g, '/').split('/').slice(-2).join('/') || raw;
     const already = [...byPath.values()].some((f) => f.path === raw || raw.endsWith('/' + f.path) || raw.endsWith('\\' + f.path));
     if (!already) {

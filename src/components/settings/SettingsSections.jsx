@@ -444,7 +444,7 @@ export function AccountSection({ T, provider, setProvider }) {
                       onClick={() => use(pv, a)}
                     >
                       <span className="model-opt-name">{a.label || a.account}</span>
-                      <span className="model-opt-prov">{a.needsSignIn ? T('account.needsSignIn') : acctSub(a)}</span>
+                      <span className={'model-opt-prov' + (a.needsSignIn || a.expired ? ' is-warn' : '')}>{a.needsSignIn ? T('account.needsSignIn') : acctSub(a)}</span>
                       {on && <Icon name="Check" size={13} className="model-check" />}
                     </button>
                     <button type="button" className="prov-x" title={T('account.signOut')} disabled={busy === 'signout:' + pv.id} onClick={() => act('signout', pv.id, a.account)}>
@@ -522,7 +522,7 @@ export function AccountSection({ T, provider, setProvider }) {
       {st && (
         <div className="account-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button type="button" className="primary" disabled={!!busy} onClick={() => act('autoheal')}>
-            <Icon name="Refresh" size={13} /> {busy === 'autoheal:' ? 'Healing PC Accounts…' : 'Auto-Heal PC Accounts'}
+            <Icon name="Refresh" size={13} /> {busy === 'autoheal:' ? 'Healing accounts…' : 'Auto-heal accounts'}
           </button>
           <button type="button" disabled={!!busy} onClick={() => act('import')}>
             <Icon name="Download" size={13} /> {busy === 'import:' ? T('account.import.scanning') : T('account.import')}

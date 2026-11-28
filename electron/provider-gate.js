@@ -66,8 +66,31 @@ function s(p) {
 
 const now = () => Date.now();
 
-function isDead(p) { return s(p).deadUntil > now(); }
-function deadReason(p) { return s(p).deadWhy || ''; }
+// Credit / allowance is spent per ACCOUNT (one Grok, Claude or ChatGPT login
+// serves many model rows), so "out of credit" on one row is true of all rows
+// on the same subscription account.
+function billingKeyOf(p) {
+  if (!p || p.gateKey) return '';
+  const op = String(p.oauthProvider || '');
+  if (op) return 'bill|' + op;
+  const base = String(p.baseURL || '').replace(/\/+$/, '').replace('://localhost', '://127.0.0.1');
+  return base && p.apiKey ? 'bill|' + base + '|' + String(p.apiKey).slice(-8) : '';
+}
+function billingSlot(p) {
+  const k = billingKeyOf(p);
+  return k ? state.get(k) || null : null;
+}
+
+function isDead(p) {
+  if (s(p).deadUntil > now()) return true;
+  const b = billingSlot(p);
+  return Boolean(b && b.deadUntil > now());
+}
+function deadReason(p) {
+  if (s(p).deadUntil > now()) return s(p).deadWhy || '';
+  const b = billingSlot(p);
+  return (b && b.deadUntil > now() && b.deadWhy) || s(p).deadWhy || '';
+}
 function coolingFor(p) {
   const a = acct(p);
   return Math.max(0, s(p).until - now(), a ? a.until - now() : 0);
@@ -107,10 +130,23 @@ function ok(p) {
   x.until = 0;
   const a = acct(p);
   if (a) { a.strikes = 0; a.until = 0; }
+  // A success on the account (credit topped up) clears the account-wide mark.
+  const b = billingSlot(p);
+  if (b) { b.deadUntil = 0; b.deadWhy = ''; }
 }
 
 function markDead(p, why, ms) {
   const x = s(p);
+  x.deadUntil = now() + (Number(ms) > 0 ? Number(ms) : 10 * 60000);
+  x.deadWhy = String(why || '').slice(0, 200);
+}
+
+// Out of credit / allowance spent: skip every row billed to the same account.
+function markAccountDead(p, why, ms) {
+  markDead(p, why, ms);
+  const k = billingKeyOf(p);
+  if (!k) return;
+  const x = slot(k);
   x.deadUntil = now() + (Number(ms) > 0 ? Number(ms) : 10 * 60000);
   x.deadWhy = String(why || '').slice(0, 200);
 }
@@ -227,6 +263,6 @@ function snapshot() {
 function reset() { state.clear(); }
 
 module.exports = {
-  keyOf, keyFor, accountKeyOf, usable, isDead, deadReason, coolingFor, inflight, rateLimited, ok, markDead, capOf, hasCapacity,
+  keyOf, keyFor, accountKeyOf, billingKeyOf, usable, isDead, deadReason, coolingFor, inflight, rateLimited, ok, markDead, markAccountDead, capOf, hasCapacity,
   tryAcquire, acquire, order, soonestReset, retryHintMs, snapshot, reset,
 };

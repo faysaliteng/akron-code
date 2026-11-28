@@ -22,6 +22,7 @@ const gate = require('./provider-gate');
 const usageEstimator = require('./usage-estimator');
 const modeCollab = require('./mode-collab');
 const cliRunner = require('./cli-runner');
+const swarmTools = require('./swarm-tools');
 
 const TRIVIAL_CONVO_RE = /^(hi+|hello+|hey+|yo|sup|ping|test|ok|okay|thanks|thank you|thx|good\s+(?:morning|afternoon|evening)|how\s+are\s+you\??|who\s+are\s+you\??|what\s+model(?:\s+are\s+you)?\??|are\s+you\s+there\??)[!?. ]*$/i;
 const ACTION_OR_CODE_RE = /\b(fix|build|create|write|edit|refactor|implement|audit|test|run|search|inspect|read|check|analyze|debug|deploy|install|update|add|remove|delete|find|grep|scan|review|compare|parallel|subagent|swarm|worktree|file|repo|codebase|code|bug|app|website|script)\b|```|(?:[\w.-]+\/)+[\w.-]+|\b[\w.-]+\.(?:js|jsx|ts|tsx|mjs|cjs|py|go|rs|json|md|css|html|sh)\b/i;
@@ -344,6 +345,8 @@ function normalizePlan(raw, opts = {}) {
       owns: Array.isArray(t.owns) ? t.owns.map(String).slice(0, 20) : [],
       isolation: t.isolation === 'worktree' ? 'worktree' : null,
       worktree: Boolean(t.worktree || t.isolation === 'worktree'),
+      // Optional: the capabilities the supervisor says this subtask needs.
+      tools: swarmTools.normalizeToolSpec(t.tools || t.capabilities),
     });
   });
   if (!tasks.length) return null;
@@ -377,10 +380,11 @@ The available model tiers are: {ROSTER}
 Route expensive tiers to work that needs them and cheap tiers to mechanical work.
 
 Reply with ONLY a JSON object, no prose, no markdown fence:
-{"subtasks":[{"id":"t1","title":"short label","tier":"small|heavy|critical","role":"coder|vision|fast|planner","isolation":"worktree|readonly","prompt":"complete instructions for that agent","owns":["path/or/area"]}],"synthesis":"how to merge the results"}
+{"subtasks":[{"id":"t1","title":"short label","tier":"small|heavy|critical","role":"coder|vision|fast|planner","isolation":"worktree|readonly","tools":["read","edit","shell"],"prompt":"complete instructions for that agent","owns":["path/or/area"]}],"synthesis":"how to merge the results"}
 ("role" is optional: coder = implementation (default), vision = UI/screenshot work,
 fast = trivial/mechanical, planner = architecture/review.
-"isolation" is optional: "worktree" = isolated git worktree (default for any task writing/editing files), "readonly" = read-only research/audit task.)
+"isolation" is optional: "worktree" = isolated git worktree (default for any task writing/editing files), "readonly" = read-only research/audit task.
+${swarmTools.TOOLS_PROMPT_HELP}{MCP})
 
 USER GOAL:
 {GOAL}`;
@@ -657,6 +661,13 @@ function boardTools(board, me, opts = {}) {
 
 // ---------- runner ----------
 
+// Names the connected MCP servers so the supervisor can hand one to the worker
+// that needs it ("mcp:<server>") instead of every worker carrying all of them.
+function mcpServersNote(mcpTools) {
+  const ids = [...new Set((Array.isArray(mcpTools) ? mcpTools : []).map((t) => swarmTools.mcpServerOf(t && t.name)).filter(Boolean))];
+  return ids.length ? ` Connected MCP servers: ${ids.join(', ')}.` : '';
+}
+
 // Decompose the goal with the supervisor. Returns { subtasks, synthesis } or null.
 async function decompose(opts) {
   const { runAgent, supervisor, roster, goal, emit = () => {}, maxTasks = 6 } = opts;
@@ -664,6 +675,7 @@ async function decompose(opts) {
   const prompt = SUPERVISOR_PLAN_PROMPT
     .replace('{MAX}', String(maxTasks))
     .replace('{ROSTER}', opts.rosterText || rosterSummary(roster))
+    .replace('{MCP}', mcpServersNote(opts.mcpTools))
     .replace('{GOAL}', goal);
   let text = '';
   try {
@@ -692,7 +704,11 @@ async function decompose(opts) {
 
 // Run the whole supervisor → workers → review loop.
 // opts: { goal, runAgent, provider, orchestrator, emit, tasks?, concurrency?,
-async function reconcileWorkerWorktrees(doneResults, rootCwd, emit) {
+// Bring each worker's worktree changes back into the user's folder. By default
+// they land as ordinary UNCOMMITTED edits (like Claude Code, which never commits
+// unless asked); the old behaviour — `git merge --no-ff` into the user's branch,
+// adding commits to their history — is opt-in via `autoCommit`.
+async function reconcileWorkerWorktrees(doneResults, rootCwd, emit, { autoCommit = false } = {}) {
   const out = { merged: [], conflicts: [] };
   const withWt = (doneResults || []).filter((r) => r && r.worktree && r.worktree.branch && r.worktree.path);
   if (!withWt.length) return out;
@@ -720,14 +736,28 @@ async function reconcileWorkerWorktrees(doneResults, rootCwd, emit) {
       continue;
     }
     try {
-      execFileSync('git', ['-c', 'user.name=Akron Swarm', '-c', 'user.email=swarm@akronlogic.com', 'merge', '--no-ff', '--no-edit', branch], {
-        cwd: gitRoot,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      if (autoCommit) {
+        execFileSync('git', ['-c', 'user.name=Akron Swarm', '-c', 'user.email=swarm@akronlogic.com', 'merge', '--no-ff', '--no-edit', branch], {
+          cwd: gitRoot,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } else {
+        // The worker's whole change as one patch, applied to the working tree
+        // only (no index, no commit). A failure falls through to the per-file
+        // fallback below, which also writes files without committing.
+        const patch = execFileSync('git', ['diff', '--binary', `HEAD...${branch}`], {
+          cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024,
+        });
+        if (patch && patch.length) {
+          execFileSync('git', ['apply', '--whitespace=nowarn'], { cwd: gitRoot, input: patch, stdio: ['pipe', 'pipe', 'pipe'] });
+        }
+      }
       r.worktree.merged = true;
       out.merged.push({ worker: r.name, branch, files: diffFiles.split(/\r?\n/).filter(Boolean) });
-      r.result = String(r.result || '').replace(/\n*\[Worktree preserved:[^\]]+\]/g, '') + `\n\n[Worktree merged into HEAD: branch=${branch}]`;
+      r.result = String(r.result || '').replace(/\n*\[Worktree preserved:[^\]]+\]/g, '') + (autoCommit
+        ? `\n\n[Worktree merged into HEAD: branch=${branch}]`
+        : `\n\n[Worktree changes applied to the workspace, not committed: branch=${branch}]`);
       try { execFileSync('git', ['worktree', 'remove', '--force', wtDir], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
       try { fs.rmSync(wtDir, { recursive: true, force: true }); } catch (_) {}
       try { execFileSync('git', ['worktree', 'prune'], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
@@ -736,7 +766,7 @@ async function reconcileWorkerWorktrees(doneResults, rootCwd, emit) {
         emit({ type: 'swarm', phase: 'worktree_merged', worker: r.name, branch, files: out.merged[out.merged.length - 1].files });
       }
     } catch (mergeErr) {
-      try { execFileSync('git', ['merge', '--abort'], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+      if (autoCommit) { try { execFileSync('git', ['merge', '--abort'], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {} }
       const errTxt = String((mergeErr && (mergeErr.stderr || mergeErr.message)) || mergeErr || '');
       const changedList = diffFiles.split(/\r?\n/).filter(Boolean);
       const alreadyMerged = new Set(out.merged.flatMap((m) => m.files || []));
@@ -973,6 +1003,7 @@ async function swarm(goal, opts = {}) {
   if (!plan) {
     plan = await decompose({
       runAgent: trackedRunAgent, supervisor, supervisorOrch, roster, rosterText, goal, emit,
+      mcpTools: opts.mcpTools,
       maxTasks: opts.maxTasks, maxSteps: opts.maxSteps, cwd: opts.cwd, signal: opts.signal,
     });
   }
@@ -1245,7 +1276,8 @@ async function swarm(goal, opts = {}) {
         worktreeInfo = { gitRoot, wtDir, wtBranch, baseHead };
       } catch (_) { worktreeInfo = null; }
     }
-    emit({ type: 'subagent', id: agentId, name, status: 'running', role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, round, worktree: worktreeInfo ? worktreeInfo.wtBranch : undefined });
+    const workerTools = swarmTools.resolveWorkerTools(task.tools, { mcpTools: opts.mcpTools, builtinToolNames: opts.builtinToolNames });
+    emit({ type: 'subagent', id: agentId, name, status: 'running', role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, round, worktree: worktreeInfo ? worktreeInfo.wtBranch : undefined, tools: workerTools.summary || undefined });
     try {
       if (workerAc.signal.aborted) throw new Error('aborted');
       armWorkerTimer();
@@ -1254,13 +1286,18 @@ async function swarm(goal, opts = {}) {
       const out = await trackedRunAgent({
         provider: p,
         orchestrator: task.chain || null,
-        messages: [{ role: 'user', content: workerPrompt(String(goal), task, { me: workerName, channel }) + (briefing ? '\n\n' + briefing : '') }],
+        // A subscription-CLI worker runs its own tool set and cannot reach the
+        // board tools; telling it to post only made it search for them.
+        messages: [{ role: 'user', content: workerPrompt(String(goal), task, cliRunner.isCliProvider(p) ? null : { me: workerName, channel }) + (briefing ? '\n\n' + briefing : '') }],
         maxSteps: opts.maxSteps || 0,
         timeoutMs: workerTimeoutMs,
         cwd: subCwd,
         signal: workerAc.signal,
         useMemory: opts.useMemory,
-        extraTools: bus.defs,
+        // The supervisor's per-task `tools` narrows what this worker is offered
+        // (and can hand it one MCP server); untagged workers keep the default.
+        extraTools: workerTools.extraTools.length ? bus.defs.concat(workerTools.extraTools) : bus.defs,
+        ...(workerTools.toolAllow ? { toolAllow: workerTools.toolAllow } : {}),
         localTools: bus.localTools,
         emit: (evt) => {
           if (!evt || evt.type === 'done') return;
@@ -1425,9 +1462,10 @@ async function swarm(goal, opts = {}) {
       const byName = new Map(results.filter(Boolean).map((r, i) => [r.name, i]));
       const redo = new Map();
       if (wave === 0 && board.messages.length > 0) {
-        for (const r of results) {
-          if (r && r.status === 'done' && !((board.member(r.name) || {}).posts)) redo.set(r.name, { reason: 'stall' });
-        }
+        results.forEach((r, i) => {
+          const cliWorker = tasks[i] && tasks[i].provider && cliRunner.isCliProvider(tasks[i].provider);
+          if (r && r.status === 'done' && !cliWorker && !((board.member(r.name) || {}).posts)) redo.set(r.name, { reason: 'stall' });
+        });
       }
       for (const [who] of byName) {
         if (redo.has(who)) continue;
@@ -1472,7 +1510,7 @@ async function swarm(goal, opts = {}) {
   if (opts.signal && opts.signal.aborted) throw new Error('aborted');
 
   const wtRecon = opts.autoMergeWorktrees !== false && !(opts.signal && opts.signal.aborted)
-    ? await reconcileWorkerWorktrees(done, opts.cwd, emit)
+    ? await reconcileWorkerWorktrees(done, opts.cwd, emit, { autoCommit: opts.swarmAutoCommit === true })
     : { merged: [], conflicts: [] };
 
   // ---- 3. Supervisor review / merge ----

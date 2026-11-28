@@ -6,6 +6,7 @@ const { spawn } = require('child_process');
 
 module.exports = function registerFeaturesIpc(ctx) {
   const {
+    runs,
     app, ipcMain, shell, dialog, BrowserWindow, session,
     store, workspace, mcp, mcpStatus, autoConnectMcp, shells, git, pluginsDir, scheduler, sandbox,
     secretstore, search, sessionDb, environments, depManager, updater, browser,
@@ -44,6 +45,19 @@ module.exports = function registerFeaturesIpc(ctx) {
     }
     return hydrateProvider(p);
   }
+
+// Runs still going in the main process. A window reload wipes the renderer's
+// run state while the run keeps working; the renderer re-attaches to these so
+// the reply still lands (and the queue does not start a second run on top).
+ipcMain.handle('autobot:activeRuns', () => {
+  const out = [];
+  if (runs && typeof runs.entries === 'function') {
+    for (const [runId, entry] of runs.entries()) {
+      if (entry && !entry.cancelled && entry.convId) out.push({ runId, convId: entry.convId });
+    }
+  }
+  return out;
+});
 
 ipcMain.handle('autobot:chatOnce', async (event, payload) => {
   try {

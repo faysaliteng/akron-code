@@ -75,7 +75,7 @@ const DEFAULT_GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_XAI_BASE = 'https://api.x.ai/v1';
 const DEFAULT_ZAI_CODING_BASE = 'https://api.z.ai/api/coding/paas/v4';
 const DEFAULT_ZAI_BASE = 'https://api.z.ai/api/paas/v4';
-const OFFICIAL_USER_AGENT = 'akron-code/1.6.9';
+const OFFICIAL_USER_AGENT = 'akron-code/' + (() => { try { return require('../package.json').version; } catch (_) { return '1.7.0'; } })(); // follows the release
 
 // Context windows + auto-compact budgets. Pure data module, no imports, so this
 // does not create a cycle (and survives asar packing).

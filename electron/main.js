@@ -120,7 +120,7 @@ protocol.registerSchemesAsPrivileged([{
   scheme: 'helio-extension',
   privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
 }]);
-const runs = new Map(); // runId -> AbortController
+const runs = new Map(); const earlyCancels = new Set(); // runId -> AbortController; Stop pressed before a run registered
 
 // ---------------------------------------------------------------------------
 // Single instance + deep links (Desktop's launcher.js parity)
@@ -137,7 +137,7 @@ if (process.env.AKRON_COLD_BOOT_CHECK === '1') {
   try { app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'akron-cb-'))); } catch (_) {}
 }
 
-const gotSingleInstance = app.requestSingleInstanceLock();
+const gotSingleInstance = app.requestSingleInstanceLock(); try { require('./keychain-policy').apply(app); } catch (_) {} // no login-password prompt per build (see keychain-policy.js)
 if (!gotSingleInstance && process.env.AKRON_COLD_BOOT_CHECK !== '1') app.quit();
 
 const PROTOCOL = 'helio';
@@ -263,11 +263,10 @@ const autoMcp = new Map(); // `${cwd}::${name}` -> serverId
 const autoMcpTried = new Set(); // `${cwd}::${name}` that already failed once
 
 async function autoConnectMcp(cwd) {
+  let feat = {}; // the server loop below reads it; scoped to the try it threw a ReferenceError
   try {
-    const feat = store.getFeatures ? store.getFeatures() : {};
-    if (!feat.reaDisabled) {
-      await rea.ensureConnected(mcp, { userDataDir: app.getPath('userData') }).catch(() => {});
-    }
+    feat = (store.getFeatures ? store.getFeatures() : {}) || {};
+    if (!feat.reaDisabled) await rea.ensureConnected(mcp, { userDataDir: app.getPath('userData') }).catch(() => {});
   } catch (_) {}
   try { await require('./paradev-client').ensureParadevMcpConnected(mcp).catch(() => {}); } catch (_) {}
   let cfg;
@@ -277,12 +276,12 @@ async function autoConnectMcp(cwd) {
     if (!e) return false;
     if (String(e.name || '') !== String(cCfg.name || '') || String(e.type || '') !== String(cCfg.transport || '')) return false;
     if (cCfg.url) return String(e.url || '') === String(cCfg.url);
-    return String(e.command || '') === String(cCfg.command || '')
-      && JSON.stringify(e.args || []) === JSON.stringify(cCfg.args || []);
+    return String((e.rawConfig || e).command || '') === String(cCfg.command || '')
+      && JSON.stringify((e.rawConfig || e).args || []) === JSON.stringify(cCfg.args || []);
   };
   for (const [name, def] of entries) {
     const key = `${cwd || ''}::${name}`;
-    if (autoMcp.has(key) || autoMcpTried.has(key)) continue;
+    if ((autoMcp.has(key) && !(mcp.servers.get(autoMcp.get(key)) || {}).exited) || autoMcpTried.has(key)) continue;
     if (!def || typeof def !== 'object') continue;
     // Skip servers the user disabled in the config (`"disabled": true`).
     if (def.disabled) continue;
@@ -388,7 +387,7 @@ const registerWindowsExtensionsIpc = require('./ipc/ipc-windows-extensions');
 const registerFeaturesIpc = require('./ipc/ipc-features');
 
 const cwdFor = (cwd) => cwd || store.getSettings().lastCwd || workspace.ROOT;
-const pendingComputerUseRef = { val: null };
+const pendingComputerUseRef = { waiters: new Map() }; // id -> {resolve, tier}: one per waiting run (a single slot let a 2nd chat orphan the 1st)
 const extHost = extensionhost.createExtensionHost();
 let winExtCtrl = null;
 let oauthCtrl = null;
@@ -802,12 +801,13 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   const slog = sessionlog.open(convId || 'scratch', turnId, { title });
   const runEntry = { ac, pauseCtrl, send: null, convId, cancelled: false };
   const send = (evt) => {
+    if (evt && evt.type === 'permissionMode' && evt.mode) runEntry.mode = evt.mode; // plan approval switches it mid-run
     if (runEntry.cancelled && evt && evt.type !== 'cancelled') return;
     if (owner && !owner.isDestroyed()) owner.webContents.send('autobot:event', { runId, convId, ...evt });
     slog.append(evt);
   };
   runEntry.send = send;
-  runs.set(runId, runEntry);
+  runs.set(runId, runEntry); if (earlyCancels.delete(runId)) { runEntry.cancelled = true; ac.abort(); }
   const emit = (evt) => send(evt);
 
   const deadNotice = poolDead.length ? poolDeadNotice(poolDead) : '';
@@ -824,9 +824,9 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     ? validateOrchestrator(orchInput, emit).catch(() => orchInput)
     : Promise.resolve(orchInput);
 
-  // gather MCP tools across connected servers + built-in Google Drive tools
+  const reaWanted = require('./rea-gate').isReaRequested(messages); // MCP tools + built-in Drive tools; REA dormant until asked for
   const extraTools = [];
-  const serverIds = [...mcp.servers.keys()];
+  const serverIds = [...mcp.servers.keys()].filter((id) => (id !== 'rea' || reaWanted) && !mcp.servers.get(id).exited);
   for (const sid of serverIds) {
     const entry = mcp.servers.get(sid);
     // entry.tools holds only names; we need descriptions/schemas — store full defs in connect
@@ -944,9 +944,9 @@ ipcMain.handle('autobot:run', async (event, payload) => {
         const want = sensitive ? 'full_control' : 'access';
         if (!computeruse.satisfies(st.grant, want)) {
           const granted = await new Promise((resolve) => {
-            const id = 'cu' + Date.now();
+            const id = 'cu' + Date.now() + Math.random().toString(36).slice(2, 6);
             let onAbort = null;
-            pendingComputerUseRef.val = {
+            pendingComputerUseRef.waiters.set(id, {
               id,
               resolve: (ok) => {
                 if (onAbort && ac && ac.signal) {
@@ -955,15 +955,14 @@ ipcMain.handle('autobot:run', async (event, payload) => {
                 resolve(ok);
               },
               tier: want,
-            };
+            });
             if (ac && ac.signal) {
               if (ac.signal.aborted) {
-                pendingComputerUseRef.val = null;
+                pendingComputerUseRef.waiters.delete(id);
                 return resolve(false);
               }
               onAbort = () => {
-                if (pendingComputerUseRef.val && pendingComputerUseRef.val.id === id) {
-                  pendingComputerUseRef.val = null;
+                if (pendingComputerUseRef.waiters.delete(id)) {
                   resolve(false);
                 }
               };
@@ -979,7 +978,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
         }
       }
     }
-    const mode = permissions || 'auto';
+    const mode = runEntry.mode || permissions || 'auto';
     // settings.json `permissions.allow/deny/ask` rules run BEFORE the mode, the
     // way Claude Code evaluates them: deny always wins (even in bypass), ask
     // forces a prompt, allow skips it.
@@ -1002,13 +1001,13 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       if (curFeat && curFeat.trustedFolders && runCwd && mode === 'ask') {
         if (/^(Read|Glob|Grep|LS|CodebaseSearch|NotebookRead)$/i.test(toolName)) return true;
         if (toolName === 'Bash' && toolArgs && (toolArgs.command || toolArgs.cmd)) {
-          require('./os-sandbox').checkCanonicalCommand(String(toolArgs.command || toolArgs.cmd), { protectCredentials: true });
-          return true;
+          const chk = require('./os-sandbox').checkCanonicalCommand(String(toolArgs.command || toolArgs.cmd), { protectCredentials: true });
+          if (chk && chk.ok) return true; // a flagged command still goes to the user
         }
       }
     } catch (_) {}
     if (mode === 'auto' || mode === 'bypass') return true;
-    if (mode === 'plan') return false;
+    if (mode === 'plan') return EDIT_TOOLS.has(toolName); // the plan gate already limited edits to the plan file
     if (mode === 'acceptEdits' && EDIT_TOOLS.has(toolName)) return true;
     return await promptPermission(toolName, toolArgs);
   };
@@ -1018,7 +1017,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
   try {
     const before = new Set(extraTools.map((t) => t.name));
     await autoConnectMcp(runCwd);
-    for (const sid of [...mcp.servers.keys()]) {
+    for (const sid of [...mcp.servers.keys()].filter((id) => (id !== 'rea' || reaWanted) && !mcp.servers.get(id).exited)) {
       const entry = mcp.servers.get(sid);
       for (const t of entry.fullTools || []) {
         const nm = `mcp__${sid}__${t.name}`;
@@ -1056,7 +1055,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       approveTool,
       // The 5-mode permission pill drives plan-mode enforcement inside the run
       // loop (read-only + plan file only), not just the approval prompts.
-      permissionMode: permissions || 'auto',
+      permissionMode: permissions || 'auto', planPrevMode: payload && payload.planPrevMode,
       planFile: 'PLAN.md',
       // Checkpoints need the conversation id + a stable turn key so a rewind can
       // restore exactly the files this turn touched.
@@ -1147,7 +1146,7 @@ ipcMain.handle('autobot:cancel', async (event, runId) => {
     if (entry && !entry.cancelled && typeof entry.send === 'function') entry.send({ type: 'cancelled', immediate: true });
     if (entry) { entry.cancelled = true; const ac = entry.ac || entry; if (ac && typeof ac.abort === 'function') ac.abort(); }
   }
-  if (!targets.length && runId) { permGate.clearRun(runId, 'cancelled'); questionGate.clearRun(runId, broadcast); }
+  if (!targets.length && runId && runId !== '__all__') { permGate.clearRun(runId, 'cancelled'); questionGate.clearRun(runId, broadcast); earlyCancels.add(runId); }
   return { ok: true, cancelledCount: targets.length };
 });
 
@@ -1289,7 +1288,7 @@ ipcMain.handle('autobot:openLegalDoc', (_e, which) => {
   return { ok: true, path: p };
 });
 
-registerFeaturesIpc({ app, ipcMain, shell, dialog, BrowserWindow, session, store, workspace, mcp, mcpStatus, autoConnectMcp, shells, git, pluginsDir, scheduler, sandbox, secretstore, search, sessionDb, environments, depManager, updater, browser, gdrive, runAgent, providertransport, providerOauth, permGate, questionGate, pendingQuestions, windows, winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix, getRuntimes: () => runtimesCtrl && runtimesCtrl.getRuntimes(), hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine, humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError });
+registerFeaturesIpc({ runs, app, ipcMain, shell, dialog, BrowserWindow, session, store, workspace, mcp, mcpStatus, autoConnectMcp, shells, git, pluginsDir, scheduler, sandbox, secretstore, search, sessionDb, environments, depManager, updater, browser, gdrive, runAgent, providertransport, providerOauth, permGate, questionGate, pendingQuestions, windows, winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix, getRuntimes: () => runtimesCtrl && runtimesCtrl.getRuntimes(), hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine, humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError });
 
 app.whenReady().then(() => {
   try { secretstore.migrateLegacySafeStorage(); } catch (_) {}

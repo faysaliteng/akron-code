@@ -556,10 +556,9 @@ ipcMain.handle('autobot:computerUseRequest', (e, tier) => computeruse.request(ti
 ipcMain.handle('autobot:computerUseGrant', (e, tier, opts) => {
   const res = computeruse.grant(tier, opts || {});
   computer.setEnabled(!!res.grant);
-  if (pendingComputerUseRef.val && computeruse.satisfies(res.grant, pendingComputerUseRef.val.tier)) {
-    const p = pendingComputerUseRef.val;
-    pendingComputerUseRef.val = null;
-    p.resolve(true);
+  // A grant is app-wide: release every waiting run it satisfies.
+  for (const [id, p] of [...pendingComputerUseRef.waiters]) {
+    if (computeruse.satisfies(res.grant, p.tier)) { pendingComputerUseRef.waiters.delete(id); p.resolve(true); }
   }
   broadcast({ type: 'computerUse', state: computeruse.status() });
   return res;
@@ -567,11 +566,7 @@ ipcMain.handle('autobot:computerUseGrant', (e, tier, opts) => {
 ipcMain.handle('autobot:computerUseRevoke', (e, tier) => {
   const res = computeruse.revoke(tier);
   computer.setEnabled(!!res.grant);
-  if (pendingComputerUseRef.val) {
-    const p = pendingComputerUseRef.val;
-    pendingComputerUseRef.val = null;
-    p.resolve(false);
-  }
+  for (const [id, p] of [...pendingComputerUseRef.waiters]) { pendingComputerUseRef.waiters.delete(id); p.resolve(false); }
   broadcast({ type: 'computerUse', state: computeruse.status() });
   return res;
 });

@@ -64,7 +64,8 @@ import { DocPreviewPane } from './components/chat/DocPreviewPane.jsx';
 import { InputBarBody } from './components/chat/InputBarView.jsx';
 import { SettingsModalBody } from './components/settings/SettingsModalBody.jsx';
 import { resolveAgainstCwd, isHtmlPath, attachDocumentLinkRouter } from './utils/linkAndFileHelpers.js';
-import { sendDesktopNotification, convToMarkdown, convToHtml, escapeHtml, fmtSize, extractCodeBlocks, filesToAttachments, toggleDictation, useDismiss, priceFor, FREELLM_LOOPBACK_BASES, MODEL_WINDOW_CACHE, HARNESS_PROFILES, SOUND_PRESETS, playUiSound, extractLinks, fetchUnfurl, parseCodeInfo, copyTextToClipboard, extractMessageText } from './utils/appHelpers.jsx';
+import { sendDesktopNotification, convToMarkdown, convToHtml, escapeHtml, fmtSize, extractCodeBlocks, filesToAttachments, toggleDictation, useDismiss, priceFor, FREELLM_LOOPBACK_BASES, MODEL_WINDOW_CACHE, HARNESS_PROFILES, SOUND_PRESETS, playUiSound, extractLinks, fetchUnfurl, parseCodeInfo, copyTextToClipboard, extractMessageText, clipTitle } from './utils/appHelpers.jsx';
+import { useReattachRuns, usePersistConvs } from './hooks/useAppResilience.js';
 import { extractPersistedSettings, mergeBootSettings, reconcileBootProvider, syncProviderForOrchestratorToggle, mergeBootUiState } from './utils/settingsPersistence.js';
 import { InteractiveTutorialModal, WelcomeQuickStartBar } from './components/InteractiveTutorialModal.jsx';
 import { TUTORIAL_SEEN_KEY, ORCH_SETUP_NOTICE, hasConfiguredOrchestratorModels, applyBeginnerPreset, shouldAutoOpenTutorial } from './utils/tutorialPresets.js';
@@ -263,9 +264,15 @@ export default function App() {
     const saved = loadJSON('autobot:queued', []);
     return Array.isArray(saved) ? saved : [];
   }); // messages typed while a reply streams
+  const queuedRef = useRef(queued);
+  queuedRef.current = queued;
   const [queuePausedByConv, setQueuePausedByConv] = useState(() => {
     const saved = loadJSON('autobot:queuePausedByConv', {});
-    return saved && typeof saved === 'object' ? saved : {};
+    const map = saved && typeof saved === 'object' ? { ...saved } : {};
+    // Messages still queued from a previous session wait for the user: they
+    // used to fire on their own at launch (or after a window reload).
+    for (const q of Array.isArray(queued) ? queued : []) if (q && q.convId) map[q.convId] = true;
+    return map;
   });
   useEffect(() => { saveJSON('autobot:queued', queued); }, [queued]);
   useEffect(() => { saveJSON('autobot:queuePausedByConv', queuePausedByConv); }, [queuePausedByConv]);
@@ -395,10 +402,17 @@ export default function App() {
     setPermError,
     setScrolledAway,
   });
+  useReattachRuns({ startSessionRun, runsByConvRef });
   const streamingRef = useRef(false);
   streamingRef.current = streaming;
   const [cuConsent, setCuConsent] = useState(null); // pending Computer Use consent { id, tier, tool, sensitive }
   const [planMode, setPlanMode] = useState(null); // active plan-mode banner { active, file }
+  // The banner follows run events; switching the mode by hand must clear it too.
+  // Also remember the last non-plan mode, so approving a plan returns to it.
+  const lastNonPlanPermRef = useRef(permissions && permissions !== 'plan' ? permissions : 'auto');
+  useEffect(() => {
+    if (permissions !== 'plan') { setPlanMode(null); lastNonPlanPermRef.current = permissions || 'auto'; }
+  }, [permissions]);
   const [activeSkillPill, setActiveSkillPill] = useState(null); // e.g. { id: 'automation', icon: 'Clock', label: 'automation', hint: '...' }
   const [gdriveModalOpen, setGdriveModalOpen] = useState(false);
   const [gdriveState, setGdriveState] = useState({ connected: false, mode: null, detectedLocalFolders: [] });
@@ -541,7 +555,7 @@ export default function App() {
   }, [openReview]);
 
   // persist
-  useEffect(() => { saveJSON('autobot:convs', convs); }, [convs]);
+  usePersistConvs(convs, setNotice);
   // One-time non-destructive sync of existing localStorage chats to SQLite WAL+FTS (~/.autobot/akron.db)
   // plus throttled incremental sync for instant full-text search across sessions.
   const dbMigratedRef = useRef(false);
@@ -571,7 +585,7 @@ export default function App() {
     cwdByConv, cwdByConvRef, getSessionBundle, activeProvider, activeOrchestrator, activeSwarmEnabled,
     activeCwd, reasoningLevel, setSessionProvider, setReasoningLevel, setSessionSwarmEnabled,
     setSessionCwd, saveSessionOrchestrator, setProviderFromSettings, saveOrchestratorFromSettings,
-    promoteDraftSessionConfig, resetDraftSessionConfig,
+    promoteDraftSessionConfig, resetDraftSessionConfig, cloneSessionConfig,
   } = usePerConvSessionState({
     activeId, activeIdRef, convs, convsRef, provider, setProvider, providerRef,
     orchestrator, orchRef, saveOrchestrator, swarmEnabled, swarmRef, cwd, setCwd, cwdRef,
@@ -888,7 +902,7 @@ export default function App() {
     setError('');
 
     let convId = targetConvId;
-    const autoTitle = text.slice(0, 48) || atts.map((a) => a.name).join(', ').slice(0, 48);
+    const autoTitle = clipTitle(text) || clipTitle(atts.map((a) => a.name).join(', '));
     const isNewConv = !convId;
     if (isNewConv) convId = uid();
     sendingLocksRef.current.add(convId);
@@ -969,7 +983,7 @@ export default function App() {
         cwd: runCwd || undefined,
         useMemory: settings.useMemory,
         orchestrator: sessOrch,
-        permissions,
+        permissions, planPrevMode: lastNonPlanPermRef.current,
         convId,
         title: convsRef.current.find((c) => c.id === convId)?.title || autoTitle,
         swarm: sessSwarm,
@@ -993,6 +1007,11 @@ export default function App() {
     if (cid) sendingLocksRef.current.delete(cid);
     if (window.autobot && window.autobot.cancel) window.autobot.cancel(run.runId);
     commitSessionLive(cid, run.runId);
+    // Stop means "stop": hold this chat's queued messages instead of starting
+    // the next one at once. The queue tray shows it paused with a resume control.
+    if (cid && (queuedRef.current || []).some((q) => q && q.convId === cid)) {
+      setQueuePausedByConv((m) => ({ ...m, [cid]: true }));
+    }
     setQueueWakeTick((t) => t + 1);
   }, [runsByConvRef, commitSessionLive]);
 
@@ -1186,10 +1205,12 @@ export default function App() {
 
   // Starting a new chat leaves background streaming runs untouched so multiple sessions run concurrently.
   const newChat = () => {
+    let seedCfg = null;
+    try { seedCfg = getSessionBundle(activeIdRef.current).cfg; } catch (_) { seedCfg = null; }
     setActiveId(null);
     setError('');
     setPanel('chats');
-    resetDraftSessionConfig(Boolean(settings && settings.autoSwitch && settings.autoSwitch.defaultForNewSessions));
+    resetDraftSessionConfig(Boolean(settings && settings.autoSwitch && settings.autoSwitch.defaultForNewSessions), seedCfg);
     inputRef.current?.focus();
   };
   const selectConv = (id) => { setActiveId(id); setPanel('chats'); };
@@ -1208,6 +1229,10 @@ export default function App() {
         return;
       }
     }
+    // A deleted chat must not keep an agent editing files out of sight, nor
+    // fire its queued messages into nowhere.
+    try { stop(id); } catch (_) {}
+    try { clearQueuedForConv(id); } catch (_) {}
     setConvs((cs) => cs.filter((c) => c.id !== id));
     setOpenTabIds((tabs) => {
       const next = tabs.filter((t) => t !== id);
@@ -1240,6 +1265,7 @@ export default function App() {
     if (!src) return;
     const copyId = uid();
     const copy = { ...src, id: copyId, title: (src.title || 'Untitled') + ' (split)', pinned: false, ts: Date.now() };
+    cloneSessionConfig(id, copyId);
     setConvs((cs) => [copy, ...cs]);
     setActiveId(copyId);
     setPanel('chats');
@@ -1290,6 +1316,7 @@ export default function App() {
       messages: sliced,
       forkedFrom: { convId, idx },
     };
+    cloneSessionConfig(convId, forkId);
     setConvs((cs) => [forkConv, ...cs]);
     setActiveId(forkId);
     setPanel('chats');
@@ -1395,7 +1422,7 @@ export default function App() {
     });
     const started = await window.autobot.run({
       runId, messages: payloadMessages, provider: effProvider,
-      cwd: runCwd || undefined, useMemory: settings.useMemory, orchestrator: sessOrch, permissions,
+      cwd: runCwd || undefined, useMemory: settings.useMemory, orchestrator: sessOrch, permissions, planPrevMode: lastNonPlanPermRef.current,
       convId, title: conv.title || '',
       swarm: sessSwarm,
     });
@@ -2425,7 +2452,7 @@ export default function App() {
       // No active conversation (e.g. /help on a fresh chat) — create one so the message is visible.
       const convId = uid();
       setActiveId(convId);
-      setConvs((cs) => [{ id: convId, title: (content.slice(0, 48) || 'Assistant'), messages: [msg], ts: Date.now() }, ...cs]);
+      setConvs((cs) => [{ id: convId, title: (clipTitle(content) || 'Assistant'), messages: [msg], ts: Date.now() }, ...cs]);
       return;
     }
     setConvs((cs) => cs.map((c) => (c.id === id ? { ...c, messages: [...c.messages, msg] } : c)));

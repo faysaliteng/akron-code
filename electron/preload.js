@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld('autobot', {
   // Subscription accounts (Claude Max / ChatGPT / Antigravity / Grok). Only
   // non-secret status crosses the bridge; tokens stay in the main process.
   providerStatus: () => ipcRenderer.invoke('autobot:providerStatus'),
+  activeRuns: () => ipcRenderer.invoke('autobot:activeRuns'),
   providerModels: (id) => ipcRenderer.invoke('autobot:providerModels', id),
   refreshModelCatalogs: () => ipcRenderer.invoke('autobot:refreshModelCatalogs'),
   providerSignIn: (id) => ipcRenderer.invoke('autobot:providerSignIn', id),
