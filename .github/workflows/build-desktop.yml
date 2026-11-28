@@ -38,7 +38,7 @@ jobs:
   package:
     needs: test
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    timeout-minutes: 30
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -50,8 +50,11 @@ jobs:
             platform: win
             cmd: npm run build && npx electron-builder --win --config.compression=normal --publish never
           - os: ubuntu-latest
-            platform: linux
-            cmd: npm run build && npx electron-builder --linux AppImage tar.gz --x64 --config.compression=normal --publish never && npx electron-builder --linux tar.gz --arm64 --config.compression=normal --publish never
+            platform: linux-x64
+            cmd: npm run build && npx electron-builder --linux AppImage tar.gz --x64 --config.compression=normal --publish never
+          - os: ubuntu-latest
+            platform: linux-arm64
+            cmd: npm run build && npx electron-builder --linux tar.gz --arm64 --config.compression=normal --publish never
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -102,13 +105,15 @@ jobs:
         run: |
           $unpacked = if (Test-Path "./release/win-unpacked") { "./release/win-unpacked" } else { "./release/win-arm64-unpacked" }
           $exe = Join-Path $unpacked "Akron Code.exe"
-          $asar = Join-Path $unpacked "resources/app.asar"
+          $resDir = Join-Path $unpacked "resources"
+          $asar = Join-Path $resDir "app.asar"
           $env:WIN_EXE = $exe
+          $env:WIN_RES = $resDir
           $env:WIN_ASAR = $asar
           npx --yes @electron/asar extract $asar ./release/_win_asar_check
           node -e "
           const { verifyBrandIntegrity } = require('./electron/brand-guard');
-          const res = verifyBrandIntegrity({ appRoot: './release/_win_asar_check' });
+          const res = verifyBrandIntegrity({ appRoot: './release/_win_asar_check', resourcesPath: process.env.WIN_RES });
           console.log('WIN_BRAND_CHECK:', JSON.stringify(res));
           if (!res.ok) process.exit(1);
           "
@@ -122,21 +127,37 @@ jobs:
           });
           "
 
-      - name: Verify ASAR Brand Seal & Headless Cold-Boot (Linux)
-        if: matrix.platform == 'linux'
+      - name: Verify Electron Fuses, ASAR Brand Seal & Headless Cold-Boot (Linux)
+        if: startsWith(matrix.platform, 'linux')
+        shell: bash
         run: |
-          npx --yes @electron/asar extract ./release/linux-unpacked/resources/app.asar ./release/_linux_asar_check
-          node -e "
+          UNPACKED_DIR="./release/linux-unpacked"
+          if [ ! -d "$UNPACKED_DIR" ]; then UNPACKED_DIR="./release/linux-arm64-unpacked"; fi
+          LINUX_BIN="$UNPACKED_DIR/akronbot" LINUX_RES="$UNPACKED_DIR/resources" node -e "
+          const { getCurrentFuseWire, FuseV1Options } = require('@electron/fuses');
+          getCurrentFuseWire(process.env.LINUX_BIN).then(w => {
+            const ok = w[FuseV1Options.RunAsNode]===48 && w[FuseV1Options.OnlyLoadAppFromAsar]===49 && w[FuseV1Options.EnableEmbeddedAsarIntegrityValidation]===49;
+            console.log('LINUX_FUSES_OK:', ok, w);
+            if (!ok) process.exit(1);
+          });
+          "
+          npx --yes @electron/asar extract "$UNPACKED_DIR/resources/app.asar" ./release/_linux_asar_check
+          LINUX_RES="$UNPACKED_DIR/resources" node -e "
           const { verifyBrandIntegrity } = require('./electron/brand-guard');
-          const res = verifyBrandIntegrity({ appRoot: './release/_linux_asar_check' });
+          const res = verifyBrandIntegrity({ appRoot: './release/_linux_asar_check', resourcesPath: process.env.LINUX_RES });
           console.log('LINUX_BRAND_CHECK:', JSON.stringify(res));
           if (!res.ok) process.exit(1);
           "
           rm -rf ./release/_linux_asar_check
-          if ! command -v xvfb-run >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y xvfb; fi
-          timeout 60 xvfb-run -a env AKRON_COLD_BOOT_CHECK=1 AKRON_NO_DIALOG=1 ./release/linux-unpacked/akronbot --no-sandbox --disable-gpu > /tmp/linux-cold-boot.log 2>&1 || true
-          cat /tmp/linux-cold-boot.log
-          grep -q 'COLD_BOOT_OK.*"ok":true' /tmp/linux-cold-boot.log
+          if [ "${{ matrix.platform }}" = "linux-x64" ]; then
+            if ! command -v xvfb-run >/dev/null 2>&1 || ldd "$UNPACKED_DIR/akronbot" | grep -q "not found"; then
+              sudo apt-get update
+              sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libgbm1 libasound2t64 || sudo apt-get install -y xvfb libgtk-3-0 libnss3 libgbm1 libasound2
+            fi
+            timeout 60 xvfb-run -a env AKRON_COLD_BOOT_CHECK=1 AKRON_NO_DIALOG=1 "$UNPACKED_DIR/akronbot" --no-sandbox --disable-gpu > /tmp/linux-cold-boot.log 2>&1 || true
+            cat /tmp/linux-cold-boot.log
+            grep -q 'COLD_BOOT_OK.*"ok":true' /tmp/linux-cold-boot.log
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: akron-code-${{ matrix.platform }}
