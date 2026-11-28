@@ -675,7 +675,10 @@ function buildCliInvocation(kind, provider, prompt, systemPrompt, opts = {}) {
     else if (perm === 'plan') args.push('--mode', 'plan');
     else if (perm === 'acceptedits') args.push('--mode', 'accept-edits');
     const rl = String((provider && provider.reasoningLevel) || '').toLowerCase();
-    if (['low', 'medium', 'high', 'xhigh', 'max'].includes(rl) && !/orchestrator/i.test(agyModel)) {
+    // agy slugs like `claude-opus-5-5-low` already carry the effort, and agy
+    // rejects `--effort` next to them ("conflicts with --effort").
+    if (['low', 'medium', 'high', 'xhigh', 'max'].includes(rl) && !/orchestrator/i.test(agyModel)
+      && !/-(?:low|medium|high|xhigh|max)$/i.test(agyModel)) {
       args.push('--effort', rl);
     }
     return args;
@@ -1080,6 +1083,25 @@ async function selfHealOutdatedCli(resolved, { runtimes = null, selfHealUpdate =
 const WARM_POOL_TTL_MS = Number(process.env.AKRON_WARM_CLI_TTL_MS) || 10 * 60 * 1000;
 const _warmPool = new Map(); // poolKey -> entry
 const _warmPoolFlights = new Map();
+
+// What the last finished turn ran (folder + model, never credentials), so the
+// next launch can pre-start that exact CLI instead of one in "/" nobody uses.
+const WARM_HINT_FILE = path.join(os.homedir(), '.autobot', 'warm-hint.json');
+function writeWarmHint(kind, provider, cwd, permissions) {
+  if (process.env.NODE_TEST_CONTEXT) return;
+  try {
+    const hint = { kind, model: String((provider && provider.model) || ''), reasoningLevel: String((provider && provider.reasoningLevel) || ''), cwd: path.resolve(String(cwd || '')), permissions: String(permissions || 'auto'), at: Date.now() };
+    fs.mkdirSync(path.dirname(WARM_HINT_FILE), { recursive: true });
+    fs.writeFileSync(WARM_HINT_FILE, JSON.stringify(hint));
+  } catch (_) {}
+}
+function readWarmHint(file = WARM_HINT_FILE) {
+  try {
+    const h = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!h || !h.kind || !h.cwd || !fs.existsSync(h.cwd)) return null;
+    return h;
+  } catch (_) { return null; }
+}
 
 function buildCliRuntimeEnv(kind, binBase, provider = {}) {
   const env = { ...process.env };
@@ -1584,6 +1606,7 @@ async function runCliTurn({
       emit({ type: 'done_usage', usage: state.usage, model: state.model });
       if (!omitModel && (!spawnImpl || forceWarmPool === true)) {
         const wTimer = setImmediate(() => {
+          if (!spawnImpl) writeWarmHint(resolved.kind, provider, cwd, permissions);
           warmCliWorker(provider, { cwd, permissions, runtimes, resolveBin, userRuntimesDir, spawnImpl, forceWarmPool }).catch(() => {});
         });
         if (wTimer && typeof wTimer.unref === 'function') wTimer.unref();
@@ -1791,6 +1814,8 @@ async function runCliTurn({
       return runOnce(false, resolved.bin);
     }
     if (err && err._canRetryWithoutModel) {
+      // Say so: the reply now comes from the CLI's default model, not the one picked.
+      try { emit({ type: 'notice', text: `${resolved.kind} rejected model "${(provider && provider.model) || ''}" — answering with the CLI's default model.` }); } catch (_) {}
       return runOnce(true);
     }
     throw err;
@@ -1981,6 +2006,7 @@ module.exports = {
   writeIsolatedMcpConfigFile,
   selectMcpServersForPrompt,
   warmCliWorker,
+  readWarmHint,
   clearWarmCliPool,
   getWarmCliPoolStats,
   isOutdatedCliError,

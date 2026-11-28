@@ -419,3 +419,13 @@ test('keychain policy: no login/keyring prompt on builds the OS cannot remember'
   assert.strictEqual(x.r.keychain, 'os-default'); assert.deepStrictEqual(x.sw, []);
   assert.strictEqual(kp.bundlePathOf('/Applications/Akron Code.app/Contents/MacOS/Akron Code'), '/Applications/Akron Code.app');
 });
+
+test('agy: no --effort next to a model slug that already carries the effort', () => {
+  const cr = require('../electron/cli-runner');
+  const bin = '/x/agy';
+  const withSuffix = cr.buildCliInvocation('antigravity', { model: 'claude-opus-5-5-low', reasoningLevel: 'high' }, 'hi', '', { cwd: '/tmp', bin });
+  assert.ok(withSuffix.includes('claude-opus-5-5-low'));
+  assert.ok(!withSuffix.includes('--effort'), withSuffix.join(' '));
+  const bare = cr.buildCliInvocation('antigravity', { model: 'gemini-pro-orchestrator', reasoningLevel: 'high' }, 'hi', '', { cwd: '/tmp', bin });
+  assert.ok(!bare.includes('--effort'));
+});

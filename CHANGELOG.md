@@ -9,10 +9,12 @@ All notable changes to **Akron Code** are documented here.
 - CLI turns end on the model's final answer instead of waiting for the CLI to exit (Claude CLI spent 2–3.5 s writing a post-turn summary) (`electron/cli-runner.js`).
 - MCP servers and plugins only start for a CLI turn when your message names them; REA stays dormant until asked for (`electron/rea-gate.js`).
 - Warm CLI workers stay ready for 10 minutes instead of 90 seconds; out-of-credit accounts are skipped account-wide instead of per model (`electron/provider-gate.js`).
+- **Antigravity models with the effort in their name (e.g. `claude-opus-5-5-low`) ran twice per message.** Akron also passed `--effort`, agy rejected the pair, and Akron retried without a model — so the reply came from agy's default model, ~2.5 s later, and never from a warm worker. The flag is no longer sent for those models, and a model rejection now says so in the chat.
+- **Pre-warm while you type:** on your first keystroke Akron starts the CLI the last turn used, in this chat's folder, so it is loaded when you press Enter. At launch it pre-starts that same CLI instead of four CLIs in `/` that no turn could use (first reply after launch: 17 s → 3 s).
 - The packaged app drops ~110 MB of UI libraries that Vite already bundles (Monaco, Mermaid), which speeds the first launch of each new build.
 
 ### Subscription models (Claude, Gemini/Antigravity, Codex, Grok)
-- **Swarm now works with subscription CLI models**: Akron starts the Swarm itself for large or explicitly parallel tasks (supervisor plans, workers run in parallel worktrees, supervisor merges).
+- **Swarm now works with subscription CLI models**: Akron starts the Swarm itself for medium-to-large or explicitly parallel tasks (say "use swarm" to force it) (supervisor plans, workers run in parallel worktrees, supervisor merges).
 - **Plan mode works end to end**: the CLI model's plan goes to the approval card; approving switches back to your previous mode and implements it. The run's live mode is honoured when approving tools after plan approval.
 - HTML/SVG files written by CLI models open in Akron's preview; Claude CLI no longer publishes them to claude.ai.
 - The Swarm supervisor can give each worker only the tools it needs (`electron/swarm-tools.js`).

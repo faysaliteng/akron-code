@@ -10,6 +10,17 @@ import { ModelPickerPopover } from './ModelPickerPopover.jsx';
 import { PRESETS, PRESET_KEYS, resolveLoopbackKey, STYLES, REASON_LEVELS, REASON_LABELS, MODEL_CAPABILITY_CACHE, thinkingCapabilitiesForUi, contextWindowFor, resolveEffectiveContextWindow, loadJSON, saveJSON, useDismiss, toggleDictation, filesToAttachments, uid, ProvNotice, fmtInt, MODEL_WINDOW_CACHE, usedTokens } from '../../utils/appHelpers.jsx';
 import { guardOrchestratorAction } from '../../utils/tutorialPresets.js';
 
+// Start the likely CLI while the user is still typing, so it is loaded by the
+// time they press Enter. At most once a minute per folder.
+let lastPrewarm = { at: 0, key: '' };
+function prewarmCli(cwd, permissions) {
+  const key = String(cwd || '') + '|' + String(permissions || '');
+  const now = Date.now();
+  if (key === lastPrewarm.key && now - lastPrewarm.at < 60000) return;
+  lastPrewarm = { at: now, key };
+  try { if (window.autobot && window.autobot.prewarmCli) window.autobot.prewarmCli({ cwd, permissions }).catch(() => {}); } catch (_) {}
+}
+
 export function InputBarBody({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, orchestrator, setOrchestrator, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, onOpenTutorial, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, customStyles = [], customAgents = [], onOpenCustomizations, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, queuePaused, onToggleQueuePaused, onClearQueue, onToggleQueueItemPaused, onReorderQueue, onStepQueueItem, onUpdateQueueItemText, unqueue, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, activeSkillPill, onClearSkillPill, T }) {
   const [reasonOpen, setReasonOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -1494,7 +1505,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
           placeholder={T('composer.placeholder')}
           onFocus={() => refreshSlashActions()}
           onKeyDown={onKey}
-          onInput={(e) => syncInputState(e.target.value)}
+          onInput={(e) => { syncInputState(e.target.value); if (e.target.value) prewarmCli(cwd, permissions); }}
           onPaste={onPasteFiles}
         />
         <div className="composer-foot">

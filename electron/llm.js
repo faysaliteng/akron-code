@@ -2250,7 +2250,7 @@ async function runAgent(opts) {
     if (!big) {
       try {
         const sc = taskRouter.scorePromptComplexity(lastUserFastText, messages);
-        big = Boolean(sc && Number(sc.complexity) >= 4);
+        big = Boolean(sc && Number(sc.complexity) >= 3);
       } catch (_) {}
     }
     if (big) hostSwarmGoal = lastUserFastText.trim();

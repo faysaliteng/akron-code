@@ -172,9 +172,9 @@ async function hydrateProvider(provider) {
   }
   if (!process.env.NODE_TEST_CONTEXT && process.env.AKRON_NO_DIALOG !== '1') {
     const wt = setImmediate(() => {
-      if (out.cliMode && cliRunner && typeof cliRunner.warmCliWorker === 'function') {
-        cliRunner.warmCliWorker(out).catch(() => {});
-      } else if (!out.cliMode && out.baseURL && providertransport && typeof providertransport.warmHttpEndpoint === 'function') {
+      // CLI workers are pre-started after each turn (and at launch from the
+      // last turn's folder): one started here would sit in "/" unused.
+      if (!out.cliMode && out.baseURL && providertransport && typeof providertransport.warmHttpEndpoint === 'function') {
         providertransport.warmHttpEndpoint(out.baseURL);
       }
     });
@@ -620,6 +620,23 @@ function healSavedOrchestratorAndSettings() {
   return { changed };
 }
 
+// Pre-start the CLI the last turn used, in its folder (or in `cwd` when the
+// user starts typing in another one), so the next reply skips CLI start-up.
+// Claude, agy and Codex keep their own sign-in, so a bare row is enough for them.
+const HINT_WARMABLE = ['claude', 'antigravity', 'chatgpt'];
+function warmFromHint(hp, { cwd = '', permissions = '' } = {}) {
+  try {
+    const hint = typeof cliRunner.readWarmHint === 'function' ? cliRunner.readWarmHint() : null;
+    if (!hint) return false;
+    const sameKind = hp && hp.cliMode && cliRunner.providerKind(hp) === hint.kind;
+    const base = sameKind ? hp : (HINT_WARMABLE.includes(hint.kind) ? { oauthProvider: hint.kind, cliMode: true, transport: 'cli' } : null);
+    if (!base) return false;
+    const dir = cwd && fs.existsSync(cwd) ? cwd : hint.cwd;
+    cliRunner.warmCliWorker({ ...base, model: hint.model || base.model, reasoningLevel: hint.reasoningLevel || base.reasoningLevel }, { cwd: dir, permissions: permissions || hint.permissions }).catch(() => {});
+    return true;
+  } catch (_) { return false; }
+}
+
 async function warmModelCatalogs() {
   await warmOpenRouterContextMetadata(false).catch(() => {});
   if (providerOauth && typeof providerOauth.syncCliAccounts === 'function') {
@@ -643,11 +660,13 @@ async function warmModelCatalogs() {
       const activeP = s.provider;
       if (activeP && (activeP.oauthProvider || activeP.transport === 'cli')) {
         const hp = await hydrateProvider(activeP).catch(() => null);
-        if (hp && hp.cliMode) cliRunner.warmCliWorker(hp).catch(() => {});
+        warmFromHint(hp);
       }
     } catch (_) {}
   }
 }
+
+ipcMain.handle('autobot:prewarmCli', (_e, o = {}) => warmFromHint(null, { cwd: String((o && o.cwd) || ''), permissions: String((o && o.permissions) || '') }));
 
 ipcMain.handle('autobot:providerModels', async (event, id) => {
   try {
