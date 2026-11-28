@@ -9,6 +9,7 @@ const path = require('node:path');
 const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'autobot-copilot-test-'));
 process.env.AUTOBOT_HOME = TMP_HOME;
 process.env.AKRON_NO_DIALOG = '1';
+process.env.AKRON_ISOLATE_RUNTIMES = '1';
 
 const providerOauth = require('../electron/provider-oauth');
 const cliRunner = require('../electron/cli-runner');
@@ -215,6 +216,7 @@ rl.on('line', (line) => {
   assert.equal(res.usage.total_tokens, 16);
   assert.ok(deltas.some((d) => d.isThinking === true && d.txt === 'thinking...'));
   assert.ok(deltas.some((d) => d.isThinking === false && d.txt === 'COPILOT_ACP_OK'));
+  await new Promise((r) => setImmediate(r));
   cliRunner.clearWarmCliPool();
 });
 
@@ -230,7 +232,7 @@ test('oauth:startCliLogin for copilot extracts github device URL & 8-char code',
   const mockLoginBin = path.join(TMP_HOME, 'mock-copilot-login');
   fs.writeFileSync(mockLoginBin, `#!/usr/bin/env node
 console.log('To authenticate, visit https://github.com/login/device and enter code 1FA2-BB14');
-setTimeout(() => {}, 5000);
+setTimeout(() => {}, 1500);
 `);
   fs.chmodSync(mockLoginBin, 0o755);
 

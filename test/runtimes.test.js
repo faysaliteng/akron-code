@@ -239,9 +239,9 @@ function startRegistry() {
     res.writeHead(200, { 'content-type': 'text/plain' });
     const sum = badCopilotSum ? '0'.repeat(64) : COPILOT_SHA256;
     res.end([
-      'a'.repeat(64) + '  copilot-linux-x64.tar.gz',
+      'a'.repeat(64) + '  copilot-other-x64.tar.gz',
       sum + '  ./' + copilotAssetName,
-      'b'.repeat(64) + '  copilot-win32-x64.zip',
+      'b'.repeat(64) + '  copilot-other-arm64.zip',
     ].join('\n') + '\n');
   });
   let base = () => '';

@@ -374,14 +374,28 @@ check('ModelPickerPopover pins Orchestrator Mode at top before subscriptions & i
 acheck('resolveCliBinary prefers bundled antigravity-cli agy over stale userData gemini-cli', async () => {
   const rtDir = path.join(TMP, 'stale-user-runtimes');
   const legacyBinDir = path.join(rtDir, 'gemini-cli', 'v1', 'bin');
+  const agyBundleDir = path.join(TMP, 'bundled-runtimes', 'antigravity-cli', 'bin');
   fs.mkdirSync(legacyBinDir, { recursive: true });
+  fs.mkdirSync(agyBundleDir, { recursive: true });
   const fakeGem = path.join(legacyBinDir, process.platform === 'win32' ? 'gemini.exe' : 'gemini');
+  const fakeAgy = path.join(agyBundleDir, process.platform === 'win32' ? 'agy.exe' : 'agy');
   fs.writeFileSync(fakeGem, '#!/bin/sh\necho 0.0.1\n', { mode: 0o755 });
+  fs.writeFileSync(fakeAgy, '#!/bin/sh\necho 1.5.19\n', { mode: 0o755 });
   fs.symlinkSync('v1', path.join(rtDir, 'gemini-cli', 'current'));
 
   const res = await cliRunner.resolveCliBinary(
     { oauthProvider: 'antigravity:gemini', cliBin: fakeGem },
-    { userRuntimesDir: rtDir, bypassCache: true }
+    {
+      userRuntimesDir: rtDir,
+      bypassCache: true,
+      runtimes: {
+        resolve: async (cid) => {
+          if (cid === 'antigravity-cli') return { source: 'bundled', bin: fakeAgy, version: '1.5.19' };
+          if (cid === 'gemini-cli') return { source: 'installed', bin: fakeGem, version: '0.0.1' };
+          return { source: 'missing', bin: '' };
+        },
+      },
+    }
   );
   assert.ok(res && res.bin, 'expected resolved binary');
   assert.ok(path.basename(res.bin).toLowerCase().startsWith('agy'), `expected agy to win over stale gemini, got: ${res.bin}`);
