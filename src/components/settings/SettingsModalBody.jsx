@@ -357,6 +357,10 @@ export function SettingsModalBody({
                 )}
 
                 <div className="settings-card">
+                  <AccountSection T={T} provider={provider} setProvider={setProvider} />
+                </div>
+
+                <div className="settings-card">
                   <h3>{T('settings.provider')}</h3>
                   <div className="presets">
                     {PRESETS.map((p) => (
@@ -423,10 +427,6 @@ export function SettingsModalBody({
                       Configure →
                     </button>
                   </div>
-                </div>
-
-                <div className="settings-card">
-                  <AccountSection T={T} provider={provider} setProvider={setProvider} />
                 </div>
               </>
             )}

@@ -42,20 +42,20 @@ const PROVIDERS = {
     allowBearer: true,
     bearerBaseURL: 'https://api.anthropic.com',
     models: [
-      { id: 'claude-fable-5-2', label: 'Fable 5.2' },
-      { id: 'claude-haiku-5-5', label: 'Haiku 5.5' },
-      { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
-      { id: 'claude-opus-5-5', label: 'Opus 5.5' },
-      { id: 'claude-fable-5-1', label: 'Fable 5.1' },
-      { id: 'claude-opus-5', label: 'Opus 5' },
-      { id: 'claude-sonnet-5', label: 'Sonnet 5' },
-      { id: 'claude-fable-5', label: 'Fable 5' },
-      { id: 'claude-opus-4-8', label: 'Opus 4.8' },
-      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-      { id: 'claude-opus-4-6', label: 'Opus 4.6' },
-      { id: 'claude-opus-4-5-20251101', label: 'Opus 4.5' },
-      { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
-      { id: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5' },
+      { id: 'claude-fable-5-2', label: 'Fable 5.2', contextWindow: 1000000, thinking: true },
+      { id: 'claude-haiku-5-5', label: 'Haiku 5.5', contextWindow: 1000000, thinking: true },
+      { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', contextWindow: 1000000, thinking: true },
+      { id: 'claude-opus-5-5', label: 'Opus 5.5', contextWindow: 1000000, thinking: true },
+      { id: 'claude-fable-5-1', label: 'Fable 5.1', contextWindow: 1000000, thinking: true },
+      { id: 'claude-opus-5', label: 'Opus 5', contextWindow: 1000000, thinking: true },
+      { id: 'claude-sonnet-5', label: 'Sonnet 5', contextWindow: 1000000, thinking: true },
+      { id: 'claude-fable-5', label: 'Fable 5', contextWindow: 1000000, thinking: true },
+      { id: 'claude-opus-4-8', label: 'Opus 4.8', contextWindow: 1000000, thinking: true },
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', contextWindow: 1000000, thinking: true },
+      { id: 'claude-opus-4-6', label: 'Opus 4.6', contextWindow: 1000000, thinking: true },
+      { id: 'claude-opus-4-5-20251101', label: 'Opus 4.5', contextWindow: 1000000, thinking: true },
+      { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', contextWindow: 200000, thinking: true },
+      { id: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5', contextWindow: 1000000, thinking: true },
     ],
     docs: 'https://docs.anthropic.com/en/docs/claude-code',
   },
@@ -73,10 +73,11 @@ const PROVIDERS = {
     allowBearer: true,
     bearerBaseURL: 'https://api.openai.com/v1',
     models: [
-      { id: 'gpt-5-4', label: 'GPT-5.4' },
-      { id: 'gpt-5', label: 'GPT-5' },
-      { id: 'o3', label: 'OpenAI o3' },
-      { id: 'codex-auto-review', label: 'Codex Auto Review' },
+      { id: 'gpt-5-4', label: 'GPT-5.4', contextWindow: 1000000, thinking: true },
+      { id: 'gpt-5.4', label: 'GPT-5.4 (1M)', contextWindow: 1000000, thinking: true },
+      { id: 'gpt-5', label: 'GPT-5', contextWindow: 400000, thinking: true },
+      { id: 'o3', label: 'OpenAI o3', contextWindow: 200000, thinking: true },
+      { id: 'codex-auto-review', label: 'Codex Auto Review', contextWindow: 400000, thinking: true },
     ],
     docs: 'https://developers.openai.com/codex',
   },
@@ -113,19 +114,67 @@ const PROVIDERS = {
     transport: 'cli',
     cliId: 'grok',
     bin: 'grok',
-    authLoginArgs: ['login', '--oauth'],
+    authLoginArgs: ['login'],
     authStatusArgs: ['models'],
     authLogoutArgs: ['logout'],
     allowBearer: true,
     bearerBaseURL: 'https://api.x.ai/v1',
     models: [
-      { id: 'grok-build', label: 'Grok Build (Default)', contextWindow: 256000 },
-      { id: 'grok-4.5', label: 'Grok 4.5' },
-      { id: 'grok-4', label: 'Grok 4' },
-      { id: 'grok-4-fast', label: 'Grok 4 Fast' },
-      { id: 'grok-code-fast-1', label: 'Grok Code Fast' },
+      { id: 'grok-4.7', label: 'Grok 4.7', contextWindow: 1000000, thinking: true },
+      { id: 'grok-4.7-build-fast', label: 'Grok 4.7 Build Fast', contextWindow: 2000000, thinking: true },
+      { id: 'grok-4.6', label: 'Grok 4.6', contextWindow: 1000000, thinking: true },
+      { id: 'grok-4.5', label: 'Grok 4.5', contextWindow: 1000000, thinking: true },
+      { id: 'grok-build', label: 'Grok Build', contextWindow: 256000, thinking: true },
+      { id: 'grok-4', label: 'Grok 4', contextWindow: 256000, thinking: true },
+      { id: 'grok-4-fast', label: 'Grok 4 Fast', contextWindow: 2000000, thinking: true },
+      { id: 'grok-code-fast-1', label: 'Grok Code Fast', contextWindow: 2000000, thinking: true },
     ],
     docs: 'https://docs.x.ai/docs',
+  },
+  kimi: {
+    id: 'kimi',
+    label: 'Kimi K3 (Kimi Code)',
+    vendor: 'Moonshot AI',
+    kind: 'cli',
+    transport: 'cli',
+    cliId: 'kimi-code',
+    bin: 'kimi',
+    authLoginArgs: ['login'],
+    authStatusArgs: ['provider', 'list', '--json'],
+    authLogoutArgs: ['provider', 'remove', 'kimi-code'],
+    allowBearer: true,
+    bearerBaseURL: 'https://api.moonshot.ai/v1',
+    models: [
+      { id: 'kimi-k3.1-pro', label: 'Kimi K3.1 Pro', contextWindow: 1048576, thinking: true },
+      { id: 'kimi-k3', label: 'Kimi K3', contextWindow: 1048576, thinking: true },
+      { id: 'kimi-k3.1-pro-highspeed', label: 'Kimi K3.1 Pro Highspeed', contextWindow: 1048576, thinking: true },
+      { id: 'kimi-k2.6', label: 'Kimi K2.6', contextWindow: 256000, thinking: true },
+      { id: 'kimi-k2.5', label: 'Kimi K2.5', contextWindow: 256000, thinking: true },
+    ],
+    docs: 'https://moonshotai.github.io/kimi-code/',
+  },
+  zai: {
+    id: 'zai',
+    label: 'Z.ai (GLM Coding Plan)',
+    vendor: 'Z.ai',
+    kind: 'coding-plan',
+    transport: 'zai',
+    cliId: 'zcode',
+    bin: 'zcode',
+    authLoginArgs: ['login'],
+    authStatusArgs: ['--version'],
+    authLogoutArgs: ['logout'],
+    allowBearer: true,
+    bearerBaseURL: 'https://api.z.ai/api/coding/paas/v4',
+    standardBaseURL: 'https://api.z.ai/api/paas/v4',
+    models: [
+      { id: 'glm-5.4', label: 'GLM-5.4 (Coding Plan)', contextWindow: 1000000, thinking: true },
+      { id: 'glm-5.3', label: 'GLM-5.3 (Coding Plan)', contextWindow: 1000000, thinking: true },
+      { id: 'glm-5.3-flash', label: 'GLM-5.3 Flash (Coding Plan)', contextWindow: 1000000, thinking: true },
+      { id: 'glm-5', label: 'GLM-5', contextWindow: 1000000, thinking: true },
+      { id: 'glm-4.7', label: 'GLM-4.7', contextWindow: 200000, thinking: true },
+    ],
+    docs: 'https://z.ai/manage-apikey/apikey-list',
   },
 };
 
@@ -137,6 +186,12 @@ const ALIAS_MAP = {
   agy: 'antigravity',
   xai: 'grok',
   anthropic: 'claude',
+  moonshot: 'kimi',
+  'kimi-code': 'kimi',
+  zhipu: 'zai',
+  glm: 'zai',
+  'zai-coding': 'zai',
+  zcode: 'zai',
 };
 
 function providerIds() {
@@ -279,12 +334,15 @@ async function addBearer(id, key, opts = {}) {
   if (!p) throw new Error(`unknown provider: ${id}`);
   const cleanKey = String(key || '').trim();
   if (!cleanKey) throw new Error('API key is required');
-  const account = slug(rest.join(':') || opts.account || 'api-key');
+  const account = slug(rest.join(':') || opts.account || (p.id === 'zai' ? 'coding-plan' : 'api-key'));
   secretstore.set(slotKey(p.id, account), cleanKey);
+  if (p.id === 'zai') {
+    try { secretstore.set('autobot.orch_api_key.zai_coding', cleanKey); } catch (_) {}
+  }
   return addAccount(p.id, {
     account,
-    label: opts.label || `${p.label} API Key`,
-    plan: 'API Key',
+    label: opts.label || (p.id === 'zai' ? 'Z.ai Coding Plan Key' : `${p.label} API Key`),
+    plan: p.id === 'zai' ? 'Coding Plan' : 'API Key',
     source: 'api-key',
   });
 }
@@ -313,6 +371,7 @@ function listAccounts() {
 
 function status() {
   const db = readDb();
+  const zcodeInstalled = Boolean(cliRunner.detectZcodeCli && cliRunner.detectZcodeCli());
   const providers = providerIds().map((pid) => {
     const p = PROVIDERS[pid];
     const accts = db.accounts.filter((a) => a && a.provider === pid).map((a) => publicRecord(a, pid));
@@ -323,6 +382,9 @@ function status() {
       kind: p.kind,
       transport: p.transport,
       allowBearer: !!p.allowBearer,
+      canPasteKey: !!p.allowBearer,
+      canCliSignIn: p.kind === 'cli' || (p.id === 'zai' && zcodeInstalled),
+      zcodeInstalled: p.id === 'zai' ? zcodeInstalled : undefined,
       cliId: p.cliId,
       bin: p.bin,
       accounts: accts,
@@ -354,7 +416,7 @@ async function resolveCliPathForProvider(prov, opts = {}) {
   if (typeof opts.resolveBin === 'function') {
     return (await opts.resolveBin(prov.id, bins)) || '';
   }
-  const r = await cliRunner.resolveCliBinary({ cliId: prov.cliId, cliBin: prov.bin }, opts);
+  const r = await cliRunner.resolveCliBinary({ cliKind: prov.id, cliId: prov.cliId, cliBin: prov.bin }, opts);
   if (r && r.bin && fs.existsSync(r.bin)) return r.bin;
   for (const b of bins) {
     const hit = cliRunner.whichOnPath(b);
@@ -366,6 +428,25 @@ async function resolveCliPathForProvider(prov, opts = {}) {
 async function probeCliAuthStatus(provId, opts = {}) {
   const p = provider(provId);
   if (!p) return { ok: false, loggedIn: false, error: `unknown provider ${provId}` };
+
+  if (p.id === 'zai') {
+    const zcodeBin = await resolveCliPathForProvider(p, opts);
+    if (zcodeBin) {
+      const execFn = opts.execCli || execCli;
+      const res = await execFn(zcodeBin, p.authStatusArgs || ['--version'], opts);
+      const raw = `${res.stdout}\n${res.stderr}`.trim();
+      const loggedIn = res.ok && !/not logged in|login required|unauthorized/i.test(raw);
+      return { ok: true, bin: zcodeBin, loggedIn, account: 'zcode-cli', label: 'Z.ai zcode CLI', plan: 'Coding Plan' };
+    }
+    try {
+      const key = secretstore.get('autobot.orch_api_key.zai_coding') || secretstore.get('ZAI_CODING_API_KEY') || '';
+      if (key && String(key).trim()) {
+        return { ok: true, bin: '', loggedIn: true, account: 'coding-plan', label: 'Z.ai Coding Plan', plan: 'Coding Plan', source: 'api-key' };
+      }
+    } catch (_) {}
+    return { ok: true, bin: '', loggedIn: false, account: '', label: p.label, plan: 'Coding Plan' };
+  }
+
   const bin = await resolveCliPathForProvider(p, opts);
   if (!bin) return { ok: false, loggedIn: false, bin: '', error: `${p.bin} CLI not installed` };
 
@@ -399,6 +480,20 @@ async function probeCliAuthStatus(provId, opts = {}) {
   if (p.id === 'grok') {
     const loggedIn = res.ok && !/not logged in|sign in|login required|unauthorized/i.test(raw);
     return { ok: true, bin, loggedIn, account: 'grok-cli', label: 'Grok CLI', plan: 'CLI Subscription' };
+  }
+
+  if (p.id === 'kimi') {
+    let loggedIn = false;
+    try {
+      const parsed = JSON.parse(res.stdout.trim());
+      if (parsed && typeof parsed === 'object') {
+        const provs = parsed.providers && typeof parsed.providers === 'object' ? Object.keys(parsed.providers) : [];
+        loggedIn = Boolean(res.ok && provs.length > 0);
+      }
+    } catch (_) {
+      loggedIn = Boolean(res.ok && /kimi|moonshot|logged in/i.test(raw) && !/not logged in|unauthoriz|no providers/i.test(raw));
+    }
+    return { ok: true, bin, loggedIn, account: 'kimi-cli', label: 'Kimi Code CLI', plan: 'CLI Subscription' };
   }
 
   // Gemini / Antigravity CLI
@@ -525,7 +620,7 @@ async function resolve(id) {
   const viaKey = Boolean(rec && rec.source === 'api-key' && prov.bearerBaseURL);
   if (viaKey) {
     const apiKey = secretstore.get(slotKey(prov.id, rec.account)) || '';
-    const transportMap = { claude: 'anthropic', chatgpt: 'codex', antigravity: 'google', grok: 'grok' };
+    const transportMap = { claude: 'anthropic', chatgpt: 'codex', antigravity: 'google', grok: 'grok', kimi: 'openai', zai: 'zai' };
     return {
       provider: prov.id,
       account: rec.account,
@@ -541,6 +636,22 @@ async function resolve(id) {
     };
   }
   const resolvedBin = await resolveCliPathForProvider(prov).catch(() => prov.bin);
+  if (prov.id === 'zai' && !resolvedBin) {
+    const zKey = secretstore.get(slotKey('zai', acct)) || secretstore.get('autobot.orch_api_key.zai_coding') || '';
+    return {
+      provider: 'zai',
+      account: acct,
+      label: (rec && rec.label) || 'Z.ai Coding Plan',
+      apiKey: zKey,
+      accessToken: '',
+      transport: 'zai',
+      baseURL: prov.bearerBaseURL,
+      models: prov.models,
+      plan: (rec && rec.plan) || 'Coding Plan',
+      cliMode: false,
+      oauth: false,
+    };
+  }
   return {
     provider: prov.id,
     account: (rec && rec.account) || acct,
@@ -559,6 +670,26 @@ async function resolve(id) {
   };
 }
 
+async function signOutAccount(provId, account, opts = {}) {
+  const p = provider(provId);
+  if (!p) return { ok: false, removed: false };
+  const target = account || activeAccount(p.id);
+  const rec = getAccount(p.id, target);
+  let cliLogout = null;
+  if ((!rec || rec.source !== 'api-key') && Array.isArray(p.authLogoutArgs) && p.authLogoutArgs.length) {
+    const bin = await resolveCliPathForProvider(p, opts).catch(() => '');
+    if (bin) {
+      const execFn = opts.execCli || execCli;
+      cliLogout = await execFn(bin, p.authLogoutArgs, { timeoutMs: 5000 }).catch(() => null);
+    }
+  }
+  if (p.id === 'zai') {
+    try { secretstore.del('autobot.orch_api_key.zai_coding'); } catch (_) {}
+  }
+  const removed = removeAccount(p.id, target);
+  return { ok: true, removed, cliLogout };
+}
+
 purgeLegacyTokenMirror();
 
 module.exports = {
@@ -575,6 +706,7 @@ module.exports = {
   addAccount,
   addBearer,
   removeAccount,
+  signOutAccount,
   setActive,
   activeAccount,
   authorize,

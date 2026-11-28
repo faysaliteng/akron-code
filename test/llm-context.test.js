@@ -130,8 +130,8 @@ function providerFor(url, model) {
     try {
       const messages = [{ role: 'user', content: 'Build the thing.' }];
       for (let i = 0; i < 20; i++) {
-        messages.push({ role: 'assistant', content: `Step ${i}: ` + 'x'.repeat(2500) });
-        messages.push({ role: 'user', content: `tool output ${i}: ` + 'y'.repeat(2500) });
+        messages.push({ role: 'assistant', content: `Step ${i}: ` + 'x'.repeat(1000) });
+        messages.push({ role: 'user', content: `tool output ${i}: ` + 'y'.repeat(1000) });
       }
       messages.push({ role: 'user', content: 'Now finish it.' });
       const events = [];

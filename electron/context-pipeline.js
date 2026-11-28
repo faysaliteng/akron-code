@@ -3,6 +3,23 @@
 const DEFAULT_KEEP_RECENT_STEPS = 4;
 const DEFAULT_MASK_MIN_CHARS = 1400;
 const SHRINK_RATIOS = [0.65, 0.45, 0.28];
+const AUTO_COMPACT_TRIGGER_RATIO = 0.8;
+const AUTO_COMPACT_TARGET_RATIO = 0.2;
+
+function computeCompactTargetChars(windowTokens, { model = '', systemChars = 0, toolChars = 0, targetRatio = AUTO_COMPACT_TARGET_RATIO } = {}) {
+  let resolvedWin = Number(windowTokens) || 0;
+  if (resolvedWin <= 0 && model) {
+    try {
+      resolvedWin = require('./model-catalog').contextWindowFor(model);
+    } catch (_) {}
+  }
+  const win = Math.max(4096, resolvedWin || 128000);
+  const ratio = Number(targetRatio) > 0 && Number(targetRatio) < 0.8 ? Number(targetRatio) : AUTO_COMPACT_TARGET_RATIO;
+  const totalTargetChars = Math.floor(win * ratio * 3.4);
+  const overhead = Math.max(0, Number(systemChars) || 0) + Math.max(0, Number(toolChars) || 0);
+  const floorChars = Math.max(12000, Math.round(win * 0.08 * 3.4));
+  return Math.max(floorChars, totalTargetChars - overhead);
+}
 
 function shrinkingBudgets(baseBudget) {
   const b = Math.max(24000, Number(baseBudget) || 64000);
@@ -117,6 +134,9 @@ module.exports = {
   DEFAULT_KEEP_RECENT_STEPS,
   DEFAULT_MASK_MIN_CHARS,
   SHRINK_RATIOS,
+  AUTO_COMPACT_TRIGGER_RATIO,
+  AUTO_COMPACT_TARGET_RATIO,
+  computeCompactTargetChars,
   shrinkingBudgets,
   summarizeToolResult,
   maskOlderToolOutputs,

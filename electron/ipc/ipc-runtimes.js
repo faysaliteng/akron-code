@@ -65,10 +65,10 @@ function syncBundledBinsToDir({ binDir, links = [] } = {}) {
 }
 
 module.exports = function createRuntimesController(ctx) {
-  const { app, ipcMain, store, workspace, shells, freellm, createRuntimes, providertransport, runAgent, hydrateProvider, hydrateOrchestrator, validateOrchestrator, freellmFallbackApiKey, oneLine, broadcast, mcp, autoConnectMcp, sessionDb, notificationService, proactivity, gdrive } = ctx;
+  const { app, ipcMain, store, workspace, shells, freellm, createRuntimes, providertransport, runAgent, hydrateProvider, hydrateOrchestrator, validateOrchestrator, freellmFallbackApiKey, oneLine, broadcast, mcp, autoConnectMcp, sessionDb, notificationService, proactivity, gdrive, depManager, pluginsDir } = ctx;
 
 // ---------------------------------------------------------------------------
-// Bundled agent runtimes (Claude Code / Codex / Grok CLI) + self-update.
+// Bundled agent runtimes (Claude Code / Codex / Grok CLI / Gemini CLI / Kimi CLI) + self-update.
 // ---------------------------------------------------------------------------
 // Resolution is userData (self-updated) → Resources (shipped in the DMG) → PATH.
 // Whatever wins is prepended to process.env.PATH so the Bash tool, git, and
@@ -96,6 +96,10 @@ function getRuntimes() {
   }
   return runtimesHandle;
 }
+
+try {
+  require('../cli-runner').setDefaultRuntimesGetter(() => getRuntimes());
+} catch (_) {}
 
 function prependPathDir(dir) {
   if (!dir) return;
@@ -202,8 +206,24 @@ async function startRuntimes() {
               }).catch(() => {});
               syncClientVersions();
             }
+            return done;
           })
-          .catch((e) => console.error('runtime auto-update skipped:', oneLine(e)));
+          .catch((e) => {
+            console.error('runtime auto-update skipped:', oneLine(e));
+            return [];
+          })
+          .then(async (done) => {
+            if (process.env.AKRON_NO_DIALOG === '1') return;
+            const lspRes = depManager && typeof depManager.checkAndUpdateInstalledLsps === 'function'
+              ? await depManager.checkAndUpdateInstalledLsps({ apply: true }).catch(() => null)
+              : null;
+            const gitRes = pluginsDir && typeof pluginsDir.updateAllGitPlugins === 'function'
+              ? await pluginsDir.updateAllGitPlugins({ checkOnly: false }).catch(() => null)
+              : null;
+            if ((done && done.length) || (lspRes && lspRes.updatedCount > 0) || (gitRes && gitRes.updatedCount > 0)) {
+              broadcast({ type: 'ecosystem-updated', runtimes: done || [], lsp: lspRes, gitPlugins: gitRes });
+            }
+          });
       }, 20000);
       if (t && typeof t.unref === 'function') t.unref();
     }
@@ -217,6 +237,7 @@ const RUNTIME_TO_PROVIDER = {
   codex: 'chatgpt',
   grok: 'grok',
   'gemini-cli': 'antigravity',
+  'kimi-code': 'kimi',
 };
 
 function enrichRuntimesWithAuth(rows) {
@@ -260,6 +281,18 @@ ipcMain.handle('autobot:runtimesUpdate', async (event, id, force) => {
     const rt = getRuntimes();
     const res = id ? await rt.install(String(id), undefined, { force: !!force }) : await rt.updateAll();
     const out = { ok: true, ...res, runtimes: enrichRuntimesWithAuth(await rt.list()) };
+    if (!id) {
+      const [lspUpdates, gitPluginUpdates] = await Promise.all([
+        depManager && typeof depManager.checkAndUpdateInstalledLsps === 'function'
+          ? depManager.checkAndUpdateInstalledLsps({ apply: true }).catch(() => null)
+          : Promise.resolve(null),
+        pluginsDir && typeof pluginsDir.updateAllGitPlugins === 'function'
+          ? pluginsDir.updateAllGitPlugins({ checkOnly: false }).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      if (lspUpdates) out.lspUpdates = lspUpdates;
+      if (gitPluginUpdates) out.gitPluginUpdates = gitPluginUpdates;
+    }
     // A freshly installed runtime changes PATH for later children.
     const p = await runtimePathPrefix();
     if (p) {

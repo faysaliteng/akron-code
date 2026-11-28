@@ -125,6 +125,7 @@ function runCommandHook(hook, payload, cwd) {
     child.stderr.on('data', (d) => { if (err.length < MAX_STREAM) err += d; });
     child.on('error', (e) => { clearTimeout(timer); done({ exitCode: 1, stdout: out, stderr: e.message }); });
     child.on('close', (code) => { clearTimeout(timer); done({ exitCode: code == null ? 1 : code, stdout: out, stderr: err }); });
+    if (child.stdin) child.stdin.on('error', () => {});
     try {
       child.stdin.write(JSON.stringify(payload || {}));
       child.stdin.end();

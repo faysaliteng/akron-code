@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Icon } from '../Icon.jsx';
 import {
   contextWindowFor,
+  resolveEffectiveContextWindow,
   usedTokens,
   formatContextPct,
   estimateConvBaselineTokens,
@@ -10,15 +11,21 @@ import {
   copyTextToClipboard,
 } from '../../utils/appHelpers.jsx';
 
-export function ContextMeter({ used, win, size = 44 }) {
+export function ContextMeter({ used, win, size = 44, lastAutoCompact = null, autoCompactEnabled = true }) {
   const rawPct = win > 0 && used > 0 ? Math.max(0, Math.min(100, (used / win) * 100)) : 0;
   const arcPct = rawPct > 0 ? Math.max(rawPct, 2.5) : 0;
   const r = (size - 6) / 2;
   const c = 2 * Math.PI * r;
   const dash = (arcPct / 100) * c;
   const tone = rawPct >= 90 ? 'hot' : rawPct >= 70 ? 'warm' : 'cool';
+  const acTip = lastAutoCompact && Number(lastAutoCompact.beforeTokens) > 0
+    ? `\nLast auto-compact: ${fmtInt(lastAutoCompact.beforeTokens)} → ${fmtInt(lastAutoCompact.afterTokens)} tokens (${lastAutoCompact.trigger || 'auto'})`
+    : '';
   return (
-    <span className={'ctx-meter ' + tone} title={fmtInt(used) + ' of ' + fmtInt(win) + ' tokens used'}>
+    <span
+      className={'ctx-meter ' + tone}
+      title={`${fmtInt(used)} / ${fmtInt(win)} tokens (${formatContextPct(used, win)}) · Auto-compact: ${autoCompactEnabled ? 'ON (80%)' : 'OFF'}${acTip}`}
+    >
       <svg width={size} height={size} viewBox={'0 0 ' + size + ' ' + size}>
         <circle className="ctx-track" cx={size / 2} cy={size / 2} r={r} strokeWidth="3" fill="none" />
         <circle
@@ -53,7 +60,7 @@ export function EnvPanel({
   setNotice,
 }) {
   const activeModel = (lastUsage && lastUsage.model) || (provider && provider.model) || '';
-  const win = contextWindowFor(activeModel);
+  const win = resolveEffectiveContextWindow(provider, lastUsage);
   const used = usedTokens(lastUsage);
   const rawPct = win > 0 && used > 0 ? (used / win) * 100 : 0;
   const pctNum = win > 0 ? Math.min(100, Math.round(rawPct)) : 0;
@@ -354,7 +361,12 @@ export function EnvPanel({
       <section className="env-sec">
         <div className="env-sec-title">Context</div>
         <div className="env-card">
-          <ContextMeter used={used} win={win} size={46} />
+          <ContextMeter
+            used={used}
+            win={win}
+            size={46}
+            lastAutoCompact={(lastUsage && lastUsage.lastAutoCompact) || (activeConv && activeConv.lastAutoCompact) || null}
+          />
           <div className="env-card-main">
             <div className="env-card-title" data-testid="env-ctx-title">{pctLabel} used</div>
             <div className="env-card-sub" data-testid="env-ctx-sub">

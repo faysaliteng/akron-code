@@ -256,6 +256,8 @@ function freellmPreset(baseURL) {
     roles: {
       planner: { label: ROLE_LABEL.planner, maxConcurrent: 1, models: [
         { model: 'gpt-5.6-luna', max: 1 },
+        { model: 'kimi-k3.1-pro', max: 1 },
+        { model: 'glm-5.4', max: 1 },
         { model: 'glm-5.3', max: 1 },
         { model: 'nemotron-3-ultra-550b-a55b', max: 2 },
       ] },
@@ -263,6 +265,8 @@ function freellmPreset(baseURL) {
       // devstral-2512 so parallel coders failover to native-tool models first
       // without burning a 429 retry.
       coder: { label: ROLE_LABEL.coder, maxConcurrent: 4, spread: false, models: [
+        { model: 'kimi-k3', max: 1 },
+        { model: 'glm-5.3', max: 1 },
         { model: 'qwen3.8-flash', max: 1 },
         { model: 'qwen3-coder-30b-a3b-instruct', max: 1 },
         { model: 'qwen3.8-27b', max: 3 },
@@ -278,12 +282,16 @@ function freellmPreset(baseURL) {
         { model: 'gemini-3.8-flash', max: 1 },
       ] },
       fast: { label: ROLE_LABEL.fast, maxConcurrent: 6, spread: true, models: [
+        { model: 'glm-5.3-flash', max: 2 },
         { model: 'qwen3.8-27b', max: 4 },
         { model: 'gpt-oss-120b', max: 4 },
         { model: 'glm-4.7-flash', max: 2 },
         { model: 'kilo-auto', max: 2 },
       ] },
       longctx: { label: ROLE_LABEL.longctx, maxConcurrent: 1, models: [
+        { model: 'kimi-k3.1-pro', max: 1 },
+        { model: 'kimi-k3', max: 1 },
+        { model: 'glm-5.4', max: 1 },
         { model: 'gpt-5.6-luna', max: 1 },
         { model: 'qwen3.8-flash', max: 1 },
         { model: 'minimax-m3', max: 1 },
@@ -769,8 +777,8 @@ const ORCH_PAID_API_PRESETS = [
     docsUrl: 'https://openrouter.ai/keys',
     editableBaseUrl: true,
     models: [
-      { id: 'anthropic/claude-opus-4.6', label: 'Claude Opus 4.6 (OpenRouter)', tier: 'critical', contextWindow: 200000 },
-      { id: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6 (OpenRouter)', tier: 'heavy', contextWindow: 200000 },
+      { id: 'anthropic/claude-opus-4.6', label: 'Claude Opus 4.6 (OpenRouter)', tier: 'critical', contextWindow: 1000000 },
+      { id: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6 (OpenRouter)', tier: 'heavy', contextWindow: 1000000 },
       { id: 'anthropic/claude-haiku-4.5', label: 'Claude Haiku 4.5 (OpenRouter)', tier: 'small', contextWindow: 200000 },
       { id: 'deepseek/deepseek-r1', label: 'DeepSeek R1 (OpenRouter)', tier: 'critical', contextWindow: 128000 },
       { id: 'deepseek/deepseek-chat-v3-0324', label: 'DeepSeek V3 (OpenRouter)', tier: 'heavy', contextWindow: 128000 },
@@ -792,13 +800,30 @@ const ORCH_PAID_API_PRESETS = [
     ],
   },
   {
+    id: 'zai_coding',
+    name: 'Z.ai (GLM Coding Plan)',
+    baseURL: 'https://api.z.ai/api/coding/paas/v4',
+    docsUrl: 'https://z.ai/subscribe',
+    editableBaseUrl: true,
+    models: [
+      { id: 'glm-5.4', label: 'GLM-5.4 (Coding Plan)', tier: 'critical', contextWindow: 1000000 },
+      { id: 'glm-5.3', label: 'GLM-5.3 (Coding Plan)', tier: 'heavy', contextWindow: 1000000 },
+      { id: 'glm-5.3-flash', label: 'GLM-5.3 Flash (Coding Plan)', tier: 'small', contextWindow: 1000000 },
+      { id: 'glm-5', label: 'GLM-5', tier: 'critical', contextWindow: 1000000 },
+      { id: 'glm-4.7', label: 'GLM-4.7', tier: 'heavy', contextWindow: 200000 },
+    ],
+  },
+  {
     id: 'glm',
     name: 'GLM / Z.ai (Zhipu API)',
     baseURL: 'https://api.z.ai/api/paas/v4',
     docsUrl: 'https://z.ai/manage-apikey/apikey-list',
     editableBaseUrl: true,
     models: [
-      { id: 'glm-5', label: 'GLM-5', tier: 'critical', contextWindow: 200000 },
+      { id: 'glm-5.4', label: 'GLM-5.4', tier: 'critical', contextWindow: 1000000 },
+      { id: 'glm-5.3', label: 'GLM-5.3', tier: 'heavy', contextWindow: 1000000 },
+      { id: 'glm-5.3-flash', label: 'GLM-5.3 Flash', tier: 'small', contextWindow: 1000000 },
+      { id: 'glm-5', label: 'GLM-5', tier: 'critical', contextWindow: 1000000 },
       { id: 'glm-4.7', label: 'GLM-4.7', tier: 'heavy', contextWindow: 200000 },
       { id: 'glm-4-plus', label: 'GLM-4 Plus', tier: 'heavy', contextWindow: 128000 },
       { id: 'glm-4.5', label: 'GLM-4.5', tier: 'heavy', contextWindow: 128000 },
@@ -814,6 +839,8 @@ const ORCH_PAID_API_PRESETS = [
     docsUrl: 'https://platform.moonshot.ai/console/api-keys',
     editableBaseUrl: true,
     models: [
+      { id: 'kimi-k3.1-pro', label: 'Kimi K3.1 Pro', tier: 'critical', contextWindow: 1048576 },
+      { id: 'kimi-k3', label: 'Kimi K3', tier: 'heavy', contextWindow: 1048576 },
       { id: 'kimi-k2.5', label: 'Kimi K2.5', tier: 'critical', contextWindow: 256000 },
       { id: 'kimi-k2-thinking', label: 'Kimi K2 Thinking', tier: 'critical', contextWindow: 256000 },
       { id: 'kimi-k2-0905-preview', label: 'Kimi K2 Preview', tier: 'heavy', contextWindow: 256000 },
@@ -853,8 +880,8 @@ const ORCH_PAID_API_PRESETS = [
     docsUrl: 'https://console.anthropic.com/settings/keys',
     editableBaseUrl: true,
     models: [
-      { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', tier: 'critical', contextWindow: 200000 },
-      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', tier: 'heavy', contextWindow: 200000 },
+      { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', tier: 'critical', contextWindow: 1000000 },
+      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', tier: 'heavy', contextWindow: 1000000 },
       { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', tier: 'small', contextWindow: 200000 },
     ],
   },
@@ -949,7 +976,8 @@ const ORCH_PAID_API_PRESETS = [
 
 const ORCH_ENV_KEY_RULES = [
   { id: 'xai_api', hostRe: /api\.x\.ai/i, vars: ['XAI_API_KEY', 'GROK_API_KEY'] },
-  { id: 'glm', hostRe: /(api\.z\.ai|open\.bigmodel\.cn)/i, vars: ['ZAI_API_KEY', 'ZHIPUAI_API_KEY', 'GLM_API_KEY'] },
+  { id: 'zai_coding', hostRe: /api\.z\.ai\/api\/coding/i, vars: ['ZAI_CODING_API_KEY', 'ZAI_API_KEY', 'ZHIPUAI_API_KEY', 'GLM_API_KEY'] },
+  { id: 'glm', hostRe: /(api\.z\.ai|open\.bigmodel\.cn)/i, vars: ['ZAI_API_KEY', 'ZAI_CODING_API_KEY', 'ZHIPUAI_API_KEY', 'GLM_API_KEY'] },
   { id: 'kimi', hostRe: /api\.moonshot\.(ai|cn)/i, vars: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'] },
   { id: 'openai', hostRe: /api\.openai\.com/i, vars: ['OPENAI_API_KEY'] },
   { id: 'anthropic_api', hostRe: /api\.anthropic\.com/i, vars: ['ANTHROPIC_API_KEY'] },
@@ -984,11 +1012,21 @@ function resolvePaidProviderApiKey(providerOrRow, { settings = null, secretstore
   const isLoopback = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(base);
   const provId = String(providerOrRow.orchProviderId || providerOrRow.id || '').trim();
   if (secretstore && typeof secretstore.get === 'function') {
-    if (provId) {
+    const idAliases = provId === 'zai_coding' ? ['zai_coding', 'glm', 'zai']
+      : (provId === 'glm' ? ['glm', 'zai_coding', 'zai'] : (provId ? [provId] : []));
+    for (const candidateId of idAliases) {
       try {
-        const k = String(secretstore.get('autobot.orch_api_key.' + provId) || '').trim();
+        const k = String(secretstore.get('autobot.orch_api_key.' + candidateId) || '').trim();
         if (k) return k;
       } catch (_) {}
+    }
+    if ((provId === 'zai_coding' || provId === 'glm' || /api\.z\.ai/i.test(base))) {
+      for (const slot of ['provider-api:zai:api-key', 'provider-api:zai:coding-plan', 'ZAI_CODING_API_KEY', 'ZAI_API_KEY']) {
+        try {
+          const k = String(secretstore.get(slot) || '').trim();
+          if (k) return k;
+        } catch (_) {}
+      }
     }
     if (base && !isLoopback) {
       try {

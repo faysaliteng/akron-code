@@ -70,7 +70,8 @@ test('Tutorial icons resolve in src/icons.json and all entry points, commands, a
 
   const appSrc = fs.readFileSync(path.join(ROOT, 'src/App.jsx'), 'utf8');
   const mainSrc = fs.readFileSync(path.join(ROOT, 'electron/main.js'), 'utf8');
-  const barSrc = fs.readFileSync(path.join(ROOT, 'src/components/chat/InputBarView.jsx'), 'utf8');
+  const barSrc = fs.readFileSync(path.join(ROOT, 'src/components/chat/InputBarView.jsx'), 'utf8')
+    + '\n' + fs.readFileSync(path.join(ROOT, 'src/components/chat/ModelPickerPopover.jsx'), 'utf8');
   const wsSrc = fs.readFileSync(path.join(ROOT, 'src/components/chat/WorkspaceViews.jsx'), 'utf8');
   const modSrc = fs.readFileSync(path.join(ROOT, 'src/features/AppModals.jsx'), 'utf8');
 

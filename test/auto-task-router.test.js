@@ -322,7 +322,8 @@ function writeSseToolCall(res, model, toolCallId, name, argsObj) {
   });
 
   await test('3-Mode Model Picker UI & App.jsx wiring cover Auto, Orchestrator Supervisor + Configure…, Direct reset, and footer badge', () => {
-    const barSrc = fs.readFileSync(path.join(ROOT, 'src/components/chat/InputBarView.jsx'), 'utf8');
+    const barSrc = fs.readFileSync(path.join(ROOT, 'src/components/chat/InputBarView.jsx'), 'utf8')
+      + '\n' + fs.readFileSync(path.join(ROOT, 'src/components/chat/ModelPickerPopover.jsx'), 'utf8');
     const appSrc = fs.readFileSync(path.join(ROOT, 'src/App.jsx'), 'utf8');
     const cssSrc = fs.readFileSync(path.join(ROOT, 'src/styles.css'), 'utf8');
 

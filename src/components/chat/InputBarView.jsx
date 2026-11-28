@@ -6,7 +6,8 @@ import { hydrateProvider, endpointKey } from '../../providerhydrate.mjs';
 import { useVoiceDictation } from '../../voice';
 import { ClaudeReconnectPanel, useClaudeReconnect } from '../settings/SettingsSections.jsx';
 import { SessionModelList, EnvironmentPicker, PERM_MODES, PERM_SHORT, BUILTIN_MENTION_AGENTS, ContextMeter, ProvModelList } from './WorkspaceViews.jsx';
-import { PRESETS, PRESET_KEYS, resolveLoopbackKey, STYLES, REASON_LEVELS, REASON_LABELS, MODEL_CAPABILITY_CACHE, thinkingCapabilitiesForUi, contextWindowFor, loadJSON, saveJSON, useDismiss, toggleDictation, filesToAttachments, uid, ProvNotice, fmtInt, MODEL_WINDOW_CACHE, usedTokens } from '../../utils/appHelpers.jsx';
+import { ModelPickerPopover } from './ModelPickerPopover.jsx';
+import { PRESETS, PRESET_KEYS, resolveLoopbackKey, STYLES, REASON_LEVELS, REASON_LABELS, MODEL_CAPABILITY_CACHE, thinkingCapabilitiesForUi, contextWindowFor, resolveEffectiveContextWindow, loadJSON, saveJSON, useDismiss, toggleDictation, filesToAttachments, uid, ProvNotice, fmtInt, MODEL_WINDOW_CACHE, usedTokens } from '../../utils/appHelpers.jsx';
 import { guardOrchestratorAction } from '../../utils/tutorialPresets.js';
 
 export function InputBarBody({ streaming, paused, onPause, onResume, send, stop, inputRef, cwd, setCwd, runSlashCommand, provider, setProvider, orchestrator, setOrchestrator, providerKeys, setProviderKeys, modelMenuOpen, setModelMenuOpen, openSettings, onOpenTutorial, attachments, setAttachments, reasoningLevel, setReasoningLevel, swarmEnabled, setSwarmEnabled, styleId, setStyleId, customStyles = [], customAgents = [], onOpenCustomizations, webSearch, setWebSearch, dictating, setDictating, voiceMode, startVoiceMode, stopVoiceMode, sessionPane, toggleSessionPane, permissions, setPermissions, queued, queuePaused, onToggleQueuePaused, onClearQueue, onToggleQueueItemPaused, onReorderQueue, onStepQueueItem, onUpdateQueueItemText, unqueue, sendQueuedNow, lastUsage, settings, onVoiceError, gdriveState, onOpenGdrive, envState, onSwitchEnvironment, onOpenEnvironments, activeSkillPill, onClearSkillPill, T }) {
@@ -309,9 +310,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   // the last turn. `provider.model` is right on a fresh chat, but switching
   // models (or sitting on a gateway alias like `auto`) would otherwise rescale
   // an existing conversation against the wrong window.
-  const ctxWindow = (!provider.oauth && !provider.oauthProvider && Number(provider.contextWindow) > 0 && (!lastUsage || !lastUsage.model || lastUsage.model === provider.model))
-    ? Number(provider.contextWindow)
-    : contextWindowFor((lastUsage && lastUsage.model) || provider.model);
+  const ctxWindow = resolveEffectiveContextWindow(provider, lastUsage);
 
   const loadPaidProviders = useCallback(async () => {
     try {
@@ -1136,9 +1135,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   // the effective context length without opening the picker. Backed by the
   // live per-model window cached from `autobot:providerModels`.
   const modelWindowLabel = (() => {
-    const w = (!provider.oauth && !provider.oauthProvider && Number(provider.contextWindow) > 0)
-      ? Number(provider.contextWindow)
-      : contextWindowFor(provider.model);
+    const w = resolveEffectiveContextWindow(provider, lastUsage);
     if (!w) return '';
     if (w >= 1000000) return Math.round(w / 100000) / 10 + 'M';
     if (w % 1024 === 0 && w >= 1024 && w < 1000000) return Math.round(w / 1024) + 'K';
@@ -1520,14 +1517,29 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
           </div>
 
           <div className="composer-right">
-            <button
-              type="button"
-              className="ctx-btn"
-              title={'Context: ' + fmtInt(usedTokens(lastUsage)) + ' of ' + fmtInt(ctxWindow) + ' tokens used — open Environment'}
-              onClick={() => toggleSessionPane('env')}
-            >
-              <ContextMeter used={usedTokens(lastUsage)} win={ctxWindow} size={26} />
-            </button>
+            {(() => {
+              const usedTok = usedTokens(lastUsage);
+              const acMode = (typeof localStorage !== 'undefined' && localStorage.getItem('autobot:autoCompactWindow')) || 'auto';
+              const acOn = !['off', 'false', '0'].includes(acMode.trim().toLowerCase());
+              const acInfo = (lastUsage && lastUsage.lastAutoCompact) || null;
+              const pctVal = ctxWindow > 0 && usedTok > 0 ? Math.min(100, Math.round((usedTok / ctxWindow) * 100)) : 0;
+              const acNote = acInfo && Number(acInfo.beforeTokens) > 0
+                ? `\nLast auto-compact: ${fmtInt(acInfo.beforeTokens)} → ${fmtInt(acInfo.afterTokens)} tokens (${acInfo.trigger || 'auto'})`
+                : '';
+              return (
+                <button
+                  type="button"
+                  className="ctx-btn"
+                  data-testid="composer-context-ring"
+                  data-context-pct={pctVal}
+                  data-context-window={ctxWindow}
+                  title={`Context: ${fmtInt(usedTok)} / ${fmtInt(ctxWindow)} tokens (${pctVal}%) · Auto-compact: ${acOn ? 'ON (80%)' : 'OFF'}${acNote} — click for Environment`}
+                  onClick={() => toggleSessionPane('env')}
+                >
+                  <ContextMeter used={usedTok} win={ctxWindow} size={26} lastAutoCompact={acInfo} autoCompactEnabled={acOn} />
+                </button>
+              );
+            })()}
             <div className="model-pill-wrap" ref={modelWrapRef}>
               <button
                 className={'model-pill' + (modelMenuOpen ? ' open' : '') + (effectiveRoutingMode === 'auto' ? ' mode-auto' : effectiveRoutingMode === 'orchestrator' ? ' mode-orchestrator' : '')}
@@ -1551,365 +1563,46 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                   <ModelLogo model={lastRoutedModel} size={13} className="model-ico-routed" />
                 )}
                 <span className="model-name">{pillDisplayLabel}</span>
-                {effectiveRoutingMode !== 'auto' && modelWindowLabel && <span className="model-win" title={'Context window: ' + modelWindowLabel + ' tokens'}>{modelWindowLabel}</span>}
+                {effectiveRoutingMode !== 'auto' && modelWindowLabel && <span className="model-win" data-testid="composer-model-ctx" title={'Context window: ' + modelWindowLabel + ' tokens'}>{modelWindowLabel}</span>}
                 {effectiveRoutingMode === 'direct' && activeDot && <span className={'model-dot ' + activeDot} title={activeKeyState.detail || ''} />}
                 <Icon name={modelMenuOpen ? 'CaretUp' : 'CaretDown'} size={12} className="model-caret" />
               </button>
               {modelMenuOpen && (
-                <div className="model-menu" ref={modelMenuRef}>
-                  <div className="model-menu-head">Routing mode</div>
-                  {onOpenTutorial && (
-                    <button
-                      type="button"
-                      data-testid="open-mode-guide-btn"
-                      className="mode-guide-link"
-                      onClick={() => { setModelMenuOpen(false); onOpenTutorial('guide'); }}
-                    >
-                      <Icon name="GraduationCap" size={12} /> Not sure which mode? Open Quick Guide →
-                    </button>
-                  )}
-                  <div className={'routing-mode-wrap' + (effectiveRoutingMode === 'auto' ? ' on' : '')}>
-                    <button
-                      type="button"
-                      data-testid="routing-mode-auto"
-                      className={'model-opt routing-mode-card' + (effectiveRoutingMode === 'auto' ? ' on' : '')}
-                      onClick={selectAutoMode}
-                    >
-                      <ModelLogo model="deepseek" size={18} className="routing-mode-logo" />
-                      <div className="routing-mode-main">
-                        <span className="model-opt-name">Auto (DeepSeek V4.1 Flash)</span>
-                        <span className="routing-mode-sub">
-                          {hasDeepSeekKey
-                            ? 'DeepSeek Dispatcher active — picks Fast, Coder, Frontier, Vision, or 1M model per prompt'
-                            : 'Offline heuristic fallback ready — configure a DeepSeek key for ~150ms AI task dispatch'}
-                        </span>
-                      </div>
-                      {effectiveRoutingMode === 'auto' && <Icon name="Check" size={13} className="model-check" />}
-                    </button>
-                    {!hasDeepSeekKey && (
-                      <div className="routing-mode-config-bar">
-                        <button
-                          type="button"
-                          data-testid="configure-deepseek-key-btn"
-                          className="configure-deepseek-pill"
-                          onClick={() => { setModelMenuOpen(false); openSettings({ section: 'system', focus: 'deepseek-router' }); }}
-                        >
-                          Setup Free Key →
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                  <div className={'orch-picker-box' + (effectiveRoutingMode === 'orchestrator' ? ' on' : '')} data-testid="routing-mode-orchestrator">
-                    <div className="orch-picker-head">
-                      <button
-                        type="button"
-                        className="orch-picker-toggle"
-                        onClick={() => setOrchExpanded((v) => !v)}
-                        aria-expanded={orchExpanded}
-                      >
-                        <ModelLogo model="orchestrator" size={16} />
-                        <span className="model-opt-name">Orchestrator Models</span>
-                        {effectiveRoutingMode === 'orchestrator' && <span className="orch-active-tag">On</span>}
-                        <Icon name={orchExpanded ? 'CaretUp' : 'CaretDown'} size={11} />
-                      </button>
-                      <button
-                        type="button"
-                        data-testid="orch-configure-btn"
-                        className="orch-config-link"
-                        onClick={() => { setModelMenuOpen(false); openSettings({ section: 'orchestrator' }); }}
-                      >
-                        Configure…
-                      </button>
-                    </div>
-                    {(orchExpanded || effectiveRoutingMode === 'orchestrator') && (() => {
-                      const hasMatchingOrchRow = effectiveRoutingMode === 'orchestrator' && orchModelChoices.some((r) => provider.model === r.model && String(provider.oauthProvider || '') === String(r.oauthProvider || ''));
-                      return (
-                      <div className="orch-picker-body">
-                        <button
-                          type="button"
-                          data-testid="orch-use-supervisor"
-                          className={'model-opt orch-supervisor-btn' + (effectiveRoutingMode === 'orchestrator' && !hasMatchingOrchRow ? ' on' : '')}
-                          onClick={() => activateOrchestratorSupervisor(null)}
-                        >
-                          <ModelLogo model="orchestrator" size={14} />
-                          <span className="model-opt-name">Activate Orchestrator (Use Selected Model as Supervisor)</span>
-                          {effectiveRoutingMode === 'orchestrator' && !hasMatchingOrchRow && <Icon name="Check" size={13} className="model-check" />}
-                        </button>
-                        {orchModelChoices.length > 0 ? orchModelChoices.map((row) => {
-                          const rowActive = effectiveRoutingMode === 'orchestrator' && provider.model === row.model && String(provider.oauthProvider || '') === String(row.oauthProvider || '');
-                          return (
-                            <button
-                              key={`${row.model}|${row.oauthProvider || row.baseURL || ''}`}
-                              type="button"
-                              className={'model-opt' + (rowActive ? ' on' : '')}
-                              onClick={() => activateOrchestratorSupervisor(row)}
-                            >
-                              <span className="model-dot ok" />
-                              <ModelLogo model={row.model} provider={row.oauthProvider || row.name} baseURL={row.baseURL} size={14} />
-                              <span className="model-opt-name">{row.model.split('/').pop()}</span>
-                              <span className="model-opt-prov" title={row.roleHint || row.name || 'Orchestrator'}>{row.roleHint || row.name || 'Orchestrator'}</span>
-                              {rowActive && <Icon name="Check" size={13} className="model-check" />}
-                            </button>
-                          );
-                        }) : (
-                          <div className="prov-none">No Orchestrator models selected — click Configure… to connect OAuth or API keys</div>
-                        )}
-                        {orchModelChoices.length > 1 && setOrchestrator && (
-                          <div className="orch-executor-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 8px 2px', borderTop: '1px solid rgba(255,255,255,0.06)', marginTop: 4 }}>
-                            <span style={{ fontSize: 11, opacity: 0.72 }}>Executor</span>
-                            <select
-                              aria-label="Orchestrator Executor Model"
-                              value={(orchestrator && orchestrator.executorModel) || ''}
-                              onChange={(e) => setOrchestrator({ ...(orchestrator || { enabled: true, providers: [] }), executorModel: e.target.value || '' })}
-                              style={{ maxWidth: 165, fontSize: 11, background: 'rgba(255,255,255,0.06)', color: 'inherit', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 6, padding: '2px 6px' }}
-                            >
-                              <option value="">Auto · Best Coder</option>
-                              {orchModelChoices.map((r) => (
-                                <option key={'ex:' + r.model} value={r.model}>{r.model.split('/').pop()}</option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-                      </div>
-                      );
-                    })()}
-                  </div>
-                  <div className="model-menu-divider" />
-                  <div className="model-menu-head">Model · this session{keyProbing ? ' · checking keys…' : ''}</div>
-                  <SessionModelList
-                    rows={pickerRows}
-                    isActive={(r) => effectiveRoutingMode === 'direct' && provider.baseURL === r.preset.baseURL && provider.model === r.model}
-                    renderRow={(r) => {
-                      const active = effectiveRoutingMode === 'direct' && provider.baseURL === r.preset.baseURL && provider.model === r.model;
-                      const st = presetStatus(r.preset, { keyFor, status: keyStatus, probing: keyProbing });
-                      const rowBase = normBase(r.preset.baseURL);
-                      const isOllama = /:11434\b/.test(rowBase);
-                      const scan = ollama[rowBase];
-                      const ollamaDown = isOllama && !(scan && scan.ok && scan.models && scan.models.length);
-                      return (
-                        <button
-                          key={r.key}
-                          className={'model-opt' + (active ? ' on' : '') + (st.row ? ' ' + st.row : '')}
-                          title={r.local ? (r.prov + ' — ' + r.model) : (ollamaDown || st.row === 'dim' ? undefined : st.label)}
-                          onClick={() => {
-                            if (r.local) return pickModel(r.preset, r.model);
-                            if (ollamaDown) return connectOllama();
-                            if (st.row === 'dim') return configurePreset(r.preset);
-                            return pickModel(r.preset, r.model);
-                          }}
-                        >
-                          <span className={'model-dot ' + (r.local ? 'ok' : st.dot)} />
-                          <ModelLogo model={r.model} label={r.label} provider={r.prov || (r.preset && r.preset.name)} baseURL={r.preset && r.preset.baseURL} size={16} />
-                          <span className="model-opt-name">{r.label}</span>
-                          {(ollamaDown || (!r.local && st.row === 'dim') || r.ctxBadge) && (
-                            <span className="model-opt-prov">
-                              {ollamaDown ? 'click to connect' : (!r.local && st.row === 'dim' ? st.label : r.ctxBadge)}
-                            </span>
-                          )}
-                          {active && <Icon name="Check" size={13} className="model-check" />}
-                        </button>
-                      );
-                    }}
-                  />
-                  {ollamaEmpty && (
-                    <button className="model-opt model-connect" disabled={ollamaBusy} onClick={connectOllama}>
-                      <ModelLogo provider="ollama" size={15} />
-                      <span className="model-opt-name">{ollamaBusy ? 'Connecting to Ollama…' : 'Connect Ollama (local)'}</span>
-                      <span className="model-opt-prov">{ollamaBusy ? '' : 'starts the server'}</span>
-                    </button>
-                  )}
-                  {provOauth && (
-                    <>
-                      <div className="model-menu-divider" />
-                      <div className="model-menu-head" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span>Subscription accounts</span>
-                        <button
-                          type="button"
-                          className="prov-link"
-                          title="Refresh live model catalogs from signed-in accounts"
-                          onClick={async () => {
-                            try {
-                              if (window.autobot?.refreshModelCatalogs) await window.autobot.refreshModelCatalogs();
-                              await loadProvOauth();
-                            } catch (_) {}
-                          }}
-                        >
-                          <Icon name="Refresh" size={11} /> Refresh models
-                        </button>
-                      </div>
-                      {/* An index that could not be parsed is not "no accounts":
-                          say so here too, where the user picks a model. */}
-                      {provOauth.storeError && (
-                        <ProvNotice warn text={T('account.storeError')} />
-                      )}
-                      {provOauth.providers.map((pv) => {
-                        const accounts = pv.accounts || [];
-                        const live = provModels[pv.id];
-                        // Honesty: a provider is "unverified" only when no real
-                        // account of that kind was ever exercised here. Claude
-                        // and Antigravity are field-verified (including live
-                        // model enumeration); a provider that just answered a
-                        // live catalog request is verified for that much at
-                        // least. A live `warning` (dead token, 403) keeps the
-                        // badge on.
-                        const anyVerified = accounts.some((a) => (a.verifiedAt || 0) > 0);
-                        const unverified = !(pv.id === 'claude' || pv.id === 'antigravity'
-                          || (live && live.live) || anyVerified);
-                        return (
-                          <div key={pv.id} className="prov-group">
-                            <div className="prov-head">
-                              <ModelLogo provider={pv.id} size={14} />
-                              <span className="prov-name">{pv.label}</span>
-                              {unverified && <span className="prov-unv" title="Adapter implemented from the published wire format and unit-tested; no account of this kind exists on this machine to verify end-to-end.">unverified</span>}
-                              {pv.id === 'claude' && (
-                                <button
-                                  className="prov-link"
-                                  title="The Claude Code CLI owns this credential — this starts its own sign-in and adopts the result, so the CLI stays signed in."
-                                  disabled={!!provBusy || claudeSignIn.busy}
-                                  onClick={claudeSignIn.start}
-                                >{claudeSignIn.busy ? 'Opening…' : (accounts.length ? 'Reconnect' : 'Sign in')}</button>
-                              )}
-                              {pv.id !== 'claude' && pv.canBrowserSignIn && (
-                                <button
-                                  className="prov-link"
-                                  title={provBusy === 'signin:' + pv.id ? 'Stop waiting for the browser' : 'Open the provider sign-in page'}
-                                  disabled={!!provBusy && provBusy !== 'signin:' + pv.id}
-                                  onClick={() => (provBusy === 'signin:' + pv.id ? cancelBrowserSignIn(pv.id) : providerAction('signin', pv.id))}
-                                >{provBusy === 'signin:' + pv.id ? 'Cancel' : (accounts.length ? 'Add account' : 'Sign in')}</button>
-                              )}
-                              {pv.id !== 'claude' && pv.canManualCode && (
-                                <button
-                                  className="prov-link prov-link-sub"
-                                  title="The sign-in page shows a code you paste back here — use this when the browser cannot reach this machine."
-                                  disabled={!!provBusy}
-                                  onClick={() => startManualSignIn(pv.id)}
-                                >{provBusy === 'manual:' + pv.id ? 'Opening…' : 'Paste code'}</button>
-                              )}
-                            </div>
-                            {accounts.map((a) => {
-                              const on = provider.oauthProvider === a.id;
-                              // Per-account catalogs: the same vendor can hold
-                              // several accounts whose plans expose different
-                              // models, so resolve the list for this account.
-                              const own = provModels[pv.id + ':' + a.account] || live;
-                              const list = (own && own.models && own.models.length ? own.models : (pv.models || []));
-                              return (
-                                <div key={a.id} className={'prov-acct' + (on ? ' on' : '')}>
-                                  <button className="prov-pick" title={a.expired ? 'Stated expiry passed and the refresh was refused — a turn may still work; sign in again if it is rejected' : (a.label || a.account)} onClick={() => pickOauthAccount(pv, a.account)}>
-                                    <span className={'model-dot ' + (a.expired ? 'out' : 'ok')} />
-                                    <ModelLogo provider={pv.id} size={14} />
-                                    <span className="model-opt-name">{a.label || a.account}</span>
-                                    <span className="model-opt-prov">{a.plan || a.source || 'signed in'}</span>
-                                    {on && !provider.model && <Icon name="Check" size={13} className="model-check" />}
-                                  </button>
-                                  <button className="prov-x" title="Sign out" disabled={!!provBusy} onClick={() => providerAction('signout', pv.id, a.account)}><Icon name="X" size={12} /></button>
-                                  {on && (
-                                    <>
-                                      {own && own.warning && !list.length && (
-                                        <div className="prov-none">{own.warning}</div>
-                                      )}
-                                      <ProvModelList
-                                        list={list}
-                                        providerId={pv.id}
-                                        picked={effectiveRoutingMode === 'direct' ? provider.model : ''}
-                                        onPick={(mid) => pickOauthAccount(pv, a.account, mid)}
-                                      />
-                                    </>
-                                  )}
-                                </div>
-                              );
-                            })}
-                            {!accounts.length && pv.canBrowserSignIn && !pv.canPasteKey && !pv.canManualCode && pv.id !== 'claude' && (
-                              <div className="prov-none">Not signed in</div>
-                            )}
-                            {pv.id === 'claude' && (
-                              <ClaudeReconnectPanel
-                                t={T}
-                                rc={claudeSignIn.rc}
-                                busy={provBusy || claudeSignIn.busy}
-                                onCancel={claudeSignIn.cancel}
-                                onChange={claudeSignIn.setCode}
-                                onSubmit={claudeSignIn.submit}
-                              />
-                            )}
-                            {pv.id === 'claude' && claudeSignIn.notice && (
-                              <ProvNotice text={claudeSignIn.notice} />
-                            )}
-                            {provManual && provManual.provId === pv.id && (
-                              <div className="prov-token prov-manual">
-                                <div className="prov-manual-hint">
-                                  {provManual.sent ? 'Code sent — checking with ' + pv.vendor + '…'
-                                    : 'Sign in in the browser, then paste the code it shows (looks like xxxx#yyyy).'}
-                                </div>
-                                <input
-                                  className="prov-token-in"
-                                  type="text"
-                                  autoComplete="off"
-                                  spellCheck={false}
-                                  placeholder="Paste code"
-                                  value={provManual.code || ''}
-                                  disabled={!!provBusy || provManual.sent}
-                                  onChange={(e) => setProvManual((m) => (m ? { ...m, code: e.target.value } : m))}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') { e.preventDefault(); submitManualCode(); }
-                                  }}
-                                />
-                                <button
-                                  className="prov-link"
-                                  disabled={!!provBusy || provManual.sent || !String(provManual.code || '').trim()}
-                                  onClick={submitManualCode}
-                                >{provManual.sent ? 'Checking…' : 'Submit'}</button>
-                                <button
-                                  className="prov-x"
-                                  title="Cancel"
-                                  onClick={() => setProvManual(null)}
-                                ><Icon name="X" size={12} /></button>
-                              </div>
-                            )}
-                            {pv.canPasteKey && (
-                              <div className="prov-token">
-                                <input
-                                  className="prov-token-in"
-                                  type="password"
-                                  autoComplete="off"
-                                  spellCheck={false}
-                                  placeholder={(accounts.length ? 'or paste a ' : 'Paste your ') + pv.vendor + ' API key'}
-                                  value={provToken[pv.id] || ''}
-                                  disabled={!!provBusy}
-                                  onChange={(e) => setProvToken((m) => ({ ...m, [pv.id]: e.target.value }))}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && (provToken[pv.id] || '').trim()) {
-                                      e.preventDefault();
-                                      providerAction('bearer', pv.id, (provToken[pv.id] || '').trim());
-                                    }
-                                  }}
-                                />
-                                <button
-                                  className="prov-link"
-                                  disabled={!!provBusy || !(provToken[pv.id] || '').trim()}
-                                  onClick={() => providerAction('bearer', pv.id, (provToken[pv.id] || '').trim())}
-                                >{provBusy === 'bearer:' + pv.id ? 'Checking…' : 'Add key'}</button>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                      <button className="model-opt" disabled={!!provBusy} onClick={() => providerAction('autoheal')}>
-                        <Icon name="Refresh" size={14} />
-                        <span className="model-opt-name">{provBusy === 'autoheal:' ? 'Healing PC accounts…' : 'Auto-Heal PC accounts'}</span>
-                      </button>
-                      <button className="model-opt" disabled={!!provBusy} onClick={() => providerAction('import')}>
-                        <Icon name="Plug" size={14} />
-                        <span className="model-opt-name">{provBusy === 'import:' ? 'Scanning this Mac…' : 'Import accounts from this Mac'}</span>
-                      </button>
-                      <ProvNotice text={provNotice} />
-                    </>
-                  )}
-                  <div className="model-menu-divider" />
-                  <button className="model-opt" onClick={() => { setModelMenuOpen(false); openSettings(); }}>
-                    <Icon name="Settings" size={14} /><span className="model-opt-name">Manage providers…</span>
-                  </button>
-                </div>
+                <ModelPickerPopover
+                  modelMenuRef={modelMenuRef}
+                  effectiveRoutingMode={effectiveRoutingMode}
+                  provider={provider}
+                  orchestrator={orchestrator}
+                  setOrchestrator={setOrchestrator}
+                  setModelMenuOpen={setModelMenuOpen}
+                  openSettings={openSettings}
+                  onOpenTutorial={onOpenTutorial}
+                  hasDeepSeekKey={hasDeepSeekKey}
+                  selectAutoMode={selectAutoMode}
+                  orchExpanded={orchExpanded}
+                  setOrchExpanded={setOrchExpanded}
+                  orchModelChoices={orchModelChoices}
+                  activateOrchestratorSupervisor={activateOrchestratorSupervisor}
+                  keyProbing={keyProbing}
+                  keyStatus={keyStatus}
+                  keyFor={keyFor}
+                  pickerRows={pickerRows}
+                  ollama={ollama}
+                  ollamaEmpty={ollamaEmpty}
+                  ollamaBusy={ollamaBusy}
+                  connectOllama={connectOllama}
+                  configurePreset={configurePreset}
+                  pickModel={pickModel}
+                  provOauth={provOauth}
+                  provModels={provModels}
+                  loadProvOauth={loadProvOauth}
+                  provBusy={provBusy}
+                  providerAction={providerAction}
+                  pickOauthAccount={pickOauthAccount}
+                  provNotice={provNotice}
+                  settings={settings}
+                  T={T}
+                />
               )}
             </div>
 

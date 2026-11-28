@@ -82,6 +82,30 @@ function resolveRipgrepBinary() {
   return findBin('rg') || null;
 }
 
+function readInstalledLspVersion(npmPkg, lspRoot = DEFAULT_LSP_ROOT) {
+  if (!npmPkg) return '';
+  try {
+    const pkgJsonPath = path.join(lspRoot, 'node_modules', ...String(npmPkg).split('/'), 'package.json');
+    if (!fs.existsSync(pkgJsonPath)) return '';
+    const parsed = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+    return String((parsed && parsed.version) || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function compareSemver(a, b) {
+  const pa = String(a || '').replace(/^v/i, '').split('-')[0].split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || '').replace(/^v/i, '').split('-')[0].split('.').map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length, 3);
+  for (let i = 0; i < len; i++) {
+    const da = pa[i] || 0;
+    const db = pb[i] || 0;
+    if (da !== db) return da - db;
+  }
+  return 0;
+}
+
 function getDependenciesStatus({ lspRoot = DEFAULT_LSP_ROOT } = {}) {
   const rgBin = resolveRipgrepBinary();
   let parcelWatcherOk = false;
@@ -106,6 +130,7 @@ function getDependenciesStatus({ lspRoot = DEFAULT_LSP_ROOT } = {}) {
     return {
       ...item,
       installed: !!binPath,
+      installedVersion: binPath ? readInstalledLspVersion(item.npmPkg, lspRoot) : '',
       path: binPath || '',
     };
   });
@@ -187,6 +212,67 @@ async function installLspServer(id, { lspRoot = DEFAULT_LSP_ROOT, onProgress } =
   };
 }
 
+async function checkAndUpdateInstalledLsps({
+  lspRoot = DEFAULT_LSP_ROOT,
+  apply = true,
+  onProgress,
+  fetchRegistry = verifyNpmIntegrity,
+  installer = installLspServer,
+} = {}) {
+  const results = [];
+  let checkedCount = 0;
+  let updatedCount = 0;
+  let updatesAvailable = 0;
+
+  for (const spec of OPTIONAL_LSPS) {
+    const binPath = findBin(spec.bin, lspRoot);
+    if (!binPath) continue;
+    checkedCount++;
+    const currentVersion = readInstalledLspVersion(spec.npmPkg, lspRoot);
+    if (onProgress) onProgress({ id: spec.id, phase: 'check', message: `Checking ${spec.label} updates…` });
+    const meta = await fetchRegistry(spec.npmPkg);
+    if (!meta || !meta.ok || !meta.version) {
+      results.push({ id: spec.id, label: spec.label, ok: false, currentVersion, error: (meta && meta.error) || 'Registry lookup failed' });
+      continue;
+    }
+    const updateAvailable = !currentVersion || compareSemver(meta.version, currentVersion) > 0;
+    if (updateAvailable) updatesAvailable++;
+    if (updateAvailable && apply) {
+      const ins = await installer(spec.id, { lspRoot, onProgress });
+      if (ins && ins.ok) updatedCount++;
+      results.push({
+        id: spec.id,
+        label: spec.label,
+        ok: !!(ins && ins.ok),
+        updated: !!(ins && ins.ok),
+        updateAvailable,
+        previousVersion: currentVersion,
+        version: (ins && ins.version) || meta.version,
+        error: (ins && !ins.ok && ins.error) || '',
+      });
+    } else {
+      results.push({
+        id: spec.id,
+        label: spec.label,
+        ok: true,
+        updated: false,
+        updateAvailable,
+        currentVersion,
+        latestVersion: meta.version,
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    checkedCount,
+    updatedCount,
+    updatesAvailable,
+    results,
+    status: getDependenciesStatus({ lspRoot }),
+  };
+}
+
 module.exports = {
   DEFAULT_LSP_ROOT,
   OPTIONAL_LSPS,
@@ -194,4 +280,7 @@ module.exports = {
   installLspServer,
   findBin,
   resolveRipgrepBinary,
+  readInstalledLspVersion,
+  compareSemver,
+  checkAndUpdateInstalledLsps,
 };

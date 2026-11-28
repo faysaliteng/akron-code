@@ -721,17 +721,17 @@ function applyFeatures(features) {
   } catch (_) {}
 }
 
-oauthCtrl = registerOauthModelIpc({ ipcMain, store, secretstore, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast, poolNoticeDeduper, bundledRuntimeDir: () => (runtimesCtrl ? runtimesCtrl.bundledRuntimeDir() : ''), getRuntimes: () => (runtimesCtrl ? runtimesCtrl.getRuntimes() : null) });
+oauthCtrl = registerOauthModelIpc({ ipcMain, store, secretstore, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast, poolNoticeDeduper, bundledRuntimeDir: () => (runtimesCtrl ? runtimesCtrl.bundledRuntimeDir() : ''), getRuntimes: () => (runtimesCtrl ? runtimesCtrl.getRuntimes() : null), runtimePathPrefix: () => (runtimesCtrl ? runtimesCtrl.runtimePathPrefix() : '') });
 const { freellmFallbackApiKey, hydrateLocalFreeLlmProvider, hydrateProvider, validateOrchestrator, oneLine, fetchProviderModels, warmModelCatalogs, replayClaudeRotation } = oauthCtrl;
 
-runtimesCtrl = createRuntimesController({ app, ipcMain, store, workspace, shells, freellm, createRuntimes, providertransport, runAgent, hydrateProvider, hydrateOrchestrator, validateOrchestrator, freellmFallbackApiKey, oneLine, broadcast, mcp, autoConnectMcp, sessionDb, notificationService, proactivity: require('./proactivity'), gdrive });
+runtimesCtrl = createRuntimesController({ app, ipcMain, store, workspace, shells, freellm, createRuntimes, providertransport, runAgent, hydrateProvider, hydrateOrchestrator, validateOrchestrator, freellmFallbackApiKey, oneLine, broadcast, mcp, autoConnectMcp, sessionDb, notificationService, proactivity: require('./proactivity'), gdrive, depManager, pluginsDir });
 const { runtimePathPrefix, startRuntimes, runScheduledPrompt, startFreeLLM } = runtimesCtrl;
 
 winExtCtrl = registerWindowsExtensionsIpc({ windows, artifactWindows, extensionWindows, windowIconProps, winFor, findMainWindow, focusMainWindow, createWindow, createTray, store, extensionhost, artifactcanvas, artifactstore, artifacttypes, extHost, unfurlMod, compliance, computeruse, brandGuard, broadcast, pendingComputerUseRef, mcp, gdrive, computer, oneLine, describeConnectError });
 const { createAboutWindow, buildMenu, mainWindow } = winExtCtrl;
 
 ipcMain.handle('autobot:run', async (event, payload) => {
-  let { runId, messages, provider, cwd, useMemory, maxSteps, orchestrator, permissions, title, convId, swarm } = payload || {};
+  let { runId, messages, provider, cwd, useMemory, maxSteps, orchestrator, permissions, title, convId, swarm, autoCompactWindow } = payload || {};
   // The pool this turn will actually run against: the renderer's when it sent
   // one, otherwise the persisted one. Both need the same token resolution.
   const orchSource = orchestrator || store.getOrchestrator();
@@ -1062,6 +1062,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
       // restore exactly the files this turn touched.
       convId,
       turnId,
+      autoCompactWindow,
       // This is the top-level user turn: it owns the token-budget pool.
       turnStart: true,
       // Built-in MCP client so `rea` shares the persistent REA server session.
@@ -1288,7 +1289,7 @@ ipcMain.handle('autobot:openLegalDoc', (_e, which) => {
   return { ok: true, path: p };
 });
 
-registerFeaturesIpc({ app, ipcMain, shell, dialog, BrowserWindow, session, store, workspace, mcp, mcpStatus, autoConnectMcp, shells, git, pluginsDir, scheduler, sandbox, secretstore, search, sessionDb, environments, depManager, updater, browser, gdrive, runAgent, providertransport, providerOauth, permGate, questionGate, pendingQuestions, windows, winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix, hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine, humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError });
+registerFeaturesIpc({ app, ipcMain, shell, dialog, BrowserWindow, session, store, workspace, mcp, mcpStatus, autoConnectMcp, shells, git, pluginsDir, scheduler, sandbox, secretstore, search, sessionDb, environments, depManager, updater, browser, gdrive, runAgent, providertransport, providerOauth, permGate, questionGate, pendingQuestions, windows, winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix, getRuntimes: () => runtimesCtrl && runtimesCtrl.getRuntimes(), hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine, humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError });
 
 app.whenReady().then(() => {
   try { secretstore.migrateLegacySafeStorage(); } catch (_) {}

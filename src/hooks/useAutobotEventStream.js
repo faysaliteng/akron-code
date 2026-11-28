@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { summarizeChangedFiles } from '../components/LiveProgress.jsx';
-import { uid, cleanErr, sendDesktopNotification, usedTokens, recordConvUsage } from '../utils/appHelpers.jsx';
+import { uid, cleanErr, sendDesktopNotification, usedTokens, recordConvUsage, buildLocalCompactDigest } from '../utils/appHelpers.jsx';
 
 export function useAutobotEventStream({
   runsByConvRef, resolveConvForEvent, isEventForLiveRun, updateSessionRun, commitSessionLive,
@@ -360,6 +360,16 @@ export function useAutobotEventStream({
           const handle = String(evt.name || evt.id || 'worker').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
           if (runRefKey) {
             updateSessionRun(runRefKey, (r) => {
+              if ((key === 'supervisor' || evt.role === 'supervisor') && r.swarmInfo) {
+                return {
+                  ...r,
+                  swarmInfo: {
+                    ...r.swarmInfo,
+                    supervisorState: status,
+                    supervisor: { ...(r.swarmInfo.supervisor || {}), model: evt.model || (r.swarmInfo.supervisor && r.swarmInfo.supervisor.model) },
+                  },
+                };
+              }
               const next = [...(r.subAgents || [])];
               const i = next.findIndex((a) => a.key === key);
               const cur = i >= 0 ? next[i] : null;
@@ -461,7 +471,18 @@ export function useAutobotEventStream({
               return { ...r, swarmInfo: { ...(r.swarmInfo || {}), phase: 'wakeup', wave: evt.wave || ((r.swarmInfo && r.swarmInfo.wave) || 0) + 1 } };
             }
             if (evt.phase === 'dispatched') {
-              return { ...r, swarmInfo: { ...(r.swarmInfo || {}), phase: 'review' } };
+              let nextAgents = r.subAgents || [];
+              if (Array.isArray(evt.results) && evt.results.length) {
+                const resMap = new Map(evt.results.map((x) => [String(x.id || x.title || ''), x]));
+                nextAgents = nextAgents.map((a) => {
+                  const hit = resMap.get(String(a.key || '')) || resMap.get(String(a.name || ''));
+                  if (!hit) return a;
+                  const st = hit.status === 'done' ? 'done'
+                    : (hit.status === 'error' ? 'error' : (hit.status === 'killed' ? 'killed' : (hit.status === 'stopped' ? 'stopped' : a.status)));
+                  return { ...a, status: st, model: hit.model || a.model, ms: hit.ms != null ? hit.ms : a.ms };
+                });
+              }
+              return { ...r, swarmInfo: { ...(r.swarmInfo || {}), phase: 'review' }, subAgents: nextAgents };
             }
             if (evt.phase === 'done') {
               return { ...r, swarmInfo: { ...(r.swarmInfo || {}), phase: 'done', ms: evt.ms } };
@@ -499,17 +520,66 @@ export function useAutobotEventStream({
           setGoal(String(evt.goal || ''));
           setNotice('Goal: ' + evt.goal);
           break;
+        case 'auto-compact': {
+          const acMeta = {
+            beforeTokens: Number(evt.beforeTokens) || 0,
+            afterTokens: Number(evt.afterTokens) || 0,
+            contextWindow: Number(evt.contextWindow) || 0,
+            dropped: Number(evt.dropped) || 0,
+            trigger: evt.trigger || 'auto',
+            at: Number(evt.at) || Date.now(),
+          };
+          setLastUsage((prev) => {
+            const sameConv = !prev || !prev.convId || prev.convId === targetConv;
+            const next = {
+              ...(sameConv && prev ? prev : {}),
+              context_tokens: acMeta.afterTokens > 0 ? acMeta.afterTokens : 1,
+              prompt_tokens: acMeta.afterTokens > 0 ? acMeta.afterTokens : 1,
+              compacted: true,
+              lastAutoCompact: acMeta,
+              model: evt.model || (sameConv && prev && prev.model) || null,
+              convId: targetConv,
+              at: acMeta.at,
+            };
+            recordConvUsage(targetConv, next);
+            return next;
+          });
+          if (targetConv && typeof setConvs === 'function') {
+            setConvs((cs) => cs.map((c) => {
+              if (c.id !== targetConv) return c;
+              const msgs = Array.isArray(c.messages) ? c.messages : [];
+              if (msgs.length >= 3) {
+                const dig = buildLocalCompactDigest(msgs, 2, acMeta.contextWindow || 1000000);
+                if (dig.droppedCount > 0) {
+                  return {
+                    ...c,
+                    messages: dig.messages,
+                    archivedMessages: [...(c.archivedMessages || []), ...msgs.slice(0, Math.max(0, msgs.length - 2))].slice(-400),
+                    compactedAt: acMeta.at,
+                    lastAutoCompact: acMeta,
+                  };
+                }
+              }
+              return { ...c, compactedAt: acMeta.at, lastAutoCompact: acMeta };
+            }));
+          }
+          break;
+        }
         case 'usage':
           if (evt.usage) {
             setLastUsage((prev) => {
               const incomingCtx = usedTokens(evt.usage);
               const prevCtx = (prev && (!prev.convId || prev.convId === targetConv)) ? usedTokens(prev) : 0;
-              const keepPrevCtx = (evt.subrun && prevCtx > 0) || (incomingCtx <= 0 && prevCtx > 0);
-              const effCtx = evt.subrun ? Math.max(incomingCtx, prevCtx) : (incomingCtx > 0 ? incomingCtx : prevCtx);
+              const isPostCompact = Boolean(evt.usage.compacted);
+              const keepPrevCtx = !isPostCompact && ((evt.subrun && prevCtx > 0) || (incomingCtx <= 0 && prevCtx > 0));
+              const effCtx = isPostCompact
+                ? incomingCtx
+                : (evt.subrun ? Math.max(incomingCtx, prevCtx) : (incomingCtx > 0 ? incomingCtx : prevCtx));
               const next = {
                 ...(keepPrevCtx && prev ? prev : {}),
                 ...evt.usage,
                 ...(effCtx > 0 ? { context_tokens: effCtx } : {}),
+                lastAutoCompact: evt.usage.lastAutoCompact || (prev && prev.lastAutoCompact) || undefined,
                 model: evt.subrun && prev && prev.model ? prev.model : (evt.model || (evt.usage && evt.usage.model) || (prev && prev.model) || null),
                 convId: targetConv,
                 at: Date.now(),

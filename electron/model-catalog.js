@@ -34,9 +34,9 @@ const MAX_OUTPUT_RESERVE = 32000;
 const PROMPT_RESERVE = 8000;
 const MIN_USABLE_TOKENS = 8000;
 
-// Compact at 90% of the usable budget. The headroom absorbs a tokenizer that
+// Compact at 80% of the usable budget. The headroom absorbs a tokenizer that
 // counts a little differently from our estimate (images, tool JSON, CJK).
-const COMPACT_RATIO = 0.9;
+const COMPACT_RATIO = 0.8;
 
 // Documented context windows, most specific first. A model id that matches
 // nothing falls back to 128k, which is the common floor for current models.
@@ -46,7 +46,7 @@ const COMPACT_RATIO = 0.9;
 // window for the session if the account is not entitled, so a paying account
 // never compacts at 20% of its real window.
 const LONG_CONTEXT_BETA = 'context-1m-2025-08-07';
-const LONG_CONTEXT_MODELS = [/^claude-sonnet-4(?:[.\-]|$)/i];
+const LONG_CONTEXT_MODELS = [/(?:^|\/|\b)claude-(?:sonnet-4|opus-4[.\-]5)(?:[.\-\[]|$)/i];
 const LONG_CONTEXT_WINDOW = 1000000;
 const SHORT_CONTEXT_WINDOW = 200000;
 
@@ -65,18 +65,16 @@ const RULES = [
   [/\bgemini-3(\.\d+)?\b/i, 1048576],
   [/\bgemini-2\.5\b/i, 1048576],
   [/\bgemini/i, 1048576],
-  // Anthropic first-party. `/v1/models` publishes `max_input_tokens`, and the
-  // live catalog is installed verbatim, so these rules only cover the window
-  // before that call lands (and accounts whose token cannot list). Measured
-  // live 2026-11-26 over all 15 models: the 5.x line plus opus/sonnet 4-6..4-8
-  // advertise 1 000 000; the 4-5 pair advertises 200 000.
-  [/^claude-(?:fable|opus|sonnet|haiku)-5(?:[.\-]|$)/i, 1000000],
-  [/^claude-(?:opus|sonnet)-4-(?:6|7|8)(?:[.\-]|$)/i, 1000000],
-  // Sonnet 4.x = 1M via beta (see LONG_CONTEXT_BETA).
-  [/^claude-sonnet-4(?:[.\-]|$)/i, LONG_CONTEXT_WINDOW],
+  // Anthropic first-party & OpenRouter prefixed IDs + short CLI aliases ([1m]).
+  // Flagship 5.x, Opus 4.5+, and Sonnet 4.x resolve to 1M; older 4.0-4.4 Opus & Haiku 4.x stay 200K.
+  [/(?:^|\/|\b)claude-(?:fable|opus|sonnet|haiku)-5(?:[.\-\[]|$)/i, 1000000],
+  [/(?:^|\/|\b)claude-opus-4[.\-](?:[5-9]|[1-9][0-9])(?:[.\-\[]|$)/i, 1000000],
+  [/(?:^|\/|\b)claude-sonnet-4(?:[.\-\[]|$)/i, LONG_CONTEXT_WINDOW],
+  [/^(?:opus|sonnet|fable)(?:\[1m\])?$|\[1m\]$/i, 1000000],
   [/\bclaude-(opus|sonnet|haiku)-4/i, SHORT_CONTEXT_WINDOW],
   [/\bclaude|opus|sonnet|haiku/i, SHORT_CONTEXT_WINDOW],
   // OpenAI
+  [/\bgpt-5[.-](?:[4-9]|1[0-9])\b|\bgpt-6\b/i, 1000000],
   [/\bgpt-5\.[12](?:-codex)?(?:-max)?\b/i, 400000],
   [/\bgpt-5\b|\bgpt-5-codex\b/i, 400000],
   [/\bcodex\b/i, 400000],
@@ -84,13 +82,16 @@ const RULES = [
   [/\bgpt-4o\b/i, 128000],
   [/\bgpt-4\b/i, 128000],
   [/\bo[1-4](?:-mini|-pro)?\b/i, 200000],
-  // xAI — the 2M window is the *fast* variants specifically; base Grok 4 is 256k.
-  [/\bgrok-[0-9.]*-?(?:code-)?fast\b/i, 2000000],
+  // xAI — fast variants are 2M, Grok 4.5+ is 1M, base Grok 4 / build is 256k.
+  [/\bgrok-(?:[0-9.]+-)?(?:(?:code|build)-)?fast\b/i, 2000000],
+  [/\bgrok-(?:4\.(?:[5-9]|[1-9][0-9])|[5-9](?:\.\d+)?)\b/i, 1000000],
   [/\bgrok-build\b/i, 256000],
   [/\bgrok-4/i, 256000],
   [/\bgrok-3/i, 131072],
   [/\bgrok/i, 131072],
-  // Open-weight / free-tier families FreeLLMAPI routes to
+  // Open-weight / Moonshot Kimi K3 / Z.ai GLM-5* (1M) & standard open-weight rules
+  [/\bkimi-k3(?:\.1-pro(?:-highspeed)?|-[a-z0-9.-]+)?\b/i, 1048576],
+  [/\bglm-5(?:[.\-][a-z0-9.\-]+)?\b/i, 1000000],
   [/\bkimi|moonshot/i, 256000],
   [/\bdeepseek/i, 128000],
   [/\bglm|zhipu|chatglm/i, 200000],
@@ -215,7 +216,7 @@ function resolveReplacementModel(providerId, missingModel) {
     return sameBase[0];
   }
   // 2. Same model line prefix (e.g. claude-sonnet-4-5 -> newest claude-sonnet-*, gemini-4-* -> newest gemini-4-*)
-  const famMatch = base.match(/^(claude-(?:opus|sonnet|haiku|fable)|gemini-[0-9.]+|gpt-[0-9.]+|grok-[0-9.]+|deepseek)/i);
+  const famMatch = base.match(/^(claude-(?:opus|sonnet|haiku|fable)|gemini-[0-9.]+|gpt-[0-9.]+|grok-[0-9.]+|kimi-k[0-9.]+|glm-[0-9.]+|deepseek)/i);
   if (famMatch) {
     const fam = famMatch[1].toLowerCase();
     const sameFam = list.filter((e) => e.id.toLowerCase().startsWith(fam));
@@ -267,13 +268,21 @@ function thinkingCapabilitiesFor(model, providerId) {
       discrete: true,
     };
   }
-  const thinkingCapable = /^(?:gemini-(?:2\.5|[3-9])|claude-(?:opus|sonnet|fable)-(?:3-7|[4-9])|claude-haiku-(?:4-5|[5-9])|o[1-9]|gpt-[5-9]|codex|grok-[3-9]|deepseek-(?:r1|reasoner)|qwq|kimi-k2)/i.test(id);
+  const thinkingCapable = /^(?:gemini-(?:2\.5|[3-9])|claude-(?:opus|sonnet|fable)-(?:3-7|[4-9])|claude-haiku-(?:4-5|[5-9])|o[1-9]|gpt-[5-9]|codex|grok-[3-9]|deepseek-(?:r1|reasoner)|qwq|kimi-k[23]|glm-5)/i.test(id);
   return {
     supported: thinkingCapable,
     levels: thinkingCapable ? (hasXHigh ? ['auto', 'low', 'medium', 'high', 'xhigh'] : ['auto', 'low', 'medium', 'high']) : [],
     variants: null,
     discrete: false,
   };
+}
+
+/** Rule-only floor lookup so stale caches/registries cannot under-cap 1M+ flagship models. */
+function ruleContextWindowFor(model) {
+  const id = norm(model);
+  if (!id) return 128000;
+  for (const [re, win] of RULES) if (re.test(id)) return win;
+  return 128000;
 }
 
 /**
@@ -299,8 +308,7 @@ function contextWindowFor(model, providerId, explicit) {
       if (entry.label && String(entry.label).toLowerCase() === id.toLowerCase()) return entry.contextWindow;
     }
   }
-  for (const [re, win] of RULES) if (re.test(id)) return win;
-  return 128000;
+  return ruleContextWindowFor(id);
 }
 
 /**
@@ -402,6 +410,7 @@ function snapshot() {
 
 module.exports = {
   CHARS_PER_TOKEN,
+  COMPACT_RATIO,
   RULES,
   LONG_CONTEXT_BETA,
   LONG_CONTEXT_WINDOW,
@@ -415,6 +424,7 @@ module.exports = {
   resolveReplacementModel,
   thinkingCapabilitiesFor,
   snapshot,
+  ruleContextWindowFor,
   contextWindowFor,
   budgetFor,
   budgetForModel,

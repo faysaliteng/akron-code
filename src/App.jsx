@@ -47,7 +47,7 @@ import { ApplicationSettingsSection, AppearanceStudioSection, BrowserSettingsSec
 // `storeError` stays honest: dismissal is per surface and per mounted
 // component, so it never clears the underlying error, only this rendering of it.
 import {
-  ProvNotice, renderMarkdown, resolveLoopbackKey, timeGreeting, cleanErr, usedTokens, contextWindowFor, effectiveUsageForConv,
+  ProvNotice, renderMarkdown, resolveLoopbackKey, timeGreeting, cleanErr, usedTokens, contextWindowFor, resolveEffectiveContextWindow, estimateConvBaselineTokens, effectiveUsageForConv, recordConvUsage, runCompactNowFlow,
   PRESETS, PRESET_KEYS, STYLES, REASON_LEVELS, DEFAULT_PROVIDER, loadJSON, saveJSON, uid, Logo,
   LinkPreviews, fmtTokens, estimateCost, fmtCost, msgText, buildDirectives, fmtElapsed, fmtMessageTimestamp, fmtMessageFullTimestamp,
 } from './utils/appHelpers.jsx';
@@ -516,12 +516,14 @@ export default function App() {
     window.__akronTestHarness = {
       setTheme: (theme) => setSettings((s) => ({ ...s, theme: theme === 'light' ? 'light' : 'dark' })),
       setPanel: (p) => setPanel(p),
+      setProvider: (p) => setSessionProvider(p),
       openSettings: (sec) => { setSettingsInitialSection(sec || 'providers'); setShowSettings(true); },
       closeSettings: () => setShowSettings(false),
       setConvs: (list, nextActiveId) => {
         setConvs(list);
         if (nextActiveId) setActiveId(nextActiveId);
       },
+      compactNow: (id) => compactConversation(id || activeIdRef.current, { trigger: 'manual', keepTail: 2 }),
       setPermissionQueue: (q) => setPermissionQueue(Array.isArray(q) ? q : []),
       setQueue: (items, pausedMap) => {
         setQueued(Array.isArray(items) ? items : []);
@@ -619,6 +621,66 @@ export default function App() {
       }
     });
   }, [activeId, setSessionCwd]);
+
+  // Shared compaction executor for "Compact now" (/compact), session-open (>=80%), and pre-send (>=80%).
+  const compactConversation = useCallback(async (targetConvId, { trigger = 'manual', keepTail = 2, providerOverride = null, lastUsageOverride = null } = {}) => {
+    const conv = convsRef.current.find((c) => c.id === targetConvId);
+    if (!conv || !Array.isArray(conv.messages) || conv.messages.length < 2) return null;
+    const effProv = providerOverride || getSessionBundle(targetConvId).provider || activeProvider;
+    const effU = lastUsageOverride || effectiveUsageForConv(lastUsage, conv, effProv, null);
+    const res = await runCompactNowFlow({
+      conv,
+      provider: effProv,
+      lastUsage: effU,
+      keepTail,
+      trigger,
+      compactIpc: window.autobot && window.autobot.compact ? window.autobot.compact : null,
+    });
+    if (!res) return null;
+    setConvs((cs) => cs.map((c) => (c.id === targetConvId ? {
+      ...c,
+      messages: res.compactedMessages,
+      archivedMessages: [...(c.archivedMessages || []), ...res.archivedHead].slice(-400),
+      compactedAt: res.acMeta.at,
+      lastAutoCompact: res.acMeta,
+    } : c)));
+    recordConvUsage(targetConvId, res.nextUsage);
+    if (targetConvId === activeIdRef.current) setLastUsage(res.nextUsage);
+    const pctBefore = res.contextWindow > 0 ? Math.min(100, Math.round((res.beforeTokens / res.contextWindow) * 100)) : 0;
+    const pctAfter = res.contextWindow > 0 ? Math.max(1, Math.round((res.afterTokens / res.contextWindow) * 100)) : 0;
+    const winTag = res.contextWindow >= 1000000 ? `${Math.round(res.contextWindow / 100000) / 10}M` : `${Math.round(res.contextWindow / 1000)}K`;
+    setNotice(`Auto-compacted ${res.droppedCount} earlier messages (${pctBefore}% → ${pctAfter}% of ${winTag}).`);
+    return res;
+  }, [activeProvider, lastUsage, getSessionBundle, setNotice]);
+
+  // Always-on auto-compact: whenever active session opens or finishes at >=80% of context window, compact automatically.
+  const autoCompactedSessionRef = useRef(new Set());
+  useEffect(() => {
+    if (!activeId) return;
+    const conv = convsRef.current.find((c) => c.id === activeId);
+    if (!conv || !Array.isArray(conv.messages) || conv.messages.length < 2) return;
+    const acMode = (localStorage.getItem('autobot:autoCompactWindow') || 'auto').trim().toLowerCase();
+    if (acMode === 'off' || acMode === 'false' || acMode === '0') return;
+    const runState = runsByConvRef.current && runsByConvRef.current[activeId];
+    if (runState && runState.streaming) return;
+    const guardKey = `${activeId}:${conv.messages.length}`;
+    if (autoCompactedSessionRef.current.has(guardKey)) return;
+
+    const effProv = getSessionBundle(activeId).provider || activeProvider;
+    const effU = effectiveUsageForConv(lastUsage, conv, effProv, null);
+    const win = resolveEffectiveContextWindow(effProv, effU);
+    const used = usedTokens(effU);
+    if (typeof window !== 'undefined' && window.__akronTestHarness) {
+      window.__akronTestHarness._lastAutoCompactCheck = { activeId, len: conv.messages.length, win, used, ratio: win > 0 ? used / win : 0, acMode, streaming: Boolean(runState && runState.streaming) };
+    }
+    if (!(win > 0 && used > 0 && (used / win) >= 0.8)) return;
+
+    let cancelled = false;
+    Promise.resolve(compactConversation(activeId, { trigger: 'auto-80pct', keepTail: 2, providerOverride: effProv, lastUsageOverride: effU }))
+      .then((res) => { if (res && !cancelled) autoCompactedSessionRef.current.add(guardKey); })
+      .catch((err) => { console.error('[auto-compact-80pct]', err); });
+    return () => { cancelled = true; };
+  }, [activeId, convs, activeProvider, lastUsage, getSessionBundle, runsByConvRef, compactConversation]);
 
   // Skill activation/deactivation (per-skill toggle, persisted server-side).
   const refreshSkills = useCallback(async () => {
@@ -848,7 +910,18 @@ export default function App() {
         ts: Date.now(),
         createdAt: Date.now(),
       };
-      const currentMessages = isNewConv ? [] : (convsRef.current.find((c) => c.id === convId)?.messages || []);
+      const convBeforeSend = isNewConv ? null : (convsRef.current.find((c) => c.id === convId) || null);
+      let currentMessages = convBeforeSend && Array.isArray(convBeforeSend.messages) ? convBeforeSend.messages : [];
+      const acModeSend = (localStorage.getItem('autobot:autoCompactWindow') || 'auto').trim().toLowerCase();
+      if (convBeforeSend && currentMessages.length >= 2 && acModeSend !== 'off' && acModeSend !== 'false' && acModeSend !== '0') {
+        const effUSend = effectiveUsageForConv(lastUsage, convBeforeSend, effProvider, null);
+        const winSend = resolveEffectiveContextWindow(effProvider, effUSend);
+        const projectedSend = Math.max(usedTokens(effUSend), estimateConvBaselineTokens({ messages: [...currentMessages, userMsg] }, effProvider));
+        if (winSend > 0 && (projectedSend / winSend) >= 0.8) {
+          const compactedRes = await compactConversation(convId, { trigger: 'pre-send-80pct', keepTail: 2, providerOverride: effProvider, lastUsageOverride: effUSend });
+          if (compactedRes && Array.isArray(compactedRes.compactedMessages)) currentMessages = compactedRes.compactedMessages;
+        }
+      }
       if (isNewConv) {
         activeIdRef.current = convId;
         setActiveId(convId);
@@ -857,7 +930,7 @@ export default function App() {
         setConvs((cs) => cs.map((c) => (c.id === convId ? {
           ...c,
           ...(c.messages.length === 0 ? { title: autoTitle } : {}),
-          messages: [...c.messages, userMsg],
+          messages: [...(Array.isArray(currentMessages) ? currentMessages : c.messages), userMsg],
         } : c)));
       }
       if (!Array.isArray(attsOverride)) setAttachments([]);
@@ -900,6 +973,7 @@ export default function App() {
         convId,
         title: convsRef.current.find((c) => c.id === convId)?.title || autoTitle,
         swarm: sessSwarm,
+        autoCompactWindow: localStorage.getItem('autobot:autoCompactWindow') || 'auto',
       });
       if (started && started.ok === false) {
         commitSessionLive(convId, runId);
@@ -1567,16 +1641,8 @@ export default function App() {
       }
       case 'compact': {
         const msgs = (active && active.messages) || [];
-        if (msgs.length < 4) { note('Nothing to compact — this conversation is still short.'); break; }
-        note('⏳ Compacting ' + msgs.length + ' messages…');
-        const r = await window.autobot.compact({ provider: activeProvider, messages: msgs });
-        if (!r || !r.ok) { note('❌ Compact failed: ' + ((r && r.error) || 'unknown error')); break; }
-        const digest = { id: uid(), role: 'assistant', content: '**Compacted conversation** — earlier turns were summarized.\n\n' + String(r.summary || ''), ts: Date.now() };
-        setConvs((cs) => cs.map((c) => (c.id === activeId ? { ...c, messages: [digest], compactedAt: Date.now() } : c)));
-        const compEst = Math.max(200, Math.round(String(r.summary || '').length / 3.8));
-        const nextCompUsage = { prompt_tokens: compEst, context_tokens: compEst, completion_tokens: Number(r.usage && r.usage.completion_tokens) || 0, total_tokens: compEst, calls: 1, model: r.model || model, estimated: true, convId: activeId, at: Date.now() };
-        recordConvUsage(activeId, nextCompUsage);
-        setLastUsage(nextCompUsage);
+        if (msgs.length < 2) { note('Nothing to compact — this conversation is still short.'); break; }
+        await compactConversation(activeId, { trigger: 'manual', keepTail: 2 });
         break;
       }
       case 'model':
@@ -1672,7 +1738,7 @@ export default function App() {
         if (!u) { note('No token usage recorded yet for this session. Run a message first.'); break; }
         const cost = estimateCost(u.model || model, u.prompt_tokens, u.completion_tokens);
         const ctxUsed = usedTokens(u);
-        const ctxWin = contextWindowFor(u.model || model);
+        const ctxWin = resolveEffectiveContextWindow(activeProvider, u);
         const ctxPct = ctxWin > 0 && ctxUsed > 0 ? ((ctxUsed / ctxWin) * 100 < 1 ? '<1' : String(Math.round((ctxUsed / ctxWin) * 100))) : '0';
         note('**Usage** (last run)\n- Model: `' + (u.model || model) + '`\n- Prompt: ' + fmtTokens(u.prompt_tokens) + ' tokens (sum across ' + (u.calls || 1) + ' call(s))\n- Completion: ' + fmtTokens(u.completion_tokens) + ' tokens\n- Total: ' + fmtTokens(u.total_tokens) + ' tokens across ' + (u.calls || 1) + ' call(s)\n- Context now: ' + fmtTokens(ctxUsed) + ' / ' + fmtTokens(ctxWin) + ' (' + ctxPct + '% of window)\n- Est. cost: ' + fmtCost(cost));
         break;
@@ -1688,7 +1754,7 @@ export default function App() {
       case 'context': {
         const chars = (messages || []).reduce((n, m) => n + msgText(m).length, 0) + (live ? (live.content || '').length : 0);
         const est = Math.round(chars / 4);
-        const win = contextWindowFor(model);
+        const win = resolveEffectiveContextWindow(activeProvider, effectiveUsageForConv(lastUsage, active, activeProvider, liveForActive));
         const pct = win ? Math.min(100, (est / win) * 100) : 0;
         const bar = '█'.repeat(Math.round(pct / 5)) + '░'.repeat(20 - Math.round(pct / 5));
         note('**Context**\n- Model: `' + model + '`\n- Window: ' + fmtTokens(win) + ' tokens\n- This conversation: ~' + fmtTokens(est) + ' tokens (' + pct.toFixed(1) + '%)\n`' + bar + '`\n- Messages: ' + (messages || []).length);
@@ -2532,7 +2598,7 @@ export default function App() {
           envState={envState}
           contextPct={(() => {
             const effU = effectiveUsageForConv(lastUsage, active, activeProvider, liveForActive);
-            const win = contextWindowFor((effU && effU.model) || (activeProvider && activeProvider.model) || '');
+            const win = resolveEffectiveContextWindow(activeProvider, effU);
             const used = usedTokens(effU);
             if (!(win > 0 && used > 0)) return null;
             const raw = (used / win) * 100;

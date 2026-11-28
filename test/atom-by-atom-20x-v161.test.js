@@ -23,7 +23,8 @@ test('20x atom-by-atom verification of v1.6.1 fixes (UI sync, collapsed sidebar,
   const ipcFeatSrc = fs.readFileSync(path.join(ROOT, 'electron/ipc/ipc-features.js'), 'utf8');
   const settingsBodySrc = fs.readFileSync(path.join(ROOT, 'src/components/settings/SettingsModalBody.jsx'), 'utf8');
   const sidebarJsx = fs.readFileSync(path.join(ROOT, 'src/components/sidebar/ProjectsSidebar.jsx'), 'utf8');
-  const inputBarJsx = fs.readFileSync(path.join(ROOT, 'src/components/chat/InputBarView.jsx'), 'utf8');
+  const inputBarJsx = fs.readFileSync(path.join(ROOT, 'src/components/chat/InputBarView.jsx'), 'utf8')
+    + '\n' + fs.readFileSync(path.join(ROOT, 'src/components/chat/ModelPickerPopover.jsx'), 'utf8');
   const stylesCss = fs.readFileSync(path.join(ROOT, 'src/styles.css'), 'utf8');
   const emeraldCss = fs.readFileSync(path.join(ROOT, 'src/styles/emerald-carbon.css'), 'utf8');
   const extToolsSrc = fs.readFileSync(path.join(ROOT, 'resources/akron-browser-bot/background/tools.js'), 'utf8');

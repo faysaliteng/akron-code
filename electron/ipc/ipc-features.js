@@ -10,7 +10,7 @@ module.exports = function registerFeaturesIpc(ctx) {
     store, workspace, mcp, mcpStatus, autoConnectMcp, shells, git, pluginsDir, scheduler, sandbox,
     secretstore, search, sessionDb, environments, depManager, updater, browser,
     gdrive, runAgent, providertransport, providerOauth, permGate, questionGate, pendingQuestions, windows,
-    winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix,
+    winFor, cwdFor, winTitleBarOverlay, applyFeatures, runtimePathPrefix, getRuntimes,
     hydrateProvider, freellmFallbackApiKey, broadcast, mainWindow, oneLine,
     humanizeLLMError, rea, mcpoauth, freellm, poolNoticeDeduper, sessionlog, paths, describeConnectError,
   } = ctx;
@@ -70,22 +70,57 @@ ipcMain.handle('autobot:chatOnce', async (event, payload) => {
 
 // Real `/compact`: summarize the transcript with the active model, then the
 // renderer swaps the conversation for the returned digest. Same retry/failover
-// path as a normal turn, so a transient 429/502 doesn't break compaction.
+// path as a normal turn, so a transient 429/502 or offline environment never
+// breaks compaction (falls back deterministically to structured extraction).
 ipcMain.handle('autobot:compact', async (event, payload) => {
+  const msgs = (payload && payload.messages) || [];
+  const text = (c) => {
+    if (c == null) return '';
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) return c.map((x) => (x && typeof x === 'object' ? (x.text || '') : String(x))).join('\n');
+    try { return JSON.stringify(c); } catch { return String(c); }
+  };
+  const buildLocalSummary = () => {
+    const asks = [];
+    const files = new Set();
+    const outcomes = [];
+    for (const m of msgs) {
+      if (!m || !m.role || m.role === 'system') continue;
+      const body = text(m.content).replace(/\s+/g, ' ').trim();
+      if (m.role === 'user' && body) asks.push(body.slice(0, 160));
+      else if (m.role === 'assistant' && body) outcomes.push(body.slice(0, 160));
+      if (Array.isArray(m.tools)) {
+        for (const t of m.tools) {
+          const a = (t && t.args) || {};
+          const fp = a.path || a.file_path || a.filePath;
+          if (fp && files.size < 25) files.add(String(fp));
+        }
+      }
+    }
+    return [
+      `Compacted ${msgs.length} earlier messages into working digest.`,
+      asks.length ? `- User requests: ${[...new Set(asks)].slice(-6).map((x) => `"${x}"`).join(' · ')}` : '',
+      files.size ? `- Files touched: ${[...files].join(', ')}` : '',
+      outcomes.length ? `- Recent progress: ${outcomes.slice(-4).join(' · ')}` : '',
+    ].filter(Boolean).join('\n');
+  };
+  if (payload && payload.automatic) {
+    return {
+      ok: true,
+      summary: buildLocalSummary(),
+      usage: null,
+      model: (payload && payload.provider && payload.provider.model) || '',
+      before: msgs.length,
+      automatic: true,
+    };
+  }
   try {
     const { chatOnce } = require('../llm');
-    const msgs = (payload && payload.messages) || [];
     let p;
-    try { p = await resolveCallableProvider(payload && payload.provider, 'Summarize conversation transcript concisely'); } catch (e) {
-      return { ok: false, error: e.message, needsSignIn: e.code === 'provider_needs_signin' };
+    try { p = await resolveCallableProvider(payload && payload.provider, 'Summarize conversation transcript concisely'); } catch (_) { p = null; }
+    if (!p) {
+      return { ok: true, summary: buildLocalSummary(), usage: null, model: (payload && payload.provider && payload.provider.model) || '', before: msgs.length, fallback: true };
     }
-    const text = (c) => {
-      if (c == null) return '';
-      if (typeof c === 'string') return c;
-      if (Array.isArray(c)) return c.map((x) => (x && typeof x === 'object' ? (x.text || '') : String(x))).join('\n');
-      try { return JSON.stringify(c); } catch { return String(c); }
-    };
-    // Keep the tail intact — recent turns matter most; cap the head.
     const lines = [];
     for (const m of msgs) {
       if (!m || !m.role || m.role === 'system') continue;
@@ -110,9 +145,12 @@ ipcMain.handle('autobot:compact', async (event, payload) => {
       { role: 'user', content: 'Summarize this conversation transcript.\n\n' + transcript },
     ];
     const res = await chatOnce({ provider: p, messages: summaryPrompt, maxTokens: Math.min(4000, Number(p.maxTokens) || 4000) });
-    return { ok: true, summary: res.content, usage: res.usage, model: res.model, before: msgs.length };
-  } catch (e) {
-    return { ok: false, error: humanizeLLMError(e) };
+    if (res && String(res.content || '').trim()) {
+      return { ok: true, summary: res.content, usage: res.usage, model: res.model, before: msgs.length };
+    }
+    return { ok: true, summary: buildLocalSummary(), usage: (res && res.usage) || null, model: (res && res.model) || p.model, before: msgs.length, fallback: true };
+  } catch (_) {
+    return { ok: true, summary: buildLocalSummary(), usage: null, model: (payload && payload.provider && payload.provider.model) || '', before: msgs.length, fallback: true };
   }
 });
 
@@ -1985,6 +2023,42 @@ ipcMain.handle('autobot:depsInstallLsp', (e, id) => depManager.installLspServer(
     try { e.sender.send('autobot:event', { type: 'dep-lsp', ...evt }); } catch (_) {}
   },
 }));
+ipcMain.handle('autobot:listGitPlugins', () => ({
+  ok: true,
+  plugins: typeof pluginsDir.listGitPlugins === 'function' ? pluginsDir.listGitPlugins() : [],
+}));
+ipcMain.handle('autobot:installGitPlugin', (_e, payload) => {
+  if (typeof pluginsDir.installGitPlugin !== 'function') return { ok: false, error: 'Git plugin installer unavailable' };
+  return pluginsDir.installGitPlugin(payload || {});
+});
+ipcMain.handle('autobot:checkPluginAndDepUpdates', async (e, opts = {}) => {
+  const apply = !(opts && opts.apply === false);
+  const lsp = typeof depManager.checkAndUpdateInstalledLsps === 'function'
+    ? await depManager.checkAndUpdateInstalledLsps({
+        apply,
+        onProgress: (evt) => { try { e.sender.send('autobot:event', { type: 'dep-lsp', ...evt }); } catch (_) {} },
+      }).catch((err) => ({ ok: false, error: oneLine(err) }))
+    : { ok: true, checkedCount: 0, updatedCount: 0, updatesAvailable: 0, results: [] };
+  const gitPlugins = typeof pluginsDir.updateAllGitPlugins === 'function'
+    ? await pluginsDir.updateAllGitPlugins({ checkOnly: !apply }).catch((err) => ({ ok: false, error: oneLine(err) }))
+    : { ok: true, checkedCount: 0, updatedCount: 0, updatesAvailable: 0, results: [] };
+  let runtimes = null;
+  if (opts && opts.includeRuntimes && typeof getRuntimes === 'function') {
+    try {
+      const rt = getRuntimes();
+      if (rt) runtimes = apply ? await rt.updateAll() : await rt.checkAll();
+    } catch (err) {
+      runtimes = { ok: false, error: oneLine(err) };
+    }
+  }
+  return {
+    ok: true,
+    lsp,
+    gitPlugins,
+    runtimes,
+    status: depManager.getDependenciesStatus(),
+  };
+});
 ipcMain.handle('autobot:updateCheck', (e, opts) => updater.checkForUpdates({
   currentVersion: app.getVersion(),
   ...(opts || {}),

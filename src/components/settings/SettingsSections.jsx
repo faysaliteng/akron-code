@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Icon } from '../Icon.jsx';
+import { Icon, ModelLogo } from '../Icon.jsx';
+import { CliLoginModal, useCliLogin } from '../CliLoginModal.jsx';
 import { normBase, LOCAL_BASE } from '../../providerstatus-ui.mjs';
 import { UI_FONT_PRESETS, MONO_FONT_PRESETS, DEFAULT_TYPOGRAPHY, normalizeTypography, resolveUiFontStack, resolveMonoFontStack, applyTypographyToDocument } from '../../typography.js';
 import { HARNESS_PROFILES, loadJSON, saveJSON, useDismiss, ProvNotice, contextWindowFor } from '../../utils/appHelpers.jsx';
@@ -211,8 +212,14 @@ export function AccountSection({ T, provider, setProvider }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  // Claude sign-in is CLI-owned; this hook gives the panel the same flow the
-  // composer's model menu uses.
+  // Unified native CLI login modal across every subscription provider
+  const cliLogin = useCliLogin({
+    onSuccess: async () => {
+      setNotice('');
+      await load();
+    },
+    onNotice: (msg) => setNotice(msg),
+  });
   const claude = useClaudeReconnect({ t: T, onChanged: load });
 
   // Main reports the outcome of a paste-the-code sign-in here.
@@ -390,25 +397,29 @@ export function AccountSection({ T, provider, setProvider }) {
         <div key={pv.id} className="prov-group acct-prov">
           <div className="prov-head acct-card-head">
             <div className="acct-title-wrap">
+              <ModelLogo provider={pv.id} size={18} />
               <span className="prov-name">{pv.label}</span>
               <span className={'acct-count' + (hasAccounts ? ' connected' : '')}>
                 {pv.accounts.length === 1 ? '1 account' : (pv.accounts.length ? pv.accounts.length + ' ' + T('account.count') : T('account.none'))}
               </span>
             </div>
             <div className="acct-actions">
-              {pv.id === 'claude' && (
-                <button type="button" className={needsAction ? 'primary' : ''} disabled={!!busy || claude.busy} onClick={claude.start}>
-                  <Icon name="ArrowInSquare" size={13} /> {claude.busy ? T('account.opening') : T('account.reconnect')}
-                </button>
-              )}
+              <button
+                type="button"
+                data-testid={`acct-signin-${pv.id}`}
+                className={needsAction ? 'primary' : ''}
+                disabled={!!busy || cliLogin.busy}
+                onClick={() => cliLogin.start(pv.id)}
+              >
+                <Icon name="ArrowInSquare" size={13} /> {hasAccounts ? 'Reconnect' : 'Sign in'}
+              </button>
               {pv.id !== 'claude' && pv.canBrowserSignIn && (
                 <button
                   type="button"
-                  className={needsAction ? 'primary' : ''}
                   disabled={!!busy && busy !== 'signin:' + pv.id}
                   onClick={() => (busy === 'signin:' + pv.id ? cancelBrowserSignIn(pv.id) : act('signin', pv.id))}
                 >
-                  <Icon name="ArrowInSquare" size={13} /> {busy === 'signin:' + pv.id ? T('account.cancel') : (pv.accounts.length ? T('account.add') : T('account.signIn'))}
+                  <Icon name="Globe" size={13} /> {busy === 'signin:' + pv.id ? T('account.cancel') : 'Browser OAuth'}
                 </button>
               )}
               {pv.id !== 'claude' && pv.canManualCode && (
@@ -520,6 +531,7 @@ export function AccountSection({ T, provider, setProvider }) {
       )}
 
       <ProvNotice text={notice || claude.notice} />
+      <CliLoginModal controller={cliLogin} />
     </div>
   );
 }
@@ -738,7 +750,7 @@ export function RuntimesSection() {
     <>
       <h3><Icon name="Settings" size={14} /> Bundled agent runtimes</h3>
       <p className="muted" style={{ marginTop: -6 }}>
-        Official Claude Code, Codex, Grok CLI, and Gemini CLI binaries ship built-in, hydrate safely
+        Official Claude Code, Codex, Grok CLI, Gemini CLI, and Kimi Code CLI binaries ship built-in, hydrate safely
         for instant rollback, authenticate via native OAuth, and auto-update from each vendor&apos;s release feed.
       </p>
       <label className="check">
@@ -800,6 +812,11 @@ export function DependenciesAndUpdaterSection({ setNotice }) {
   const [updBusy, setUpdBusy] = useState('');
   const [updProg, setUpdProg] = useState(null);
   const [staged, setStaged] = useState(null);
+  const [gitPlugins, setGitPlugins] = useState([]);
+  const [gitRepoUrl, setGitRepoUrl] = useState('');
+  const [gitBusy, setGitBusy] = useState('');
+  const [ecoBusy, setEcoBusy] = useState(false);
+  const [ecoNote, setEcoNote] = useState('');
   const api = (typeof window !== 'undefined' && window.autobot) || {};
 
   const refreshDeps = useCallback(async () => {
@@ -809,11 +826,18 @@ export function DependenciesAndUpdaterSection({ setNotice }) {
         if (v && (v.app || v.version)) setCurVer(String(v.app || v.version));
       } catch (_) {}
     }
-    if (!api.depsStatus) return;
-    try {
-      const r = await api.depsStatus();
-      if (r && r.ok) setDeps(r);
-    } catch (_) {}
+    if (api.depsStatus) {
+      try {
+        const r = await api.depsStatus();
+        if (r && r.ok) setDeps(r);
+      } catch (_) {}
+    }
+    if (api.listGitPlugins) {
+      try {
+        const g = await api.listGitPlugins();
+        if (g && g.ok && Array.isArray(g.plugins)) setGitPlugins(g.plugins);
+      } catch (_) {}
+    }
   }, [api]);
 
   useEffect(() => { refreshDeps(); }, [refreshDeps]);
@@ -825,8 +849,51 @@ export function DependenciesAndUpdaterSection({ setNotice }) {
       if (evt.type === 'dep-lsp' && evt.message) setLspNote(evt.message);
       if (evt.type === 'app-update-progress') setUpdProg(evt);
       if (evt.type === 'app-update-available' && evt.latestVersion) setUpd((u) => u || evt);
+      if (evt.type === 'ecosystem-updated') refreshDeps();
     });
-  }, [api]);
+  }, [api, refreshDeps]);
+
+  const checkEcosystemUpdates = async () => {
+    if (!api.checkPluginAndDepUpdates) return;
+    setEcoBusy(true);
+    setEcoNote('Checking CLI runtimes, LSP servers, and Git plugins…');
+    try {
+      const r = await api.checkPluginAndDepUpdates({ apply: true, includeRuntimes: true });
+      if (r && r.status) setDeps(r.status);
+      if (api.listGitPlugins) {
+        const g = await api.listGitPlugins();
+        if (g && g.ok && Array.isArray(g.plugins)) setGitPlugins(g.plugins);
+      }
+      const lspUpd = (r && r.lsp && r.lsp.updatedCount) || 0;
+      const gitUpd = (r && r.gitPlugins && r.gitPlugins.updatedCount) || 0;
+      const rtUpd = (r && r.runtimes && Array.isArray(r.runtimes.results) ? r.runtimes.results.filter((x) => x && x.ok).length : 0);
+      const summary = `Ecosystem sync complete · Runtimes updated: ${rtUpd} · LSPs updated: ${lspUpd} · Git plugins updated: ${gitUpd}`;
+      setEcoNote(summary);
+      setNotice && setNotice(summary);
+    } catch (err) {
+      setEcoNote(`Sync failed: ${(err && err.message) || 'unknown error'}`);
+    } finally {
+      setEcoBusy(false);
+    }
+  };
+
+  const installGitPlugin = async (urlOverride = '', idOverride = '') => {
+    const targetUrl = String(urlOverride || gitRepoUrl || '').trim();
+    if (!targetUrl || !api.installGitPlugin) return;
+    setGitBusy(idOverride || 'clone');
+    try {
+      const r = await api.installGitPlugin({ url: targetUrl, id: idOverride || undefined });
+      if (r && r.ok) {
+        if (!urlOverride) setGitRepoUrl('');
+        await refreshDeps();
+        setEcoNote(`Synced Git plugin ${r.id} (${(r.entry && r.entry.commitSha || '').slice(0, 7) || 'ready'})`);
+      } else {
+        setEcoNote(`Git plugin sync failed: ${(r && r.error) || 'unknown error'}`);
+      }
+    } finally {
+      setGitBusy('');
+    }
+  };
 
   const installLsp = async (id) => {
     if (!api.depsInstallLsp) return;
@@ -944,7 +1011,9 @@ export function DependenciesAndUpdaterSection({ setNotice }) {
             <div key={l.id} className="env-prof-row">
               <div className="env-prof-meta">
                 <span className="env-prof-title">{l.label}</span>
-                <span className="env-prof-sub">{l.languages} · {l.installed ? l.path : 'Not installed'}</span>
+                <span className="env-prof-sub">
+                  {l.languages} · {l.installed ? `${l.installedVersion ? 'v' + l.installedVersion + ' · ' : ''}${l.path}` : 'Not installed'}
+                </span>
               </div>
               <div className="env-prof-actions">
                 <button
@@ -959,7 +1028,69 @@ export function DependenciesAndUpdaterSection({ setNotice }) {
             </div>
           ))}
         </div>
+        <div className="rt-foot" style={{ marginTop: 12 }}>
+          <button
+            type="button"
+            data-testid="btn-check-eco-updates"
+            className="btn-mini primary"
+            disabled={ecoBusy}
+            onClick={checkEcosystemUpdates}
+          >
+            {ecoBusy ? 'Checking…' : 'Check Plugin & Dependency Updates'}
+          </button>
+          {ecoNote && <span className="muted rt-note">{ecoNote}</span>}
+        </div>
         {lspNote && <p className="muted" style={{ marginTop: 8 }}>{lspNote}</p>}
+      </div>
+
+      <div className="settings-card" data-testid="git-plugins-card">
+        <h3>External Git Plugins &amp; Skills (Auto-Sync)</h3>
+        <p className="muted" style={{ marginTop: -4 }}>
+          Clone external Git repositories containing <code>SKILL.md</code> or plugin bundles. Tracked repos fast-forward automatically on launch while preserving your configuration.
+        </p>
+        <div className="prov-add" style={{ marginTop: 8, marginBottom: 10 }}>
+          <input
+            type="text"
+            className="prov-token-in"
+            placeholder="https://github.com/org/akron-skill-pack.git"
+            value={gitRepoUrl}
+            onChange={(e) => setGitRepoUrl(e.target.value)}
+          />
+          <button
+            type="button"
+            className="btn-mini primary"
+            disabled={!!gitBusy || !gitRepoUrl.trim()}
+            onClick={() => installGitPlugin()}
+          >
+            {gitBusy === 'clone' ? 'Cloning…' : 'Clone & Track'}
+          </button>
+        </div>
+        {gitPlugins.length === 0 ? (
+          <p className="muted">No external Git plugin repositories tracked yet.</p>
+        ) : (
+          <div className="env-prof-list">
+            {gitPlugins.map((g) => (
+              <div key={g.id} className="env-prof-row">
+                <div className="env-prof-meta">
+                  <span className="env-prof-title">{g.name || g.id}</span>
+                  <span className="env-prof-sub">
+                    {g.url} · branch <code>{g.branch || 'main'}</code> · <code>{(g.commitSha || '').slice(0, 7) || 'head'}</code> · {g.syncedSkillsCount || 0} skill(s)
+                  </span>
+                </div>
+                <div className="env-prof-actions">
+                  <button
+                    type="button"
+                    className="btn-mini"
+                    disabled={!!gitBusy}
+                    onClick={() => installGitPlugin(g.url, g.id)}
+                  >
+                    {gitBusy === g.id ? 'Syncing…' : 'Sync'}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </>
   );

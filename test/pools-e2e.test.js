@@ -131,8 +131,8 @@ const lastRole = (b) => { const m = (b.messages || [])[b.messages.length - 1]; r
     const p = router.freellmPreset();
     assert.deepStrictEqual(Object.keys(p.roles), ['planner', 'coder', 'vision', 'fast', 'longctx']);
     assert.strictEqual(p.roles.planner.models[0].model, 'gpt-5.6-luna');
-    assert.strictEqual(p.roles.coder.models[0].model, 'qwen3.8-flash');
-    assert.strictEqual(p.roles.fast.models[0].model, 'qwen3.8-27b');
+    assert.strictEqual(p.roles.coder.models[0].model, 'kimi-k3');
+    assert.strictEqual(p.roles.fast.models[0].model, 'glm-5.3-flash');
   });
 
   console.log('Gate:');

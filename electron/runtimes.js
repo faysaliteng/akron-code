@@ -242,6 +242,49 @@ const DESCRIPTORS = [
     },
     binPath: (dir, platform) => path.join(dir, 'bin', platform === 'win32' ? 'gemini.cmd' : 'gemini'),
   },
+  {
+    id: 'kimi-code',
+    label: 'Kimi Code CLI',
+    vendor: 'Moonshot AI',
+    bin: 'kimi',
+    versionArgs: ['--version'],
+    async meta(ctx) {
+      const j = await ctx.json(ctx.npm + '/@moonshot-ai/kimi-code/latest');
+      const version = String(j.version || '');
+      if (!version) throw new Error('kimi-code: registry returned no version');
+      return { version, url: j.dist && j.dist.tarball, integrity: j.dist && j.dist.integrity, kind: 'tgz' };
+    },
+    async stage(pkgRoot, dest, ctx) {
+      const distSrc = path.join(pkgRoot, 'dist');
+      const entrySrc = path.join(distSrc, 'main.mjs');
+      if (!fs.existsSync(entrySrc)) {
+        throw new Error('kimi-code: package does not contain dist/main.mjs');
+      }
+      await fsp.mkdir(dest, { recursive: true });
+      await copyTree(distSrc, path.join(dest, 'dist'));
+      for (const optDir of ['dist-web', 'native']) {
+        const srcSub = path.join(pkgRoot, optDir);
+        if (fs.existsSync(srcSub)) await copyTree(srcSub, path.join(dest, optDir));
+      }
+      const pkgJson = path.join(pkgRoot, 'package.json');
+      if (fs.existsSync(pkgJson)) await fsp.copyFile(pkgJson, path.join(dest, 'package.json'));
+      await fsp.mkdir(path.join(dest, 'bin'), { recursive: true });
+      const entryDest = path.join(dest, 'dist', 'main.mjs');
+      if (ctx.platform === 'win32') {
+        await fsp.writeFile(
+          path.join(dest, 'bin', 'kimi.cmd'),
+          '@echo off\r\nnode "%~dp0..\\dist\\main.mjs" %*\r\n',
+          'utf8',
+        );
+      } else {
+        try { await fsp.chmod(entryDest, 0o755); } catch (_) {}
+        const bin = path.join(dest, 'bin', 'kimi');
+        await removeIfExists(bin);
+        await fsp.symlink(path.join('..', 'dist', 'main.mjs'), bin);
+      }
+    },
+    binPath: (dir, platform) => path.join(dir, 'bin', platform === 'win32' ? 'kimi.cmd' : 'kimi'),
+  },
 ];
 
 // ---------------------------------------------------------------- helpers

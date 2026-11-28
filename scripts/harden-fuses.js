@@ -102,6 +102,7 @@ exports.default = async function afterPackHardenFuses(context) {
     const signAs = haveIdent ? ident : '-';
     const entPath = path.resolve(__dirname, '..', 'build', 'entitlements.mac.plist');
     console.log(`[harden-fuses] Re-signing macOS bundle (${haveIdent ? ident : 'ad-hoc'}): ${targetPath}`);
+    try { execFileSync('xattr', ['-cr', targetPath]); } catch (_) {}
     const unpackedEsbuild = path.join(targetPath, 'Contents', 'Resources', 'app.asar.unpacked', 'node_modules', '@esbuild');
     if (fs.existsSync(unpackedEsbuild)) {
       for (const archDir of fs.readdirSync(unpackedEsbuild)) {

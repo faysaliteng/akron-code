@@ -19,6 +19,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFile } = require('child_process');
 const curated = require('./connector-catalog');
 const registry = require('./mcpregistry');
 
@@ -57,9 +58,10 @@ function lookup(id) { return CURATED_BY_ID.get(id) || registry.get(id) || null; 
 
 // ---- Install state ---------------------------------------------------------
 function getState() {
-  const s = readJSON(pluginsFile(), { installed: {}, config: {} });
+  const s = readJSON(pluginsFile(), { installed: {}, config: {}, gitSources: {} });
   if (!s.installed) s.installed = {};
   if (!s.config) s.config = {};
+  if (!s.gitSources) s.gitSources = {};
   return s;
 }
 function saveState(s) { writeJSON(pluginsFile(), s); }
@@ -203,6 +205,246 @@ function formatSuggest(list, goal) {
   return `Suggested for "${goal}":\n` + lines.join('\n') + '\n\nInstall with: plugins install ' + list[0].id;
 }
 
+// ---- External Git Plugins & Skills tracking + fast-forward auto-update ----
+function gitPluginsDir() {
+  return process.env.AUTOBOT_GIT_PLUGINS_DIR || path.join(DATA_DIR, 'plugins-git');
+}
+
+function defaultSkillsDir() {
+  return process.env.AUTOBOT_SKILLS_DIR || path.join(DATA_DIR, 'skills');
+}
+
+function execGit(args, cwd) {
+  return new Promise((resolve) => {
+    execFile('git', args, {
+      cwd: cwd || undefined,
+      timeout: 60000,
+      maxBuffer: 8 * 1024 * 1024,
+      windowsHide: true,
+    }, (err, stdout, stderr) => {
+      resolve({
+        ok: !err,
+        stdout: String(stdout || '').trim(),
+        stderr: String(stderr || '').trim() || (err ? err.message : ''),
+      });
+    });
+  });
+}
+
+function sanitizeGitPluginId(raw) {
+  const clean = String(raw || '').trim().replace(/\.git$/i, '').split(/[\\/]/).filter(Boolean).pop() || 'git-plugin';
+  return clean.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'git-plugin';
+}
+
+function isAllowedGitSource(url) {
+  const s = String(url || '').trim();
+  return /^(https?:\/\/|ssh:\/\/|git@[\w.-]+:|file:\/\/|\/|[A-Za-z]:[\\/])/i.test(s);
+}
+
+function findSkillDirs(rootDir, maxDepth = 3, depth = 0, out = []) {
+  if (!rootDir || !fs.existsSync(rootDir) || depth > maxDepth) return out;
+  try {
+    if (fs.existsSync(path.join(rootDir, 'SKILL.md'))) {
+      out.push(rootDir);
+      return out;
+    }
+    for (const ent of fs.readdirSync(rootDir, { withFileTypes: true })) {
+      if (!ent.isDirectory()) continue;
+      if (ent.name === '.git' || ent.name === 'node_modules') continue;
+      findSkillDirs(path.join(rootDir, ent.name), maxDepth, depth + 1, out);
+    }
+  } catch (_) {}
+  return out;
+}
+
+function syncGitPluginSkills(id, repoDir, targetSkillsDir) {
+  const destBase = targetSkillsDir || defaultSkillsDir();
+  ensureDir(destBase);
+  const prefix = `git-${sanitizeGitPluginId(id)}-`;
+  try {
+    for (const ent of fs.readdirSync(destBase, { withFileTypes: true })) {
+      if (ent.isDirectory() && ent.name.startsWith(prefix)) {
+        fs.rmSync(path.join(destBase, ent.name), { recursive: true, force: true });
+      }
+    }
+  } catch (_) {}
+  const dirs = findSkillDirs(repoDir);
+  const synced = [];
+  for (const dir of dirs) {
+    const sub = path.relative(repoDir, dir);
+    const skillName = sanitizeGitPluginId(sub && sub !== '.' ? sub : id);
+    const target = path.join(destBase, `${prefix}${skillName}`);
+    fs.cpSync(dir, target, { recursive: true });
+    synced.push(target);
+  }
+  try { require('./store').invalidateSkillsCache(); } catch (_) {}
+  return synced;
+}
+
+function readGitPluginManifest(repoDir, fallbackId) {
+  for (const rel of ['plugin.json', '.claude-plugin/plugin.json', 'package.json']) {
+    const p = path.join(repoDir, rel);
+    try {
+      if (fs.existsSync(p)) {
+        const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+        return {
+          name: String(j.name || fallbackId),
+          description: String(j.description || ''),
+        };
+      }
+    } catch (_) {}
+  }
+  return { name: fallbackId, description: '' };
+}
+
+async function inspectGitHead(repoDir) {
+  const sha = await execGit(['rev-parse', 'HEAD'], repoDir);
+  const br = await execGit(['rev-parse', '--abbrev-ref', 'HEAD'], repoDir);
+  return {
+    commitSha: sha.ok ? sha.stdout : '',
+    branch: br.ok && br.stdout !== 'HEAD' ? br.stdout : 'main',
+  };
+}
+
+async function installGitPlugin({ url, id, branch, skillsDir, gitDir, config } = {}) {
+  const cleanUrl = String(url || '').trim();
+  if (!cleanUrl || !isAllowedGitSource(cleanUrl)) {
+    return { ok: false, error: 'Invalid Git repository URL or path' };
+  }
+  const pluginId = sanitizeGitPluginId(id || cleanUrl);
+  const root = gitDir || gitPluginsDir();
+  ensureDir(root);
+  const destDir = path.join(root, pluginId);
+
+  if (fs.existsSync(path.join(destDir, '.git'))) {
+    await execGit(['fetch', '--all', '--prune'], destDir);
+    const ff = await execGit(['merge', '--ff-only', 'FETCH_HEAD'], destDir);
+    if (!ff.ok) return { ok: false, id: pluginId, error: ff.stderr || 'git merge --ff-only failed' };
+  } else {
+    if (fs.existsSync(destDir)) fs.rmSync(destDir, { recursive: true, force: true });
+    const cloneArgs = ['clone', '--depth', '1'];
+    if (branch) cloneArgs.push('--branch', String(branch).trim());
+    cloneArgs.push(cleanUrl, destDir);
+    const cloned = await execGit(cloneArgs);
+    if (!cloned.ok) return { ok: false, id: pluginId, error: cloned.stderr || 'git clone failed' };
+  }
+
+  const head = await inspectGitHead(destDir);
+  const manifest = readGitPluginManifest(destDir, pluginId);
+  const syncedSkills = syncGitPluginSkills(pluginId, destDir, skillsDir);
+  const state = getState();
+  const prev = (state.gitSources && state.gitSources[pluginId]) || {};
+  const now = Date.now();
+  state.installed[pluginId] = state.installed[pluginId] || { at: now, source: 'git' };
+  if (config && typeof config === 'object') {
+    state.config[pluginId] = { ...(state.config[pluginId] || {}), ...config };
+  }
+  state.gitSources[pluginId] = {
+    ...prev,
+    id: pluginId,
+    name: manifest.name,
+    description: manifest.description,
+    url: cleanUrl,
+    branch: branch || head.branch,
+    commitSha: head.commitSha,
+    dir: destDir,
+    syncedSkillsCount: syncedSkills.length,
+    autoUpdate: prev.autoUpdate !== false,
+    installedAt: prev.installedAt || now,
+    updatedAt: now,
+    lastCheckedAt: now,
+    updateAvailable: false,
+  };
+  saveState(state);
+  return { ok: true, id: pluginId, entry: state.gitSources[pluginId], syncedSkills };
+}
+
+function listGitPlugins() {
+  const state = getState();
+  return Object.values(state.gitSources || {});
+}
+
+async function updateGitPlugin(id, { checkOnly = false, skillsDir } = {}) {
+  const state = getState();
+  const src = state.gitSources && state.gitSources[id];
+  if (!src) return { ok: false, id, error: `Git plugin not found: ${id}` };
+  if (src.autoUpdate === false) return { ok: true, id, skipped: true, updated: false, commitSha: src.commitSha };
+  if (!src.dir || !fs.existsSync(path.join(src.dir, '.git'))) {
+    return { ok: false, id, error: 'Missing local Git clone directory' };
+  }
+
+  const branch = src.branch || 'main';
+  const fetchArgs = ['fetch', 'origin', ...(branch ? [branch] : [])];
+  let fetched = await execGit(fetchArgs, src.dir);
+  if (!fetched.ok) fetched = await execGit(['fetch'], src.dir);
+  if (!fetched.ok) return { ok: false, id, error: fetched.stderr || 'git fetch failed' };
+
+  const localRes = await execGit(['rev-parse', 'HEAD'], src.dir);
+  const remoteRes = await execGit(['rev-parse', 'FETCH_HEAD'], src.dir);
+  const localSha = localRes.ok ? localRes.stdout : src.commitSha;
+  const remoteSha = remoteRes.ok ? remoteRes.stdout : localSha;
+  const behind = !!(localSha && remoteSha && localSha !== remoteSha);
+  const now = Date.now();
+
+  if (checkOnly || !behind) {
+    state.gitSources[id] = {
+      ...src,
+      commitSha: localSha || src.commitSha,
+      remoteSha,
+      updateAvailable: behind,
+      lastCheckedAt: now,
+    };
+    saveState(state);
+    return { ok: true, id, updated: false, updateAvailable: behind, commitSha: localSha, remoteSha };
+  }
+
+  const ff = await execGit(['merge', '--ff-only', 'FETCH_HEAD'], src.dir);
+  if (!ff.ok) return { ok: false, id, error: ff.stderr || 'git merge --ff-only failed (local modifications?)' };
+
+  const head = await inspectGitHead(src.dir);
+  const syncedSkills = syncGitPluginSkills(id, src.dir, skillsDir);
+  state.gitSources[id] = {
+    ...src,
+    commitSha: head.commitSha,
+    remoteSha: head.commitSha,
+    branch: head.branch,
+    syncedSkillsCount: syncedSkills.length,
+    updateAvailable: false,
+    updatedAt: now,
+    lastCheckedAt: now,
+  };
+  saveState(state);
+  return {
+    ok: true,
+    id,
+    updated: true,
+    updateAvailable: false,
+    previousSha: localSha,
+    commitSha: head.commitSha,
+    syncedSkills,
+  };
+}
+
+async function updateAllGitPlugins({ checkOnly = false, skillsDir } = {}) {
+  const list = listGitPlugins();
+  const results = [];
+  let updatedCount = 0;
+  let updatesAvailable = 0;
+  for (const item of list) {
+    const res = await updateGitPlugin(item.id, { checkOnly, skillsDir });
+    results.push(res);
+    if (res.updated) updatedCount++;
+    if (res.updateAvailable) updatesAvailable++;
+  }
+  return {
+    ok: true,
+    checkedCount: list.length,
+    updatedCount,
+    updatesAvailable,
+    results,
+  };
+}
+
 module.exports = {
   CATALOG,
   listPlugins,
@@ -221,6 +463,12 @@ module.exports = {
   registryStatus: () => registry.status(),
   refreshRegistry: (opts) => registry.refresh(opts),
   registryAll: () => registry.all(),
+  // external git plugin / skill tracking & updates
+  gitPluginsDir,
+  installGitPlugin,
+  listGitPlugins,
+  updateGitPlugin,
+  updateAllGitPlugins,
   pool,
   stats: () => {
     const p = pool();

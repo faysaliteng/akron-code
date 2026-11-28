@@ -91,6 +91,28 @@ function existsFile(p) {
  * descriptor.stage() expects (`bin/claude*`, `vendor/<triple>`, or a bare binary).
  */
 function localRoot(id) {
+  const home = os.homedir();
+  const userDirs = [
+    process.platform === 'darwin' ? path.join(home, 'Library', 'Application Support', 'Akron Code', 'runtimes') : '',
+    process.platform === 'win32' ? path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Akron Code', 'runtimes') : '',
+    process.platform === 'linux' ? path.join(process.env.XDG_CONFIG_HOME || path.join(home, '.config'), 'Akron Code', 'runtimes') : '',
+    path.join(home, '.autobot', 'runtimes'),
+  ].filter(Boolean);
+
+  for (const ud of userDirs) {
+    const cur = path.join(ud, id, 'current');
+    if (existsDir(cur)) {
+      if (id === 'claude-code' && (existsFile(path.join(cur, 'bin', 'claude')) || existsFile(path.join(cur, 'bin', 'claude.exe')))) return cur;
+      if (id === 'codex' && existsDir(path.join(cur, 'vendor'))) return cur;
+      if (id === 'grok') {
+        const gb = path.join(cur, 'bin', process.platform === 'win32' ? 'grok.exe' : 'grok');
+        if (existsFile(gb)) return gb;
+      }
+      if (id === 'gemini-cli' && existsFile(path.join(cur, 'bundle', 'gemini.js'))) return cur;
+      if (id === 'kimi-code' && existsFile(path.join(cur, 'dist', 'main.mjs'))) return cur;
+    }
+  }
+
   const npmG = path.join(path.dirname(path.dirname(which('node') || '/usr/local/bin/node')), 'lib', 'node_modules');
   if (id === 'claude-code') {
     const cands = [
@@ -148,6 +170,20 @@ function localRoot(id) {
     for (const c of cands) if (existsFile(path.join(c, 'bundle', 'gemini.js'))) return c;
     return '';
   }
+  if (id === 'kimi-code') {
+    const cands = [
+      path.join(npmG, '@moonshot-ai', 'kimi-code'),
+      '/opt/homebrew/lib/node_modules/@moonshot-ai/kimi-code',
+      '/usr/local/lib/node_modules/@moonshot-ai/kimi-code',
+    ];
+    const w = which('kimi');
+    if (w) {
+      const rp = realpath(w);
+      cands.push(path.dirname(path.dirname(rp)));
+    }
+    for (const c of cands) if (existsFile(path.join(c, 'dist', 'main.mjs'))) return c;
+    return '';
+  }
   return '';
 }
 
@@ -186,7 +222,7 @@ async function finalize(dir, runtime, sourceMeta) {
 
 async function vendorLocal(desc) {
   const src = localRoot(desc.id);
-  if (!src) throw new Error('no local install found (try --download)');
+  if (!src) return vendorDownload(desc);
   const dest = path.join(VENDOR, desc.id);
   const stage = dest + '.staging';
   await fsp.rm(stage, { recursive: true, force: true });

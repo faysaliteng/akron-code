@@ -329,7 +329,9 @@ export const PRESETS = [
   { name: 'Cerebras (free)', baseURL: 'https://api.cerebras.ai/v1', model: 'llama3.1-8b', apiKey: '', supportsTools: true },
   { name: 'Mistral (La Plateforme)', baseURL: 'https://api.mistral.ai/v1', model: 'mistral-small-latest', apiKey: '', supportsTools: true },
   { name: 'Cohere', baseURL: 'https://api.cohere.com/v1', model: 'command-r-plus', apiKey: '', supportsTools: true },
-  { name: 'Z.ai / Zhipu (GLM)', baseURL: 'https://api.z.ai/api/paas/v4', model: 'glm-4-plus', apiKey: '', supportsTools: true },
+  { name: 'Z.ai (GLM Coding Plan)', baseURL: 'https://api.z.ai/api/coding/paas/v4', model: 'glm-5.4', apiKey: '', supportsTools: true, contextWindow: 1000000 },
+  { name: 'Z.ai / Zhipu (GLM)', baseURL: 'https://api.z.ai/api/paas/v4', model: 'glm-5.4', apiKey: '', supportsTools: true, contextWindow: 1000000 },
+  { name: 'Kimi / Moonshot AI', baseURL: 'https://api.moonshot.ai/v1', model: 'kimi-k3.1-pro', apiKey: '', supportsTools: true, contextWindow: 1048576 },
   { name: 'NVIDIA NIM', baseURL: 'https://integrate.api.nvidia.com/v1', model: 'nvidia/nemotron-3.5-bolt-e4b', apiKey: '', supportsTools: true },
   { name: 'HuggingFace Inference', baseURL: 'https://router.huggingface.co/v1', model: 'meta-llama/Llama-3.3-70B-Instruct', apiKey: '', supportsTools: true },
   { name: 'Together AI (free)', baseURL: 'https://api.together.xyz/v1', model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', apiKey: '', supportsTools: true },
@@ -472,24 +474,54 @@ export const fmtCost = (usd) => {
 // result here. Exact-id hits win; the regexes below are only the offline
 // fallback for a provider that was never loaded in this install.
 export const MODEL_WINDOW_CACHE = 'autobot:modelWindows';
-export const contextWindowFor = (model) => {
-  const m = String(model || '');
-  try {
-    const cache = loadJSON(MODEL_WINDOW_CACHE, {}) || {};
-    const hit = Number(cache[m]);
-    if (Number.isFinite(hit) && hit > 0) return hit;
-  } catch (_) { /* cache is advisory */ }
+export const builtinContextWindowFor = (model) => {
+  const m = String(model || '').trim();
+  if (!m) return 128000;
+  if (/kimi[ -]?k3/i.test(m)) return 1048576;
   if (/kimi|moonshot/i.test(m)) return 256000;
   if (/deepseek/i.test(m)) return 128000;
+  if (/\bglm[ -]?5(?:[.\-][a-z0-9.\-]+)?\b/i.test(m)) return 1000000;
   if (/glm|zhipu/i.test(m)) return 200000;
-  if (/gemini-4|gemini-3/i.test(m)) return 1048576;
-  if (/gemini/i.test(m)) return 1000000;
-  if (/gpt-5|o[1-4]/i.test(m)) return 400000;
-  if (/gpt-4/i.test(m)) return 128000;
-  if (/qwen/i.test(m)) return 128000;
+  if (/gemini/i.test(m)) return 1048576;
+  if (/grok-(?:[0-9.]+-)?(?:(?:code|build)-)?fast|\bgrok\s*4(?:\.\d+)?\s*(?:build\s*)?fast\b/i.test(m)) return 2000000;
+  if (/grok[ -]?(?:4\.(?:[5-9]|[1-9][0-9])|[5-9](?:\.\d+)?)/i.test(m)) return 1000000;
+  if (/grok-4|grok-build/i.test(m)) return 256000;
   if (/grok/i.test(m)) return 131072;
-  if (/sonnet|opus|haiku|anthropic/i.test(m)) return 200000;
+  if (/gpt[ -]?5[.-](?:[4-9]|1[0-9])\b|\bgpt[ -]?6\b/i.test(m)) return 1000000;
+  if (/gpt-4\.1\b/i.test(m)) return 1047576;
+  if (/gpt-5|codex|o[1-4]\b/i.test(m)) return 400000;
+  if (/gpt-4/i.test(m)) return 128000;
+  if (/qwen/i.test(m)) return 131072;
+  if (/(?:^|\/|\b)(?:claude[ -]?)?(?:fable|opus|sonnet|haiku)[ -]?5(?:[.\-\[ ]|$)/i.test(m)) return 1000000;
+  if (/(?:^|\/|\b)(?:claude[ -]?)?opus[ -]?4[.\- ](?:[5-9]|[1-9][0-9])(?:[.\-\[ ]|$)/i.test(m)) return 1000000;
+  if (/(?:^|\/|\b)(?:claude[ -]?)?sonnet[ -]?4(?:[.\-\[ ]|$)/i.test(m)) return 1000000;
+  if (/^(?:opus|sonnet|fable)(?:\[1m\])?$|\[1m\]$/i.test(m)) return 1000000;
+  if (/sonnet|opus|haiku|fable|anthropic|claude/i.test(m)) return 200000;
   return 128000;
+};
+export const contextWindowFor = (model) => {
+  const m = String(model || '').trim();
+  const builtin = builtinContextWindowFor(m);
+  try {
+    const cache = loadJSON(MODEL_WINDOW_CACHE, {}) || {};
+    const hit = Number(cache[m] || cache[m.toLowerCase()]);
+    if (Number.isFinite(hit) && hit > 0) {
+      return (builtin >= 1000000 && hit < builtin) ? builtin : hit;
+    }
+  } catch (_) { /* cache is advisory */ }
+  return builtin;
+};
+export const resolveEffectiveContextWindow = (provider, lastUsage = null) => {
+  const servedModel = String((lastUsage && lastUsage.model) || '').trim();
+  const targetModel = (servedModel && !/^(auto|default)$/i.test(servedModel))
+    ? servedModel
+    : String((provider && provider.model) || servedModel || '').trim();
+  const catalogWin = contextWindowFor(targetModel);
+  if (provider && !provider.oauth && !provider.oauthProvider && Number(provider.contextWindow) > 0 && (!servedModel || servedModel === provider.model)) {
+    const explicit = Number(provider.contextWindow);
+    return (catalogWin >= 1000000 && explicit < catalogWin) ? catalogWin : explicit;
+  }
+  return catalogWin;
 };
 // Two different numbers live in a usage record: `prompt_tokens` is the *sum*
 // across every model call in a turn (that is what `/cost` prices), while
@@ -555,6 +587,153 @@ export function estimateConvBaselineTokens(conv, provider) {
   const sysOverhead = provider && provider.supportsTools === false ? 300 : 2200;
   return Math.max(1, Math.round(chars / 3.8) + sysOverhead);
 }
+export function buildLocalCompactDigest(messages, keepTailCount = 2, targetWindowTokens = 128000) {
+  const list = Array.isArray(messages) ? messages : [];
+  const keepN = Math.max(1, Math.min(list.length, Number(keepTailCount) || 2));
+  const cutIdx = Math.max(0, list.length - keepN);
+  const head = list.slice(0, cutIdx);
+  const rawTail = list.slice(cutIdx);
+  const maxTailTotalChars = Math.max(4000, Math.round((Number(targetWindowTokens) || 128000) * 0.14 * 3.8));
+  const perTailCap = Math.max(2000, Math.floor(maxTailTotalChars / Math.max(1, rawTail.length)));
+  const tail = rawTail.map((m) => {
+    if (!m || typeof m.content !== 'string' || m.content.length <= perTailCap) return m;
+    const h = Math.max(800, Math.floor(perTailCap * 0.4));
+    const t = Math.max(800, perTailCap - h);
+    return {
+      ...m,
+      content: `${m.content.slice(0, h)}\n\n…[${m.content.length - h - t} chars archived by auto-compact]…\n\n${m.content.slice(-t)}`,
+    };
+  });
+  const asks = [];
+  const files = new Set();
+  const summaries = [];
+  for (const m of head) {
+    if (!m) continue;
+    const raw = msgText(m).replace(/\s+/g, ' ').trim();
+    if (!raw) continue;
+    if (m.role === 'user') asks.push(raw.slice(0, 140));
+    else if (m.role === 'assistant') summaries.push(raw.slice(0, 140));
+    if (Array.isArray(m.tools)) {
+      for (const t of m.tools) {
+        const a = (t && t.args) || {};
+        const p = a.path || a.file_path || a.filePath;
+        if (p && files.size < 20) files.add(String(p));
+      }
+    }
+  }
+  const lines = [
+    `**Auto-compacted ${head.length} earlier message${head.length === 1 ? '' : 's'}** (full history archived).`,
+    asks.length ? `- Requests: ${[...new Set(asks)].slice(-6).map((x) => `"${x}"`).join(' · ')}` : '',
+    files.size ? `- Files touched: ${[...files].join(', ')}` : '',
+    summaries.length ? `- Progress: ${summaries.slice(-4).join(' · ')}` : '',
+  ].filter(Boolean);
+  const summaryMsg = {
+    id: uid(),
+    role: 'assistant',
+    compactedDigest: true,
+    content: lines.join('\n'),
+    ts: Date.now(),
+  };
+  return {
+    messages: [summaryMsg, ...tail],
+    summaryText: lines.join('\n'),
+    droppedCount: head.length,
+  };
+}
+
+/**
+ * Shared compaction executor invoked by both the manual "Compact now" button (`/compact`)
+ * and automatic 80% context-threshold triggers before/after turns.
+ */
+export async function runCompactNowFlow({
+  conv,
+  provider,
+  lastUsage = null,
+  keepTail = 2,
+  trigger = 'manual',
+  compactIpc = null,
+  timeoutMs = 6500,
+} = {}) {
+  const msgs = (conv && Array.isArray(conv.messages)) ? conv.messages : [];
+  if (msgs.length < 2) return null;
+  const win = resolveEffectiveContextWindow(provider, lastUsage);
+  const beforeTokens = Math.max(usedTokens(lastUsage), estimateConvBaselineTokens(conv, provider));
+  const safeKeepTail = Math.max(0, Math.min(Math.max(0, msgs.length - 1), Number(keepTail) || 0));
+  const cutIdx = Math.max(1, msgs.length - safeKeepTail);
+  const headMsgs = msgs.slice(0, cutIdx);
+  const tailMsgs = msgs.slice(cutIdx);
+
+  let summaryText = '';
+  let ipcUsage = null;
+  let resolvedModel = (lastUsage && lastUsage.model) || (provider && provider.model) || '';
+  if (typeof compactIpc === 'function') {
+    try {
+      const automatic = trigger !== 'manual';
+      const ipcPromise = Promise.resolve(compactIpc({ provider, messages: headMsgs, trigger, automatic })).catch(() => null);
+      const r = await (timeoutMs > 0
+        ? Promise.race([ipcPromise, new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs))])
+        : ipcPromise);
+      if (r && r.ok && String(r.summary || '').trim()) {
+        summaryText = String(r.summary).trim();
+        ipcUsage = r.usage || null;
+        if (r.model && !/^(auto|default)$/i.test(String(r.model).trim())) resolvedModel = r.model;
+      }
+    } catch (_) {}
+  }
+
+  const localDigest = buildLocalCompactDigest(msgs, safeKeepTail, win);
+  const finalTail = safeKeepTail > 0 ? localDigest.messages.slice(1) : [];
+  const finalContent = summaryText
+    ? `**Compacted conversation** — ${headMsgs.length} earlier message${headMsgs.length === 1 ? '' : 's'} summarized.\n\n${summaryText}`
+    : localDigest.summaryText;
+  const summaryMsg = {
+    id: uid(),
+    role: 'assistant',
+    compactedDigest: true,
+    content: finalContent,
+    ts: Date.now(),
+  };
+  const compactedMessages = [summaryMsg, ...finalTail];
+  const archivedHead = headMsgs;
+  const afterTokens = Math.max(
+    200,
+    Math.round(compactedMessages.reduce((n, m) => n + msgText(m).length, 0) / 3.8) + 600
+  );
+  const acMeta = {
+    beforeTokens,
+    afterTokens,
+    contextWindow: win,
+    dropped: headMsgs.length,
+    trigger,
+    at: Date.now(),
+  };
+  const nextUsage = {
+    prompt_tokens: afterTokens,
+    context_tokens: afterTokens,
+    completion_tokens: Number(ipcUsage && ipcUsage.completion_tokens) || Number(lastUsage && lastUsage.completion_tokens) || 0,
+    total_tokens: afterTokens,
+    calls: 1,
+    model: resolvedModel,
+    estimated: true,
+    compacted: true,
+    lastAutoCompact: acMeta,
+    convId: conv && conv.id ? conv.id : null,
+    at: acMeta.at,
+  };
+  return {
+    compactedMessages,
+    archivedHead,
+    summaryText: finalContent,
+    droppedCount: headMsgs.length,
+    beforeTokens,
+    afterTokens,
+    contextWindow: win,
+    acMeta,
+    nextUsage,
+    tailCount: tailMsgs.length,
+  };
+}
+
 export function effectiveUsageForConv(lastUsage, activeConv, provider, live = null) {
   const cid = activeConv && activeConv.id;
   const hasMsgs = Boolean(activeConv && Array.isArray(activeConv.messages) && activeConv.messages.length > 0);
@@ -567,12 +746,16 @@ export function effectiveUsageForConv(lastUsage, activeConv, provider, live = nu
   }
   let candidate = perConv;
   if (globalMatches && usedTokens(lastUsage) > usedTokens(perConv)) candidate = lastUsage;
+  if (globalMatches && lastUsage && (lastUsage.compacted || lastUsage.lastAutoCompact) && Number(lastUsage.at) >= Number((perConv && perConv.at) || 0)) {
+    candidate = lastUsage;
+  }
   if (!candidate && globalMatches && lastUsage) candidate = lastUsage;
   const liveChars = live ? (String(live.content || '').length + JSON.stringify(live.tools || []).length) : 0;
   const baselineEst = (hasMsgs ? estimateConvBaselineTokens(activeConv, provider) : 0)
     + (liveChars > 0 ? Math.round(liveChars / 3.8) : 0);
   const candTokens = usedTokens(candidate);
-  const poisonedSmall = Boolean(baselineEst >= 400 && candTokens < baselineEst * 0.2);
+  const isCompactedCand = Boolean(candidate && (candidate.compacted || candidate.lastAutoCompact));
+  const poisonedSmall = Boolean(!isCompactedCand && baselineEst >= 400 && candTokens < baselineEst * 0.2);
   if (candidate && candTokens > 0 && !poisonedSmall) return candidate;
   if (baselineEst <= 0) return candidate || null;
   return {
@@ -643,7 +826,7 @@ export const DEFAULT_PROVIDER = { baseURL: 'http://localhost:3001/v1', apiKey: '
 export function loadJSON(key, fallback) {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
 }
-export function saveJSON(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
+export function saveJSON(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch (_) {} }
 
 // Dismiss a popover on outside mousedown, Escape, or when focus moves into a
 // guest <webview>/<iframe> (clicks inside a guest never reach this document, but

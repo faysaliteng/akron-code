@@ -121,7 +121,7 @@ function buildRoster(opts = {}) {
   const seen = new Set();
   const add = (p, fallbackTier, role) => {
     if (!p || p.enabled === false) return;
-    const isOauth = !!p.oauthProvider || !!p.oauth || !!p.accessToken;
+    const isOauth = !!p.oauthProvider || !!p.oauth || !!p.accessToken || !!p.cliMode || p.transport === 'cli';
     const base = String(p.baseURL || '').trim();
     const apiKey = String(p.apiKey || '').trim();
     if (!base && !isOauth) return;
@@ -150,6 +150,10 @@ function buildRoster(opts = {}) {
       // binding through instead of rewriting it as an anonymous endpoint.
       oauthProvider: p.oauthProvider || '',
       transport: p.transport || '',
+      cliMode: Boolean(p.cliMode || p.transport === 'cli'),
+      cliId: p.cliId || '',
+      cliBin: p.cliBin || '',
+      cliKind: p.cliKind || '',
       oauth: !!p.oauth || isOauth,
       accessToken: p.accessToken || '',
       account: p.account || '',
@@ -722,12 +726,39 @@ async function reconcileWorkerWorktrees(doneResults, rootCwd, emit) {
       }
     } catch (mergeErr) {
       try { execFileSync('git', ['merge', '--abort'], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+      const errTxt = String((mergeErr && (mergeErr.stderr || mergeErr.message)) || mergeErr || '');
+      const changedList = diffFiles.split(/\r?\n/).filter(Boolean);
+      const alreadyMerged = new Set(out.merged.flatMap((m) => m.files || []));
+      const nonOverlapping = changedList.length > 0 && changedList.every((f) => !alreadyMerged.has(f));
+      if (nonOverlapping && /untracked working tree files|local changes to the following files would be overwritten/i.test(errTxt)) {
+        try {
+          for (const rel of changedList) {
+            const dst = path.join(gitRoot, rel);
+            try {
+              const buf = execFileSync('git', ['show', `${branch}:${rel}`], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+              fs.mkdirSync(path.dirname(dst), { recursive: true });
+              fs.writeFileSync(dst, buf);
+            } catch (_) {}
+          }
+          r.worktree.merged = true;
+          out.merged.push({ worker: r.name, branch, files: changedList });
+          r.result = String(r.result || '').replace(/\n*\[Worktree preserved:[^\]]+\]/g, '') + `\n\n[Worktree merged into workspace: branch=${branch}]`;
+          try { execFileSync('git', ['worktree', 'remove', '--force', wtDir], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+          try { fs.rmSync(wtDir, { recursive: true, force: true }); } catch (_) {}
+          try { execFileSync('git', ['worktree', 'prune'], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+          try { execFileSync('git', ['branch', '-D', branch], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+          if (typeof emit === 'function') {
+            emit({ type: 'swarm', phase: 'worktree_merged', worker: r.name, branch, files: changedList });
+          }
+          continue;
+        } catch (_) {}
+      }
       out.conflicts.push({
         worker: r.name,
         branch,
         path: wtDir,
-        files: diffFiles.split(/\r?\n/).filter(Boolean),
-        error: String((mergeErr && (mergeErr.stderr || mergeErr.message)) || mergeErr).slice(0, 300),
+        files: changedList,
+        error: errTxt.slice(0, 300),
       });
     }
   }

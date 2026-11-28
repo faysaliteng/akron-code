@@ -121,6 +121,14 @@ const geminiTgz = makeTgz('gemini', {
 });
 const GEMINI_INTEGRITY = sri(geminiTgz);
 
+// A fake kimi-code package: `dist/main.mjs` entrypoint, matching upstream.
+const KIMI_V2 = '2.8.1';
+const kimiTgz = makeTgz('kimi', {
+  'dist/main.mjs': sh('echo "' + KIMI_V2 + '"'),
+  'package.json': JSON.stringify({ name: '@moonshot-ai/kimi-code', version: KIMI_V2 }),
+});
+const KIMI_INTEGRITY = sri(kimiTgz);
+
 /** A registry that speaks just enough npm + x.ai to drive one install. */
 function startRegistry() {
   const routes = new Map();
@@ -178,6 +186,14 @@ function startRegistry() {
     res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(geminiTgz).size });
     res.end(fs.readFileSync(geminiTgz));
   });
+  routes.set('/@moonshot-ai/kimi-code/latest', (req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ version: KIMI_V2, dist: { tarball: base() + '/t/kimi.tgz', integrity: KIMI_INTEGRITY } }));
+  });
+  routes.set('/t/kimi.tgz', (req, res) => {
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(kimiTgz).size });
+    res.end(fs.readFileSync(kimiTgz));
+  });
   let base = () => '';
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
@@ -228,8 +244,8 @@ ok('codex payload triple matches Rust target naming', () => {
   assert.strictEqual(vendorTriple('win32', 'arm64'), 'aarch64-pc-windows-msvc');
 });
 
-ok('the four shipped runtimes are declared', () => {
-  assert.deepStrictEqual(rt.DESCRIPTORS.map((d) => d.id), ['claude-code', 'codex', 'grok', 'gemini-cli']);
+ok('the five shipped runtimes are declared', () => {
+  assert.deepStrictEqual(rt.DESCRIPTORS.map((d) => d.id), ['claude-code', 'codex', 'grok', 'gemini-cli', 'kimi-code']);
   for (const d of rt.DESCRIPTORS) {
     assert.ok(d.label && d.vendor && d.bin, d.id + ' needs label/vendor/bin');
     assert.deepStrictEqual(d.versionArgs, ['--version'], d.id);
@@ -572,7 +588,7 @@ aok('an unreachable registry degrades to an error string, never a throw', async 
     assert.ok(row.error, 'status must carry the failure');
     assert.strictEqual(row.latest, '');
     const list = await mgr.list();
-    assert.strictEqual(list.length, 4);
+    assert.strictEqual(list.length, 5);
     for (const r of list) assert.ok(r.id && r.label, 'list rows stay well-formed');
   } finally { await reg.close(); }
 });
@@ -588,6 +604,20 @@ aok('install(gemini-cli) stages bundle/gemini.js and links bin/gemini', async ()
     const r = await mgr.resolve('gemini-cli');
     assert.strictEqual(r.source, 'installed');
     assert.match(execFileSync(r.bin, ['--version']).toString(), new RegExp(GEMINI_V2));
+  } finally { await reg.close(); }
+});
+
+aok('install(kimi-code) stages dist/main.mjs and links bin/kimi', async () => {
+  const reg = await startRegistry();
+  try {
+    const mgr = createRuntimes(reg.opts());
+    const res = await mgr.install('kimi-code');
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.version, KIMI_V2);
+    assert.strictEqual(res.integrity, true);
+    const r = await mgr.resolve('kimi-code');
+    assert.strictEqual(r.source, 'installed');
+    assert.match(execFileSync(r.bin, ['--version']).toString(), new RegExp(KIMI_V2));
   } finally { await reg.close(); }
 });
 

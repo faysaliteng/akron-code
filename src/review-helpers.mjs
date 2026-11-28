@@ -180,11 +180,15 @@ export function deriveSubAgents(liveSubAgents = [], conv = null, messages = [], 
   const byKey = new Map();
   const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32);
 
+  const hasSwarmSup = Boolean(conv && conv.swarmInfo && conv.swarmInfo.supervisor);
   const upsert = (item) => {
     if (!item) return;
-    const rawKey = String(item.handle || item.name || item.key || '');
+    if (hasSwarmSup && (item.key === 'supervisor' || item.role === 'supervisor')) return;
+    const rawKey = String(item.key || item.handle || item.name || '');
     if (!rawKey) return;
-    const k = norm(item.handle || item.name || item.key) || rawKey;
+    const k = (item.key && /^(?:t|h)\d+$/i.test(String(item.key)))
+      ? String(item.key)
+      : (norm(item.handle || item.name || item.key) || rawKey);
     const prev = byKey.get(k);
     if (!prev) {
       byKey.set(k, { ...item });

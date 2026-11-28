@@ -20,8 +20,8 @@ export function resolveModelBrand({ model = '', provider = '', baseURL = '', lab
   if (/flux|schnell|kontext|black-forest/.test(m)) return 'flux';
   if (/command-r|command-a|c4ai|\baya\b|cohere/.test(m)) return 'cohere';
   if (/sonar|r1-1776|perplexity/.test(m)) return 'perplexity';
-  if (/kimi|moonshot/.test(m)) return 'kimi';
-  if (/\bglm|chatglm|cogview|codegeex|zhipu/.test(m)) return 'glm';
+  if (/kimi|moonshot/i.test(m)) return 'kimi';
+  if (/\bglm|chatglm|cogview|codegeex|zhipu|zcode|coding-plan/i.test(m)) return 'glm';
   if (/minimax|abab|hailuo/.test(m)) return 'minimax';
   if (/\bphi[-0-9]|wizardlm|\bmai-/.test(m)) return 'microsoft';
   if (/nemotron|nvidia|cosmos/.test(m)) return 'nvidia';
@@ -48,7 +48,7 @@ export function resolveModelBrand({ model = '', provider = '', baseURL = '', lab
   if (/nvidia/.test(p)) return 'nvidia';
   if (/huggingface|hf\.co/.test(p)) return 'huggingface';
   if (/moonshot|kimi/.test(p)) return 'kimi';
-  if (/zhipu|bigmodel|glm/.test(p)) return 'glm';
+  if (/zhipu|bigmodel|glm|zai|z\.ai|zcode/.test(p)) return 'glm';
   if (/minimax/.test(p)) return 'minimax';
   if (/microsoft|azure/.test(p)) return 'microsoft';
   if (/black-forest|\bbfl\b|flux/.test(p)) return 'flux';
@@ -71,8 +71,8 @@ const BRAND_TITLE = {
   flux: 'Black Forest Labs Flux',
   cohere: 'Cohere',
   perplexity: 'Perplexity',
-  kimi: 'Moonshot Kimi',
-  glm: 'Zhipu GLM',
+  kimi: 'Moonshot Kimi K3',
+  glm: 'Z.ai GLM Coding Plan',
   minimax: 'MiniMax',
   microsoft: 'Microsoft Phi',
   nvidia: 'NVIDIA',

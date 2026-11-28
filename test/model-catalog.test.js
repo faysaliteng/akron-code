@@ -35,19 +35,20 @@ ok('Vertex-hosted Claude 5.5 through Antigravity is 1M', () => {
   assert.strictEqual(cat.contextWindowFor('claude-opus-5-5-high'), 1000000);
 });
 
-ok('first-party Claude Sonnet 4.x is 1M (beta), Opus/Haiku are 200k', () => {
-  // Sonnet 4.x resolves to the 1M window because `anthropicChat` sends
-  // `context-1m-2025-08-07` when the request needs it and demotes the window on
-  // a refusal. Opus 4.x and Haiku are documented at 200k only.
+ok('first-party Claude Sonnet 4.x and Opus 4.5+ are 1M; Opus 4-4.4 and Haiku 4.5 stay 200k', () => {
+  // Sonnet 4.x and Opus 4.5 resolve to the 1M window (`context-1m-2025-08-07` beta when required).
+  // Older Opus 4/4.1 and Haiku 4.5 stay at 200k.
   assert.strictEqual(cat.contextWindowFor('claude-sonnet-4-5-20250929'), 1000000);
   assert.strictEqual(cat.contextWindowFor('claude-sonnet-4-20250514'), 1000000);
-  assert.strictEqual(cat.contextWindowFor('claude-opus-4-5-20251101'), 200000);
+  assert.strictEqual(cat.contextWindowFor('claude-opus-4-5-20251101'), 1000000);
+  assert.strictEqual(cat.contextWindowFor('claude-opus-4-1'), 200000);
   assert.strictEqual(cat.contextWindowFor('claude-haiku-4-5-20251001'), 200000);
 });
 
-ok('only Sonnet 4.x advertises the 1M beta', () => {
+ok('Sonnet 4.x and Opus 4.5 advertise the 1M beta', () => {
   assert.strictEqual(cat.supportsLongContext('claude-sonnet-4-5-20250929'), true);
   assert.strictEqual(cat.supportsLongContext('claude-sonnet-4'), true);
+  assert.strictEqual(cat.supportsLongContext('claude-opus-4-5-20251101'), true);
   assert.strictEqual(cat.supportsLongContext('claude-opus-4-1'), false);
   assert.strictEqual(cat.supportsLongContext('claude-sonnet-5-5'), false, 'Vertex 1M is native, no beta');
   assert.strictEqual(cat.supportsLongContext('gpt-5.1'), false);
@@ -56,17 +57,18 @@ ok('only Sonnet 4.x advertises the 1M beta', () => {
 
 ok('cold catalog matches the live /v1/models windows (measured 2026-11-26)', () => {
   // Before the account's catalog lands, the id rules must not under-budget a
-  // 1M model by 5×: the whole 5.x line is 1M, as are opus/sonnet 4-6..4-8.
+  // 1M model by 5×: the whole 5.x line is 1M, as are opus/sonnet 4-5..4-8 and glm-5*.
   for (const m of [
     'claude-fable-5-2', 'claude-fable-5-1', 'claude-fable-5',
     'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5',
     'claude-opus-5', 'claude-sonnet-5',
-    'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-4-6', 'claude-opus-4-6',
+    'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-opus-4-5-20251101',
+    'anthropic/claude-opus-4.6', 'glm-5',
   ]) {
     assert.strictEqual(cat.contextWindowFor(m), 1000000, m);
   }
-  // The 4-5 pair really is 200k — do not inflate it.
-  assert.strictEqual(cat.contextWindowFor('claude-opus-4-5-20251101'), 200000);
+  // Legacy Opus 4.1 & Haiku 4.5 remain 200k.
+  assert.strictEqual(cat.contextWindowFor('claude-opus-4-1'), 200000);
   assert.strictEqual(cat.contextWindowFor('claude-haiku-4-5-20251001'), 200000);
   // A live catalog still wins over the rule in both directions.
   cat.register('claude', [{ id: 'claude-fable-5-2', contextWindow: 200000 }]);
@@ -81,12 +83,27 @@ ok('GPT-5 family is 400k, GPT-4.1 is 1 047 576', () => {
   assert.strictEqual(cat.contextWindowFor('gpt-4.1'), 1047576);
 });
 
-ok('Grok 4 is 256k, Grok 3 is 128k, the fast variants are 2M', () => {
+ok('Grok 4.5+ is 1M, Grok 4 is 256k, Grok 3 is 128k, the fast variants are 2M', () => {
+  assert.strictEqual(cat.contextWindowFor('grok-4.5'), 1000000);
+  assert.strictEqual(cat.contextWindowFor('grok-4.7'), 1000000);
+  assert.strictEqual(cat.contextWindowFor('grok-4.7-build-fast'), 2000000);
   assert.strictEqual(cat.contextWindowFor('grok-4'), 256000);
   assert.strictEqual(cat.contextWindowFor('grok-3'), 131072);
   assert.strictEqual(cat.contextWindowFor('grok-4-fast'), 2000000);
   assert.strictEqual(cat.contextWindowFor('grok-4.1-fast-reasoning'), 2000000);
   assert.strictEqual(cat.contextWindowFor('grok-code-fast-1'), 2000000);
+});
+
+ok('GPT-5.4, Kimi K3, GLM-5.4, Claude Opus 5.5, and Gemini 3.1 Pro resolve to 1M', () => {
+  assert.strictEqual(cat.contextWindowFor('gpt-5.4'), 1000000);
+  assert.strictEqual(cat.contextWindowFor('gpt-5-4'), 1000000);
+  assert.strictEqual(cat.contextWindowFor('kimi-k3'), 1048576);
+  assert.strictEqual(cat.contextWindowFor('kimi-k3.1-pro'), 1048576);
+  assert.strictEqual(cat.contextWindowFor('glm-5.4'), 1000000);
+  assert.strictEqual(cat.contextWindowFor('glm-5.3-flash'), 1000000);
+  assert.strictEqual(cat.contextWindowFor('claude-opus-5-5'), 1000000);
+  assert.strictEqual(cat.contextWindowFor('gemini-3.1-pro'), 1048576);
+  assert.strictEqual(cat.contextWindowFor('gemini-2.5-pro'), 1048576);
 });
 
 ok('an unknown model floors at 128k', () => {
@@ -142,7 +159,7 @@ ok('budgetFor caps the output reserve so a 1M window does not reserve 100k', () 
   assert.strictEqual(b.promptReserve, 8000);
   assert.strictEqual(b.usableTokens, 1048576 - 32000 - 8000);
   assert.strictEqual(b.maxChars, Math.round(b.usableTokens * cat.CHARS_PER_TOKEN));
-  assert.strictEqual(b.compactAt, Math.round(b.maxChars * 0.9));
+  assert.strictEqual(b.compactAt, Math.round(b.maxChars * 0.8));
 });
 
 ok('budgetFor on a small window keeps at least MIN_USABLE_TOKENS', () => {
@@ -152,7 +169,7 @@ ok('budgetFor on a small window keeps at least MIN_USABLE_TOKENS', () => {
 });
 
 ok('a 200k window yields ~190k usable tokens and ~640k chars', () => {
-  const b = cat.budgetForModel('claude-opus-4-5-20251101');
+  const b = cat.budgetForModel('claude-haiku-4-5-20251001');
   assert.strictEqual(b.window, 200000);
   // 10% of 200k = 20 000 output reserve
   assert.strictEqual(b.reserveOut, 20000);

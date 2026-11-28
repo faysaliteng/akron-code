@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
 import './styles.css';
 import './styles/media-doc-studio.css';
+import './styles/model-picker.css';
 import { applyBootTypography } from './typography.js';
 
 applyBootTypography();

@@ -16,6 +16,7 @@ const router = require('./orch-router');
 const taskRouter = require('./task-router');
 const spill = require('./spill');
 const contextPipeline = require('./context-pipeline');
+const tokenBudget = require('./token-budget');
 const loopGuardMod = require('./loop-guard');
 const modeCollab = require('./mode-collab');
 
@@ -920,9 +921,9 @@ const RETRY_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 
 function isContextOverflow(e) {
   const msg = String((e && e.message) || e || '');
   if (!msg) return false;
-  if (/exceed_context_size_error/i.test(msg)) return true;
+  if (/exceed_context_size_error|contextwindowexceeded/i.test(msg)) return true;
   if (!/context|prompt|input|messages|token|length|request/i.test(msg)) return false;
-  return /context[_ -]?length|maximum context|available context|context window(?: is| size)?|prompt is too long|too many tokens|input is too long|input token count|token count exceeds|exceeds? (?:the )?(?:available )?(?:model'?s? )?(?:maximum|context|limit)|reduce the length|too long for (?:this )?model|request (?:is )?too large|larger than (?:the )?(?:model|context)/i.test(msg);
+  return /context[_ -]?length|maximum context|available context|context window(?: is| size)?|prompt(?: is |_)?too[_ ]long|too many tokens|input is too long|input length.{0,20}exceeds|input token count|token count exceeds|token limit exceeded|exceeds? (?:the )?(?:available )?(?:model'?s? )?(?:maximum|context|limit)|reduce the length|too long for (?:this )?model|request (?:is )?too large|larger than (?:the )?(?:model|context)/i.test(msg);
 }
 
 // True when the account cannot pay for *this request shape*. Distinct from a
@@ -1142,6 +1143,8 @@ async function chatWithFailover(opts) {
             chatgpt: 'OpenAI ChatGPT / Codex subscription',
             codex: 'OpenAI Codex',
             grok: 'xAI Grok',
+            kimi: 'Moonshot Kimi Code CLI',
+            zai: 'Z.ai GLM Coding Plan',
           };
           const pidNext = String(p.oauthProvider || '').split(':')[0] || String(p.transport || '').toLowerCase();
           const vLabel = vMap[pidNext] || (p.baseURL ? `OpenAI-compatible endpoint (${p.baseURL})` : 'Configured LLM provider');
@@ -1626,7 +1629,7 @@ function sanitizeHistory(messages, opts = {}) {
       notes.length ? 'Progress: ' + notes.slice(-6).join(' · ') : '',
       toolsSeen.size ? 'Tools used: ' + [...toolsSeen].slice(0, 24).join(', ') : '',
     ].filter(Boolean).join('\n');
-    const note = `[Compacted ${dropped.length} earlier turns to fit this model's context window. The full transcript stays in this chat, and the project mindmap above has the current file state.${digest ? '\n' + digest : ''}\n]`;
+    const note = `[Compacted ${dropped.length} earlier turns to fit this model's context window. The full transcript stays in this chat, and the project mindmap above has the current file state.${digest ? '\n' + digest : ''}${opts.trajectoryDigest ? '\nTrajectory digest:\n' + opts.trajectoryDigest : ''}\n]`;
     // Only announce a compaction when something actually left the window. With
     // a single oversized message the loop above drops nothing; saying
     // "Compacted 0 earlier turns" was user-visible nonsense.
@@ -1830,6 +1833,8 @@ async function runAgent(opts) {
       baseURL: p.baseURL, apiKey: p.apiKey, model: p.model,
       temperature: p.temperature, maxTokens: p.maxTokens, reasoningLevel: p.reasoningLevel,
       transport: p.transport, oauth: p.oauth, accessToken: p.accessToken,
+      cliMode: Boolean(p.cliMode || p.transport === 'cli'),
+      cliId: p.cliId || '', cliBin: p.cliBin || '', cliKind: p.cliKind || '',
       account: p.account, accountId: p.accountId, sessionId: p.sessionId,
       codexUrl: p.codexUrl, cloudcodeUrl: p.cloudcodeUrl, project: p.project,
       oauthProvider: p.oauthProvider,
@@ -2207,6 +2212,8 @@ async function runAgent(opts) {
       chatgpt: 'OpenAI ChatGPT / Codex subscription',
       codex: 'OpenAI Codex',
       grok: 'xAI Grok',
+      kimi: 'Moonshot Kimi Code CLI',
+      zai: 'Z.ai GLM Coding Plan',
     };
     const providerVendorLabel = vendorMap[pidRaw] || (provider.baseURL ? `OpenAI-compatible endpoint (${provider.baseURL})` : 'Configured LLM provider');
     const autoLine = autoRoutedMeta
@@ -2310,6 +2317,9 @@ async function runAgent(opts) {
   // is not amputated at 55k tokens while a small model still fits.
   const providerId = String(provider.oauthProvider || '').split(':')[0] || provider.transport || '';
   const modelBudget = modelCatalog.budgetForModel(provider.model, providerId, provider.contextWindow);
+  const autoCompactRaw = String(opts.autoCompactWindow == null ? 'auto' : opts.autoCompactWindow).trim().toLowerCase();
+  const autoCompactEnabled = autoCompactRaw !== 'off' && autoCompactRaw !== 'false' && autoCompactRaw !== '0';
+  const customCompactTokens = /^\d+$/.test(autoCompactRaw) ? Number(autoCompactRaw) : 0;
   // The character budget actually enforced this turn. It starts at the model's
   // own window-derived figure and shrinks on demand: a provider can still reject
   // the prompt as too long (tokeniser drift, tool schemas, image parts), and
@@ -2323,35 +2333,126 @@ async function runAgent(opts) {
     const remainingChars = Math.max(3200, safeTotalChars - overheadChars);
     historyBudget = Math.min(historyBudget, remainingChars);
   }
-  messages = sanitizeHistory(messages, {
-    supportsTools: toolMode,
-    maxChars: historyBudget,
-    onCompact: ({ dropped = 0, truncated = 0 } = {}) => {
-      // PreCompact/PostCompact fire around the compaction itself. They run
-      // fire-and-forget: compaction is synchronous and must not block on I/O.
-      const payload = { trigger: 'auto', dropped };
-      Promise.resolve()
-        .then(() => hooks.runEvent('PreCompact', payload, { cwd: currentCwd, config: getHookConfig() }))
-        .then((v) => {
-          if (v && v.additionalContext) messages[0].content += `\n\n<hook_context>\n${v.additionalContext}\n</hook_context>`;
-          return hooks.runEvent('PostCompact', payload, { cwd: currentCwd, config: getHookConfig() });
-        })
-        .catch(() => {});
-      // Say what actually happened. "Compacted 0 earlier turns" was nonsense for
-      // a single pasted document — there were no earlier turns to compact, so
-      // the message itself was shortened while its head and tail were kept.
-      const win = modelCatalog.fmtWindow(modelBudget.window);
-      let text;
-      if (dropped && truncated) {
-        text = `Fitted this conversation to ${provider.model}'s ${win} context window: ${dropped} earlier turn${dropped === 1 ? '' : 's'} left the working set and one very long message was shortened in the middle. The full transcript stays in this chat.`;
-      } else if (dropped) {
-        text = `Compacted ${dropped} earlier turn${dropped === 1 ? '' : 's'} to fit ${provider.model}'s ${win} context window — the chat history and project files are unchanged.`;
-      } else {
-        text = `This message was longer than ${provider.model}'s ${win} context window, so its middle was trimmed — the beginning and your latest request were kept, and the full text stays in the chat.`;
-      }
-      emit({ type: 'notice', text });
-    },
-  });
+  const usageEstimator = require('./usage-estimator');
+  let activeServedModel = String(provider.model || '').trim();
+  const modelsUsed = [];
+  const recordModelUsed = (name) => {
+    const clean = String(name || '').trim();
+    if (!clean) return;
+    activeServedModel = clean;
+    if (!modelsUsed.includes(clean)) modelsUsed.push(clean);
+  };
+  const usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0, context_tokens: 0, model: activeServedModel };
+  const addUsage = (u, resolvedModel) => {
+    if (resolvedModel) recordModelUsed(resolvedModel);
+    const normU = usageEstimator.normalizeCallUsage(u);
+    if (!normU) return;
+    const pin = Number(normU.prompt_tokens);
+    const pout = Number(normU.completion_tokens);
+    const ptotal = Number(normU.total_tokens);
+    if (Number.isFinite(pin) && pin > 0) { usageTotals.prompt_tokens += pin; usageTotals.context_tokens = pin; }
+    if (Number.isFinite(pout) && pout > 0) usageTotals.completion_tokens += pout;
+    usageTotals.total_tokens += (Number.isFinite(ptotal) && ptotal > 0
+      ? ptotal
+      : (Number.isFinite(pin) ? pin : 0) + (Number.isFinite(pout) ? pout : 0));
+    usageTotals.calls++;
+    usageTotals.model = activeServedModel || provider.model;
+    emit({ type: 'usage', usage: { ...usageTotals }, model: usageTotals.model });
+  };
+  const readTrajectoryDigest = () => {
+    if (!opts.convId) return '';
+    try {
+      const sd = require('./session-digest');
+      const td = sd.buildTrajectoryDigest({ convId: opts.convId, maxTokens: 700 });
+      return td && td.digest ? td.digest : '';
+    } catch (_) {
+      return '';
+    }
+  };
+  const emitCompactOutcome = (trigger, beforeTokens, afterTokens, { dropped = 0, truncated = 0 } = {}) => {
+    const payload = { trigger: trigger || 'auto', dropped };
+    Promise.resolve()
+      .then(() => hooks.runEvent('PreCompact', payload, { cwd: currentCwd, config: getHookConfig() }))
+      .then((v) => {
+        if (v && v.additionalContext && messages[0]) messages[0].content += `\n\n<hook_context>\n${v.additionalContext}\n</hook_context>`;
+        return hooks.runEvent('PostCompact', payload, { cwd: currentCwd, config: getHookConfig() });
+      })
+      .catch(() => {});
+    const winLabel = modelCatalog.fmtWindow(modelBudget.window);
+    const pctAfter = modelBudget.window > 0 ? Math.min(100, Math.round((afterTokens / modelBudget.window) * 100)) : 0;
+    const noticeTxt = dropped
+      ? `Compacted ${dropped} earlier turn${dropped === 1 ? '' : 's'} to fit ${provider.model}'s ${winLabel} context window — auto-compacted to ${afterTokens.toLocaleString()} tokens (${pctAfter}%).`
+      : `This message was longer than ${provider.model}'s ${winLabel} context window, so its middle was trimmed — auto-compacted to ${afterTokens.toLocaleString()} tokens (${pctAfter}%).`;
+    emit({ type: 'notice', text: noticeTxt });
+    emit({
+      type: 'auto-compact',
+      trigger: trigger || 'auto',
+      beforeTokens,
+      afterTokens,
+      contextWindow: modelBudget.window,
+      dropped,
+      truncated,
+      model: provider.model,
+      at: Date.now(),
+    });
+    usageTotals.context_tokens = afterTokens;
+    usageTotals.prompt_tokens = Math.max(usageTotals.prompt_tokens, afterTokens);
+    usageTotals.model = activeServedModel || provider.model;
+    emit({
+      type: 'usage',
+      usage: { ...usageTotals, context_tokens: afterTokens, prompt_tokens: afterTokens, compacted: true },
+      model: usageTotals.model,
+    });
+  };
+  const runInlineAutoCompact = (trigger, targetRatio = contextPipeline.AUTO_COMPACT_TARGET_RATIO, beforeEst = null) => {
+    const liveBefore = beforeEst || usageEstimator.estimatePromptTokens(messages, toolMode ? tools : null);
+    const masked = contextPipeline.maskOlderToolOutputs(messages, { keepRecentSteps: 3, minChars: 800 });
+    messages.length = 0;
+    messages.push(...masked);
+    const sysChars = String((messages[0] && messages[0].content) || '').length;
+    const toolChars = toolMode ? JSON.stringify(tools).length : 0;
+    const targetChars = contextPipeline.computeCompactTargetChars(modelBudget.window, { systemChars: sysChars, toolChars, targetRatio });
+    let stats = { dropped: 0, truncated: 0 };
+    const compacted = sanitizeHistory(messages, {
+      supportsTools: toolMode,
+      maxChars: Math.max(12000, Math.min(historyBudget, targetChars)),
+      trajectoryDigest: readTrajectoryDigest(),
+      onCompact: (info) => { stats = info || stats; },
+    });
+    messages.length = 0;
+    messages.push(...compacted);
+    if (!stats.dropped && !stats.truncated) {
+      shrinkLargest();
+    }
+    const afterTokens = usageEstimator.estimatePromptTokens(messages, toolMode ? tools : null);
+    emitCompactOutcome(trigger, liveBefore, afterTokens, stats);
+    return { dropped: stats.dropped || 0, truncated: stats.truncated || 0, beforeTokens: liveBefore, afterTokens };
+  };
+
+  if (autoCompactEnabled) {
+    const preEval = tokenBudget.estimateSessionContext({
+      messages,
+      tools: toolMode ? tools : null,
+      modelWindow: modelBudget.window,
+      autoCompactRatio: contextPipeline.AUTO_COMPACT_TRIGGER_RATIO,
+      customCompactTokens,
+    });
+    if (preEval.shouldCompact) {
+      runInlineAutoCompact('pre-turn-80pct', contextPipeline.AUTO_COMPACT_TARGET_RATIO, preEval.totalTokens);
+    } else {
+      messages = sanitizeHistory(messages, {
+        supportsTools: toolMode,
+        maxChars: historyBudget,
+        trajectoryDigest: readTrajectoryDigest(),
+        onCompact: ({ dropped = 0, truncated = 0 } = {}) => {
+          const afterTok = usageEstimator.estimatePromptTokens(messages, toolMode ? tools : null);
+          emitCompactOutcome('pre-turn-budget', preEval.totalTokens, afterTok, { dropped, truncated });
+        },
+      });
+    }
+  } else {
+    messages = sanitizeHistory(messages, { supportsTools: toolMode, maxChars: historyBudget });
+  }
   const knownToolNames = new Set([...allAllowedDefs.keys(), ...tools.map((t) => t.function.name)]);
   const activateTools = (names) => {
     if (!Array.isArray(names) || !names.length) return [];
@@ -2658,43 +2759,6 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     return text;
   };
 
-  // ── Token / usage accounting ────────────────────────────────────────────
-  // Example surfaces `/usage`, `/cost` and `/context`; every one of those needs
-  // numbers, and until now the run threw `json.usage` away after reading it.
-  // Accumulate prompt/completion tokens across every step of this turn (and any
-  // sub-agent share, since sub-runs report their own totals upward) and stream
-  // a `usage` event so the renderer can show live spend.
-  // `prompt_tokens`/`completion_tokens` are summed across every step so `/cost`
-  // can price the whole turn. `context_tokens` is the *last* call's prompt size —
-  // that is what the window meter must show, because summed prompt tokens exceed
-  // the context window on any multi-step turn (a 3-step turn bills ~3× the
-  // prompt). Rendering the sum as "context used" produced "168,145 of 128,000".
-  let activeServedModel = String(provider.model || '').trim();
-  const modelsUsed = [];
-  const recordModelUsed = (name) => {
-    const clean = String(name || '').trim();
-    if (!clean) return;
-    activeServedModel = clean;
-    if (!modelsUsed.includes(clean)) modelsUsed.push(clean);
-  };
-  const usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0, context_tokens: 0, model: activeServedModel };
-  const addUsage = (u, resolvedModel) => {
-    if (resolvedModel) recordModelUsed(resolvedModel);
-    const normU = require('./usage-estimator').normalizeCallUsage(u);
-    if (!normU) return;
-    const pin = Number(normU.prompt_tokens);
-    const pout = Number(normU.completion_tokens);
-    const ptotal = Number(normU.total_tokens);
-    if (Number.isFinite(pin) && pin > 0) { usageTotals.prompt_tokens += pin; usageTotals.context_tokens = pin; }
-    if (Number.isFinite(pout) && pout > 0) usageTotals.completion_tokens += pout;
-    usageTotals.total_tokens += (Number.isFinite(ptotal) && ptotal > 0
-      ? ptotal
-      : (Number.isFinite(pin) ? pin : 0) + (Number.isFinite(pout) ? pout : 0));
-    usageTotals.calls++;
-    usageTotals.model = activeServedModel || provider.model;
-    emit({ type: 'usage', usage: { ...usageTotals }, model: usageTotals.model });
-  };
-
   // Output budget for this turn. Starts as "whatever the provider config says"
   // and is raised if a reply gets cut, so later retries in the same turn ask
   // for the bigger budget straight away instead of being cut a second time.
@@ -2745,17 +2809,18 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
     // twice, once truncated.
     let turnChars = 0;
     let turnThink = 0;
-    // Mid-run compaction: a long tool loop keeps appending results, so re-check
-    // the live size every step and compact before the provider has to reject it.
-    if (step > 0) {
-      const liveCap = Math.round(historyBudget * 0.95);
-      if (historyChars() > liveCap) {
-        const c = compactTo(Math.round(historyBudget * 0.7));
-        if (c.dropped) {
-          emit({ type: 'notice', text: `Compacted ${c.dropped} earlier turn${c.dropped === 1 ? '' : 's'} mid-run to keep this tool loop inside ${provider.model}'s context window.` });
-        } else if (!shrinkLargest()) {
-          // Nothing left to shrink — the next call will decide (chatRound retries).
-        }
+    // Mid-run compaction: a long tool loop keeps appending results, so check
+    // live token pressure every iteration and auto-compact at 80% before any overflow.
+    if (step > 0 && autoCompactEnabled) {
+      const stepEval = tokenBudget.estimateSessionContext({
+        messages,
+        tools: toolMode ? tools : null,
+        modelWindow: modelBudget.window,
+        autoCompactRatio: contextPipeline.AUTO_COMPACT_TRIGGER_RATIO,
+        customCompactTokens,
+      });
+      if (stepEval.shouldCompact || historyChars() > Math.round(historyBudget * 0.8)) {
+        runInlineAutoCompact('tool-loop-80pct', 0.22, stepEval.totalTokens);
       }
     }
     const doChat = (withTools, maxTokens) => {
@@ -2916,8 +2981,9 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           const ratios = contextPipeline.SHRINK_RATIOS;
           const ratio = ratios[Math.min(tries, ratios.length - 1)];
           tries++;
-          const c = compactTo(Math.round(historyBudget * ratio));
-          let shrunk = c.freed > 0 || shrinkLargest();
+          const beforeOverflowTok = usageEstimator.estimatePromptTokens(messages, toolMode ? tools : null);
+          const overflowAc = runInlineAutoCompact('overflow-retry', Math.min(0.22, ratio), beforeOverflowTok);
+          let shrunk = overflowAc.afterTokens < beforeOverflowTok || overflowAc.dropped > 0 || overflowAc.truncated > 0 || shrinkLargest();
           if (!shrunk && messages[0] && typeof messages[0].content === 'string') {
             const beforeSys = messages[0].content.length;
             messages[0].content = messages[0].content
@@ -2925,10 +2991,6 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             if (messages[0].content.length < beforeSys) shrunk = true;
           }
           if (!shrunk) throw e;
-          emit({
-            type: 'notice',
-            text: `“${provider.model}” reported the prompt was over its context window — ${c.dropped ? `compacted ${c.dropped} earlier turn${c.dropped === 1 ? '' : 's'}` : 'trimmed the largest tool result'} and retrying.`,
-          });
         }
       }
     };
@@ -3380,6 +3442,8 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         if (/^(gpt-|o[134]\b|codex)/i.test(ml)) return op === 'chatgpt' || (op === 'antigravity' && /gpt-oss/i.test(ml));
         if (/^gemini-/i.test(ml)) return op === 'antigravity';
         if (/^grok-/i.test(ml)) return op === 'grok';
+        if (/^kimi-|^moonshot/i.test(ml)) return op === 'kimi';
+        if (/^glm-|^zai/i.test(ml)) return op === 'zai';
         return !op && Boolean(row.baseURL && (row.apiKey || /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(row.baseURL) && !/:(3001|31415)\b/.test(row.baseURL)));
       };
 
@@ -4185,6 +4249,18 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
           ...pendingImages.map((x) => ({ type: 'image_url', image_url: { url: x.imageDataUrl } })),
         ],
       });
+    }
+    if (autoCompactEnabled) {
+      const postToolEval = tokenBudget.estimateSessionContext({
+        messages,
+        tools: toolMode ? tools : null,
+        modelWindow: modelBudget.window,
+        autoCompactRatio: contextPipeline.AUTO_COMPACT_TRIGGER_RATIO,
+        customCompactTokens,
+      });
+      if (postToolEval.shouldCompact) {
+        runInlineAutoCompact('tool-loop-80pct', contextPipeline.AUTO_COMPACT_TARGET_RATIO, postToolEval.totalTokens);
+      }
     }
   }
 

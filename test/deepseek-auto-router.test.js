@@ -325,7 +325,8 @@ function writeSseText(res, model, text) {
     const modalBody = fs.readFileSync(path.join(ROOT, 'src/components/settings/SettingsModalBody.jsx'), 'utf8');
     const ipcFeat = fs.readFileSync(path.join(ROOT, 'electron/ipc/ipc-features.js'), 'utf8');
     const preloadSrc = fs.readFileSync(path.join(ROOT, 'electron/preload.js'), 'utf8');
-    const barSrc = fs.readFileSync(path.join(ROOT, 'src/components/chat/InputBarView.jsx'), 'utf8');
+    const barSrc = fs.readFileSync(path.join(ROOT, 'src/components/chat/InputBarView.jsx'), 'utf8')
+      + '\n' + fs.readFileSync(path.join(ROOT, 'src/components/chat/ModelPickerPopover.jsx'), 'utf8');
     const appSrc = fs.readFileSync(path.join(ROOT, 'src/App.jsx'), 'utf8');
 
     assert.ok(extPanels.includes('Auto-Switch Brain (DeepSeek V4.1 Flash Dispatcher)'));

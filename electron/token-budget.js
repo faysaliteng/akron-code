@@ -184,8 +184,52 @@ function analyzeCustomizationBudget({
   };
 }
 
+function estimateSessionContext({
+  messages = [],
+  tools = null,
+  model = '',
+  modelWindow = 0,
+  autoCompactRatio = 0.8,
+  customCompactTokens = 0,
+} = {}) {
+  let resolvedWin = Number(modelWindow) || 0;
+  if (resolvedWin <= 0 && model) {
+    try {
+      resolvedWin = require('./model-catalog').contextWindowFor(model);
+    } catch (_) {}
+  }
+  const windowTokens = Math.max(4096, resolvedWin || 128000);
+  const ratio = Number(autoCompactRatio) > 0 && Number(autoCompactRatio) < 1 ? Number(autoCompactRatio) : 0.8;
+  const thresholdTokens = Number(customCompactTokens) > 0
+    ? Math.max(2048, Math.min(Number(customCompactTokens), Math.round(windowTokens * 0.9)))
+    : Math.max(2048, Math.round(windowTokens * ratio));
+  let systemTokens = 0;
+  let messageTokens = 0;
+  for (const m of (Array.isArray(messages) ? messages : [])) {
+    if (!m || typeof m !== 'object') continue;
+    const t = estimateTokens(m.content || '') + (Array.isArray(m.tool_calls) ? estimateTokens(m.tool_calls) : 0) + 16;
+    if (m.role === 'system') systemTokens += t;
+    else messageTokens += t;
+  }
+  const toolTokens = (Array.isArray(tools) && tools.length) ? estimateTokens(tools) : 0;
+  const totalTokens = systemTokens + messageTokens + toolTokens;
+  const usageRatio = windowTokens > 0 ? (totalTokens / windowTokens) : 0;
+  return {
+    totalTokens,
+    systemTokens,
+    messageTokens,
+    toolTokens,
+    windowTokens,
+    thresholdTokens,
+    usageRatio,
+    usagePct: Math.min(100, Math.round(usageRatio * 100)),
+    shouldCompact: totalTokens >= thresholdTokens,
+  };
+}
+
 module.exports = {
   DEFAULT_CAP_TOKENS,
   estimateTokens,
   analyzeCustomizationBudget,
+  estimateSessionContext,
 };

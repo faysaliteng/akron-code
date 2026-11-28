@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Icon } from '../Icon.jsx';
+import { Icon, ModelLogo } from '../Icon.jsx';
+import { CliLoginModal, useCliLogin } from '../CliLoginModal.jsx';
 
 export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoaded, onPoolMutated }) {
   const [providers, setProviders] = useState([]);
@@ -40,24 +41,20 @@ export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoad
     } catch (_) {}
   }, [onProvidersLoaded, loadOauthStatus]);
 
-  const handleOauthConnect = async (pv) => {
-    if (!pv || !window.autobot) return;
-    setOauthBusy(pv.id);
-    setErrMsg('');
-    setStatusMsg('');
-    try {
-      const res = (pv.canBrowserSignIn && pv.id !== 'claude' && window.autobot.providerSignIn)
-        ? await window.autobot.providerSignIn(pv.id)
-        : (window.autobot.providerSignInManual ? await window.autobot.providerSignInManual(pv.id) : null);
+  const cliLogin = useCliLogin({
+    onSuccess: async () => {
       await loadOauthStatus();
       if (onPoolMutated) onPoolMutated();
-      if (res && res.ok === false && res.error) setErrMsg(String(res.error));
-      else setStatusMsg(`${pv.label || pv.id} status refreshed — check models below.`);
-    } catch (e) {
-      setErrMsg(String((e && e.message) || e));
-    } finally {
-      setOauthBusy('');
-    }
+      setStatusMsg('Subscription connected — models refreshed.');
+    },
+    onNotice: (msg) => setErrMsg(String(msg || '')),
+  });
+
+  const handleOauthConnect = async (pv) => {
+    if (!pv) return;
+    setErrMsg('');
+    setStatusMsg('');
+    await cliLogin.start(pv.id);
   };
 
   const handleAutoDetectAll = async () => {
@@ -318,13 +315,14 @@ export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoad
               <button
                 key={'oauth:' + pv.id}
                 type="button"
+                data-testid={`orch-oauth-pill-${pv.id}`}
                 className={'orch-paid-pill' + (activeCount ? ' ready' : '')}
-                disabled={oauthBusy === pv.id}
+                disabled={cliLogin.busy || oauthBusy === pv.id}
                 onClick={() => handleOauthConnect(pv)}
-                title={activeCount ? `${pv.label}: ${activeCount} connected account(s)` : `Connect ${pv.label} OAuth`}
+                title={activeCount ? `${pv.label}: ${activeCount} connected account(s) — click to Reconnect` : `Sign in to ${pv.label}`}
               >
-                <span className={'orch-paid-dot' + (activeCount ? ' ok' : '')} />
-                <span>{pv.label} {oauthBusy === pv.id ? '…' : (activeCount ? `(${activeCount} OAuth)` : '· Sign in')}</span>
+                <ModelLogo provider={pv.id} size={13} />
+                <span>{pv.label} {activeCount ? '· Reconnect' : '· Sign in'}</span>
               </button>
             );
           })}
@@ -451,6 +449,7 @@ export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoad
           {statusMsg && <p className="orch-paid-msg ok">{statusMsg}</p>}
         </div>
       )}
+      <CliLoginModal controller={cliLogin} />
     </div>
   );
 }

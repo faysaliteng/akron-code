@@ -1,13 +1,48 @@
 'use strict';
+const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
 const { spawn, execFile } = require('child_process');
 const { dialog, shell } = require('electron');
 const orchRouter = require('../orch-router');
+const cliRunner = require('../cli-runner');
+
+const MODEL_WINDOWS_TTL_MS = 24 * 60 * 60 * 1000;
+let _openRouterWarmedAt = 0;
+
+function modelWindowsCachePath() {
+  const base = process.env.AUTOBOT_HOME
+    ? path.resolve(process.env.AUTOBOT_HOME)
+    : path.join(os.homedir(), '.autobot');
+  return path.join(base, 'model-windows-cache.json');
+}
+
+function readModelWindowsCache() {
+  try {
+    const p = modelWindowsCachePath();
+    if (!fs.existsSync(p)) return { fetchedAt: 0, providers: {} };
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (!parsed || typeof parsed !== 'object') return { fetchedAt: 0, providers: {} };
+    return {
+      fetchedAt: Number(parsed.fetchedAt) || 0,
+      providers: parsed.providers && typeof parsed.providers === 'object' ? parsed.providers : {},
+    };
+  } catch (_) {
+    return { fetchedAt: 0, providers: {} };
+  }
+}
+
+function writeModelWindowsCache(data) {
+  try {
+    const p = modelWindowsCachePath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf8');
+  } catch (_) {}
+}
 
 module.exports = function registerOauthModelIpc(ctx) {
-  const { ipcMain, store, secretstore, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast, poolNoticeDeduper, bundledRuntimeDir, getRuntimes } = ctx;
+  const { ipcMain, store, secretstore, freellm, providerOauth, providertransport, modelCatalog, orchPool, normalizeReconnectCode, isRetryableLine, winFor, broadcast, poolNoticeDeduper, bundledRuntimeDir, getRuntimes, runtimePathPrefix } = ctx;
 
 function freellmFallbackApiKey() {
   try {
@@ -47,7 +82,7 @@ async function hydrateProvider(provider) {
   const rawBase = String(provider.baseURL || '').trim();
   const isDefaultOllamaNoKey = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):11434(\/v1)?\/?$/i.test(rawBase)
     && !String(provider.apiKey || '').trim();
-  const looksCloudModel = /^(claude-|gpt-|o[1-4](?:-|$)|codex|gemini-|grok-)/i.test(String(provider.model || '').trim());
+  const looksCloudModel = /^(claude-|gpt-|o[1-4](?:-|$)|codex|gemini-|grok-|kimi-|glm-)/i.test(String(provider.model || '').trim());
   if (!provider.oauthProvider && !provider.transport && provider.model && (!rawBase || (isDefaultOllamaNoKey && looksCloudModel))) {
     try {
       const st = providerOauth.status ? providerOauth.status() : null;
@@ -58,6 +93,8 @@ async function hydrateProvider(provider) {
       else if (/^(gpt-|o[1-4](?:-|$)|codex)/i.test(lowerModel)) preferredVendor = 'chatgpt';
       else if (/^gemini-/i.test(lowerModel)) preferredVendor = 'antigravity';
       else if (/^grok-/i.test(lowerModel)) preferredVendor = 'grok';
+      else if (/^kimi-/i.test(lowerModel)) preferredVendor = 'kimi';
+      else if (/^glm-/i.test(lowerModel)) preferredVendor = 'zai';
       const providers = (st && Array.isArray(st.providers)) ? st.providers : [];
       const exactHit = (pv) => {
         if (modelCatalog.hasLiveCatalog && modelCatalog.hasLiveCatalog(pv.id)) {
@@ -258,23 +295,36 @@ async function fetchProviderModels(id) {
   let warning = '';
   try {
     const r = await providerOauth.resolve(raw);
-    live = await providertransport.listModels({
-      transport: r.transport,
-      accessToken: r.accessToken,
-      apiKey: r.accessToken,
-      accountId: r.accountId,
-      codexUrl: r.codexUrl,
-      cloudcodeUrl: r.cloudcodeUrl,
-      baseURL: r.baseURL,
-      model: '',
-    });
+    if (r.transport === 'cli' && typeof cliRunner.probeCliModels === 'function') {
+      live = await cliRunner.probeCliModels(provId, r.cliBin).catch(() => []);
+    } else {
+      live = await providertransport.listModels({
+        transport: r.transport,
+        accessToken: r.accessToken,
+        apiKey: r.accessToken,
+        accountId: r.accountId,
+        codexUrl: r.codexUrl,
+        cloudcodeUrl: r.cloudcodeUrl,
+        baseURL: r.baseURL,
+        model: '',
+      });
+    }
   } catch (e) {
     // A provider whose token is dead still has a documented catalog: fall
     // through to the registry list instead of returning an empty picker.
     warning = oneLine(e);
   }
-  if (live.length) {
-    modelCatalog.register(provId, live);
+  const mergedLive = live.length ? [...live] : [];
+  if (mergedLive.length && Array.isArray(prov.models)) {
+    const seenIds = new Set(mergedLive.map((x) => String(x && x.id || '').toLowerCase()));
+    for (const pm of prov.models) {
+      if (pm && pm.id && !seenIds.has(String(pm.id).toLowerCase())) {
+        mergedLive.push({ ...pm });
+      }
+    }
+  }
+  if (mergedLive.length) {
+    modelCatalog.register(provId, mergedLive);
     // A live inventory answered, so this account is verified by evidence — not
     // by a hardcoded provider id list in the renderer. For ChatGPT also ask the
     // account endpoint for the real plan: its token often omits the claim, so a
@@ -284,11 +334,14 @@ async function fetchProviderModels(id) {
     Promise.resolve(providerOauth.refreshEntitlement(provId, acct)).catch(() => {});
   }
 
-  const entries = live.length
-    ? live
-    : (prov.models || []).map((m) => ({ id: m.id, label: m.label, contextWindow: 0, thinking: !!m.thinking }));
+  const entries = mergedLive.length
+    ? mergedLive
+    : (prov.models || []).map((m) => ({ id: m.id, label: m.label, contextWindow: Number(m.contextWindow) || 0, thinking: m.thinking !== false }));
   const models = entries.map((m) => {
-    const win = modelCatalog.contextWindowFor(m.id, provId, m.contextWindow);
+    const ruleFloor = modelCatalog.ruleContextWindowFor ? modelCatalog.ruleContextWindowFor(m.id) : 0;
+    const rawWin = Number(m.contextWindow) || 0;
+    const safeExplicit = (ruleFloor >= 1000000 && rawWin > 0 && rawWin < ruleFloor) ? ruleFloor : rawWin;
+    const win = modelCatalog.contextWindowFor(m.id, provId, safeExplicit);
     const caps = modelCatalog.thinkingCapabilitiesFor(m.id, provId);
     const levels = Array.isArray(m.thinkingLevels) && m.thinkingLevels.length ? m.thinkingLevels : caps.levels;
     const variants = m.thinkingVariants || caps.variants || undefined;
@@ -303,7 +356,13 @@ async function fetchProviderModels(id) {
       group: m.group || '',
     };
   });
-  if (live.length) {
+  if (models.length && process.env.AKRON_NO_DIALOG !== '1') {
+    const cur = readModelWindowsCache();
+    cur.providers[provId] = models.map((m) => ({ id: m.id, label: m.label, contextWindow: m.contextWindow }));
+    if (!cur.fetchedAt) cur.fetchedAt = Date.now();
+    writeModelWindowsCache(cur);
+  }
+  if (mergedLive.length) {
     try { broadcast({ type: 'model-catalog-updated', providerId: provId, accountId: raw, models }); } catch (_) {}
   }
   return {
@@ -317,6 +376,63 @@ async function fetchProviderModels(id) {
 }
 
 /**
+ * Hydrate cached context windows from disk and periodically refresh public
+ * OpenRouter model metadata (non-blocking) so newly shipped models never fall
+ * back to stale context sizes.
+ */
+async function warmOpenRouterContextMetadata(force = false) {
+  const cur = readModelWindowsCache();
+  if (cur.providers && typeof cur.providers === 'object') {
+    for (const [pid, rows] of Object.entries(cur.providers)) {
+      if (Array.isArray(rows) && rows.length) {
+        const sanitized = rows.map((r) => {
+          if (!r || !r.id) return r;
+          const floor = modelCatalog.ruleContextWindowFor ? modelCatalog.ruleContextWindowFor(r.id) : 0;
+          const w = Number(r.contextWindow) || 0;
+          return (floor >= 1000000 && w > 0 && w < floor) ? { ...r, contextWindow: floor } : r;
+        });
+        modelCatalog.register(pid, sanitized);
+      }
+    }
+  }
+  if (!force && (process.env.AKRON_NO_DIALOG === '1' || process.env.AKRON_ISOLATE_RUNTIMES === '1')) {
+    return 0;
+  }
+  const now = Date.now();
+  if (!force && cur.fetchedAt && (now - cur.fetchedAt) < MODEL_WINDOWS_TTL_MS && _openRouterWarmedAt) {
+    return 0;
+  }
+  _openRouterWarmedAt = now;
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/models', {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return 0;
+    const json = await res.json();
+    const rows = Array.isArray(json && json.data) ? json.data : [];
+    const byOr = [];
+    for (const m of rows) {
+      const id = String((m && m.id) || '').trim();
+      const win = Number(m && (m.context_length || (m.top_provider && m.top_provider.context_length))) || 0;
+      if (!id || win <= 0) continue;
+      byOr.push({ id, contextWindow: win });
+      const shortSlug = id.includes('/') ? id.split('/').pop() : id;
+      if (shortSlug && shortSlug !== id) byOr.push({ id: shortSlug, contextWindow: win });
+    }
+    if (byOr.length) {
+      modelCatalog.register('openrouter', byOr);
+      cur.fetchedAt = now;
+      cur.providers.openrouter = byOr;
+      writeModelWindowsCache(cur);
+    }
+    return byOr.length;
+  } catch (_) {
+    return 0;
+  }
+}
+
+/**
  * Ask every signed-in provider for its model catalog once, shortly after boot.
  *
  * The context window that drives auto-compaction is resolved from this catalog
@@ -327,6 +443,7 @@ async function fetchProviderModels(id) {
  * delay boot.
  */
 async function warmModelCatalogs() {
+  await warmOpenRouterContextMetadata(false).catch(() => {});
   let providers = [];
   try { providers = (providerOauth.status() || {}).providers || []; } catch (_) { return; }
   for (const p of providers) {
@@ -483,15 +600,18 @@ ipcMain.handle('autobot:providerSubmitCode', (event, flowId, code) => {
   return { ok: true };
 });
 
-ipcMain.handle('autobot:providerSignOut', (event, id, account) => {
+ipcMain.handle('autobot:providerSignOut', async (event, id, account) => {
   try {
     const raw = String(id || '');
     const [provId, ...rest] = raw.split(':');
     const acct = account || rest.join(':');
     if (!acct) return { ok: false, error: 'which account?' };
-    const removed = providerOauth.removeAccount(provId, acct);
+    const res = providerOauth.signOutAccount
+      ? await providerOauth.signOutAccount(provId, acct)
+      : { ok: true, removed: providerOauth.removeAccount(provId, acct) };
     poolNoticeDeduper.reset();
-    return { ok: true, removed };
+    try { broadcast({ type: 'models:updated', providerId: provId }); } catch (_) {}
+    return { ok: true, removed: Boolean(res && res.removed) };
   } catch (e) {
     return { ok: false, error: oneLine(e) };
   }
@@ -624,162 +744,385 @@ async function mirrorLoopbackOnIpv6(flow) {
   return 0;
 }
 
-function claudeCliFallback() {
-  const base = bundledRuntimeDir();
-  if (!base) return '';
-  const p = path.join(base, 'claude-code', 'bin', 'claude');
-  try { return fs.existsSync(p) ? p : ''; } catch (_) { return ''; }
-}
-
-/** Prefer a resolved runtime (self-updated install) over the repo copy. */
-async function claudeCliPath() {
+async function cliPathForProvider(prov) {
+  if (!prov) return '';
   try {
-    const hit = await getRuntimes().resolve('claude-code');
-    if (hit && hit.bin) return hit.bin;
+    const rt = typeof getRuntimes === 'function' ? getRuntimes() : null;
+    const resolved = await cliRunner.resolveCliBinary({ cliKind: prov.id, cliId: prov.cliId, cliBin: prov.bin }, { runtimes: rt });
+    if (resolved && resolved.bin && fs.existsSync(resolved.bin)) return resolved.bin;
+    if (resolved && resolved.bin && (resolved.bin.includes('/') || resolved.bin.includes('\\'))) return resolved.bin;
   } catch (_) {}
-  return claudeCliFallback();
+  const base = typeof bundledRuntimeDir === 'function' ? bundledRuntimeDir() : '';
+  if (base && prov.cliId && prov.bin) {
+    const ext = process.platform === 'win32' ? '.cmd' : '';
+    const cands = [
+      path.join(base, prov.cliId, 'bin', prov.bin + (process.platform === 'win32' ? '.exe' : '')),
+      path.join(base, prov.cliId, 'bin', prov.bin + ext),
+      path.join(base, prov.cliId, 'bin', prov.bin),
+    ];
+    for (const c of cands) {
+      try { if (fs.existsSync(c)) return c; } catch (_) {}
+    }
+  }
+  const bins = [prov.bin, ...(prov.fallbackBins || [])].filter(Boolean);
+  for (const b of bins) {
+    const hit = cliRunner.whichOnPath(b);
+    if (hit) return hit;
+  }
+  return '';
 }
 
-/**
- * Start `claude auth login` and hand its authorize URL to the renderer.
- *
- * The CLI is the credential owner, so we do not scrape its output for a token:
- * we only want the URL to open in the embedded browser and a place to paste the
- * code the page shows. On exit we re-read the keychain, which is now the CLI's
- * fresh credential.
- */
-async function startClaudeLogin(event) {
+function claudeCliPath() {
+  return cliPathForProvider(providerOauth.provider('claude'));
+}
+
+// Unified native CLI login manager (claude, chatgpt/codex, antigravity/gemini, grok, kimi, zai/zcode)
+const cliLoginFlows = new Map(); // provId -> flow
+const cliLoginStarts = new Map(); // provId -> Promise
+
+function extractDeviceUserCode(text) {
+  const clean = String(text || '');
+  const explicit = clean.match(/(?:code|enter\s+code|user\s+code|verification\s+code)\s*[:=]\s*([A-Z0-9]{4,6}-[A-Z0-9]{4,6})/i);
+  if (explicit) return explicit[1].toUpperCase();
+  const dash = clean.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/);
+  if (dash && !/^20[0-9]{2}-[0-9]{2}$/.test(dash[1])) return dash[1].toUpperCase();
+  return '';
+}
+
+function cliLoginSpecForProvider(prov, bin, opts = {}) {
+  const baseName = path.basename(String(bin || prov.bin || '')).toLowerCase();
+  if (prov.id === 'claude') {
+    return { args: ['auth', 'login'], useIpv6Relay: true, requiresCodePaste: true };
+  }
+  if (prov.id === 'chatgpt') {
+    const args = opts.deviceAuth ? ['login', '--device-auth'] : ['login'];
+    return { args, useIpv6Relay: false, supportsDeviceAuth: true };
+  }
+  if (prov.id === 'antigravity') {
+    if (baseName.startsWith('agy')) return { args: ['auth', 'login'], useIpv6Relay: false };
+    // Gemini CLI interactive/first-run auth prints an OAuth URL/code cleanly when NO_BROWSER=true
+    return { args: [], useIpv6Relay: false, extraEnv: { NO_BROWSER: 'true', GEMINI_CLI_NO_RELAUNCH: 'true' }, killAfterUrlSuccess: false };
+  }
+  if (prov.id === 'grok') {
+    const args = opts.deviceAuth ? ['login', '--device-auth'] : ['login'];
+    return { args, useIpv6Relay: false, supportsDeviceAuth: true };
+  }
+  if (prov.id === 'kimi') {
+    return { args: opts.region ? ['login', '--region', String(opts.region)] : ['login'], useIpv6Relay: false };
+  }
+  if (prov.id === 'zai') {
+    return { args: ['login'], useIpv6Relay: false };
+  }
+  return { args: prov.authLoginArgs || ['login'], useIpv6Relay: false };
+}
+
+async function startCliLogin(event, providerId, opts = {}) {
   try {
-    // A second concurrent login would race the same keychain item. A dead one
-    // must not block the next attempt, so only a live flow short-circuits.
-    if (flowIsLive(claudeLoginFlow)) {
-      return { ok: true, flowId: claudeLoginFlow.flowId, url: claudeLoginFlow.url, already: true };
+    const prov = providerOauth.provider(providerId || 'claude');
+    if (!prov) return { ok: false, error: `Unknown provider: ${providerId}` };
+
+    if (prov.id === 'zai' && !opts.useCli) {
+      const zcodeBin = await cliPathForProvider(prov);
+      if (!zcodeBin) {
+        return {
+          ok: true,
+          mode: 'api-key',
+          provider: prov.id,
+          label: prov.label,
+          docsUrl: prov.docs || 'https://z.ai/manage-apikey/apikey-list',
+          baseURL: prov.bearerBaseURL || 'https://api.z.ai/api/coding/paas/v4',
+        };
+      }
     }
-    claudeLoginFlow = null;
-    const bin = await claudeCliPath();
-    if (!bin) return { ok: false, error: 'the bundled Claude Code CLI is missing — reinstall the app' };
-    const flowId = 'claude-login:' + Date.now();
-    const env = Object.assign({}, process.env, { BROWSER: 'true' });
-    const child = spawn(bin, ['auth', 'login'], { stdio: ['pipe', 'pipe', 'pipe'], env });
-    const flow = { flowId, child, url: '', buffered: '', lines: [], alive: true, relay: null, relayPort: 0 };
-    claudeLoginFlow = flow;
-    // Start mirroring the CLI's callback port on ::1 at once, so it is listening
-    // before the user can possibly get back from the consent page.
-    // Start the IPv6 mirror immediately: the port only exists once the CLI has
-    // bound it, and the user may already be on the consent page.
-    const relayReady = mirrorLoopbackOnIpv6(flow).catch(() => 0);
-    const sender = event.sender;
-    const send = (channel, id, payload) => {
+
+    const existing = cliLoginFlows.get(prov.id);
+    if (flowIsLive(existing)) {
+      return {
+        ok: true,
+        flowId: existing.flowId,
+        provider: prov.id,
+        label: prov.label,
+        url: existing.url,
+        userCode: existing.userCode || '',
+        lines: existing.lines.slice(),
+        already: true,
+      };
+    }
+    cliLoginFlows.delete(prov.id);
+
+    const bin = await cliPathForProvider(prov);
+    if (!bin) {
+      return {
+        ok: false,
+        provider: prov.id,
+        error: `The bundled ${prov.label} CLI (${prov.bin}) is missing — check Settings → Runtimes & Updates.`,
+      };
+    }
+
+    const spec = cliLoginSpecForProvider(prov, bin, opts);
+    const flowId = `${prov.id}-login:${Date.now()}`;
+    const prefix = typeof runtimePathPrefix === 'function' ? await runtimePathPrefix().catch(() => '') : '';
+    const mergedPath = prefix
+      ? [prefix, ...String(process.env.PATH || '').split(path.delimiter).filter((d) => d && d !== prefix)].join(path.delimiter)
+      : process.env.PATH;
+    const env = Object.assign({}, process.env, {
+      BROWSER: 'true',
+      ...(mergedPath ? { PATH: mergedPath } : {}),
+      ...(spec.extraEnv || {}),
+    });
+    const spawnImpl = opts.spawnImpl || spawn;
+    const child = spawnImpl(bin, spec.args, { stdio: ['pipe', 'pipe', 'pipe'], env, windowsHide: true });
+    const flow = {
+      flowId,
+      provider: prov.id,
+      label: prov.label,
+      child,
+      url: '',
+      userCode: '',
+      openedExternal: false,
+      buffered: '',
+      lines: [],
+      alive: true,
+      relay: null,
+      relayPort: 0,
+    };
+    cliLoginFlows.set(prov.id, flow);
+    if (prov.id === 'claude') claudeLoginFlow = flow;
+
+    const relayReady = spec.useIpv6Relay
+      ? mirrorLoopbackOnIpv6(flow).catch(() => 0)
+      : Promise.resolve(0);
+
+    const sender = event && event.sender;
+    const emitEvent = (payload) => {
+      const full = { flowId, provider: prov.id, label: prov.label, ...payload };
+      try {
+        if (sender && !sender.isDestroyed()) sender.send('oauth:cli-login-event', full);
+      } catch (_) {}
+      try { broadcast({ type: 'oauth:cli-login-event', ...full }); } catch (_) {}
+    };
+    const sendLegacy = (channel, id, payload) => {
       try { if (sender && !sender.isDestroyed()) sender.send(channel, id, payload); } catch (_) {}
-      broadcast({ type: 'provider-reconnect', flowId: id, ...payload });
+      if (prov.id === 'claude') {
+        try { broadcast({ type: 'provider-reconnect', flowId: id, ...payload }); } catch (_) {}
+      }
     };
 
-    // The CLI reports a failed exchange ("Invalid code", "expired", a 400 body)
-    // on its own stdout and then exits non-zero. Reporting every non-zero exit
-    // as "cancelled" hides the reason and leaves the user re-running the same
-    // broken attempt, so keep the last few meaningful lines to quote back.
     const ansi = (s) => String(s)
-      .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')   // OSC 8 hyperlinks
-      .replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');                      // CSI colours
+      .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
+      .replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
+
+    const maybeOpenExternal = (u) => {
+      if (!u || flow.openedExternal) return;
+      flow.openedExternal = true;
+      if (opts.autoOpen === false || process.env.AKRON_NO_DIALOG === '1') return;
+      try { shell.openExternal(u); } catch (_) {}
+    };
+
     const scrape = (chunk, fromStderr) => {
       const text = ansi(chunk);
       flow.buffered += text;
+      let updatedAuthInfo = false;
       if (!flow.url) {
-        const m = flow.buffered.match(/https:\/\/[^\s"'<>]+oauth\/authorize[^\s"'<>]*/);
-        if (m) flow.url = m[0];
+        const authUrl = prov.id === 'claude'
+          ? flow.buffered.match(/https:\/\/[^\s"'<>]+oauth\/authorize[^\s"'<>]*/)
+          : flow.buffered.match(/https:\/\/[^\s"'<>]+/);
+        if (authUrl) {
+          flow.url = authUrl[0].replace(/[.,;)]+$/, '');
+          updatedAuthInfo = true;
+          maybeOpenExternal(flow.url);
+        }
+      }
+      if (!flow.userCode) {
+        const uc = extractDeviceUserCode(flow.buffered);
+        if (uc) {
+          flow.userCode = uc;
+          updatedAuthInfo = true;
+        }
+      }
+      if (updatedAuthInfo) {
+        emitEvent({ phase: 'url', url: flow.url, userCode: flow.userCode });
       }
       for (const raw of text.split(/\r?\n/)) {
         const line = raw.replace(/\s+/g, ' ').trim();
         if (!line) continue;
-        if (/oauth\/authorize|didn't open|Opening browser|Paste code here/i.test(line)) continue;
-        flow.lines.push(line.slice(0, 200));
-        if (flow.lines.length > 6) flow.lines.shift();
-        console.log('[claude-login' + (fromStderr ? ':err' : '') + ']', line.slice(0, 300));
-        // Stream it, don't wait for the exit: a rejected paste that leaves the
-        // CLI waiting ("Copy all of it, including the # in the middle") produces
-        // no result event at all, so an unstreamed message is indistinguishable
-        // from a dead sign-in — the user retries the same wrong paste forever.
-        try {
-          send('autobot:providerReconnectLine', flowId, {
-            line: line.slice(0, 220),
-            retryable: isRetryableLine(line),
-          });
-        } catch (_) {}
+        if (prov.id === 'claude' && /oauth\/authorize|didn't open|Opening browser|Paste code here/i.test(line)) continue;
+        flow.lines.push(line.slice(0, 220));
+        if (flow.lines.length > 8) flow.lines.shift();
+        emitEvent({ phase: 'output', line: line.slice(0, 220), url: flow.url, userCode: flow.userCode, fromStderr: !!fromStderr });
+        if (prov.id === 'claude') {
+          try {
+            sendLegacy('autobot:providerReconnectLine', flowId, {
+              line: line.slice(0, 220),
+              retryable: isRetryableLine(line),
+            });
+          } catch (_) {}
+        }
       }
     };
-    child.stdout.on('data', (c) => scrape(c, false));
-    child.stderr.on('data', (c) => scrape(c, true));
+
+    if (child.stdout) child.stdout.on('data', (c) => scrape(c, false));
+    if (child.stderr) child.stderr.on('data', (c) => scrape(c, true));
 
     const settle = async (result) => {
-      if (!flow.alive) return; // exit + error can both fire; settle once
+      if (!flow.alive) return;
       flow.alive = false;
+      if (cliLoginFlows.get(prov.id) === flow) cliLoginFlows.delete(prov.id);
       if (claudeLoginFlow === flow) claudeLoginFlow = null;
       if (flow.relay) { try { flow.relay.close(); } catch (_) {} flow.relay = null; }
       if (result && result.ok) {
-        // The CLI owns the credential now; adopt it and refresh the catalog.
         try {
-          const rec = await providerOauth.adoptClaudeFromCli();
-          poolNoticeDeduper.reset();
-          try { if (rec && rec.id) await fetchProviderModels(rec.id); } catch (_) {}
-          try { await warmModelCatalogs(); } catch (_) {}
-          send('autobot:providerReconnectResult', flowId, { ok: true, account: rec });
+          if (prov.id === 'claude' && providerOauth.adoptClaudeFromCli) {
+            const rec = await providerOauth.adoptClaudeFromCli();
+            poolNoticeDeduper.reset();
+            try { if (rec && rec.id) await fetchProviderModels(rec.id); } catch (_) {}
+            try { await warmModelCatalogs(); } catch (_) {}
+            emitEvent({ phase: 'done', ok: true, account: rec });
+            sendLegacy('autobot:providerReconnectResult', flowId, { ok: true, account: rec });
+          } else {
+            await providerOauth.syncCliAccounts(prov.id).catch(() => {});
+            const rec = (providerOauth.getAccount && providerOauth.getAccount(prov.id))
+              || providerOauth.addAccount(prov.id, { account: 'cli', label: `${prov.label} CLI`, plan: 'CLI Subscription', source: 'cli' });
+            poolNoticeDeduper.reset();
+            try { if (rec && rec.id) await fetchProviderModels(rec.id); } catch (_) {}
+            try { await warmModelCatalogs(); } catch (_) {}
+            try { broadcast({ type: 'models:updated', providerId: prov.id }); } catch (_) {}
+            emitEvent({ phase: 'done', ok: true, account: rec });
+          }
         } catch (e) {
-          send('autobot:providerReconnectResult', flowId, { ok: false, error: oneLine(e) });
+          const msg = oneLine(e);
+          emitEvent({ phase: 'error', ok: false, error: msg });
+          sendLegacy('autobot:providerReconnectResult', flowId, { ok: false, error: msg });
         }
       } else {
-        send('autobot:providerReconnectResult', flowId, { ok: false, error: (result && result.error) || 'sign-in did not complete' });
+        const msg = (result && result.error) || `${prov.label} sign-in did not complete`;
+        emitEvent({ phase: result && result.cancelled ? 'cancelled' : 'error', ok: false, cancelled: !!(result && result.cancelled), error: msg });
+        sendLegacy('autobot:providerReconnectResult', flowId, { ok: false, error: msg });
       }
     };
+
     child.on('exit', (code, signal) => {
-      console.log('[claude-login] exit', code, signal || '', '| last=' + String((flow.lines || []).slice(-1)[0] || ''));
       if (code !== 0) {
         const said = String((flow.lines || []).slice(-1)[0] || '');
-        const err = signal || /cancel/i.test(said)
-          ? 'Claude Code sign-in was cancelled'
-          : (said || 'Claude Code sign-in did not complete');
-        return settle({ ok: false, error: err });
+        const cancelled = Boolean(signal || /cancel/i.test(said));
+        const err = cancelled
+          ? `${prov.label} sign-in was cancelled`
+          : (said || `${prov.label} sign-in did not complete (exit ${code})`);
+        return settle({ ok: false, cancelled, error: err });
       }
       settle({ ok: true });
     });
     child.on('error', (e) => settle({ ok: false, error: e.message }));
 
-    // Give the CLI a moment to print the URL (it writes it before waiting).
-    const deadline = Date.now() + 6000;
-    while (!flow.url && Date.now() < deadline && flowIsLive(flow)) {
+    // Give CLI up to 3.5s to emit URL / userCode, then return live flow immediately
+    const waitMs = opts.waitMs != null ? Number(opts.waitMs) : (prov.id === 'claude' ? 6000 : 3500);
+    const deadline = Date.now() + waitMs;
+    while (!flow.url && !flow.userCode && Date.now() < deadline && flowIsLive(flow)) {
       await new Promise((r) => setTimeout(r, 100));
     }
-    if (!flow.url) {
-      try { child.kill('SIGTERM'); } catch (_) {}
-      if (claudeLoginFlow === flow) claudeLoginFlow = null;
-      flow.alive = false;
-      if (flow.relay) { try { flow.relay.close(); } catch (_) {} flow.relay = null; }
-      return { ok: false, error: 'Claude Code did not print a sign-in URL — try again from a terminal with `claude auth login`' };
+    if (prov.id === 'claude' && !flow.url && !flow.userCode && !flowIsLive(flow)) {
+      return { ok: false, provider: prov.id, error: (flow.lines.slice(-1)[0]) || 'Claude Code did not print a sign-in URL — try `claude auth login` in terminal' };
     }
-    // The CLI listens on 127.0.0.1 only, and Brave resolves `localhost` to
-    // `::1` first. The relay was started as soon as the child existed, but a
-    // returned URL is a promise that the click will land somewhere: wait for
-    // the listener (bounded, and never fatal — the paste box still works).
-    const boundPort = await Promise.race([
-      relayReady,
-      new Promise((r) => setTimeout(() => r(0), 4000)),
-    ]);
-    console.log('[claude-login] ready port=' + (flow.relayPort || 0) + ' ipv6Relay=' + (boundPort ? 'yes' : 'no'));
-    return { ok: true, flowId, url: flow.url };
+    await Promise.race([relayReady, new Promise((r) => setTimeout(() => r(0), 2500))]);
+    emitEvent({ phase: 'waiting', url: flow.url, userCode: flow.userCode });
+    return {
+      ok: true,
+      flowId,
+      provider: prov.id,
+      label: prov.label,
+      url: flow.url,
+      userCode: flow.userCode,
+      requiresCodePaste: Boolean(spec.requiresCodePaste),
+      supportsDeviceAuth: Boolean(spec.supportsDeviceAuth),
+      waiting: flowIsLive(flow),
+    };
   } catch (e) {
     return { ok: false, error: oneLine(e) };
   }
 }
 
-/**
- * Single-flight start.
- *
- * The first click spends up to 6 s waiting for the CLI to print its URL. A
- * second click inside that window used to short-circuit on `flowIsLive()` and
- * hand back the *empty* url of the in-flight flow, so the panel rendered a
- * paste box with no way to reach the sign-in page. Both clicks now await the
- * same promise and therefore see the same real URL — and only one
- * `claude auth login` is ever spawned.
- */
+function cancelCliLogin(providerId) {
+  const prov = providerOauth.provider(providerId || 'claude');
+  const key = prov ? prov.id : String(providerId || 'claude');
+  const f = cliLoginFlows.get(key) || (key === 'claude' ? claudeLoginFlow : null);
+  if (!f) return { ok: true, cancelled: false };
+  f.alive = false;
+  cliLoginFlows.delete(key);
+  if (claudeLoginFlow === f) claudeLoginFlow = null;
+  try { f.child.kill('SIGTERM'); } catch (_) {}
+  if (f.relay) { try { f.relay.close(); } catch (_) {} f.relay = null; }
+  try { broadcast({ type: 'oauth:cli-login-event', flowId: f.flowId, provider: key, phase: 'cancelled', ok: false, cancelled: true }); } catch (_) {}
+  return { ok: true, cancelled: true, flowId: f.flowId, provider: key };
+}
+
+function submitCliLoginCode(flowId, code) {
+  const fid = String(flowId || '');
+  let f = null;
+  for (const flow of cliLoginFlows.values()) {
+    if (flow && flow.flowId === fid) { f = flow; break; }
+  }
+  if (!f && claudeLoginFlow && claudeLoginFlow.flowId === fid) f = claudeLoginFlow;
+  if (!f) return { ok: false, error: 'that sign-in is no longer waiting — start it again' };
+  if (!flowIsLive(f)) {
+    f.alive = false;
+    cliLoginFlows.delete(f.provider);
+    if (claudeLoginFlow === f) claudeLoginFlow = null;
+    return { ok: false, error: 'that sign-in window closed before the code arrived — start it again' };
+  }
+  const v0 = String(code || '').trim();
+  const norm = normalizeReconnectCode(v0);
+  if (!norm.ok) return { ok: false, error: norm.error };
+  try {
+    if (!f.child.stdin || f.child.stdin.destroyed || f.child.stdin.writable === false) {
+      f.alive = false;
+      cliLoginFlows.delete(f.provider);
+      if (claudeLoginFlow === f) claudeLoginFlow = null;
+      return { ok: false, error: 'that sign-in window closed before the code arrived — start it again' };
+    }
+    f.child.stdin.write(norm.value + '\n');
+    return { ok: true };
+  } catch (e) {
+    f.alive = false;
+    cliLoginFlows.delete(f.provider);
+    if (claudeLoginFlow === f) claudeLoginFlow = null;
+    return { ok: false, error: oneLine(e) };
+  }
+}
+
+function getCliLoginState(providerId) {
+  const prov = providerOauth.provider(providerId || 'claude');
+  const key = prov ? prov.id : String(providerId || 'claude');
+  const f = cliLoginFlows.get(key) || (key === 'claude' ? claudeLoginFlow : null);
+  const live = flowIsLive(f);
+  return {
+    ok: true,
+    provider: key,
+    waiting: live,
+    flowId: live ? f.flowId : '',
+    url: live ? f.url : '',
+    userCode: live ? (f.userCode || '') : '',
+    lines: live ? f.lines.slice() : [],
+    pid: live && f.child && f.child.pid ? f.child.pid : 0,
+  };
+}
+
+ipcMain.handle('oauth:startCliLogin', async (event, providerId, opts) => {
+  const key = String(providerId || 'claude').trim().toLowerCase();
+  if (cliLoginStarts.has(key)) return cliLoginStarts.get(key);
+  const p = startCliLogin(event, key, opts || {})
+    .finally(() => { cliLoginStarts.delete(key); });
+  cliLoginStarts.set(key, p);
+  return p;
+});
+
+ipcMain.handle('oauth:cancelCliLogin', (_event, providerId) => cancelCliLogin(providerId));
+ipcMain.handle('oauth:cliLoginState', (_event, providerId) => getCliLoginState(providerId));
+ipcMain.handle('oauth:submitCliLoginCode', (_event, flowId, code) => submitCliLoginCode(flowId, code));
+
+async function startClaudeLogin(event) {
+  return startCliLogin(event, 'claude', {});
+}
+
 let claudeLoginStart = null;
 ipcMain.handle('autobot:providerReconnectClaude', async (event) => {
   if (claudeLoginStart) return claudeLoginStart;
@@ -791,56 +1134,15 @@ ipcMain.handle('autobot:providerReconnectClaude', async (event) => {
 });
 
 ipcMain.handle('autobot:providerReconnectClaudeCode', (event, flowId, code) => {
-  const f = claudeLoginFlow;
-  if (!f || f.flowId !== String(flowId || '')) {
-    return { ok: false, error: 'that sign-in is no longer waiting — start it again' };
-  }
-  if (!flowIsLive(f)) {
-    f.alive = false;
-    if (claudeLoginFlow === f) claudeLoginFlow = null;
-    return { ok: false, error: 'that sign-in window closed before the code arrived — start it again' };
-  }
-  const v0 = String(code || '').trim();
-  const norm = normalizeReconnectCode(v0);
-  if (!norm.ok) return { ok: false, error: norm.error };
-  const v = norm.value;
-  try {
-    if (!f.child.stdin || f.child.stdin.destroyed || f.child.stdin.writable === false) {
-      f.alive = false;
-      if (claudeLoginFlow === f) claudeLoginFlow = null;
-      return { ok: false, error: 'that sign-in window closed before the code arrived — start it again' };
-    }
-    f.child.stdin.write(v + '\n');
-  } catch (e) {
-    f.alive = false;
-    if (claudeLoginFlow === f) claudeLoginFlow = null;
-    return { ok: false, error: oneLine(e) };
-  }
-  return { ok: true };
+  return submitCliLoginCode(flowId, code);
 });
 
 ipcMain.handle('autobot:providerReconnectClaudeCancel', () => {
-  const f = claudeLoginFlow;
-  if (!f) return { ok: true, cancelled: false };
-  f.alive = false;
-  claudeLoginFlow = null;
-  try { f.child.kill('SIGTERM'); } catch (_) {}
-  if (f.relay) { try { f.relay.close(); } catch (_) {} f.relay = null; }
-  return { ok: true, cancelled: true };
+  return cancelCliLogin('claude');
 });
 
-// What the renderer can render without guessing: is a login still waiting, and
-// for how long. `waiting: false` means any code the user pastes will be refused.
 ipcMain.handle('autobot:providerReconnectState', () => {
-  const f = claudeLoginFlow;
-  const live = flowIsLive(f);
-  return {
-    ok: true,
-    waiting: live,
-    flowId: live ? f.flowId : '',
-    url: live ? f.url : '',
-    pid: live && f.child && f.child.pid ? f.child.pid : 0,
-  };
+  return getCliLoginState('claude');
 });
 
 // Re-import after an external `claude auth login` (the user may have run it in

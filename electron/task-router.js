@@ -125,6 +125,7 @@ const TIER_PREFERENCES = {
     'gemini-2.5-flash',
     'grok-4-fast',
     'gpt-5.6-luna',
+    'glm-5.3-flash',
     'claude-haiku-4-5-20251001',
     'qwen3.8-27b',
     'deepseek-v4-flash',
@@ -139,6 +140,8 @@ const TIER_PREFERENCES = {
     'gemini-4-carbon-medium',
     'gemini-4-neon-medium',
     'grok-code-fast-1',
+    'kimi-k3',
+    'glm-5.3',
     'claude-opus-5-5-low',
     'qwen3-coder-30b-a3b-instruct',
     'qwen3.8-flash',
@@ -154,6 +157,8 @@ const TIER_PREFERENCES = {
     'gpt-6-luna',
     'claude-fable-5-2',
     'grok-4.5',
+    'kimi-k3.1-pro',
+    'glm-5.4',
     'gpt-5.6-luna',
   ],
   vision: [
@@ -170,6 +175,9 @@ const TIER_PREFERENCES = {
     'gemini-4-carbon-high',
     'gemini-4-neon-high',
     'gemini-4-carbon-medium',
+    'kimi-k3.1-pro',
+    'kimi-k3',
+    'glm-5.4',
     'claude-opus-5-5',
     'claude-sonnet-5-5',
     'gpt-5.6-luna',
@@ -213,6 +221,17 @@ const VENDOR_MODELS_BY_PROVIDER = {
     'grok-code-fast-1',
     'grok-4.5',
     'grok-4',
+  ],
+  kimi: [
+    'kimi-k3.1-pro',
+    'kimi-k3',
+    'kimi-k3.1-pro-highspeed',
+    'kimi-k2.6',
+  ],
+  zai: [
+    'glm-5.4',
+    'glm-5.3',
+    'glm-5.3-flash',
   ],
 };
 

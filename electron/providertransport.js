@@ -38,6 +38,8 @@ const DEFAULT_ANTHROPIC_BASE = 'https://api.anthropic.com';
 const DEFAULT_OPENAI_BASE = 'https://api.openai.com/v1';
 const DEFAULT_GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_XAI_BASE = 'https://api.x.ai/v1';
+const DEFAULT_ZAI_CODING_BASE = 'https://api.z.ai/api/coding/paas/v4';
+const DEFAULT_ZAI_BASE = 'https://api.z.ai/api/paas/v4';
 const OFFICIAL_USER_AGENT = 'akron-code/1.6.9';
 
 // Context windows + auto-compact budgets. Pure data module, no imports, so this
@@ -251,6 +253,7 @@ const TRANSPORT_LABEL = {
   grok: 'Grok',
   google: 'Google Antigravity',
   antigravity: 'Google Antigravity',
+  zai: 'Z.ai (GLM Coding Plan)',
 };
 
 function parseRetryAfterMs(res) {
@@ -1704,6 +1707,244 @@ function grokChat(provider, messages, tools, onDelta, signal, maxTokensOverride,
 }
 
 // ---------------------------------------------------------------------------
+// Z.ai (GLM Coding Plan & PaaS v4) — official API / Coding Plan key transport
+// ---------------------------------------------------------------------------
+const ZAI_DEFAULT_MODELS = [
+  { id: 'glm-5.4', label: 'GLM-5.4 (Coding Plan)', contextWindow: 1000000, thinking: true, thinkingLevels: ['auto', 'low', 'medium', 'high'] },
+  { id: 'glm-5.3', label: 'GLM-5.3 (Coding Plan)', contextWindow: 1000000, thinking: true, thinkingLevels: ['auto', 'low', 'medium', 'high'] },
+  { id: 'glm-5.3-flash', label: 'GLM-5.3 Flash (Coding Plan)', contextWindow: 1000000, thinking: true, thinkingLevels: ['auto', 'low', 'medium', 'high'] },
+  { id: 'glm-5', label: 'GLM-5', contextWindow: 1000000, thinking: true, thinkingLevels: ['auto', 'low', 'medium', 'high'] },
+  { id: 'glm-4.7', label: 'GLM-4.7', contextWindow: 200000, thinking: true, thinkingLevels: ['auto', 'low', 'medium', 'high'] },
+];
+
+function resolveZaiBase(provider) {
+  const raw = trimBase(provider && provider.baseURL);
+  if (raw) return raw.replace(/\/chat\/completions$/i, '');
+  if (provider && provider.useStandardEndpoint) return DEFAULT_ZAI_BASE;
+  return DEFAULT_ZAI_CODING_BASE;
+}
+
+function toZaiMessages(messages) {
+  const out = [];
+  for (const m of messages || []) {
+    if (!m || typeof m !== 'object') continue;
+    const role = m.role === 'developer' ? 'system' : (m.role || 'user');
+    if (role === 'tool') {
+      out.push({
+        role: 'tool',
+        tool_call_id: m.tool_call_id || m.toolCallId || 'tool_0',
+        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content == null ? '' : m.content),
+      });
+      continue;
+    }
+    if (role === 'assistant') {
+      const msg = {
+        role: 'assistant',
+        content: typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map((p) => (p && p.text) || '').join('') : ''),
+      };
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+        msg.tool_calls = m.tool_calls.map((tc, idx) => ({
+          id: sanitizeToolCallId(tc.id, idx + 1),
+          type: 'function',
+          function: {
+            name: (tc.function && tc.function.name) || tc.name || 'tool',
+            arguments: typeof (tc.function && tc.function.arguments) === 'string'
+              ? tc.function.arguments
+              : JSON.stringify((tc.function && tc.function.arguments) || {}),
+          },
+        }));
+      }
+      out.push(msg);
+      continue;
+    }
+    if (Array.isArray(m.content)) {
+      const parts = [];
+      for (const p of m.content) {
+        if (typeof p === 'string' && p) parts.push({ type: 'text', text: p });
+        else if (p && typeof p.text === 'string' && p.text) parts.push({ type: 'text', text: p.text });
+        else if (p && p.type === 'image_url' && p.image_url) parts.push(p);
+      }
+      if (parts.length) out.push({ role, content: parts });
+    } else if (m.content != null) {
+      out.push({ role, content: String(m.content) });
+    }
+  }
+  return out;
+}
+
+async function zaiChat(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
+  const apiKey = assertOfficialApiKey(provider, ['ZAI_CODING_API_KEY', 'ZAI_API_KEY', 'ZHIPUAI_API_KEY', 'GLM_API_KEY'], 'zai');
+  const base = resolveZaiBase(provider);
+  const url = `${base}/chat/completions`;
+  const modelId = String((provider && provider.model) || 'glm-5.4');
+  const maxOut = Number(maxTokensOverride || (provider && provider.maxTokens)) > 0
+    ? Number(maxTokensOverride || (provider && provider.maxTokens))
+    : 16384;
+  const rLevel = String((provider && provider.reasoningLevel) || '').toLowerCase();
+  const buildBody = (allowThinking) => {
+    const b = {
+      model: modelId,
+      messages: toZaiMessages(messages),
+      stream: true,
+      max_tokens: maxOut,
+    };
+    if (Array.isArray(tools) && tools.length) {
+      b.tools = tools.map((t) => {
+        const fn = t.function || t;
+        return {
+          type: 'function',
+          function: {
+            name: fn.name,
+            description: fn.description || '',
+            parameters: fn.parameters || { type: 'object', properties: {} },
+          },
+        };
+      });
+      b.tool_choice = 'auto';
+    }
+    if (allowThinking && /^glm-5/i.test(modelId) && ['low', 'medium', 'high'].includes(rLevel)) {
+      b.thinking = { type: 'enabled' };
+    }
+    return b;
+  };
+  const headers = {
+    'content-type': 'application/json',
+    accept: 'text/event-stream',
+    authorization: 'Bearer ' + apiKey,
+    'user-agent': OFFICIAL_USER_AGENT,
+  };
+  const postZai = (payloadObj) => fetchWithTimeout(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payloadObj),
+    signal,
+  }, 'zai', 180000);
+
+  const firstBody = buildBody(true);
+  let res = await postZai(firstBody);
+  if (!res.ok && firstBody.thinking && res.status === 400) {
+    const errTxt = await res.text().catch(() => '');
+    if (res._cleanupAbort) { try { res._cleanupAbort(); } catch (_) {} res._cleanupAbort = null; }
+    if (/thinking/i.test(errTxt)) {
+      res = await postZai(buildBody(false));
+    } else {
+      throw httpError('zai', res, errTxt);
+    }
+  }
+  if (!res.ok) {
+    const errTxt = await res.text().catch(() => '');
+    if (res._cleanupAbort) { try { res._cleanupAbort(); } catch (_) {} res._cleanupAbort = null; }
+    throw httpError('zai', res, errTxt);
+  }
+
+  const opened = await openStream(res, signal);
+  const message = { role: 'assistant', content: '', tool_calls: [], model: modelId };
+  const byIndex = new Map();
+  const settle = () => {
+    if (!message.finish_reason) message.finish_reason = message.tool_calls.length ? 'tool_calls' : 'stop';
+    return message;
+  };
+  if (opened.empty) return settle();
+  if (!opened.isSse) {
+    const text = await new Response(opened.stream).text().catch(() => '');
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) {}
+    const ch = data && data.choices && data.choices[0];
+    const msg = ch && ch.message;
+    if (msg) {
+      if (typeof msg.reasoning_content === 'string' && msg.reasoning_content) onDelta(msg.reasoning_content, true);
+      if (typeof msg.content === 'string' && msg.content) { message.content = msg.content; onDelta(msg.content, false); }
+      if (Array.isArray(msg.tool_calls)) message.tool_calls = msg.tool_calls;
+    }
+    if (ch && ch.finish_reason) message.finish_reason = ch.finish_reason;
+    if (data && data.model) message.model = String(data.model);
+    if (data && data.usage) message.usage = usageEstimator.normalizeCallUsage(data.usage) || data.usage;
+    return settle();
+  }
+  for await (const ev of sseEvents(opened.stream)) {
+    if (ev.error) {
+      const err = new Error('LLM zai: ' + (ev.error.message || 'provider error'));
+      err.transient = true;
+      throw err;
+    }
+    if (ev.model) message.model = String(ev.model);
+    if (ev.usage) message.usage = usageEstimator.normalizeCallUsage(ev.usage) || ev.usage;
+    const ch = ev.choices && ev.choices[0];
+    if (!ch) continue;
+    const d = ch.delta || {};
+    if (typeof d.reasoning_content === 'string' && d.reasoning_content) {
+      onDelta(d.reasoning_content, true);
+    }
+    if (typeof d.content === 'string' && d.content) {
+      message.content += d.content;
+      onDelta(d.content, false);
+    }
+    if (Array.isArray(d.tool_calls)) {
+      for (const tc of d.tool_calls) {
+        const idx = Number.isFinite(Number(tc.index)) ? Number(tc.index) : 0;
+        let acc = byIndex.get(idx);
+        if (!acc) {
+          acc = {
+            id: sanitizeToolCallId(tc.id, idx + 1),
+            type: 'function',
+            function: { name: (tc.function && tc.function.name) || '', arguments: '' },
+          };
+          byIndex.set(idx, acc);
+          message.tool_calls.push(acc);
+        }
+        if (tc.id) acc.id = sanitizeToolCallId(tc.id, idx + 1);
+        if (tc.function && tc.function.name) acc.function.name = tc.function.name;
+        if (tc.function && tc.function.arguments) pushToolArg(acc, tc.function.arguments);
+        if (onToolDelta && acc.function.name) onToolDelta(toolDeltaPayload(acc));
+      }
+    }
+    if (ch.finish_reason) message.finish_reason = ch.finish_reason;
+  }
+  return settle();
+}
+
+async function zaiModels(provider, signal) {
+  const apiKey = assertOfficialApiKey(provider, ['ZAI_CODING_API_KEY', 'ZAI_API_KEY', 'ZHIPUAI_API_KEY', 'GLM_API_KEY'], 'zai');
+  const base = resolveZaiBase(provider);
+  let live = [];
+  try {
+    const res = await fetch(base + '/models', {
+      headers: {
+        accept: 'application/json',
+        authorization: 'Bearer ' + apiKey,
+        'user-agent': OFFICIAL_USER_AGENT,
+      },
+      signal,
+    });
+    const text = await res.text().catch(() => '');
+    if (res.ok) {
+      const json = JSON.parse(text);
+      const arr = json.data || json.models || (Array.isArray(json) ? json : []);
+      live = arr.map((m) => {
+        const id = String(m.id || m.model || '');
+        const cap = num(m.context_window || m.contextLength || m.contextWindow || (/^glm-5/i.test(id) ? 1000000 : 200000));
+        return {
+          id,
+          label: String(m.display_name || m.name || id),
+          contextWindow: cap,
+          thinking: /^glm-5/i.test(id),
+          thinkingLevels: /^glm-5/i.test(id) ? ['auto', 'low', 'medium', 'high'] : [],
+        };
+      }).filter((m) => m.id);
+    } else if (res.status === 401 || res.status === 403) {
+      throw httpError('zai', res, text);
+    }
+  } catch (e) {
+    if (e && e.code === 'provider_needs_signin') throw e;
+  }
+  const seen = new Set(live.map((m) => m.id));
+  for (const def of ZAI_DEFAULT_MODELS) {
+    if (!seen.has(def.id)) live.push({ ...def });
+  }
+  return live;
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 const ADAPTERS = {
@@ -1711,6 +1952,7 @@ const ADAPTERS = {
   codex: codexChat,
   google: googleChat,
   grok: grokChat,
+  zai: zaiChat,
 };
 
 /** True when this provider uses a non-`/chat/completions` official REST adapter. */
@@ -1827,6 +2069,10 @@ async function listModels(provider, signal) {
     }).filter((m) => m.id);
   }
 
+  if (transport === 'zai') {
+    return zaiModels(provider, effSignal);
+  }
+
   return [];
 }
 
@@ -1839,10 +2085,10 @@ module.exports = {
   // exported for tests
   _internal: {
     httpError, sseEvents, toAnthropicBody, anthropicAuth, anthropicFinish, sanitizeToolCallId,
-    toCodexInput, toCodexTools, toGeminiContents, geminiFinish, responsesChat,
+    toCodexInput, toCodexTools, toGeminiContents, geminiFinish, responsesChat, zaiChat, zaiModels, resolveZaiBase, toZaiMessages,
     googleModels, googleModelList, OFFICIAL_USER_AGENT,
     toGeminiSchema, toGeminiDeclarations,
     setClientVersions, formatResetIn, assertOfficialApiKey,
-    DEFAULT_ANTHROPIC_BASE, DEFAULT_OPENAI_BASE, DEFAULT_GEMINI_BASE, DEFAULT_XAI_BASE,
+    DEFAULT_ANTHROPIC_BASE, DEFAULT_OPENAI_BASE, DEFAULT_GEMINI_BASE, DEFAULT_XAI_BASE, DEFAULT_ZAI_CODING_BASE, DEFAULT_ZAI_BASE,
   },
 };

@@ -24,11 +24,11 @@ const eq = (name, actual, expected) => ok(name, JSON.stringify(actual) === JSON.
 (async () => {
   console.log('\nprovider registry (official CLI + optional encrypted API key)');
   {
-    eq('four first-party providers are catalogued', po.providerIds(), ['claude', 'chatgpt', 'antigravity', 'grok']);
+    eq('six first-party providers are catalogued', po.providerIds(), ['claude', 'chatgpt', 'antigravity', 'grok', 'kimi', 'zai']);
     for (const id of po.providerIds()) {
       const p = po.provider(id);
-      eq(id + ' kind is cli', p.kind, 'cli');
-      eq(id + ' transport is cli', p.transport, 'cli');
+      eq(id + ' kind matches', p.kind, id === 'zai' ? 'coding-plan' : 'cli');
+      eq(id + ' transport matches', p.transport, id === 'zai' ? 'zai' : 'cli');
       ok(id + ' exposes cliId and bin', Boolean(p.cliId && p.bin));
       ok(id + ' exposes authLoginArgs/authStatusArgs', Array.isArray(p.authLoginArgs) && Array.isArray(p.authStatusArgs));
       ok(id + ' exposes at least one model', Array.isArray(p.models) && p.models.length > 0);
@@ -39,6 +39,8 @@ const eq = (name, actual, expected) => ok(name, JSON.stringify(actual) === JSON.
     eq('gemini alias resolves to antigravity', po.provider('gemini').id, 'antigravity');
     eq('xai alias resolves to grok', po.provider('xai').id, 'grok');
     eq('anthropic alias resolves to claude', po.provider('anthropic').id, 'claude');
+    eq('moonshot alias resolves to kimi', po.provider('moonshot').id, 'kimi');
+    eq('glm alias resolves to zai', po.provider('glm').id, 'zai');
     eq('unknown provider is null', po.provider('nope'), null);
   }
 

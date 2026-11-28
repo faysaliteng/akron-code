@@ -88,6 +88,17 @@ contextBridge.exposeInMainWorld('autobot', {
   providerSetActive: (id, account) => ipcRenderer.invoke('autobot:providerSetActive', id, account),
   providerAutoHeal: (opts) => ipcRenderer.invoke('autobot:providerAutoHeal', opts),
 
+  // Unified One-Click Native CLI Login across all subscription providers
+  startCliLogin: (provider, opts) => ipcRenderer.invoke('oauth:startCliLogin', provider, opts),
+  cancelCliLogin: (provider) => ipcRenderer.invoke('oauth:cancelCliLogin', provider),
+  cliLoginState: (provider) => ipcRenderer.invoke('oauth:cliLoginState', provider),
+  submitCliLoginCode: (flowId, code) => ipcRenderer.invoke('oauth:submitCliLoginCode', flowId, code),
+  onCliLoginEvent: (cb) => {
+    const h = (e, payload) => { try { cb(payload); } catch (_) {} };
+    ipcRenderer.on('oauth:cli-login-event', h);
+    return () => ipcRenderer.removeListener('oauth:cli-login-event', h);
+  },
+
   // FreeLLMAPI — the local OpenAI-compatible router that aggregates the free
   // provider keys. Status/models never include key material.
   freellmStatus: () => ipcRenderer.invoke('autobot:freellmStatus'),
@@ -485,6 +496,9 @@ contextBridge.exposeInMainWorld('autobot', {
   envGetHostToken: () => ipcRenderer.invoke('autobot:envGetHostToken'),
   depsStatus: () => ipcRenderer.invoke('autobot:depsStatus'),
   depsInstallLsp: (id) => ipcRenderer.invoke('autobot:depsInstallLsp', id),
+  listGitPlugins: () => ipcRenderer.invoke('autobot:listGitPlugins'),
+  installGitPlugin: (payload) => ipcRenderer.invoke('autobot:installGitPlugin', payload),
+  checkPluginAndDepUpdates: (opts) => ipcRenderer.invoke('autobot:checkPluginAndDepUpdates', opts),
   updateCheck: (opts) => ipcRenderer.invoke('autobot:updateCheck', opts),
   updateDownload: (opts) => ipcRenderer.invoke('autobot:updateDownload', opts),
   updateApply: (stagedPath) => ipcRenderer.invoke('autobot:updateApply', stagedPath),

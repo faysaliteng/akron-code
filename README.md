@@ -48,10 +48,12 @@
 
 ## Why Akron Code
 
-Single-vendor AI tools lock every conversation to one model provider, one subscription quota, and one editing surface. **Akron Code** brings your official **Claude Code**, **Codex**, **Grok**, and **Gemini / Antigravity** CLI subscriptions together with a built-in Monaco/Xterm IDE, **Git worktree Swarm orchestration**, **MCP Connectors**, **20+ bundled skills**, **Chrome/Brave/Edge browser control**, cross-platform **Computer Use**, and a real cloud + offline **Images &amp; Video Studio** inside one cross-platform Electron desktop app (**macOS**, **Windows 11/10**, and **Linux**).
+Single-vendor AI tools lock every conversation to one model provider, one subscription quota, and one editing surface. **Akron Code** brings your official **Claude Code**, **Codex**, **Grok**, **Gemini / Antigravity**, **Kimi Code (`kimi-k3`)**, and **Z.ai (`GLM-5.4` Coding Plan)** subscriptions together with a built-in Monaco/Xterm IDE, **Git worktree Swarm orchestration**, **MCP Connectors**, **20+ bundled &amp; Git auto-syncing skills**, **Chrome/Brave/Edge browser control**, cross-platform **Computer Use**, and a real cloud + offline **Images &amp; Video Studio** inside one cross-platform Electron desktop app (**macOS**, **Windows 11/10**, and **Linux**).
 
-- **Zero Token Scraping &amp; Zero Header Spoofing:** Subscription turns execute directly through each vendor's official CLI subprocess (`claude`, `codex`, `grok`, `gemini` / `agy`) using native CLI OAuth (`claude auth login`, `codex login`, `grok login`, Gemini auth) — never extracting credentials or impersonating internal headers.
-- **Built-In Self-Updating CLI Runtimes:** Official `claude-code`, `codex`, `grok`, and `gemini-cli` packages ship inside `vendor/runtimes/`, hydrate on first launch to writable `~/.autobot/runtimes/<id>/current` (leaving `.app/Contents/Resources` read-only), verify upstream releases + SHA checksums / OS code signatures, and support one-click **Rollback**.
+- **Zero Token Scraping &amp; Zero Header Spoofing:** Subscription turns execute directly through each vendor's official CLI subprocess (`claude`, `codex`, `grok`, `gemini` / `agy`, `kimi`) using native CLI OAuth (`claude auth login`, `codex login`, `grok login`, Gemini auth, `kimi login`) via one-click **Sign in / Reconnect** — never extracting credentials or impersonating internal headers.
+- **Built-In Self-Updating CLI Runtimes &amp; Ecosystem Auto-Sync:** Official `claude-code`, `codex`, `grok`, `gemini-cli`, and `kimi-code` packages ship inside `vendor/runtimes/`, hydrate on first launch to writable `~/.autobot/runtimes/<id>/current` (prioritized ahead of bundled/PATH binaries and auto-healed on `426 Upgrade Required`), verify upstream releases + SHA checksums / OS code signatures, support one-click **Rollback**, and auto-update installed LSP servers and Git-tracked plugins on startup.
+- **1M / 2M Flagship Context Windows + Automatic 80% Compaction:** Dynamically resolves `1M`–`2M` context windows (`Opus 4.5`/`4.6`/`5.5`, `Sonnet 4.5`/`4.6`, `Grok 4.5`–`4.7 Fast`, `Gemini 2.5`/`3.1 Pro`, `Kimi K3`, `GLM-5.4`, `GPT-5.4`) across both the composer pill/ring and right-sidebar **Context** panel, and automatically triggers `Compact now` at **80%** capacity before and after tool-use turns so long sessions never stall.
+- **Customizable 3-Layout Model Picker:** Switch between **Compact List**, **Grouped Cards**, and **Quick-Switch Bar** layouts, pin favorites (`★`), toggle **"Hide unconfigured providers"**, and trigger one-click CLI **Sign in / Reconnect** directly from the composer menu or **Settings → Models &amp; Providers**.
 - **Isolated Git Worktree Swarm:** Parallel worker agents operate in dedicated `.worktrees/*` Git branches instead of mutating the same working directory concurrently, followed by checkpoint diffs and **Duet Cross-Model Review**.
 - **Real Cloud &amp; Local AI Media Studio:** Route image generation/editing and 720p/1080p video generation to **Google Gemini 2.5 Flash Image / Imagen 3 / Veo 2**, **OpenAI GPT-Image-1 / DALL·E 3 / Sora**, **xAI Grok**, **NVIDIA NIM Flux.1 Schnell**, **fal.ai / Replicate**, or local FFmpeg tools — surfacing explicit API errors rather than silently substituting fake placeholders.
 
@@ -83,9 +85,9 @@ flowchart TB
 
 ### How Built-In CLI Runtimes &amp; Native OAuth Work
 
-1. **Bundled &amp; Hydrated Cleanly (`electron/runtimes.js`):** Every packaged release bundles verified copies of `claude-code`, `codex`, `grok`, and `gemini-cli` inside `<resources>/runtimes/<id>`. On boot (`hydrateBundled()`), Akron Code copies each runtime into writable user data (`~/.autobot/runtimes/<id>/<version>`) and updates `current` without ever mutating signed application bundle resources.
-2. **Verified Auto-Updates &amp; Instant Rollback (`electron/ipc/ipc-runtimes.js`):** Startup update checks and **Update all** query official vendor feeds (`npm` / official GCS release manifests), validate integrity hashes and OS signatures (`codesign` / Authenticode where applicable) before switching `current`, and keep prior versions ready for one-click **Rollback**.
-3. **Subprocess-Native Subscription Auth (`electron/cli-runner.js`, `electron/provider-oauth.js`):** Chat turns on subscription accounts spawn the official CLI binary cleanly as a child process (`claude`, `codex`, `grok`, `gemini`) and normalize streamed JSON events into the unified workspace. API keys for direct model providers and Media Studio (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `FAL_KEY`, `REPLICATE_API_TOKEN`, `NVIDIA_API_KEY`, `CLOUDFLARE_API_TOKEN`) are encrypted at rest via Electron `safeStorage` (with AES-256-GCM fallback) in `secretstore.js`.
+1. **Bundled &amp; Hydrated Cleanly (`electron/runtimes.js`):** Every packaged release bundles verified copies of `claude-code`, `codex`, `grok`, `gemini-cli`, and `kimi-code` inside `<resources>/runtimes/<id>`. On boot (`hydrateBundled()`), Akron Code copies each runtime into writable user data (`~/.autobot/runtimes/<id>/<version>`) and updates `current` without ever mutating signed application bundle resources.
+2. **Verified Auto-Updates &amp; Instant Rollback (`electron/ipc/ipc-runtimes.js`):** Startup update checks and **Update all** query official vendor feeds (`npm` / official GCS release manifests), validate integrity hashes and OS signatures (`codesign` / Authenticode where applicable) before switching `current`, and keep prior versions ready for one-click **Rollback**. Installed LSP servers (`electron/dep-manager.js`) and Git-tracked plugins/skills (`electron/plugins.js`) sync automatically on startup as well.
+3. **Subprocess-Native Subscription Auth (`electron/cli-runner.js`, `electron/provider-oauth.js`):** Chat turns on subscription accounts spawn the official CLI binary cleanly as a child process (`claude`, `codex`, `grok`, `gemini`, `kimi`), resolve `~/.autobot/runtimes/<id>/current` ahead of older copies, auto-heal `426 Upgrade Required` responses, and normalize streamed JSON events into the unified workspace. API keys for direct model providers, Z.ai Coding Plan, and Media Studio are encrypted at rest via Electron `safeStorage` (with AES-256-GCM fallback) in `secretstore.js`.
 
 ---
 
@@ -156,10 +158,12 @@ Connect external **stdio**, **SSE**, and **Streamable-HTTP** MCP servers with OA
 
 | Category | Provider / Runtime | Integration &amp; Auth | Capabilities |
 |---|---|---|---|
-| **Agent CLI** | **Claude Code** (`claude-code` `2.1.154`) | Official CLI subprocess + `claude auth login` | Multi-turn coding, tool streaming, thinking budgets |
-| **Agent CLI** | **Codex CLI** (`codex` `0.135.0`) | Official CLI subprocess + `codex login` | OpenAI coding agent workflows &amp; reviews |
-| **Agent CLI** | **Grok CLI** (`grok` `0.2.2`) | Official CLI subprocess + `grok login` | xAI Grok models (`grok-build`, `grok-4`, `grok-code-fast-1`) |
-| **Agent CLI** | **Gemini CLI** (`gemini-cli` `0.44.1`) | Official CLI subprocess + native Google auth | Gemini 2.5 / 3.x models with 1M context windows |
+| **Agent CLI** | **Claude Code** (`claude-code` `2.1.332`) | Official CLI subprocess + `claude auth login` | Multi-turn coding, tool streaming, `1M` windows (`Opus 4.5`/`4.6`/`5.5`, `Sonnet 4.x`) |
+| **Agent CLI** | **Codex CLI** (`codex` `0.172.0`) | Official CLI subprocess + `codex login` | OpenAI coding agent workflows (`GPT-5.4` `1M`, reviews) |
+| **Agent CLI** | **Grok CLI** (`grok` `1.0.92`) | Official CLI subprocess + `grok login` | xAI Grok models (`grok-4.7` `1M`, `grok-4.7-build-fast` `2M`, `grok-4.5` `1M`) |
+| **Agent CLI** | **Gemini CLI** (`gemini-cli` `0.44.1`) | Official CLI subprocess + native Google auth | Gemini 2.5 / 3.x models with `1M` context windows |
+| **Agent CLI** | **Kimi Code CLI** (`kimi-code` `2.8.1`) | Official CLI subprocess + `kimi login` | Moonshot `kimi-k3.1-pro` &amp; `kimi-k3` (`1M` context windows) |
+| **Coding Plan** | **Z.ai GLM Coding Plan** | `https://api.z.ai/api/coding/paas/v4` (`secretstore` / `zcode`) | `glm-5.4`, `glm-5.3`, `glm-5.3-flash`, `glm-5` (`1M` windows) |
 | **Media API** | **Google Gemini / Imagen / Veo** | `GEMINI_API_KEY` (`secretstore`) | `gemini-2.5-flash-image`, `gemini-3-pro-image`, `imagen-3.0-generate-002`, `veo-2.0-generate-001` (Text &amp; Image-to-Video) |
 | **Media API** | **OpenAI Images &amp; Video** | `OPENAI_API_KEY` (`secretstore`) | `gpt-image-1`, `dall-e-3`, `sora` |
 | **Media API** | **xAI Grok Media** | `XAI_API_KEY` (`secretstore`) | `grok-2-image`, `grok-2-video` |
@@ -187,6 +191,7 @@ claude auth login       # Anthropic Claude subscription
 codex login             # OpenAI ChatGPT / Codex subscription
 grok login              # xAI Grok CLI
 gemini                  # Google Gemini CLI interactive auth
+kimi login              # Moonshot Kimi Code CLI (Kimi K3)
 ```
 
 For **Images &amp; Video Studio**, open **Settings → Images &amp; Video APIs** (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `NVIDIA_API_KEY`, `FAL_KEY`, `REPLICATE_API_TOKEN`) to unlock dedicated cloud media endpoints.

@@ -13,6 +13,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 
+let _defaultRuntimesGetter = null;
+function setDefaultRuntimesGetter(fn) {
+  _defaultRuntimesGetter = typeof fn === 'function' ? fn : null;
+}
+function getDefaultRuntimes() {
+  try { return _defaultRuntimesGetter ? _defaultRuntimesGetter() : null; } catch (_) { return null; }
+}
+
 const CLI_DEFS = {
   claude: { cliId: 'claude-code', bins: ['claude'] },
   chatgpt: { cliId: 'codex', bins: ['codex'] },
@@ -21,6 +29,10 @@ const CLI_DEFS = {
   antigravity: { cliId: 'gemini-cli', bins: ['gemini', 'agy'] },
   google: { cliId: 'gemini-cli', bins: ['gemini', 'agy'] },
   gemini: { cliId: 'gemini-cli', bins: ['gemini', 'agy'] },
+  kimi: { cliId: 'kimi-code', bins: ['kimi'] },
+  moonshot: { cliId: 'kimi-code', bins: ['kimi'] },
+  'kimi-code': { cliId: 'kimi-code', bins: ['kimi'] },
+  zcode: { cliId: 'zcode', bins: ['zcode'] },
 };
 
 function providerKind(provider) {
@@ -33,25 +45,34 @@ function providerKind(provider) {
   if (cid === 'codex') return 'chatgpt';
   if (cid === 'grok') return 'grok';
   if (cid === 'gemini-cli' || cid === 'agy' || cid === 'gemini') return 'antigravity';
+  if (cid === 'kimi-code' || cid === 'kimi') return 'kimi';
+  if (cid === 'zcode') return 'zcode';
   const tr = String(provider.transport || '').toLowerCase().trim();
   if (tr === 'anthropic') return 'claude';
   if (tr === 'codex') return 'chatgpt';
   if (tr === 'google') return 'antigravity';
   if (tr === 'grok') return 'grok';
+  if (tr === 'kimi') return 'kimi';
+  if (tr === 'zcode') return 'zcode';
   const m = String(provider.model || '').toLowerCase().trim();
   if (/^claude-/.test(m)) return 'claude';
   if (/^(gpt-|o[1-9]|codex)/.test(m)) return 'chatgpt';
   if (/^grok-/.test(m)) return 'grok';
   if (/^gemini-/.test(m)) return 'antigravity';
+  if (/^kimi-/.test(m) && (provider.oauthProvider || provider.cliMode || provider.transport === 'cli')) return 'kimi';
   return '';
 }
 
 function isCliProvider(provider) {
   if (!provider || typeof provider !== 'object') return false;
   if (provider.cliMode === true || provider.transport === 'cli') return true;
-  if (provider.transport === 'openai') return false;
+  if (provider.transport === 'openai' || provider.transport === 'zai') return false;
   if (String(provider.apiKey || '').trim() && !provider.oauthProvider && !provider.oauth) return false;
   return Boolean((provider.oauth || provider.oauthProvider) && !String(provider.apiKey || '').trim() && providerKind(provider));
+}
+
+function detectZcodeCli() {
+  return whichOnPath('zcode') || '';
 }
 
 function whichOnPath(binName) {
@@ -78,6 +99,94 @@ function whichOnPath(binName) {
   return '';
 }
 
+function isBundledSeedPath(p) {
+  if (!p) return false;
+  const norm = path.resolve(String(p)).replace(/\\/g, '/').toLowerCase();
+  return norm.includes('/vendor/runtimes/')
+    || norm.includes('/contents/resources/runtimes/')
+    || norm.includes('/resources/runtimes/');
+}
+
+function candidateUserRuntimesDirs(opts = {}) {
+  const out = [];
+  const push = (d) => {
+    if (!d) return;
+    const norm = path.resolve(String(d));
+    if (!out.includes(norm)) out.push(norm);
+  };
+  if (opts.userRuntimesDir) push(opts.userRuntimesDir);
+  if (process.env.AKRON_USER_RUNTIMES_DIR) push(process.env.AKRON_USER_RUNTIMES_DIR);
+  if (process.env.AUTOBOT_HOME) push(path.join(process.env.AUTOBOT_HOME, 'runtimes'));
+  if (process.env.AKRON_ISOLATE_RUNTIMES !== '1') {
+    try {
+      const electron = require('electron');
+      if (electron && electron.app && typeof electron.app.getPath === 'function') {
+        push(path.join(electron.app.getPath('userData'), 'runtimes'));
+      }
+    } catch (_) {}
+    const home = os.homedir();
+    if (process.platform === 'darwin') {
+      push(path.join(home, 'Library', 'Application Support', 'Akron Code', 'runtimes'));
+      push(path.join(home, 'Library', 'Application Support', 'akronbot', 'runtimes'));
+    } else if (process.platform === 'win32') {
+      const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+      push(path.join(appData, 'Akron Code', 'runtimes'));
+      push(path.join(appData, 'akronbot', 'runtimes'));
+    } else {
+      const cfg = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+      push(path.join(cfg, 'Akron Code', 'runtimes'));
+      push(path.join(cfg, 'akronbot', 'runtimes'));
+    }
+    push(path.join(home, '.autobot', 'runtimes'));
+  }
+  return out;
+}
+
+function resolveUserDataRuntime(cliId, binNames, opts = {}) {
+  if (!cliId) return '';
+  const isWin = process.platform === 'win32';
+  for (const root of candidateUserRuntimesDirs(opts)) {
+    const cliRoot = path.join(root, cliId);
+    if (!fs.existsSync(cliRoot)) continue;
+    const versionDirs = [];
+    const curLink = path.join(cliRoot, 'current');
+    try {
+      const linkTarget = fs.readlinkSync(curLink);
+      const absTarget = path.isAbsolute(linkTarget) ? linkTarget : path.join(cliRoot, linkTarget);
+      if (fs.existsSync(absTarget) && fs.statSync(absTarget).isDirectory()) versionDirs.push(absTarget);
+    } catch (_) {
+      try {
+        if (fs.existsSync(curLink) && fs.statSync(curLink).isDirectory()) versionDirs.push(curLink);
+      } catch (__) {}
+    }
+    const ptrFile = path.join(cliRoot, 'current.ptr');
+    try {
+      if (fs.existsSync(ptrFile)) {
+        const ptrVal = fs.readFileSync(ptrFile, 'utf8').trim();
+        if (ptrVal) {
+          const absPtr = path.isAbsolute(ptrVal) ? ptrVal : path.join(cliRoot, ptrVal);
+          if (fs.existsSync(absPtr) && fs.statSync(absPtr).isDirectory() && !versionDirs.includes(absPtr)) {
+            versionDirs.push(absPtr);
+          }
+        }
+      }
+    } catch (_) {}
+
+    for (const vDir of versionDirs) {
+      for (const bn of binNames) {
+        const exts = isWin && !/\.(exe|cmd|bat)$/i.test(bn) ? ['.exe', '.cmd', ''] : [''];
+        for (const ext of exts) {
+          const cand = path.join(vDir, 'bin', bn + ext);
+          try {
+            if (fs.existsSync(cand) && fs.statSync(cand).isFile()) return cand;
+          } catch (_) {}
+        }
+      }
+    }
+  }
+  return '';
+}
+
 function resolveBundledRuntime(cliId, binNames) {
   const isWin = process.platform === 'win32';
   const roots = [
@@ -86,8 +195,9 @@ function resolveBundledRuntime(cliId, binNames) {
   ].filter(Boolean);
   for (const r of roots) {
     for (const bn of binNames) {
-      const exe = isWin && !/\.(exe|cmd)$/i.test(bn) ? `${bn}.exe` : bn;
-      for (const cand of [path.join(r, cliId, 'bin', exe), path.join(r, cliId, 'bin', bn)]) {
+      const exts = isWin && !/\.(exe|cmd|bat)$/i.test(bn) ? ['.exe', '.cmd', ''] : [''];
+      for (const ext of exts) {
+        const cand = path.join(r, cliId, 'bin', bn + ext);
         try {
           if (fs.existsSync(cand) && fs.statSync(cand).isFile()) return cand;
         } catch (_) {}
@@ -103,28 +213,60 @@ async function resolveCliBinary(provider, opts = {}) {
   const preferredBin = String((provider && provider.cliBin) || '').trim();
   const candidates = preferredBin && !preferredBin.includes('/') && !preferredBin.includes('\\')
     ? [preferredBin, ...def.bins.filter((b) => b !== preferredBin)]
-    : (preferredBin ? [preferredBin, ...def.bins] : [...def.bins]);
+    : (preferredBin ? [path.basename(preferredBin), ...def.bins.filter((b) => b !== path.basename(preferredBin))] : [...def.bins]);
 
-  if (preferredBin && (preferredBin.includes('/') || preferredBin.includes('\\')) && fs.existsSync(preferredBin)) {
-    return { kind, bin: preferredBin, cliId: def.cliId };
-  }
   if (typeof opts.resolveBin === 'function') {
     const custom = await opts.resolveBin({ kind, cliId: def.cliId, bins: candidates, provider });
-    if (custom) return { kind, bin: custom, cliId: def.cliId };
+    if (custom) return { kind, bin: custom, cliId: def.cliId, source: 'custom' };
   }
-  if (opts.runtimes && typeof opts.runtimes.resolve === 'function' && def.cliId) {
+
+  // Only honor an explicit full cliBin path immediately when it is NOT a bundled seed path
+  // (stale bundled paths passed from old sessions must never shadow self-updated userData copies).
+  if (preferredBin && (preferredBin.includes('/') || preferredBin.includes('\\')) && !isBundledSeedPath(preferredBin) && fs.existsSync(preferredBin)) {
+    return { kind, bin: preferredBin, cliId: def.cliId, source: 'explicit' };
+  }
+
+  // 1. Live self-updated copy via runtimes manager (`source === 'installed'`)
+  const rt = opts.runtimes || getDefaultRuntimes();
+  let rtResolved = null;
+  if (rt && typeof rt.resolve === 'function' && def.cliId) {
     try {
-      const r = await opts.runtimes.resolve(def.cliId);
-      if (r && r.bin && fs.existsSync(r.bin)) return { kind, bin: r.bin, cliId: def.cliId };
+      rtResolved = await rt.resolve(def.cliId);
+      if (rtResolved && rtResolved.source === 'installed' && rtResolved.bin && fs.existsSync(rtResolved.bin)) {
+        return { kind, bin: rtResolved.bin, cliId: def.cliId, source: 'installed', version: rtResolved.version || '' };
+      }
     } catch (_) {}
   }
+
+  // 2. Direct lookup inside userData/runtimes/<id>/current (symlink + current.ptr)
+  const userDataBin = resolveUserDataRuntime(def.cliId, candidates, opts);
+  if (userDataBin) {
+    return { kind, bin: userDataBin, cliId: def.cliId, source: 'installed' };
+  }
+
+  if (process.env.AKRON_ISOLATE_RUNTIMES === '1') {
+    for (const bn of candidates) {
+      const hit = whichOnPath(bn);
+      if (hit) return { kind, bin: hit, cliId: def.cliId, source: 'system' };
+    }
+  }
+
+  // 3. Bundled seed (`rtResolved.source === 'bundled'` -> Resources -> repo vendor/runtimes)
+  if (rtResolved && rtResolved.bin && fs.existsSync(rtResolved.bin)) {
+    return { kind, bin: rtResolved.bin, cliId: def.cliId, source: rtResolved.source || 'bundled', version: rtResolved.version || '' };
+  }
   const bundled = resolveBundledRuntime(def.cliId, candidates);
-  if (bundled) return { kind, bin: bundled, cliId: def.cliId };
+  if (bundled) return { kind, bin: bundled, cliId: def.cliId, source: 'bundled' };
+
+  // 4. Explicit bundled seed fallback or PATH
+  if (preferredBin && (preferredBin.includes('/') || preferredBin.includes('\\')) && fs.existsSync(preferredBin)) {
+    return { kind, bin: preferredBin, cliId: def.cliId, source: 'bundled' };
+  }
   for (const bn of candidates) {
     const hit = whichOnPath(bn);
-    if (hit) return { kind, bin: hit, cliId: def.cliId };
+    if (hit) return { kind, bin: hit, cliId: def.cliId, source: 'system' };
   }
-  return { kind, bin: candidates[0] || '', cliId: def.cliId };
+  return { kind, bin: candidates[0] || '', cliId: def.cliId, source: 'missing' };
 }
 
 function formatMessagesPrompt(messages) {
@@ -181,6 +323,11 @@ function mapPermissionMode(kind, permissions) {
     if (perm === 'bypass') return 'yolo';
     return 'auto_edit';
   }
+  if (kind === 'kimi' || kind === 'moonshot' || kind === 'kimi-code') {
+    if (perm === 'plan') return 'plan';
+    if (perm === 'acceptEdits' || perm === 'acceptedits') return 'yolo';
+    return 'auto';
+  }
   return 'auto';
 }
 
@@ -228,6 +375,24 @@ function buildCliInvocation(kind, provider, prompt, systemPrompt, opts = {}) {
     args.push('--permission-mode', mapPermissionMode('grok', opts.permissions));
     const rl = String((provider && provider.reasoningLevel) || '').toLowerCase();
     if (['low', 'medium', 'high'].includes(rl)) args.push('--reasoning-effort', rl);
+    return args;
+  }
+
+  if (kind === 'kimi' || kind === 'moonshot' || kind === 'kimi-code') {
+    const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
+    const args = ['-p', fullPrompt, '--output-format', 'stream-json', '--add-dir', cwd];
+    if (model && !opts.omitModel) args.push('-m', model);
+    const kPerm = mapPermissionMode('kimi', opts.permissions);
+    if (kPerm === 'plan') args.push('--plan');
+    else if (kPerm === 'yolo') args.push('-y');
+    else args.push('--auto');
+    return args;
+  }
+
+  if (kind === 'zcode') {
+    const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
+    const args = ['-p', fullPrompt];
+    if (model && !opts.omitModel) args.push('-m', model);
     return args;
   }
 
@@ -406,6 +571,47 @@ function parseNdjsonEvent(ev, state, emitEvt, onDelta, onToolDelta) {
     return;
   }
 
+  // Kimi Code CLI `stream-json` assistant / content / tool_calls events
+  if (ev.role === 'assistant' && !ev.message) {
+    if (typeof ev.reasoning_content === 'string' && ev.reasoning_content) {
+      onDelta(ev.reasoning_content, true);
+      emitEvt({ type: 'thinking', text: ev.reasoning_content });
+    }
+    if (typeof ev.content === 'string' && ev.content) {
+      state.streamedText += ev.content;
+      onDelta(ev.content, false);
+      emitEvt({ type: 'text', text: ev.content });
+    } else if (Array.isArray(ev.content)) {
+      for (const part of ev.content) {
+        if (!part || typeof part !== 'object') continue;
+        if ((part.type === 'think' || part.type === 'thinking') && (part.think || part.thinking || part.text)) {
+          const th = String(part.think || part.thinking || part.text);
+          onDelta(th, true);
+          emitEvt({ type: 'thinking', text: th });
+        } else if (part.type === 'text' && typeof part.text === 'string' && part.text) {
+          state.streamedText += part.text;
+          onDelta(part.text, false);
+          emitEvt({ type: 'text', text: part.text });
+        }
+      }
+    }
+    if (Array.isArray(ev.tool_calls)) {
+      for (const tc of ev.tool_calls) {
+        if (!tc) continue;
+        const name = (tc.function && tc.function.name) || tc.name || 'tool';
+        let args = (tc.function && tc.function.arguments) || tc.arguments || tc.input || {};
+        if (typeof args === 'string') {
+          try { args = JSON.parse(args); } catch (_) { args = {}; }
+        }
+        const filePath = extractFileEditPath(name, args);
+        if (filePath) emitEvt({ type: 'file_edit', path: filePath, tool: name });
+        emitEvt({ type: 'tool_use', id: tc.id || '', name, args });
+        emitEvt({ type: 'tool', id: tc.id || '', name, args });
+      }
+    }
+    return;
+  }
+
   // Normalized / Grok / Gemini streaming-json fallback events
   if (t === 'thinking' && typeof ev.text === 'string') {
     onDelta(ev.text, true);
@@ -430,6 +636,36 @@ function parseNdjsonEvent(ev, state, emitEvt, onDelta, onToolDelta) {
   }
 }
 
+function isOutdatedCliError(text) {
+  const s = String(text || '');
+  return /\b426\b|upgrade\s+required|client\s+version.*(?:outdated|unsupported|too\s+old|must\s+be\s+updated)|minimum\s+supported\s+version|please\s+(?:upgrade|update)\s+(?:your\s+)?(?:grok|claude|codex|gemini|kimi)|version\s+[0-9.]+\s+(?:or\s+newer\s+)?is\s+required/i.test(s);
+}
+
+async function selfHealOutdatedCli(resolved, { runtimes = null, selfHealUpdate = null, spawnImpl = null } = {}) {
+  if (typeof selfHealUpdate === 'function') {
+    return selfHealUpdate(resolved);
+  }
+  const rt = runtimes || getDefaultRuntimes();
+  if (rt && resolved && resolved.cliId && typeof rt.install === 'function') {
+    try {
+      return await rt.install(resolved.cliId, undefined, { force: true });
+    } catch (_) {}
+  }
+  if (resolved && resolved.bin && fs.existsSync(resolved.bin)) {
+    const effSpawn = spawnImpl || spawn;
+    await new Promise((resolve) => {
+      try {
+        const child = effSpawn(resolved.bin, ['update'], { stdio: 'ignore', windowsHide: true });
+        const t = setTimeout(() => { killChildTree(child); resolve(); }, 60000);
+        if (t && typeof t.unref === 'function') t.unref();
+        child.on('exit', () => { clearTimeout(t); resolve(); });
+        child.on('error', () => { clearTimeout(t); resolve(); });
+      } catch (_) { resolve(); }
+    });
+  }
+  return null;
+}
+
 async function runCliTurn({
   provider,
   messages,
@@ -442,6 +678,8 @@ async function runCliTurn({
   singleTurn = false,
   runtimes = null,
   resolveBin = null,
+  selfHealUpdate = null,
+  userRuntimesDir = '',
   spawnImpl = null,
   timeoutMs = 0,
 }) {
@@ -449,7 +687,7 @@ async function runCliTurn({
     throw Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
   }
 
-  const resolved = await resolveCliBinary(provider, { runtimes, resolveBin });
+  let resolved = await resolveCliBinary(provider, { runtimes, resolveBin, userRuntimesDir });
   if (!resolved.bin) {
     const err = new Error(`No CLI runtime binary found for provider "${provider && provider.model || resolved.kind}".`);
     err.code = 'cli_binary_missing';
@@ -458,12 +696,12 @@ async function runCliTurn({
 
   const { systemPrompt, prompt } = formatMessagesPrompt(messages);
   const effectiveSpawn = spawnImpl || spawn;
-  const runOnce = (omitModel) => new Promise((resolve, reject) => {
+  const runOnce = (omitModel, binToRun = resolved.bin) => new Promise((resolve, reject) => {
     const args = buildCliInvocation(resolved.kind, provider, prompt, systemPrompt, {
       cwd,
       permissions,
       singleTurn,
-      bin: resolved.bin,
+      bin: binToRun,
       omitModel,
     });
     const env = { ...process.env };
@@ -484,7 +722,7 @@ async function runCliTurn({
       rateLimitError: '',
     };
 
-    const child = effectiveSpawn(resolved.bin, args, {
+    const child = effectiveSpawn(binToRun, args, {
       cwd,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -619,6 +857,13 @@ async function runCliTurn({
   try {
     return await runOnce(false);
   } catch (err) {
+    if (err && isOutdatedCliError(err.message)) {
+      try { emit({ type: 'notice', text: `Updating ${resolved.kind} CLI automatically (426 Upgrade Required)…` }); } catch (_) {}
+      await selfHealOutdatedCli(resolved, { runtimes, selfHealUpdate, spawnImpl: effectiveSpawn });
+      const refreshed = await resolveCliBinary({ ...(provider || {}), cliBin: '' }, { runtimes, resolveBin, userRuntimesDir });
+      if (refreshed && refreshed.bin) resolved = refreshed;
+      return runOnce(false, resolved.bin);
+    }
     if (err && err._canRetryWithoutModel) {
       return runOnce(true);
     }
@@ -626,12 +871,104 @@ async function runCliTurn({
   }
 }
 
+function parseCliModelsOutput(provId, rawText) {
+  const txt = String(rawText || '').trim();
+  if (!txt) return [];
+  let modelCatalog = null;
+  try { modelCatalog = require('./model-catalog'); } catch (_) {}
+  const ctxFor = (id, explicitWin = 0) => {
+    const n = Number(explicitWin);
+    if (Number.isFinite(n) && n > 0) return n;
+    return modelCatalog ? modelCatalog.contextWindowFor(id, provId) : 0;
+  };
+  const pretty = (id) => String(id || '')
+    .split('-')
+    .map((w) => (/^(gpt|o\d+|glm)$/i.test(w) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join(' ');
+
+  // 1. JSON array or { models / data } envelope
+  if (txt.startsWith('{') || txt.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(txt);
+      const list = Array.isArray(parsed) ? parsed : (parsed.models || parsed.data || []);
+      if (Array.isArray(list) && list.length) {
+        return list.map((m) => {
+          const id = String((m && (m.id || m.name || m.model || m.slug)) || m || '').trim();
+          if (!id) return null;
+          const win = Number(m && (m.contextWindow || m.context_window || m.context_length || m.maxTokens || m.inputTokenLimit)) || 0;
+          return {
+            id,
+            label: String((m && (m.label || m.displayName || m.display_name)) || pretty(id)),
+            contextWindow: ctxFor(id, win),
+            thinking: m && typeof m.thinking === 'boolean' ? m.thinking : true,
+            recommended: Boolean(m && m.default),
+          };
+        }).filter(Boolean);
+      }
+    } catch (_) {}
+  }
+
+  // 2. CLI bullet format (`* grok-4.7 (default)` / `- grok-4.7-build-fast` / `• grok-4.5 (1M)`)
+  const out = [];
+  const seen = new Set();
+  for (const line of txt.split(/\r?\n/)) {
+    const m = /^\s*(?:[*•-]|\d+\.)\s+([a-zA-Z0-9._:/-]{2,80})(.*)$/.exec(line);
+    if (!m) continue;
+    const id = m[1].trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const tail = m[2] || '';
+    const isDefault = /\(default\)/i.test(tail);
+    let explicitWin = 0;
+    const mWin = /(\d+(?:\.\d+)?)\s*([mMkK])\b/.exec(tail);
+    if (mWin) {
+      explicitWin = Math.round(Number(mWin[1]) * (mWin[2].toLowerCase() === 'm' ? 1000000 : 1000));
+    }
+    out.push({
+      id,
+      label: pretty(id),
+      contextWindow: ctxFor(id, explicitWin),
+      thinking: true,
+      recommended: isDefault,
+    });
+  }
+  return out;
+}
+
+async function probeCliModels(provId, bin, opts = {}) {
+  const id = String(provId || '').trim().toLowerCase();
+  if (!bin) return [];
+  const argsByProv = {
+    grok: ['models'],
+  };
+  const args = opts.args || argsByProv[id];
+  if (!args) return [];
+  const timeoutMs = Number(opts.timeoutMs) || 5000;
+  return new Promise((resolve) => {
+    try {
+      const { execFile } = require('child_process');
+      execFile(bin, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+        if (err && !stdout) return resolve([]);
+        resolve(parseCliModelsOutput(id, stdout));
+      });
+    } catch (_) {
+      resolve([]);
+    }
+  });
+}
+
 module.exports = {
   CLI_DEFS,
   providerKind,
   isCliProvider,
   whichOnPath,
+  detectZcodeCli,
+  setDefaultRuntimesGetter,
+  resolveUserDataRuntime,
+  isOutdatedCliError,
   resolveCliBinary,
+  probeCliModels,
+  parseCliModelsOutput,
   formatMessagesPrompt,
   mapPermissionMode,
   buildCliInvocation,
