@@ -870,11 +870,60 @@ async function resolveCandidateCredential(candidate) {
   return { apiKey, oauthToken, bearer: apiKey || oauthToken };
 }
 
-async function tryRemoteImageGenerate(candidate, { prompt, aspect_ratio, style, dims }) {
+function isExplicitCloudModel(model) {
+  const m = String(model || '').trim().toLowerCase();
+  if (!m || m === 'auto') return false;
+  if (m === 'akron-svg-canvas-studio' || m === 'akron-motion-canvas-30fps') return false;
+  return true;
+}
+
+function candidateMatchesPreferredModel(cand, preferredModel) {
+  const pref = String(preferredModel || '').trim().toLowerCase();
+  if (!pref || pref === 'auto') return true;
+  const cm = String((cand && cand.model) || '').toLowerCase();
+  const cb = String((cand && cand.backend) || '').toLowerCase();
+  if (cm === pref || cm.includes(pref)) return true;
+  if (pref === 'wan-video/wan-2.1' && /wan/i.test(cm)) return true;
+  if (pref === 'flux-1.1-pro' && /flux[-.]?1\.1[-.]?pro/i.test(cm)) return true;
+  if (/flux\.1-schnell|nvidia-flux/.test(pref) && (cb === 'nvidia-flux' || /flux\.1-schnell/i.test(cm))) return true;
+  return false;
+}
+
+async function extractApiErrorMessage(res, providerLabel = 'Media API') {
+  const status = res && res.status ? res.status : 0;
+  let txt = '';
+  try { txt = await res.text(); } catch (_) {}
+  let detail = '';
+  try {
+    const j = JSON.parse(txt);
+    detail = (j && j.error && j.error.message)
+      || (Array.isArray(j && j.errors) && j.errors[0] && j.errors[0].message)
+      || (Array.isArray(j && j.detail) && j.detail[0] && j.detail[0].msg)
+      || (typeof (j && j.detail) === 'string' && j.detail)
+      || (j && j.message)
+      || '';
+  } catch (_) {}
+  const msg = String(detail || txt || res.statusText || 'Request failed').replace(/\s+/g, ' ').trim().slice(0, 260);
+  return `${providerLabel} HTTP ${status}: ${msg}`;
+}
+
+function imageBufferToMime(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  return 'image/png';
+}
+
+async function tryRemoteImageGenerate(candidate, { prompt, aspect_ratio, style, dims, inputImageBase64 = '', inputMimeType = 'image/png' }) {
   if (!candidate || candidate.offline) return null;
   if (candidate.backend === 'pollinations-flux') {
-    const w = (dims && dims.width) || 1024;
-    const h = (dims && dims.height) || 1024;
+    const rawW = (dims && dims.width) || 1024;
+    const rawH = (dims && dims.height) || 1024;
+    // Cap Pollinations requests at 1024 on longest edge and omit enhance=true to avoid 402 tier rejections.
+    const maxEdge = Math.max(rawW, rawH, 1);
+    const scale = maxEdge > 1024 ? (1024 / maxEdge) : 1;
+    const w = Math.max(256, Math.round((rawW * scale) / 8) * 8);
+    const h = Math.max(256, Math.round((rawH * scale) / 8) * 8);
     const fullPrompt = style ? `${prompt}, ${style}` : prompt;
     const seed = crypto.randomInt(1, 999999);
     const polyModel = String(candidate.remoteModel || candidate.model || 'flux').toLowerCase().includes('realism')
@@ -884,21 +933,36 @@ async function tryRemoteImageGenerate(candidate, { prompt, aspect_ratio, style, 
         : (String(candidate.remoteModel || candidate.model || '').toLowerCase().includes('3d')
           ? 'flux-3d'
           : 'flux'));
-    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=${w}&height=${h}&model=${encodeURIComponent(polyModel)}&nologo=true&enhance=true&seed=${seed}`;
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=${w}&height=${h}&model=${encodeURIComponent(polyModel)}&nologo=true&seed=${seed}`;
     const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 16000);
+    const timer = setTimeout(() => ac.abort(), 20000);
     try {
       const res = await fetch(url, { signal: ac.signal, headers: { accept: 'image/*' } });
-      if (!res.ok) return null;
+      if (!res.ok) throw new Error(await extractApiErrorMessage(res, `Pollinations (${polyModel})`));
       const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length < 512) return null;
+      if (buf.length < 512) throw new Error('Pollinations returned an empty image payload');
       const isPng = buf[0] === 0x89 && buf[1] === 0x50;
       const isJpg = buf[0] === 0xff && buf[1] === 0xd8;
       const isWebp = buf.slice(0, 4).toString('ascii') === 'RIFF';
-      return (isPng || isJpg || isWebp) ? buf : null;
+      if (!isPng && !isJpg && !isWebp) throw new Error('Pollinations response was not a valid image');
+      return buf;
     } finally {
       clearTimeout(timer);
     }
+  }
+  if (candidate.backend === 'nvidia-flux') {
+    const cred = await resolveCandidateCredential(candidate);
+    if (!cred.bearer || !candidate.baseURL) return null;
+    const res = await fetch(candidate.baseURL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json', authorization: 'Bearer ' + cred.bearer },
+      body: JSON.stringify({ prompt: style ? `${prompt}, ${style}` : prompt, steps: 4 }),
+    });
+    if (!res.ok) throw new Error(await extractApiErrorMessage(res, `NVIDIA NIM (${candidate.model})`));
+    const j = await res.json();
+    const b64 = (j && j.artifacts && j.artifacts[0] && (j.artifacts[0].base64 || j.artifacts[0].b64_json)) || (j && j.image) || '';
+    if (!b64) throw new Error(`NVIDIA NIM (${candidate.model}) returned no image data`);
+    return Buffer.from(b64, 'base64');
   }
   if (candidate.backend === 'cloudflare-flux') {
     const cred = await resolveCandidateCredential(candidate);
@@ -909,68 +973,141 @@ async function tryRemoteImageGenerate(candidate, { prompt, aspect_ratio, style, 
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + cred.bearer },
       body: JSON.stringify({ prompt: style ? `${prompt}, ${style}` : prompt }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) throw new Error(await extractApiErrorMessage(res, 'Cloudflare Workers AI'));
     const ct = String(res.headers.get('content-type') || '');
     if (ct.includes('application/json')) {
       const j = await res.json();
       const b64 = j && j.result && (j.result.image || j.result.b64_json);
-      return b64 ? Buffer.from(b64, 'base64') : null;
+      if (!b64) throw new Error('Cloudflare Workers AI returned no image bytes');
+      return Buffer.from(b64, 'base64');
     }
     const buf = Buffer.from(await res.arrayBuffer());
-    return buf.length > 512 ? buf : null;
+    if (buf.length <= 512) throw new Error('Cloudflare Workers AI returned an empty image');
+    return buf;
   }
   if (candidate.backend === 'gemini' || candidate.backend === 'gemini-flash-image') {
     const cred = await resolveCandidateCredential(candidate);
     if (!cred.bearer) return null;
+    const base = String(candidate.baseURL || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
     const authHeaders = cred.apiKey
-      ? { 'content-type': 'application/json' }
+      ? { 'content-type': 'application/json', 'x-goog-api-key': cred.apiKey }
       : { 'content-type': 'application/json', authorization: 'Bearer ' + cred.oauthToken };
-    const keyQs = cred.apiKey ? `?key=${encodeURIComponent(cred.apiKey)}` : '';
     if (candidate.backend === 'gemini') {
-      const url = `${candidate.baseURL}/models/${encodeURIComponent(candidate.model)}:predict${keyQs}`;
+      const url = `${base}/models/${encodeURIComponent(candidate.model)}:predict`;
       const res = await fetch(url, {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({ instances: [{ prompt: style ? `${prompt} (${style})` : prompt }], parameters: { sampleCount: 1, aspectRatio: aspect_ratio || '1:1' } }),
       });
-      if (!res.ok) return null;
+      if (!res.ok) throw new Error(await extractApiErrorMessage(res, `Google ${candidate.model}`));
       const j = await res.json();
-      const b64 = j && j.predictions && j.predictions[0] && j.predictions[0].bytesBase64Encoded;
-      return b64 ? Buffer.from(b64, 'base64') : null;
+      const b64 = (j && j.predictions && j.predictions[0] && j.predictions[0].bytesBase64Encoded)
+        || (j && j.generatedImages && j.generatedImages[0] && j.generatedImages[0].image && j.generatedImages[0].image.imageBytes)
+        || '';
+      if (!b64) throw new Error(`Google ${candidate.model} returned no image bytes`);
+      return Buffer.from(b64, 'base64');
     }
-    const url = `${candidate.baseURL}/models/${encodeURIComponent(candidate.model)}:generateContent${keyQs}`;
+    const url = `${base}/models/${encodeURIComponent(candidate.model)}:generateContent`;
+    const partsPayload = [{ text: style ? `${prompt}. Style: ${style}` : prompt }];
+    if (inputImageBase64) {
+      partsPayload.push({ inlineData: { mimeType: inputMimeType || 'image/png', data: inputImageBase64 } });
+    }
     const res = await fetch(url, {
       method: 'POST',
       headers: authHeaders,
       body: JSON.stringify({
-        contents: [{ parts: [{ text: style ? `${prompt}. Style: ${style}` : prompt }] }],
+        contents: [{ parts: partsPayload }],
         generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
       }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) throw new Error(await extractApiErrorMessage(res, `Google ${candidate.model}`));
     const j = await res.json();
     const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
-    const inline = parts.find((p) => p.inlineData && p.inlineData.data);
-    return inline ? Buffer.from(inline.inlineData.data, 'base64') : null;
+    const inline = parts.find((p) => (p.inlineData && p.inlineData.data) || (p.inline_data && p.inline_data.data));
+    const b64 = inline ? ((inline.inlineData && inline.inlineData.data) || (inline.inline_data && inline.inline_data.data)) : '';
+    if (!b64) {
+      const blockReason = j?.promptFeedback?.blockReason || j?.candidates?.[0]?.finishReason || '';
+      const textHint = parts.map((p) => p.text).filter(Boolean).join(' ').slice(0, 140);
+      throw new Error(`Google ${candidate.model} returned no image${blockReason ? ` (${blockReason})` : ''}${textHint ? `: ${textHint}` : ''}`);
+    }
+    return Buffer.from(b64, 'base64');
+  }
+  if (candidate.backend === 'fal') {
+    const cred = await resolveCandidateCredential(candidate);
+    if (!cred.bearer) return null;
+    const base = String(candidate.baseURL || 'https://fal.run').replace(/\/+$/, '');
+    const imageSize = aspect_ratio === '16:9' ? 'landscape_16_9' : (aspect_ratio === '9:16' ? 'portrait_16_9' : (aspect_ratio === '4:3' ? 'landscape_4_3' : 'square_hd'));
+    const res = await fetch(`${base}/${candidate.model}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Key ' + cred.bearer },
+      body: JSON.stringify({ prompt: style ? `${prompt}, ${style}` : prompt, image_size: imageSize }),
+    });
+    if (!res.ok) throw new Error(await extractApiErrorMessage(res, `fal.ai (${candidate.model})`));
+    const j = await res.json();
+    const imgObj = (j && j.images && j.images[0]) || (j && j.image);
+    const imgUrl = typeof imgObj === 'string' ? imgObj : (imgObj && imgObj.url);
+    if (imgUrl && imgUrl.startsWith('data:')) {
+      return Buffer.from(imgUrl.split(',')[1] || '', 'base64');
+    }
+    if (imgUrl) {
+      const dl = await fetch(imgUrl);
+      if (!dl.ok) throw new Error(await extractApiErrorMessage(dl, 'fal.ai image download'));
+      return Buffer.from(await dl.arrayBuffer());
+    }
+    throw new Error(`fal.ai (${candidate.model}) returned no image URL`);
+  }
+  if (candidate.backend === 'replicate') {
+    const cred = await resolveCandidateCredential(candidate);
+    if (!cred.bearer) return null;
+    const base = String(candidate.baseURL || 'https://api.replicate.com/v1').replace(/\/+$/, '');
+    const createRes = await fetch(`${base}/models/${candidate.model}/predictions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + cred.bearer, prefer: 'wait=60' },
+      body: JSON.stringify({ input: { prompt: style ? `${prompt}, ${style}` : prompt, aspect_ratio: aspect_ratio || '1:1' } }),
+    });
+    if (!createRes.ok) throw new Error(await extractApiErrorMessage(createRes, `Replicate (${candidate.model})`));
+    let pred = await createRes.json();
+    for (let i = 0; i < 20 && pred && !['succeeded', 'failed', 'canceled'].includes(pred.status) && pred.urls && pred.urls.get; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const pRes = await fetch(pred.urls.get, { headers: { authorization: 'Bearer ' + cred.bearer } });
+      if (pRes.ok) pred = await pRes.json();
+    }
+    if (!pred || pred.status === 'failed' || pred.status === 'canceled') {
+      throw new Error(`Replicate (${candidate.model}) ${pred?.status || 'failed'}: ${pred?.error || 'prediction failed'}`);
+    }
+    const outUrl = Array.isArray(pred.output) ? pred.output[0] : pred.output;
+    if (!outUrl || typeof outUrl !== 'string') throw new Error(`Replicate (${candidate.model}) returned no output URL`);
+    const dl = await fetch(outUrl);
+    if (!dl.ok) throw new Error(await extractApiErrorMessage(dl, 'Replicate image download'));
+    return Buffer.from(await dl.arrayBuffer());
   }
   if (['openai-images', 'xai-images', 'together-images', 'openrouter-images', 'fireworks-images', 'openai-compat'].includes(candidate.backend)) {
     const cred = await resolveCandidateCredential(candidate);
     if (!cred.bearer || !candidate.baseURL) return null;
-    const size = aspect_ratio === '16:9' ? '1536x1024' : (aspect_ratio === '9:16' ? '1024x1536' : '1024x1024');
+    const isGptImage = /gpt-image/i.test(candidate.model || '');
+    const isDalle3 = /dall-e-3/i.test(candidate.model || '');
+    const size = isDalle3
+      ? (aspect_ratio === '16:9' ? '1792x1024' : (aspect_ratio === '9:16' ? '1024x1792' : '1024x1024'))
+      : (aspect_ratio === '16:9' ? '1536x1024' : (aspect_ratio === '9:16' ? '1024x1536' : '1024x1024'));
+    const body = { model: candidate.model, prompt: style ? `${prompt}, ${style}` : prompt };
+    if (candidate.backend !== 'xai-images') body.size = size;
+    if (!isGptImage) body.response_format = 'b64_json';
     const url = candidate.baseURL.replace(/\/+$/, '') + '/images/generations';
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + cred.bearer },
-      body: JSON.stringify({ model: candidate.model, prompt: style ? `${prompt}, ${style}` : prompt, size, response_format: 'b64_json' }),
+      body: JSON.stringify(body),
     });
-    if (!res.ok) return null;
+    if (!res.ok) throw new Error(await extractApiErrorMessage(res, `${candidate.backend} (${candidate.model})`));
     const j = await res.json();
     const item = j && j.data && j.data[0];
     if (item && item.b64_json) return Buffer.from(item.b64_json, 'base64');
     if (item && item.url) {
       const dl = await fetch(item.url);
-      if (dl.ok) return Buffer.from(await dl.arrayBuffer());
+      if (!dl.ok) throw new Error(await extractApiErrorMessage(dl, `${candidate.backend} image download`));
+      return Buffer.from(await dl.arrayBuffer());
     }
+    throw new Error(`${candidate.backend} (${candidate.model}) returned neither b64_json nor url`);
   }
   return null;
 }
@@ -988,12 +1125,34 @@ async function generateImage(args = {}, ctx = {}) {
     preferredModel: args.model || '',
     provider: ctx.provider || args.provider || null,
     orchestrator: ctx.orchestrator || args.orchestrator || null,
-    store: ctx.store || null,
+    store: ctx.store,
   });
+
+  const explicitCloud = !args.forceOffline && format !== 'svg' && isExplicitCloudModel(args.model);
+  let activeCandidates = (routed.candidates || []).filter((c) => !c.offline);
+  if (explicitCloud) {
+    activeCandidates = activeCandidates.filter((c) => candidateMatchesPreferredModel(c, args.model));
+    if (!activeCandidates.length) {
+      const cat = router.listMediaStudioCatalog({ store: ctx.store, provider: ctx.provider || args.provider || null, orchestrator: ctx.orchestrator || args.orchestrator || null });
+      const entry = (cat.imageModels || []).find((m) => String(m.id || '').toLowerCase() === String(args.model).trim().toLowerCase());
+      const err = new Error(
+        entry && entry.requiredKeyLabel
+          ? `${entry.label} requires ${entry.requiredKeyLabel} — configure your API key in Settings → Images & Video APIs.`
+          : `Model "${args.model}" is not configured or has no available API key.`
+      );
+      if (entry && entry.configKeyId) {
+        err.needsApiKey = true;
+        err.configKeyId = entry.configKeyId;
+      }
+      throw err;
+    }
+  }
 
   const files = [];
   let usedModel = 'akron-svg-canvas-studio';
   let usedBackend = 'offline-image-studio';
+  let actualWidth = dims.width;
+  let actualHeight = dims.height;
 
   for (let i = 0; i < count; i++) {
     let suffixOut = args.output_path;
@@ -1005,9 +1164,9 @@ async function generateImage(args = {}, ctx = {}) {
     const outFile = resolveOutputPath(args.cwd || ctx.cwd, suffixOut, 'image', format);
 
     let remoteBuf = null;
+    let lastErr = null;
     if (format !== 'svg' && !args.forceOffline) {
-      for (const cand of routed.candidates || []) {
-        if (cand.offline) break;
+      for (const cand of activeCandidates) {
         try {
           remoteBuf = await tryRemoteImageGenerate(cand, { prompt, aspect_ratio: aspect, style: args.style, dims });
           if (remoteBuf) {
@@ -1015,8 +1174,14 @@ async function generateImage(args = {}, ctx = {}) {
             usedBackend = cand.backend;
             break;
           }
-        } catch (_) {}
+        } catch (err) {
+          lastErr = err;
+        }
       }
+    }
+
+    if (!remoteBuf && explicitCloud) {
+      throw lastErr || new Error(`Image generation failed for "${args.model}" with no output from provider.`);
     }
 
     if (remoteBuf) {
@@ -1026,6 +1191,8 @@ async function generateImage(args = {}, ctx = {}) {
         const cropped = cropBottomStrip(decoded, Math.min(44, Math.floor(decoded.height * 0.08)));
         decoded = resizeRgbaBilinear(cropped, dims.width, dims.height);
       }
+      actualWidth = decoded.width;
+      actualHeight = decoded.height;
       await encodeImageBuffer(decoded, format, outFile);
     } else if (format === 'svg') {
       const svg = buildArtboardSvg({ prompt: count > 1 ? `${prompt} #${i + 1}` : prompt, style: args.style, width: dims.width, height: dims.height });
@@ -1060,8 +1227,8 @@ async function generateImage(args = {}, ctx = {}) {
       path: fp,
       cachePath: fp === files[0] ? primaryCache.cachePath : '',
       format,
-      width: dims.width,
-      height: dims.height,
+      width: actualWidth,
+      height: actualHeight,
       size: fs.existsSync(fp) ? fs.statSync(fp).size : 0,
       model: usedModel,
       backend: usedBackend,
@@ -1070,7 +1237,7 @@ async function generateImage(args = {}, ctx = {}) {
     });
   }
   if (typeof ctx.emit === 'function') {
-    ctx.emit({ type: 'mediaArtifact', kind: 'image', files, cachePath: primaryCache.cachePath, previewDataUrl: primaryCache.previewDataUrl, model: usedModel, backend: usedBackend, width: dims.width, height: dims.height, size: outStat ? outStat.size : 0, format });
+    ctx.emit({ type: 'mediaArtifact', kind: 'image', files, cachePath: primaryCache.cachePath, previewDataUrl: primaryCache.previewDataUrl, model: usedModel, backend: usedBackend, width: actualWidth, height: actualHeight, size: outStat ? outStat.size : 0, format });
   }
   return {
     ok: true,
@@ -1078,15 +1245,15 @@ async function generateImage(args = {}, ctx = {}) {
     path: files[0],
     cachePath: primaryCache.cachePath,
     ...(args && args.includeDataUrl === true ? { previewDataUrl: primaryCache.previewDataUrl } : {}),
-    width: dims.width,
-    height: dims.height,
+    width: actualWidth,
+    height: actualHeight,
     size: outStat ? outStat.size : 0,
     aspect_ratio: aspect,
     format,
     model: usedModel,
     backend: usedBackend,
     routedFrom: (ctx.provider && ctx.provider.model) || null,
-    summary: `Generated ${files.length} image (${dims.width}x${dims.height} ${format.toUpperCase()}) using ${usedModel} → ${files.join(', ')}`,
+    summary: `Generated ${files.length} image (${actualWidth}x${actualHeight} ${format.toUpperCase()}) using ${usedModel} → ${files.join(', ')}`,
   };
 }
 
@@ -1197,20 +1364,39 @@ async function editImage(args = {}, ctx = {}) {
   } else if (op === 'annotate' || op === 'ai_edit' || op === 'inpaint') {
     let aiEditedOk = false;
     let aiEditModel = '';
+    const explicitEditCloud = op === 'ai_edit' && !args.forceOffline && isExplicitCloudModel(args.model);
     if (op === 'ai_edit' && args.instruction && !args.crop_box && !args.forceOffline) {
-      try {
-        const aspectGuess = img.width > img.height * 1.25 ? '16:9' : (img.height > img.width * 1.25 ? '9:16' : (Math.abs(img.width - img.height) < 80 ? '1:1' : '4:3'));
-        const routed = await router.resolveMediaProvider({
-          kind: 'image',
-          preferredModel: args.model || '',
-          provider: ctx.provider || args.provider || null,
-          orchestrator: ctx.orchestrator || args.orchestrator || null,
-          store: ctx.store || null,
-        });
-        for (const cand of routed.candidates || []) {
-          if (cand.offline) break;
-          const editPrompt = `${String(args.instruction).trim()}, high detail studio quality, refined from ${path.basename(inputPath).replace(/\.[^.]+$/, '')}`;
-          const buf = await tryRemoteImageGenerate(cand, { prompt: editPrompt, aspect_ratio: aspectGuess, style: args.style, dims: { width: img.width, height: img.height } });
+      const aspectGuess = img.width > img.height * 1.25 ? '16:9' : (img.height > img.width * 1.25 ? '9:16' : (Math.abs(img.width - img.height) < 80 ? '1:1' : '4:3'));
+      const routed = await router.resolveMediaProvider({
+        kind: 'image',
+        preferredModel: args.model || '',
+        provider: ctx.provider || args.provider || null,
+        orchestrator: ctx.orchestrator || args.orchestrator || null,
+        store: ctx.store,
+      });
+      let cands = (routed.candidates || []).filter((c) => !c.offline);
+      if (explicitEditCloud) {
+        cands = cands.filter((c) => candidateMatchesPreferredModel(c, args.model));
+        if (!cands.length) {
+          throw new Error(`Model "${args.model}" is not configured or has no available API key.`);
+        }
+      }
+      const inputB64 = fs.readFileSync(inputPath).toString('base64');
+      const inputMime = imageBufferToMime(inputPath);
+      let lastEditErr = null;
+      for (const cand of cands) {
+        try {
+          const editPrompt = cand.backend === 'gemini-flash-image'
+            ? String(args.instruction).trim()
+            : `${String(args.instruction).trim()}, high detail studio quality, refined from ${path.basename(inputPath).replace(/\.[^.]+$/, '')}`;
+          const buf = await tryRemoteImageGenerate(cand, {
+            prompt: editPrompt,
+            aspect_ratio: aspectGuess,
+            style: args.style,
+            dims: { width: img.width, height: img.height },
+            inputImageBase64: cand.backend === 'gemini-flash-image' ? inputB64 : '',
+            inputMimeType: inputMime,
+          });
           if (buf) {
             let dec = await decodeBufferToRgba(buf, inputPath);
             if (cand.backend === 'pollinations-flux' && dec.height > 180) {
@@ -1221,8 +1407,13 @@ async function editImage(args = {}, ctx = {}) {
             aiEditModel = cand.model || cand.backend;
             break;
           }
+        } catch (err) {
+          lastEditErr = err;
         }
-      } catch (_) {}
+      }
+      if (!aiEditedOk && explicitEditCloud) {
+        throw lastEditErr || new Error(`AI image edit failed for "${args.model}".`);
+      }
     }
     if (!aiEditedOk) {
       const box = args.crop_box
@@ -1308,88 +1499,206 @@ const VIDEO_HD_DIMENSIONS = {
   '1:1': { width: 720, height: 720 },
 };
 
-async function tryRemoteVideoGenerate(candidate, { prompt, aspect_ratio = '16:9', durationSec = 3, fps = 30, format = 'mp4', outFile, sourceImagePath = '' }) {
+async function tryRemoteVideoGenerate(candidate, { prompt, aspect_ratio = '16:9', durationSec = 3, fps = 30, format = 'mp4', outFile, sourceImagePath = '', pollIntervalMs = 2500, imageCandidates = [] }) {
   if (!candidate || candidate.offline) return null;
 
   if (candidate.backend === 'google-veo' && candidate.apiKey) {
-    const base = candidate.baseURL.replace(/\/+$/, '');
-    const startUrl = `${base}/models/${encodeURIComponent(candidate.model)}:predictLongRunning?key=${encodeURIComponent(candidate.apiKey)}`;
+    const base = String(candidate.baseURL || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
+    const startUrl = `${base}/models/${encodeURIComponent(candidate.model)}:predictLongRunning`;
+    const instance = { prompt };
+    if (sourceImagePath && fs.existsSync(sourceImagePath)) {
+      instance.image = {
+        bytesBase64Encoded: fs.readFileSync(sourceImagePath).toString('base64'),
+        mimeType: imageBufferToMime(sourceImagePath),
+      };
+    }
     const startRes = await fetch(startUrl, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': candidate.apiKey },
       body: JSON.stringify({
-        instances: [{ prompt }],
+        instances: [instance],
         parameters: { aspectRatio: aspect_ratio || '16:9', durationSeconds: Math.max(5, Math.min(8, Math.round(durationSec || 5))) },
       }),
     });
-    if (!startRes.ok) return null;
+    if (!startRes.ok) throw new Error(await extractApiErrorMessage(startRes, `Google Veo (${candidate.model})`));
     const op = await startRes.json();
-    if (!op || !op.name) return null;
-    for (let i = 0; i < 24; i++) {
-      await new Promise((r) => setTimeout(r, 2500));
-      const pollRes = await fetch(`${base}/${op.name}?key=${encodeURIComponent(candidate.apiKey)}`);
-      if (!pollRes.ok) continue;
+    if (!op || !op.name) throw new Error(`Google Veo (${candidate.model}) did not return an operation handle`);
+    const maxPolls = 36;
+    for (let i = 0; i < maxPolls; i++) {
+      await new Promise((r) => setTimeout(r, Math.max(50, Number(pollIntervalMs) || 2500)));
+      const pollRes = await fetch(`${base}/${op.name}`, {
+        headers: { 'x-goog-api-key': candidate.apiKey },
+      });
+      if (!pollRes.ok) {
+        if (pollRes.status >= 400 && pollRes.status < 500) {
+          throw new Error(await extractApiErrorMessage(pollRes, `Google Veo (${candidate.model}) poll`));
+        }
+        continue;
+      }
       const poll = await pollRes.json();
+      if (poll.error) {
+        throw new Error(`Google Veo (${candidate.model}) error ${poll.error.code || ''}: ${poll.error.message || JSON.stringify(poll.error)}`);
+      }
       if (poll.done) {
+        const inlineB64 = poll.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.bytesBase64Encoded
+          || poll.response?.predictions?.[0]?.bytesBase64Encoded
+          || poll.response?.videos?.[0]?.bytesBase64Encoded
+          || '';
+        if (inlineB64) {
+          const buf = Buffer.from(inlineB64, 'base64');
+          if (buf.length < 4096) throw new Error(`Google Veo (${candidate.model}) returned empty video payload`);
+          fs.writeFileSync(outFile, buf);
+          return { model: candidate.model, backend: candidate.backend };
+        }
         const uri = poll.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri
           || poll.response?.videos?.[0]?.gcsUri
-          || poll.response?.generatedSamples?.[0]?.video?.uri;
-        if (!uri) return null;
-        const vidRes = await fetch(`${uri}${uri.includes('?') ? '&' : '?'}key=${encodeURIComponent(candidate.apiKey)}`);
-        if (!vidRes.ok) return null;
+          || poll.response?.videos?.[0]?.uri
+          || '';
+        if (!uri) throw new Error(`Google Veo (${candidate.model}) completed without a video URI`);
+        const dlHeaders = /^https:\/\/generativelanguage\.googleapis\.com/i.test(uri) ? { 'x-goog-api-key': candidate.apiKey } : {};
+        const vidRes = await fetch(uri, { headers: dlHeaders, redirect: 'follow' });
+        if (!vidRes.ok) throw new Error(await extractApiErrorMessage(vidRes, `Google Veo (${candidate.model}) download`));
         const buf = Buffer.from(await vidRes.arrayBuffer());
-        if (buf.length < 4096) return null;
+        if (buf.length < 4096) throw new Error(`Google Veo (${candidate.model}) downloaded an empty video`);
         fs.writeFileSync(outFile, buf);
         return { model: candidate.model, backend: candidate.backend };
       }
     }
-    return null;
+    throw new Error(`Google Veo (${candidate.model}) operation timed out before completion`);
   }
 
   if (candidate.backend === 'openai-sora' && candidate.apiKey) {
-    const res = await fetch(candidate.baseURL, {
+    const endpoint = String(candidate.baseURL || 'https://api.openai.com/v1/videos/generations');
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + candidate.apiKey },
       body: JSON.stringify({ model: candidate.model || 'sora', prompt, size: aspect_ratio === '9:16' ? '720x1280' : (aspect_ratio === '1:1' ? '720x720' : '1280x720') }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) throw new Error(await extractApiErrorMessage(res, `OpenAI (${candidate.model || 'sora'})`));
     const j = await res.json();
     const url = j?.data?.[0]?.url || j?.url;
+    const b64 = j?.data?.[0]?.b64_json || j?.b64_json;
+    if (b64) {
+      const buf = Buffer.from(b64, 'base64');
+      fs.writeFileSync(outFile, buf);
+      return { model: candidate.model, backend: candidate.backend };
+    }
     if (url) {
       const dl = await fetch(url);
-      if (dl.ok) {
-        const buf = Buffer.from(await dl.arrayBuffer());
-        if (buf.length > 4096) {
-          fs.writeFileSync(outFile, buf);
-          return { model: candidate.model, backend: candidate.backend };
-        }
+      if (!dl.ok) throw new Error(await extractApiErrorMessage(dl, 'OpenAI Sora download'));
+      const buf = Buffer.from(await dl.arrayBuffer());
+      if (buf.length > 4096) {
+        fs.writeFileSync(outFile, buf);
+        return { model: candidate.model, backend: candidate.backend };
       }
     }
-    return null;
+    throw new Error(`OpenAI (${candidate.model || 'sora'}) returned no video payload`);
+  }
+
+  if (candidate.backend === 'xai-video' && candidate.apiKey) {
+    const base = String(candidate.baseURL || 'https://api.x.ai/v1').replace(/\/+$/, '');
+    const body = { model: candidate.model || 'grok-2-video', prompt };
+    if (sourceImagePath && fs.existsSync(sourceImagePath)) {
+      body.image_url = `data:${imageBufferToMime(sourceImagePath)};base64,${fs.readFileSync(sourceImagePath).toString('base64')}`;
+    }
+    const res = await fetch(`${base}/videos/generations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + candidate.apiKey },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await extractApiErrorMessage(res, `xAI (${candidate.model || 'grok-2-video'})`));
+    let j = await res.json();
+    if (j && j.request_id && !j.url && !j.video) {
+      for (let i = 0; i < 24; i++) {
+        await new Promise((r) => setTimeout(r, Math.max(50, Number(pollIntervalMs) || 2500)));
+        const pRes = await fetch(`${base}/videos/${encodeURIComponent(j.request_id)}`, { headers: { authorization: 'Bearer ' + candidate.apiKey } });
+        if (!pRes.ok) continue;
+        j = await pRes.json();
+        if (j?.video?.url || j?.url || j?.status === 'failed') break;
+      }
+    }
+    const vUrl = j?.video?.url || j?.data?.[0]?.url || j?.url;
+    if (!vUrl) throw new Error(`xAI (${candidate.model}) returned no video URL`);
+    const dl = await fetch(vUrl);
+    if (!dl.ok) throw new Error(await extractApiErrorMessage(dl, 'xAI video download'));
+    fs.writeFileSync(outFile, Buffer.from(await dl.arrayBuffer()));
+    return { model: candidate.model, backend: candidate.backend };
+  }
+
+  if (candidate.backend === 'fal-video' && candidate.apiKey) {
+    const base = String(candidate.baseURL || 'https://fal.run').replace(/\/+$/, '');
+    const slug = sourceImagePath && fs.existsSync(sourceImagePath) ? 'fal-ai/wan-i2v' : (candidate.model || 'fal-ai/wan-t2v');
+    const body = { prompt };
+    if (sourceImagePath && fs.existsSync(sourceImagePath)) {
+      body.image_url = `data:${imageBufferToMime(sourceImagePath)};base64,${fs.readFileSync(sourceImagePath).toString('base64')}`;
+    }
+    const res = await fetch(`${base}/${slug}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Key ' + candidate.apiKey },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await extractApiErrorMessage(res, `fal.ai (${slug})`));
+    const j = await res.json();
+    const vUrl = j?.video?.url || j?.url;
+    if (!vUrl) throw new Error(`fal.ai (${slug}) returned no video URL`);
+    const dl = await fetch(vUrl);
+    if (!dl.ok) throw new Error(await extractApiErrorMessage(dl, 'fal.ai video download'));
+    fs.writeFileSync(outFile, Buffer.from(await dl.arrayBuffer()));
+    return { model: candidate.model, backend: candidate.backend };
+  }
+
+  if (candidate.backend === 'replicate-video' && candidate.apiKey) {
+    const base = String(candidate.baseURL || 'https://api.replicate.com/v1').replace(/\/+$/, '');
+    const input = { prompt };
+    if (sourceImagePath && fs.existsSync(sourceImagePath)) {
+      input.image = `data:${imageBufferToMime(sourceImagePath)};base64,${fs.readFileSync(sourceImagePath).toString('base64')}`;
+    }
+    const createRes = await fetch(`${base}/models/${candidate.model}/predictions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + candidate.apiKey, prefer: 'wait=60' },
+      body: JSON.stringify({ input }),
+    });
+    if (!createRes.ok) throw new Error(await extractApiErrorMessage(createRes, `Replicate (${candidate.model})`));
+    let pred = await createRes.json();
+    for (let i = 0; i < 24 && pred && !['succeeded', 'failed', 'canceled'].includes(pred.status) && pred.urls && pred.urls.get; i++) {
+      await new Promise((r) => setTimeout(r, Math.max(50, Number(pollIntervalMs) || 2500)));
+      const pRes = await fetch(pred.urls.get, { headers: { authorization: 'Bearer ' + candidate.apiKey } });
+      if (pRes.ok) pred = await pRes.json();
+    }
+    if (!pred || pred.status === 'failed' || pred.status === 'canceled') {
+      throw new Error(`Replicate (${candidate.model}) ${pred?.status || 'failed'}: ${pred?.error || 'prediction failed'}`);
+    }
+    const vUrl = Array.isArray(pred.output) ? pred.output[0] : pred.output;
+    if (!vUrl || typeof vUrl !== 'string') throw new Error(`Replicate (${candidate.model}) returned no video URL`);
+    const dl = await fetch(vUrl);
+    if (!dl.ok) throw new Error(await extractApiErrorMessage(dl, 'Replicate video download'));
+    fs.writeFileSync(outFile, Buffer.from(await dl.arrayBuffer()));
+    return { model: candidate.model, backend: candidate.backend };
   }
 
   if (candidate.backend === 'ai-keyframe-video') {
     const ff = resolveFfmpeg();
-    if (!ff || format === 'gif' || format === 'webm') {
-      // Fall back for non-mp4 or missing ffmpeg
-    }
-    if (!ff) return null;
+    if (!ff) throw new Error('ffmpeg is required for Flux Cinema 720p video synthesis');
     const hdDims = VIDEO_HD_DIMENSIONS[aspect_ratio] || VIDEO_HD_DIMENSIONS['16:9'];
     let decoded = null;
     if (sourceImagePath && fs.existsSync(sourceImagePath)) {
       decoded = await decodeImageBuffer(sourceImagePath);
     } else {
-      const kfBuf = await tryRemoteImageGenerate(
+      const kfPrompt = `${prompt}, breathtaking cinematic wide film still, atmospheric lighting, rich natural detail, photorealistic`;
+      const kfChain = (imageCandidates && imageCandidates.length ? imageCandidates : [
         { backend: 'pollinations-flux', model: 'flux-realism', remoteModel: 'flux-realism', offline: false },
-        {
-          prompt: `${prompt}, breathtaking cinematic wide film still, atmospheric lighting, rich natural detail, photorealistic`,
-          aspect_ratio,
-          dims: hdDims,
-        }
-      );
-      if (!kfBuf) return null;
+      ]).filter((c) => !c.offline);
+      let kfBuf = null;
+      let kfBackend = '';
+      for (const kfCand of kfChain) {
+        try {
+          kfBuf = await tryRemoteImageGenerate(kfCand, { prompt: kfPrompt, aspect_ratio, dims: hdDims });
+          if (kfBuf) { kfBackend = kfCand.backend; break; }
+        } catch (_) {}
+      }
+      if (!kfBuf) throw new Error('Could not generate AI keyframe for Flux AI Cinema video');
       decoded = await decodeBufferToRgba(kfBuf, 'keyframe.png');
-      if (decoded.height > 180) {
+      if (kfBackend === 'pollinations-flux' && decoded.height > 180) {
         decoded = cropBottomStrip(decoded, Math.min(44, Math.floor(decoded.height * 0.08)));
       }
     }
@@ -1436,16 +1745,43 @@ async function generateVideo(args = {}, ctx = {}) {
     preferredModel: args.model || '',
     provider: ctx.provider || args.provider || null,
     orchestrator: ctx.orchestrator || args.orchestrator || null,
-    store: ctx.store || null,
+    store: ctx.store,
   });
+  const imgRouted = await router.resolveMediaProvider({
+    kind: 'image',
+    preferredModel: '',
+    provider: ctx.provider || args.provider || null,
+    orchestrator: ctx.orchestrator || args.orchestrator || null,
+    store: ctx.store,
+  });
+
+  const explicitCloud = !args.forceOffline && isExplicitCloudModel(args.model);
+  let activeCandidates = (routed.candidates || []).filter((c) => !c.offline);
+  if (explicitCloud) {
+    activeCandidates = activeCandidates.filter((c) => candidateMatchesPreferredModel(c, args.model));
+    if (!activeCandidates.length) {
+      const cat = router.listMediaStudioCatalog({ store: ctx.store, provider: ctx.provider || args.provider || null, orchestrator: ctx.orchestrator || args.orchestrator || null });
+      const entry = (cat.videoModels || []).find((m) => String(m.id || '').toLowerCase() === String(args.model).trim().toLowerCase());
+      const err = new Error(
+        entry && entry.requiredKeyLabel
+          ? `${entry.label} requires ${entry.requiredKeyLabel} — configure your API key in Settings → Images & Video APIs.`
+          : `Video model "${args.model}" is not configured or has no available API key.`
+      );
+      if (entry && entry.configKeyId) {
+        err.needsApiKey = true;
+        err.configKeyId = entry.configKeyId;
+      }
+      throw err;
+    }
+  }
 
   let usedModel = 'akron-motion-canvas-30fps';
   let usedBackend = 'offline-video-studio';
   let remoteGenerated = null;
+  let lastErr = null;
 
-  if (!args.forceOffline && !isTransientTestPath(outFile)) {
-    for (const cand of routed.candidates || []) {
-      if (cand.offline) break;
+  if (!args.forceOffline && (explicitCloud || !isTransientTestPath(outFile))) {
+    for (const cand of activeCandidates) {
       try {
         remoteGenerated = await tryRemoteVideoGenerate(cand, {
           prompt,
@@ -1456,14 +1792,22 @@ async function generateVideo(args = {}, ctx = {}) {
           dims,
           outFile,
           sourceImagePath: args.image_path ? (path.isAbsolute(args.image_path) ? args.image_path : path.resolve(args.cwd || ctx.cwd || process.cwd(), args.image_path)) : '',
+          pollIntervalMs: ctx.pollIntervalMs || args.pollIntervalMs || 2500,
+          imageCandidates: imgRouted.candidates || [],
         });
         if (remoteGenerated) {
           usedModel = remoteGenerated.model || cand.model;
           usedBackend = remoteGenerated.backend || cand.backend;
           break;
         }
-      } catch (_) {}
+      } catch (err) {
+        lastErr = err;
+      }
     }
+  }
+
+  if (!remoteGenerated && explicitCloud) {
+    throw lastErr || new Error(`Video generation failed for "${args.model}" with no output from provider.`);
   }
 
   if (!remoteGenerated) {

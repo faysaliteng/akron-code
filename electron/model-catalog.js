@@ -86,6 +86,7 @@ const RULES = [
   [/\bo[1-4](?:-mini|-pro)?\b/i, 200000],
   // xAI — the 2M window is the *fast* variants specifically; base Grok 4 is 256k.
   [/\bgrok-[0-9.]*-?(?:code-)?fast\b/i, 2000000],
+  [/\bgrok-build\b/i, 256000],
   [/\bgrok-4/i, 256000],
   [/\bgrok-3/i, 131072],
   [/\bgrok/i, 131072],

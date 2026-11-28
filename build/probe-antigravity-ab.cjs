@@ -31,15 +31,16 @@ const send = async (provider, parameters, label) => {
     userAgent: 'antigravity',
     requestType: 'agent',
   };
-  const res = await fetch(t._internal.cloudcodeBase(provider) + ':streamGenerateContent?alt=sse', {
+  const base = (provider && provider.baseURL) || t._internal.DEFAULT_GEMINI_BASE;
+  const res = await fetch(`${base.replace(/\/+$/, '')}/models/${encodeURIComponent(provider.model)}:streamGenerateContent?alt=sse`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       accept: 'text/event-stream',
-      authorization: 'Bearer ' + provider.accessToken,
-      'user-agent': t._internal.ANTIGRAVITY_UA,
+      'x-goog-api-key': provider.apiKey || process.env.GEMINI_API_KEY || '',
+      'user-agent': t._internal.OFFICIAL_USER_AGENT,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body.request),
   });
   const text = await res.text().catch(() => '');
   console.log('\n[' + label + '] HTTP ' + res.status + (res.ok ? '' : '\n' + text.slice(0, 500)));

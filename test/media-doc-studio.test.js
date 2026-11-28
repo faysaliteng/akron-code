@@ -3,10 +3,12 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const http = require('http');
 const { PNG } = require('pngjs');
 const JSZip = require('jszip');
 
 const router = require('../electron/orch-router');
+const mediaGen = require('../electron/media-gen');
 const { runTool } = require('../electron/tools');
 const docStudio = require('../electron/doc-studio');
 
@@ -353,6 +355,121 @@ async function test(name, fn) {
     assert(appSrc.includes("id: 'media'") && appSrc.includes('Images & Video APIs') && appSrc.includes("openSettingsAt('media'"));
     assert(ipcFeat.includes("ipcMain.handle('autobot:mediaKeysGet'") && ipcFeat.includes("ipcMain.handle('autobot:mediaKeysSave'") && ipcFeat.includes('needsApiKey: true'));
     assert(preload.includes('mediaKeysGet') && preload.includes('mediaKeysSave'));
+  });
+
+  await test('Cloud models surface HTTP errors cleanly without silent offline fallback & support Gemini/Veo protocol end-to-end', async () => {
+    const png = new PNG({ width: 32, height: 32 });
+    for (let i = 0; i < png.data.length; i += 4) {
+      png.data[i] = 16; png.data[i + 1] = 185; png.data[i + 2] = 129; png.data[i + 3] = 255;
+    }
+    const pngB64 = PNG.sync.write(png).toString('base64');
+    const fakeMp4 = Buffer.alloc(6144, 0);
+    Buffer.from('ftypisom').copy(fakeMp4, 4);
+
+    let failMode = false;
+    let baseUrl = '';
+    const seen = [];
+    const srv = http.createServer((req, res) => {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        const body = raw ? JSON.parse(raw) : null;
+        seen.push({ url: req.url, key: req.headers['x-goog-api-key'], body });
+        if (failMode) {
+          res.writeHead(429, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'Quota exceeded in test' } }));
+          return;
+        }
+        if (req.url.includes(':generateContent')) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({
+            candidates: [{ content: { parts: [{ inline_data: { mime_type: 'image/png', data: pngB64 } }] } }],
+          }));
+          return;
+        }
+        if (req.url.includes(':predictLongRunning')) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ name: 'operations/test-veo-op' }));
+          return;
+        }
+        if (req.url.includes('/operations/test-veo-op')) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({
+            done: true,
+            response: { generateVideoResponse: { generatedSamples: [{ video: { uri: `${baseUrl}/download/veo.mp4` } }] } },
+          }));
+          return;
+        }
+        if (req.url.includes('/download/veo.mp4')) {
+          res.writeHead(200, { 'content-type': 'video/mp4' });
+          res.end(fakeMp4);
+          return;
+        }
+        res.writeHead(404);
+        res.end('not found');
+      });
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    baseUrl = `http://127.0.0.1:${srv.address().port}/v1beta`;
+
+    try {
+      const mockOrch = {
+        providers: [
+          { model: 'gemini-2.5-flash-image', baseURL: baseUrl, apiKey: 'GM_TEST_KEY' },
+          { model: 'veo-2.0-generate-001', baseURL: baseUrl, apiKey: 'GM_TEST_KEY' },
+        ],
+      };
+
+      const imgOut = path.join(tmp, 'gemini-flash.png');
+      const imgRes = await mediaGen.generateImage(
+        { prompt: 'Emerald crystal', model: 'gemini-2.5-flash-image', output_path: imgOut },
+        { cwd: tmp, orchestrator: mockOrch, store: false }
+      );
+      assert.strictEqual(imgRes.model, 'gemini-2.5-flash-image');
+      assert.strictEqual(imgRes.backend, 'gemini-flash-image');
+      assert.strictEqual(imgRes.width, 32);
+      assert(fs.existsSync(imgOut));
+
+      // ai_edit must forward input image bytes via inlineData
+      const editOut = path.join(tmp, 'gemini-edited.png');
+      const editRes = await mediaGen.editImage(
+        { input_path: imgOut, operation: 'ai_edit', instruction: 'Make it glow brighter', model: 'gemini-2.5-flash-image', output_path: editOut },
+        { cwd: tmp, orchestrator: mockOrch, store: false }
+      );
+      assert.strictEqual(editRes.model, 'gemini-2.5-flash-image');
+      const editReq = seen.find((s) => s.url.includes(':generateContent') && s.body?.contents?.[0]?.parts?.length === 2);
+      assert(editReq && editReq.body.contents[0].parts[1].inlineData.data, 'ai_edit must pass inlineData to Gemini');
+
+      // Veo 2 text-to-video + image-to-video
+      const veoOut = path.join(tmp, 'veo-anim.mp4');
+      const veoRes = await mediaGen.generateVideo(
+        { prompt: 'Animate emerald crystal', model: 'veo-2.0-generate-001', image_path: imgOut, output_path: veoOut, pollIntervalMs: 60 },
+        { cwd: tmp, orchestrator: mockOrch, store: false }
+      );
+      assert.strictEqual(veoRes.model, 'veo-2.0-generate-001');
+      assert.strictEqual(veoRes.backend, 'google-veo');
+      assert(fs.existsSync(veoOut) && fs.statSync(veoOut).size >= 6144);
+      const veoReq = seen.find((s) => s.url.includes(':predictLongRunning'));
+      assert(veoReq && veoReq.body?.instances?.[0]?.image?.bytesBase64Encoded, 'Veo 2 animate-video must send source image');
+
+      // Rejection must throw explicitly — NEVER silently generate akron-svg-canvas-studio
+      failMode = true;
+      const failOut = path.join(tmp, 'should-not-exist.png');
+      let errMsg = '';
+      try {
+        await mediaGen.generateImage(
+          { prompt: 'Emerald crystal', model: 'gemini-2.5-flash-image', output_path: failOut },
+          { cwd: tmp, orchestrator: mockOrch, store: false }
+        );
+      } catch (e) {
+        errMsg = e.message;
+      }
+      assert(errMsg.includes('429') && errMsg.includes('Quota exceeded in test'), 'Expected HTTP 429 error, got: ' + errMsg);
+      assert.strictEqual(fs.existsSync(failOut), false, 'Failed cloud generation must not write fallback SVG placeholder');
+    } finally {
+      srv.close();
+    }
   });
 
   fs.rmSync(tmp, { recursive: true, force: true });

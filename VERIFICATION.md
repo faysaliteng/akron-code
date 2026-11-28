@@ -1154,7 +1154,7 @@ picks between two logins. Deps are injectable (`db`, `readCreds`, `saveTokens`,
 
 ### Grok — 402 is an allowance state, not a bug
 
-The 426 version rejection was a stale UA (`grok-shell/1.0.92` now; minimum
+The 426 version rejection was a stale client UA header (replaced in v1.6.9 with `cli-runner.js` + `OFFICIAL_USER_AGENT`; minimum
 1.0.13). After that, every model answered
 `402 {"error":"Grok Build usage balance exhausted"}`.
 

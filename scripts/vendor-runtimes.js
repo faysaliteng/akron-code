@@ -134,6 +134,20 @@ function localRoot(id) {
     for (const c of cands) if (c && existsFile(c)) return c;
     return '';
   }
+  if (id === 'gemini-cli') {
+    const cands = [
+      path.join(npmG, '@google', 'gemini-cli'),
+      '/opt/homebrew/lib/node_modules/@google/gemini-cli',
+      '/usr/local/lib/node_modules/@google/gemini-cli',
+    ];
+    const w = which('gemini');
+    if (w) {
+      const rp = realpath(w);
+      cands.push(path.dirname(path.dirname(rp)));
+    }
+    for (const c of cands) if (existsFile(path.join(c, 'bundle', 'gemini.js'))) return c;
+    return '';
+  }
   return '';
 }
 

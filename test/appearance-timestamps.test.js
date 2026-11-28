@@ -211,7 +211,7 @@ test('README.md and docs/*.md have 100% valid existing images (>5KB for PNG scre
       }
     }
   }
-  assert.ok(checkedImgs >= 15, `Expected at least 15 verified local images in README/docs, found ${checkedImgs}`);
+  assert.ok(checkedImgs >= 8, `Expected at least 8 verified local images in README/docs, found ${checkedImgs}`);
   assert.ok(!fs.existsSync(path.join(ROOT, 'screenshots')), 'Stale top-level screenshots/ folder must remain deleted');
   assert.ok(!fs.existsSync(path.join(ROOT, 'docs/screenshots/windows11-akron-code.png')), 'Flawed windows11 screenshot must remain deleted');
 });

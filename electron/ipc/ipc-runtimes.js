@@ -173,6 +173,7 @@ async function syncClientVersions() {
 async function startRuntimes() {
   try {
     const rt = getRuntimes();
+    await rt.hydrateBundled().catch(() => {});
     const prefix = await runtimePathPrefix();
     await syncClientVersions();
     if (prefix) {
@@ -211,13 +212,46 @@ async function startRuntimes() {
   }
 }
 
+const RUNTIME_TO_PROVIDER = {
+  'claude-code': 'claude',
+  codex: 'chatgpt',
+  grok: 'grok',
+  'gemini-cli': 'antigravity',
+};
+
+function enrichRuntimesWithAuth(rows) {
+  let byProv = {};
+  try {
+    const st = require('../provider-oauth').status();
+    for (const p of (st && st.providers) || []) {
+      if (p && p.id) byProv[p.id] = p;
+    }
+  } catch (_) {}
+  return (rows || []).map((r) => {
+    const pid = RUNTIME_TO_PROVIDER[r && r.id];
+    const p = pid ? byProv[pid] : null;
+    const accts = (p && Array.isArray(p.accounts)) ? p.accounts : [];
+    const active = accts.find((a) => a && a.account === p.active) || accts[0] || null;
+    return {
+      ...r,
+      oauthProvider: pid || '',
+      oauthConnected: Boolean(p && p.signedIn),
+      oauthAccount: (active && active.account) || '',
+      oauthPlan: (active && active.plan) || '',
+    };
+  });
+}
+
 ipcMain.handle('autobot:runtimes', async () => {
-  try { return { ok: true, runtimes: await getRuntimes().list(), bundledDir: bundledRuntimeDir() }; }
+  try { return { ok: true, runtimes: enrichRuntimesWithAuth(await getRuntimes().list()), bundledDir: bundledRuntimeDir() }; }
   catch (e) { return { ok: false, error: oneLine(e) }; }
 });
 
 ipcMain.handle('autobot:runtimesCheck', async () => {
-  try { return await getRuntimes().checkAll(); }
+  try {
+    const res = await getRuntimes().checkAll();
+    return { ...res, runtimes: enrichRuntimesWithAuth(res && res.runtimes) };
+  }
   catch (e) { return { ok: false, error: oneLine(e) }; }
 });
 
@@ -225,7 +259,7 @@ ipcMain.handle('autobot:runtimesUpdate', async (event, id, force) => {
   try {
     const rt = getRuntimes();
     const res = id ? await rt.install(String(id), undefined, { force: !!force }) : await rt.updateAll();
-    const out = { ok: true, ...res, runtimes: await rt.list() };
+    const out = { ok: true, ...res, runtimes: enrichRuntimesWithAuth(await rt.list()) };
     // A freshly installed runtime changes PATH for later children.
     const p = await runtimePathPrefix();
     if (p) {
@@ -237,12 +271,12 @@ ipcMain.handle('autobot:runtimesUpdate', async (event, id, force) => {
     await syncClientVersions();
     return out;
   } catch (e) {
-    return { ok: false, error: oneLine(e), runtimes: await getRuntimes().list().catch(() => []) };
+    return { ok: false, error: oneLine(e), runtimes: enrichRuntimesWithAuth(await getRuntimes().list().catch(() => [])) };
   }
 });
 
 ipcMain.handle('autobot:runtimesRollback', async (event, id) => {
-  try { return { ok: true, ...(await getRuntimes().rollback(String(id))), runtimes: await getRuntimes().list() }; }
+  try { return { ok: true, ...(await getRuntimes().rollback(String(id))), runtimes: enrichRuntimesWithAuth(await getRuntimes().list()) }; }
   catch (e) { return { ok: false, error: oneLine(e) }; }
 });
 

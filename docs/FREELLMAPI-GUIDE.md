@@ -16,7 +16,7 @@ You have **two seamless ways** to run FreeLLMAPI:
    - **Windows 11 / 10:** Auto-detected at `%LOCALAPPDATA%\Programs\FreeLLMAPI\FreeLLMAPI.exe` or launch `FreeLLMAPI Installer.exe` directly from **Settings → Models & Providers**.
    - **Linux:** Auto-detected at `~/.local/bin/freellmapi` or `/opt/FreeLLMAPI/freellmapi`.
 
-![FreeLLMAPI 1,575-Model Unlocked Hub in Akron Code](./screenshots/freellmapi-hub-dark.png)
+![Akron Code Workspace & FreeLLMAPI Hub](./screenshots/hero-workbench-dark.png)
 
 ---
 
@@ -26,7 +26,7 @@ You do **not** need a credit card to unlock hundreds of fast frontier and coding
 - **Automatic Setup with Akron Web Bot (Recommended):** Open **Settings → Models & Providers** (or **Settings → Runtimes & Updates**) and click **🤖 Auto-Setup Free Keys with Akron Web Bot**. Select any provider (**OpenRouter**, **Google AI Studio**, **Groq**, **Mistral**, **Cohere**, **Cloudflare Workers AI**, **NVIDIA NIM**, **HuggingFace**, **Puter**, **ElectronHub**), click **Open in Akron Browser Bot →**, sign in inside the built-in browser pane, and paste/save the key directly into both FreeLLMAPI and Akron Code's Auto-Switch Brain!
 - **Keyless Immediate Platforms:** Several providers including **Kilo Gateway**, **OVH AI Endpoints**, **LLM7**, and **AI Horde** work with anonymous or free instant tokens.
 
-![Akron Web Bot Assisted Free Key Setup](./screenshots/freellmapi-webbot-setup.png)
+![MCP Connectors, Plugins & Built-In IDE Diff Review](./screenshots/mcp-plugins-ide-dark.png)
 
 ---
 
@@ -45,11 +45,11 @@ You do **not** need a credit card to unlock hundreds of fast frontier and coding
    - **Option B — DeepSeek Platform API:** Direct `platform.deepseek.com` key (~$1 = 40,000+ routing decisions).
    - **Option C — FreeLLMAPI Unified Key:** Uses your local `:31415/v1` / `:3001/v1` router.
 
-![Auto-Switch Brain DeepSeek V4.1 Flash Dispatcher Settings](./screenshots/autoswitch-brain-dark.png)
+![Bundled CLI Runtimes & Native OAuth Settings](./screenshots/runtimes-native-oauth-dark.png)
 
 2. Return to chat and pick **`⚡ Auto · DeepSeek V4.1 Flash`**, **`🛰️ Orchestrator Models`**, or any exact **Direct Model** in the bottom-right session picker, or click **`Wire into Role Pools & Auto-Switch`** to auto-populate all 8 Role Pools (`planner`, `coder`, `vision`, `fast`, `longctx`, `image_gen`, `video_gen`, `audio_speech`).
 
-![3-Mode Model Picker Popup](./screenshots/model-picker-3modes.png)
+![Multi-CLI Orchestrator & Swarm Git Worktrees](./screenshots/orchestrator-swarm-worktrees-dark.png)
 
 ---
 

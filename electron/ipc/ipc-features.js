@@ -1559,14 +1559,18 @@ function buildMediaKeysSnapshot() {
       val = String(process.env[spec.id]).trim();
       source = 'env';
     } else if (spec.id === 'GEMINI_API_KEY') {
-      const alt = secretstore.get('GOOGLE_API_KEY') || process.env.GOOGLE_API_KEY || findInUrlKeys([/generativelanguage\.googleapis\.com/i, /ai\.google/i]) || ((flProvs.google && (flProvs.google.apiKey || flProvs.google.key)) || '');
-      if (alt) { val = String(alt).trim(); source = 'configured'; }
+      const sAlt = secretstore.get('GOOGLE_API_KEY') || process.env.GOOGLE_API_KEY || findInUrlKeys([/generativelanguage\.googleapis\.com/i, /ai\.google/i]);
+      const flAlt = (flProvs.gemini && (flProvs.gemini.apiKey || flProvs.gemini.key)) || (flProvs.google && (flProvs.google.apiKey || flProvs.google.key)) || '';
+      if (sAlt) { val = String(sAlt).trim(); source = 'configured'; }
+      else if (flAlt) { val = String(flAlt).trim(); source = 'freellm'; }
     } else if (spec.id === 'OPENAI_API_KEY') {
       const alt = findInUrlKeys([/api\.openai\.com/i]);
       if (alt) { val = alt; source = 'providerKeys'; }
     } else if (spec.id === 'XAI_API_KEY') {
-      const alt = findInUrlKeys([/api\.x\.ai/i, /grok\.com/i]) || (flProvs.xai && flProvs.xai.apiKey) || (flProvs.grok && flProvs.grok.apiKey) || '';
-      if (alt) { val = String(alt).trim(); source = 'configured'; }
+      const sAlt = findInUrlKeys([/api\.x\.ai/i, /grok\.com/i]);
+      const flAlt = (flProvs.xai && flProvs.xai.apiKey) || (flProvs.grok && flProvs.grok.apiKey) || '';
+      if (sAlt) { val = String(sAlt).trim(); source = 'providerKeys'; }
+      else if (flAlt) { val = String(flAlt).trim(); source = 'freellm'; }
     } else if (spec.id === 'FAL_KEY') {
       const alt = secretstore.get('FAL_API_KEY') || process.env.FAL_API_KEY || findInUrlKeys([/fal\.run|fal\.ai/i]);
       if (alt) { val = String(alt).trim(); source = 'configured'; }
@@ -1574,11 +1578,20 @@ function buildMediaKeysSnapshot() {
       const alt = secretstore.get('REPLICATE_API_KEY') || process.env.REPLICATE_API_KEY || findInUrlKeys([/api\.replicate\.com/i]);
       if (alt) { val = String(alt).trim(); source = 'configured'; }
     } else if (spec.id === 'TOGETHER_API_KEY') {
-      const alt = findInUrlKeys([/api\.together\.xyz/i]) || (flProvs.together && flProvs.together.apiKey) || '';
-      if (alt) { val = String(alt).trim(); source = 'configured'; }
+      const sAlt = findInUrlKeys([/api\.together\.xyz/i]);
+      const flAlt = (flProvs.together && flProvs.together.apiKey) || '';
+      if (sAlt) { val = String(sAlt).trim(); source = 'providerKeys'; }
+      else if (flAlt) { val = String(flAlt).trim(); source = 'freellm'; }
+    } else if (spec.id === 'NVIDIA_API_KEY') {
+      const sAlt = findInUrlKeys([/nvidia\.com/i]);
+      const flAlt = (flProvs.nvidia && (flProvs.nvidia.apiKey || flProvs.nvidia.key)) || '';
+      if (sAlt) { val = String(sAlt).trim(); source = 'providerKeys'; }
+      else if (flAlt) { val = String(flAlt).trim(); source = 'freellm'; }
     } else if (spec.id === 'CLOUDFLARE_API_TOKEN') {
-      const alt = secretstore.get('CLOUDFLARE_API_KEY') || process.env.CLOUDFLARE_API_KEY || (flProvs.cloudflare && flProvs.cloudflare.apiKey) || '';
-      if (alt) { val = String(alt).trim(); source = 'configured'; }
+      const sAlt = secretstore.get('CLOUDFLARE_API_KEY') || process.env.CLOUDFLARE_API_KEY;
+      const flAlt = (flProvs.cloudflare && flProvs.cloudflare.apiKey) || '';
+      if (sAlt) { val = String(sAlt).trim(); source = 'configured'; }
+      else if (flAlt) { val = String(flAlt).trim(); source = 'freellm'; }
     }
 
     let extraValue = '';
@@ -1721,7 +1734,11 @@ ipcMain.handle('autobot:mediaStudioGenerate', async (_event, payload) => {
       cwd,
     }, ctx);
   } catch (e) {
-    return { ok: false, error: (e && e.message) || String(e) };
+    return {
+      ok: false,
+      error: (e && e.message) || String(e),
+      ...(e && e.needsApiKey ? { needsApiKey: true, configKeyId: e.configKeyId || '' } : {}),
+    };
   }
 });
 

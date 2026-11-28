@@ -738,8 +738,8 @@ export function RuntimesSection() {
     <>
       <h3><Icon name="Settings" size={14} /> Bundled agent runtimes</h3>
       <p className="muted" style={{ marginTop: -6 }}>
-        The Claude Code, Codex and Grok CLIs the Bash tool runs. Each ships inside the app and
-        updates itself from the vendor&apos;s own release feed.
+        Official Claude Code, Codex, Grok CLI, and Gemini CLI binaries ship built-in, hydrate safely
+        for instant rollback, authenticate via native OAuth, and auto-update from each vendor&apos;s release feed.
       </p>
       <label className="check">
         <input type="checkbox" checked={autoUpdate} onChange={(e) => toggleAuto(e.target.checked)} />
@@ -750,12 +750,16 @@ export function RuntimesSection() {
         {rows.map((r) => {
           const prog = live[r.id];
           const stale = r.latest && r.version && r.latest !== r.version;
+          const oauthBadge = r.oauthConnected
+            ? (`OAuth · ${r.oauthPlan || 'Connected'}${r.oauthAccount ? ' (' + r.oauthAccount + ')' : ''}`)
+            : 'CLI Ready';
           return (
             <div key={r.id} className={'rt-item' + (r.busy ? ' busy' : '')}>
               <div className="rt-main">
                 <span className="rt-name">{r.label || r.id}</span>
                 <span className="rt-vendor">{r.vendor}</span>
                 <span className={'rt-src rt-src-' + (r.source || 'missing')}>{sourceLabel(r.source)}</span>
+                <span className={'rt-src ' + (r.oauthConnected ? 'rt-src-installed' : 'rt-src-system')}>{oauthBadge}</span>
               </div>
               <div className="rt-ver">
                 <code>{r.version || '—'}</code>
@@ -767,7 +771,7 @@ export function RuntimesSection() {
                 <button type="button" className="btn-mini" disabled={!!busy} onClick={() => update(r.id, r.source !== 'missing' && !stale)}>
                   {busy === r.id ? 'Updating…' : (r.source === 'missing' ? 'Install' : stale ? 'Update' : 'Reinstall')}
                 </button>
-                {r.source === 'installed' && (
+                {(r.hasRollback || r.source === 'installed') && (
                   <button type="button" className="btn-mini" disabled={!!busy} onClick={() => rollback(r.id)} title="Switch back to the previous version">Rollback</button>
                 )}
               </div>

@@ -2,18 +2,20 @@
 /**
  * Bundled agent runtimes + self-update.
  *
- * Akron Bot ships the three CLI agents it can drive (Claude Code, Codex, Grok)
- * inside the app bundle so a fresh DMG works with no `npm i -g` step, and keeps
+ * Akron Code ships the four CLI agents it can drive (Claude Code, Codex, Grok,
+ * Gemini CLI) inside the app bundle so a fresh install works with no manual
+ * `npm i -g` step, hydrates them to `userData/runtimes/<id>/current`, and keeps
  * them current from the same upstream the vendors publish to:
  *
  *   Claude Code  npm  @anthropic-ai/claude-code(-<platform>)   dist.integrity (sha512)
  *   Codex        npm  @openai/codex(-<platform>)               dist.integrity (sha512)
- *   Grok         x.ai https://x.ai/cli/<channel> → binary      no upstream checksum
+ *   Grok         x.ai https://x.ai/cli/<channel> → binary      sha256 sidecar / OS signature
+ *   Gemini CLI   npm  @google/gemini-cli                       dist.integrity (sha512)
  *
  * Resolution order, per runtime:
- *   1. `~/Library/Application Support/Akron Bot/runtimes/<id>/current`  (self-updated)
- *   2. `<resources>/runtimes/<id>`                                      (shipped in the DMG)
- *   3. `PATH`                                                           (system install)
+ *   1. `<userData>/runtimes/<id>/current`  (hydrated & self-updated)
+ *   2. `<resources>/runtimes/<id>`         (shipped in the app bundle)
+ *   3. `PATH`                              (system install)
  *
  * Downloads are HTTPS-only, host-allowlisted, size-capped, integrity-checked
  * where upstream publishes a hash, then the extracted binary is executed once
@@ -200,6 +202,45 @@ const DESCRIPTORS = [
       await copyExecutable(pkgRoot, path.join(dest, 'bin', name));
     },
     binPath: (dir, platform) => path.join(dir, 'bin', platform === 'win32' ? 'grok.exe' : 'grok'),
+  },
+  {
+    id: 'gemini-cli',
+    label: 'Gemini CLI',
+    vendor: 'Google',
+    bin: 'gemini',
+    versionArgs: ['--version'],
+    async meta(ctx) {
+      const j = await ctx.json(ctx.npm + '/@google/gemini-cli/latest');
+      const version = String(j.version || '');
+      if (!version) throw new Error('gemini-cli: registry returned no version');
+      return { version, url: j.dist && j.dist.tarball, integrity: j.dist && j.dist.integrity, kind: 'tgz' };
+    },
+    async stage(pkgRoot, dest, ctx) {
+      const bundleSrc = path.join(pkgRoot, 'bundle');
+      const entrySrc = path.join(bundleSrc, 'gemini.js');
+      if (!fs.existsSync(entrySrc)) {
+        throw new Error('gemini-cli: package does not contain bundle/gemini.js');
+      }
+      await fsp.mkdir(dest, { recursive: true });
+      await copyTree(bundleSrc, path.join(dest, 'bundle'));
+      const pkgJson = path.join(pkgRoot, 'package.json');
+      if (fs.existsSync(pkgJson)) await fsp.copyFile(pkgJson, path.join(dest, 'package.json'));
+      await fsp.mkdir(path.join(dest, 'bin'), { recursive: true });
+      const entryDest = path.join(dest, 'bundle', 'gemini.js');
+      if (ctx.platform === 'win32') {
+        await fsp.writeFile(
+          path.join(dest, 'bin', 'gemini.cmd'),
+          '@echo off\r\nnode "%~dp0..\\bundle\\gemini.js" %*\r\n',
+          'utf8',
+        );
+      } else {
+        try { await fsp.chmod(entryDest, 0o755); } catch (_) {}
+        const bin = path.join(dest, 'bin', 'gemini');
+        await removeIfExists(bin);
+        await fsp.symlink(path.join('..', 'bundle', 'gemini.js'), bin);
+      }
+    },
+    binPath: (dir, platform) => path.join(dir, 'bin', platform === 'win32' ? 'gemini.cmd' : 'gemini'),
   },
 ];
 
@@ -739,6 +780,11 @@ function createRuntimes(opts) {
     let error = '';
     try { latest = (await meta(id, force)).version; } catch (e) { error = String(e && e.message || e); }
     const updateAvailable = !!(latest && version && latest !== version);
+    let versionCount = 0;
+    try {
+      const ents = await fsp.readdir(path.join(root, id), { withFileTypes: true });
+      versionCount = ents.filter((e) => e.isDirectory() && e.name !== '.tmp' && /^\d+\.\d+\.\d+/.test(e.name)).length;
+    } catch (_) {}
     return {
       id,
       label: d.label,
@@ -749,12 +795,44 @@ function createRuntimes(opts) {
       source: runtime.source,
       updateAvailable,
       outdated: updateAvailable,
+      hasRollback: runtime.source === 'installed' && versionCount >= 2,
       autoUpdate: s.autoUpdate !== false,
       busy: !!busy.get(id),
       error,
       checkedAt: metaCache.get(id) ? metaCache.get(id).at : 0,
       lastInstalled: (s.updated || {})[id] || null,
     };
+  }
+
+  /**
+   * Hydrate any bundled runtime into writable `<userData>/runtimes/<id>/current`
+   * on first launch so initial versions stay rollbackable and Resources stay read-only.
+   */
+  async function hydrateBundled() {
+    const hydrated = [];
+    if (!bundledDir || !fs.existsSync(bundledDir)) return { ok: true, hydrated };
+    for (const d of DESCRIPTORS) {
+      try {
+        if (await currentLink(d.id)) continue;
+        const srcDir = path.join(bundledDir, d.id);
+        const srcBin = d.binPath(srcDir, platform);
+        if (!fs.existsSync(srcBin)) continue;
+        const ver = sanitizeVersion(await readVersionFile(srcDir)) || '0.0.0';
+        const versionsDir = path.join(root, d.id);
+        const finalDir = path.join(versionsDir, ver);
+        await fsp.mkdir(versionsDir, { recursive: true });
+        await removeIfExists(finalDir);
+        await fsp.cp(srcDir, finalDir, { recursive: true, dereference: false, force: true });
+        const dstBin = d.binPath(finalDir, platform);
+        if (platform !== 'win32' && fs.existsSync(dstBin)) {
+          try { await fsp.chmod(dstBin, 0o755); } catch (_) {}
+        }
+        await fsp.writeFile(path.join(finalDir, 'VERSION'), ver + '\n');
+        await pointCurrent(versionsDir, ver);
+        hydrated.push({ id: d.id, version: ver });
+      } catch (_) {}
+    }
+    return { ok: true, hydrated };
   }
 
   async function list(opts) {
@@ -817,6 +895,7 @@ function createRuntimes(opts) {
   return {
     DESCRIPTORS,
     resolve,
+    hydrateBundled,
     status,
     list,
     checkAll,

@@ -36,37 +36,9 @@ provider you chose.
 
 ---
 
-## Screenshots
+## Screenshot
 
-<table>
-  <tr>
-    <td align="center" width="33%">
-      <img src="screenshots/sidepanel-welcome-dark.png" alt="Akron Browser Bot Dark Side Panel" width="260" /><br />
-      <sub><strong>Dark Side Panel</strong> — Active tab context &amp; quick prompts</sub>
-    </td>
-    <td align="center" width="33%">
-      <img src="screenshots/sidepanel-agent-run-dark.png" alt="Akron Browser Bot Multi-Step Agent Run &amp; GitHub Update Banner" width="260" /><br />
-      <sub><strong>Live Agent Run</strong> — Inline plan progress, tool steps &amp; update banner</sub>
-    </td>
-    <td align="center" width="33%">
-      <img src="screenshots/sidepanel-light.png" alt="Akron Browser Bot Light Theme &amp; Model Picker" width="260" /><br />
-      <sub><strong>Light Theme &amp; Orchestrator</strong> — Searchable 60+ model picker</sub>
-    </td>
-  </tr>
-</table>
-
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <img src="screenshots/settings-providers-orchestrator.png" alt="Akron Browser Bot Providers &amp; Multi-Key Orchestrator Settings" width="460" /><br />
-      <sub><strong>Providers &amp; Failover</strong> — BYOK keys across Anthropic, OpenAI, Gemini &amp; Ollama</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="screenshots/settings-github-updates.png" alt="Akron Browser Bot GitHub Auto-Update Settings" width="460" /><br />
-      <sub><strong>Updates from GitHub</strong> — Zero-token release checks &amp; one-click upgrades</sub>
-    </td>
-  </tr>
-</table>
+![Akron Code MCP Connectors, Plugins & IDE Bridge](../../docs/screenshots/mcp-plugins-ide-dark.png)
 
 ---
 

@@ -18,9 +18,9 @@ const CLI_DEFS = {
   chatgpt: { cliId: 'codex', bins: ['codex'] },
   codex: { cliId: 'codex', bins: ['codex'] },
   grok: { cliId: 'grok', bins: ['grok'] },
-  antigravity: { cliId: 'agy', bins: ['agy', 'gemini'] },
-  google: { cliId: 'agy', bins: ['agy', 'gemini'] },
-  gemini: { cliId: 'agy', bins: ['agy', 'gemini'] },
+  antigravity: { cliId: 'gemini-cli', bins: ['gemini', 'agy'] },
+  google: { cliId: 'gemini-cli', bins: ['gemini', 'agy'] },
+  gemini: { cliId: 'gemini-cli', bins: ['gemini', 'agy'] },
 };
 
 function providerKind(provider) {
@@ -32,7 +32,7 @@ function providerKind(provider) {
   if (cid === 'claude-code') return 'claude';
   if (cid === 'codex') return 'chatgpt';
   if (cid === 'grok') return 'grok';
-  if (cid === 'agy' || cid === 'gemini') return 'antigravity';
+  if (cid === 'gemini-cli' || cid === 'agy' || cid === 'gemini') return 'antigravity';
   const tr = String(provider.transport || '').toLowerCase().trim();
   if (tr === 'anthropic') return 'claude';
   if (tr === 'codex') return 'chatgpt';

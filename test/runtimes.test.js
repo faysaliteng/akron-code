@@ -113,6 +113,14 @@ const codexTgz = makeTgz('codex', {
 const GROK_V2 = '9.9.9';
 const grokTgzless = sh('echo "grok ' + GROK_V2 + ' (abc1234)"');
 
+// A fake gemini-cli package: `bundle/gemini.js` entrypoint, matching upstream.
+const GEMINI_V2 = '0.44.1';
+const geminiTgz = makeTgz('gemini', {
+  'bundle/gemini.js': sh('echo "' + GEMINI_V2 + '"'),
+  'package.json': JSON.stringify({ name: '@google/gemini-cli', version: GEMINI_V2 }),
+});
+const GEMINI_INTEGRITY = sri(geminiTgz);
+
 /** A registry that speaks just enough npm + x.ai to drive one install. */
 function startRegistry() {
   const routes = new Map();
@@ -161,6 +169,14 @@ function startRegistry() {
   routes.set(grokName, (req, res) => {
     res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': Buffer.byteLength(grokTgzless) });
     res.end(grokTgzless);
+  });
+  routes.set('/@google/gemini-cli/latest', (req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ version: GEMINI_V2, dist: { tarball: base() + '/t/gemini.tgz', integrity: GEMINI_INTEGRITY } }));
+  });
+  routes.set('/t/gemini.tgz', (req, res) => {
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(geminiTgz).size });
+    res.end(fs.readFileSync(geminiTgz));
   });
   let base = () => '';
   return new Promise((resolve) => {
@@ -212,8 +228,8 @@ ok('codex payload triple matches Rust target naming', () => {
   assert.strictEqual(vendorTriple('win32', 'arm64'), 'aarch64-pc-windows-msvc');
 });
 
-ok('the three shipped runtimes are declared', () => {
-  assert.deepStrictEqual(rt.DESCRIPTORS.map((d) => d.id), ['claude-code', 'codex', 'grok']);
+ok('the four shipped runtimes are declared', () => {
+  assert.deepStrictEqual(rt.DESCRIPTORS.map((d) => d.id), ['claude-code', 'codex', 'grok', 'gemini-cli']);
   for (const d of rt.DESCRIPTORS) {
     assert.ok(d.label && d.vendor && d.bin, d.id + ' needs label/vendor/bin');
     assert.deepStrictEqual(d.versionArgs, ['--version'], d.id);
@@ -556,8 +572,55 @@ aok('an unreachable registry degrades to an error string, never a throw', async 
     assert.ok(row.error, 'status must carry the failure');
     assert.strictEqual(row.latest, '');
     const list = await mgr.list();
-    assert.strictEqual(list.length, 3);
+    assert.strictEqual(list.length, 4);
     for (const r of list) assert.ok(r.id && r.label, 'list rows stay well-formed');
+  } finally { await reg.close(); }
+});
+
+aok('install(gemini-cli) stages bundle/gemini.js and links bin/gemini', async () => {
+  const reg = await startRegistry();
+  try {
+    const mgr = createRuntimes(reg.opts());
+    const res = await mgr.install('gemini-cli');
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.version, GEMINI_V2);
+    assert.strictEqual(res.integrity, true);
+    const r = await mgr.resolve('gemini-cli');
+    assert.strictEqual(r.source, 'installed');
+    assert.match(execFileSync(r.bin, ['--version']).toString(), new RegExp(GEMINI_V2));
+  } finally { await reg.close(); }
+});
+
+aok('hydrateBundled() seeds userData cleanly without touching bundle and supports Rollback after update', async () => {
+  const reg = await startRegistry();
+  try {
+    const bundled = path.join(TMP, 'bundled-hydrate');
+    const claudeBundleBin = path.join(bundled, 'claude-code', 'bin', 'claude');
+    fs.mkdirSync(path.dirname(claudeBundleBin), { recursive: true });
+    fs.writeFileSync(claudeBundleBin, sh('echo "2.0.0 (Claude Code)"'), { mode: 0o644 });
+    fs.writeFileSync(path.join(bundled, 'claude-code', 'VERSION'), '2.0.0\n');
+    const bundledMtimeBefore = fs.statSync(claudeBundleBin).mode;
+
+    const mgr = createRuntimes(reg.opts({ bundledDir: bundled }));
+    const hyd = await mgr.hydrateBundled();
+    assert.strictEqual(hyd.hydrated.some((x) => x.id === 'claude-code' && x.version === '2.0.0'), true);
+    // Bundle source permissions untouched (no chmod inside Resources)
+    assert.strictEqual(fs.statSync(claudeBundleBin).mode, bundledMtimeBefore);
+
+    // Resolved copy is now in writable userData (`installed`), runnable cleanly
+    const beforeUpd = await mgr.resolve('claude-code');
+    assert.strictEqual(beforeUpd.source, 'installed');
+    assert.strictEqual(beforeUpd.version, '2.0.0');
+
+    // Update from upstream -> keeps 2.0.0 for Rollback
+    await mgr.install('claude-code');
+    const stUp = await mgr.status('claude-code');
+    assert.strictEqual(stUp.version, CLAUDE_V2);
+    assert.strictEqual(stUp.hasRollback, true);
+
+    const rolled = await mgr.rollback('claude-code');
+    assert.strictEqual(rolled.ok, true);
+    assert.strictEqual(rolled.version, '2.0.0');
   } finally { await reg.close(); }
 });
 

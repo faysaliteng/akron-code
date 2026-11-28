@@ -395,7 +395,7 @@ function resolveMediaChain({
       push({
         source: 'role_pool',
         role: roleName,
-        backend: /gemini|imagen|veo/i.test(ent.model) ? 'gemini' : (/comfy/i.test(ent.model) ? 'comfyui' : 'openai-compat'),
+        backend: /veo/i.test(ent.model) ? 'google-veo' : (/flash-image|pro-image/i.test(ent.model) ? 'gemini-flash-image' : (/gemini|imagen/i.test(ent.model) ? 'gemini' : (/comfy/i.test(ent.model) ? 'comfyui' : 'openai-compat'))),
         model: ent.model,
         baseURL: ent.baseURL || gw.baseURL || (provider && provider.baseURL) || '',
         apiKey: ent.apiKey || gw.apiKey || (provider && provider.apiKey) || '',
@@ -408,7 +408,7 @@ function resolveMediaChain({
     push({
       source: 'settings',
       role: roleName,
-      backend: /gemini|imagen|veo/i.test(settingModel) ? 'gemini' : 'openai-compat',
+      backend: /veo/i.test(settingModel) ? 'google-veo' : (/flash-image|pro-image/i.test(settingModel) ? 'gemini-flash-image' : (/gemini|imagen/i.test(settingModel) ? 'gemini' : 'openai-compat')),
       model: settingModel.trim(),
       baseURL: (provider && provider.baseURL) || '',
       apiKey: (provider && provider.apiKey) || '',
@@ -421,11 +421,11 @@ function resolveMediaChain({
     for (const row of orch.providers) {
       if (!row || !row.model) continue;
       const m = String(row.model);
-      if (k === 'image' && /(imagen|dall-e|gpt-image|flash-image|grok-2-image|flux|sdxl)/i.test(m)) {
-        const bkend = /flash-image/i.test(m) ? 'gemini-flash-image' : (/imagen|gemini/i.test(m) ? 'gemini' : 'openai-compat');
+      if (k === 'image' && /(imagen|dall-e|gpt-image|flash-image|pro-image|grok-2-image|flux|sdxl)/i.test(m)) {
+        const bkend = /(?:flash|pro)-image/i.test(m) ? 'gemini-flash-image' : (/imagen|gemini/i.test(m) ? 'gemini' : 'openai-compat');
         push({ source: 'orchestrator', role: roleName, backend: bkend, model: m, baseURL: row.baseURL || (/imagen|gemini/i.test(m) ? 'https://generativelanguage.googleapis.com/v1beta' : ''), apiKey: row.apiKey || '', oauthProvider: row.oauthProvider || '', offline: false });
       } else if (k === 'video' && /(veo|sora|runway|luma|kling|wan|hunyuan|cogvideo)/i.test(m)) {
-        push({ source: 'orchestrator', role: roleName, backend: /veo/i.test(m) ? 'gemini' : 'openai-compat', model: m, baseURL: row.baseURL || '', apiKey: row.apiKey || '', oauthProvider: row.oauthProvider || '', offline: false });
+        push({ source: 'orchestrator', role: roleName, backend: /veo/i.test(m) ? 'google-veo' : 'openai-compat', model: m, baseURL: row.baseURL || (/veo/i.test(m) ? 'https://generativelanguage.googleapis.com/v1beta' : ''), apiKey: row.apiKey || '', oauthProvider: row.oauthProvider || '', offline: false });
       } else if (k === 'audio' && /(tts|eleven|speech|audio)/i.test(m)) {
         push({ source: 'orchestrator', role: roleName, backend: 'openai-compat', model: m, baseURL: row.baseURL || '', apiKey: row.apiKey || '', offline: false });
       }
@@ -466,33 +466,35 @@ function resolveMediaChain({
 
   const geminiEnvKey = env.GEMINI_API_KEY || env.GOOGLE_API_KEY || '';
   const geminiKeyHit = findKeyInProviderKeys(pKeys, [/generativelanguage\.googleapis\.com/i, /ai\.google/i]);
-  const geminiKey = geminiEnvKey || (geminiKeyHit && geminiKeyHit.apiKey) || pickFreeKey('google') || pickSecret(['GEMINI_API_KEY', 'GOOGLE_API_KEY']) || '';
+  const geminiKey = pickSecret(['GEMINI_API_KEY', 'GOOGLE_API_KEY']) || geminiEnvKey || (geminiKeyHit && geminiKeyHit.apiKey) || pickFreeKey('gemini') || pickFreeKey('google') || '';
   const geminiOauth = oauthAccts.find((a) => a && !a.needsSignIn && !a.expired && /^(gemini|antigravity|google)$/i.test(String(a.provider || '')));
 
   const openaiEnvKey = env.OPENAI_API_KEY || '';
   const openaiKeyHit = findKeyInProviderKeys(pKeys, [/api\.openai\.com/i]);
-  const openaiKey = openaiEnvKey || (openaiKeyHit && openaiKeyHit.apiKey) || pickSecret(['OPENAI_API_KEY']) || '';
+  const openaiKey = pickSecret(['OPENAI_API_KEY']) || openaiEnvKey || (openaiKeyHit && openaiKeyHit.apiKey) || pickFreeKey('openai') || '';
   const chatgptOauth = oauthAccts.find((a) => a && !a.needsSignIn && !a.expired && /^(chatgpt|openai)$/i.test(String(a.provider || '')));
 
-  const xaiKey = env.XAI_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.x\.ai/i, /grok\.com/i]) || {}).apiKey || pickFreeKey('xai') || pickFreeKey('grok') || pickSecret(['XAI_API_KEY']) || '';
-  const togetherKey = env.TOGETHER_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.together\.xyz/i]) || {}).apiKey || pickFreeKey('together') || pickSecret(['TOGETHER_API_KEY']) || '';
-  const openrouterKey = env.OPENROUTER_API_KEY || (findKeyInProviderKeys(pKeys, [/openrouter\.ai/i]) || {}).apiKey || pickFreeKey('openrouter') || pickSecret(['OPENROUTER_API_KEY']) || '';
-  const fireworksKey = env.FIREWORKS_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.fireworks\.ai/i]) || {}).apiKey || pickFreeKey('fireworks') || pickSecret(['FIREWORKS_API_KEY']) || '';
-  const replicateKey = env.REPLICATE_API_TOKEN || env.REPLICATE_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.replicate\.com/i]) || {}).apiKey || pickSecret(['REPLICATE_API_TOKEN', 'REPLICATE_API_KEY']) || '';
-  const falKey = env.FAL_KEY || env.FAL_API_KEY || (findKeyInProviderKeys(pKeys, [/fal\.run|fal\.ai/i]) || {}).apiKey || pickSecret(['FAL_KEY', 'FAL_API_KEY']) || '';
-  const electronHubKey = pickFreeKey('electronhub');
+  const xaiKey = pickSecret(['XAI_API_KEY']) || env.XAI_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.x\.ai/i, /grok\.com/i]) || {}).apiKey || pickFreeKey('xai') || pickFreeKey('grok') || '';
+  const togetherKey = pickSecret(['TOGETHER_API_KEY']) || env.TOGETHER_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.together\.xyz/i]) || {}).apiKey || pickFreeKey('together') || '';
+  const openrouterKey = pickSecret(['OPENROUTER_API_KEY']) || env.OPENROUTER_API_KEY || (findKeyInProviderKeys(pKeys, [/openrouter\.ai/i]) || {}).apiKey || pickFreeKey('openrouter') || '';
+  const fireworksKey = pickSecret(['FIREWORKS_API_KEY']) || env.FIREWORKS_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.fireworks\.ai/i]) || {}).apiKey || pickFreeKey('fireworks') || '';
+  const replicateKey = pickSecret(['REPLICATE_API_TOKEN', 'REPLICATE_API_KEY']) || env.REPLICATE_API_TOKEN || env.REPLICATE_API_KEY || (findKeyInProviderKeys(pKeys, [/api\.replicate\.com/i]) || {}).apiKey || '';
+  const falKey = pickSecret(['FAL_KEY', 'FAL_API_KEY']) || env.FAL_KEY || env.FAL_API_KEY || (findKeyInProviderKeys(pKeys, [/fal\.run|fal\.ai/i]) || {}).apiKey || '';
+  const electronHubKey = pickSecret(['ELECTRONHUB_API_KEY']) || env.ELECTRONHUB_API_KEY || pickFreeKey('electronhub');
+  const nvidiaKey = pickSecret(['NVIDIA_API_KEY']) || env.NVIDIA_API_KEY || (findKeyInProviderKeys(pKeys, [/nvidia\.com/i]) || {}).apiKey || pickFreeKey('nvidia') || '';
   const cloudflareEntry = freeLlmProviders.cloudflare;
-  const cloudflareKey = env.CLOUDFLARE_API_TOKEN || env.CLOUDFLARE_API_KEY || pickFreeKey('cloudflare') || pickSecret(['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_API_KEY']) || '';
-  const cloudflareAcc = (cloudflareEntry && typeof cloudflareEntry === 'object' && (cloudflareEntry.accountId || cloudflareEntry.account_id)) || env.CLOUDFLARE_ACCOUNT_ID || pickSecret(['CLOUDFLARE_ACCOUNT_ID']) || '';
-  const runwayKey = env.RUNWAYML_API_SECRET || env.RUNWAY_API_KEY || (findKeyInProviderKeys(pKeys, [/runwayml\.com/i]) || {}).apiKey || pickSecret(['RUNWAYML_API_SECRET', 'RUNWAY_API_KEY']) || '';
-  const lumaKey = env.LUMA_API_KEY || (findKeyInProviderKeys(pKeys, [/lumalabs\.ai/i]) || {}).apiKey || pickSecret(['LUMA_API_KEY']) || '';
-  const klingKey = env.KLING_API_KEY || (findKeyInProviderKeys(pKeys, [/klingai\.com/i]) || {}).apiKey || pickSecret(['KLING_API_KEY']) || '';
-  const elevenKey = env.ELEVENLABS_API_KEY || (findKeyInProviderKeys(pKeys, [/elevenlabs\.io/i]) || {}).apiKey || pickSecret(['ELEVENLABS_API_KEY']) || '';
+  const cloudflareKey = pickSecret(['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_API_KEY']) || env.CLOUDFLARE_API_TOKEN || env.CLOUDFLARE_API_KEY || pickFreeKey('cloudflare') || '';
+  const cloudflareAcc = pickSecret(['CLOUDFLARE_ACCOUNT_ID']) || env.CLOUDFLARE_ACCOUNT_ID || (cloudflareEntry && typeof cloudflareEntry === 'object' && (cloudflareEntry.accountId || cloudflareEntry.account_id)) || '';
+  const runwayKey = pickSecret(['RUNWAYML_API_SECRET', 'RUNWAY_API_KEY']) || env.RUNWAYML_API_SECRET || env.RUNWAY_API_KEY || (findKeyInProviderKeys(pKeys, [/runwayml\.com/i]) || {}).apiKey || '';
+  const lumaKey = pickSecret(['LUMA_API_KEY']) || env.LUMA_API_KEY || (findKeyInProviderKeys(pKeys, [/lumalabs\.ai/i]) || {}).apiKey || '';
+  const klingKey = pickSecret(['KLING_API_KEY']) || env.KLING_API_KEY || (findKeyInProviderKeys(pKeys, [/klingai\.com/i]) || {}).apiKey || '';
+  const elevenKey = pickSecret(['ELEVENLABS_API_KEY']) || env.ELEVENLABS_API_KEY || (findKeyInProviderKeys(pKeys, [/elevenlabs\.io/i]) || {}).apiKey || '';
 
   if (k === 'image') {
     // 2. Google Gemini Image / Imagen (requires real API key; chat OAuth logins cannot mint Imagen assets)
     if (geminiKey) {
       push({ source: 'api_key', role: roleName, backend: 'gemini-flash-image', model: 'gemini-2.5-flash-image', baseURL: 'https://generativelanguage.googleapis.com/v1beta', apiKey: geminiKey, offline: false });
+      push({ source: 'api_key', role: roleName, backend: 'gemini-flash-image', model: 'gemini-3-pro-image', baseURL: 'https://generativelanguage.googleapis.com/v1beta', apiKey: geminiKey, offline: false });
       push({ source: 'api_key', role: roleName, backend: 'gemini', model: 'imagen-3.0-generate-002', baseURL: 'https://generativelanguage.googleapis.com/v1beta', apiKey: geminiKey, offline: false });
     }
     // 3. OpenAI Image (requires OPENAI_API_KEY; ChatGPT Codex OAuth cannot mint Images API assets)
@@ -500,7 +502,10 @@ function resolveMediaChain({
       push({ source: 'api_key', role: roleName, backend: 'openai-images', model: 'gpt-image-1', baseURL: 'https://api.openai.com/v1', apiKey: openaiKey, offline: false });
       push({ source: 'api_key', role: roleName, backend: 'openai-images', model: 'dall-e-3', baseURL: 'https://api.openai.com/v1', apiKey: openaiKey, offline: false });
     }
-    // 3b. FreeLLMAPI configured image backends (ElectronHub / Cloudflare Flux)
+    // 3b. NVIDIA NIM Flux & FreeLLMAPI configured image backends (ElectronHub / Cloudflare Flux)
+    if (nvidiaKey) {
+      push({ source: 'api_key', role: roleName, backend: 'nvidia-flux', model: 'black-forest-labs/flux.1-schnell', baseURL: 'https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell', apiKey: nvidiaKey, offline: false });
+    }
     if (electronHubKey) {
       push({ source: 'freellmapi', role: roleName, backend: 'openai-compat', model: 'flux-1.1-pro', baseURL: 'https://api.electronhub.ai/v1', apiKey: electronHubKey, offline: false });
     }
@@ -568,6 +573,8 @@ function resolveMediaChain({
       idx = candidates.findIndex((c) => c.model && /wan/i.test(c.model));
     } else if (idx < 0 && pl === 'flux-1.1-pro') {
       idx = candidates.findIndex((c) => c.model && /flux[-.]?1\.1[-.]?pro/i.test(c.model));
+    } else if (idx < 0 && /flux\.1-schnell|nvidia-flux/.test(pl)) {
+      idx = candidates.findIndex((c) => c.backend === 'nvidia-flux' || /flux\.1-schnell/i.test(c.model));
     }
     if (idx > 0) {
       const [match] = candidates.splice(idx, 1);
@@ -686,6 +693,15 @@ const MEDIA_PROVIDER_KEYS = [
     unlocksVideo: ['Luma Ray 2'],
   },
   {
+    id: 'NVIDIA_API_KEY',
+    label: 'NVIDIA NIM · Flux.1 Schnell',
+    envVar: 'NVIDIA_API_KEY',
+    placeholder: 'nvapi-…',
+    portalUrl: 'https://build.nvidia.com/black-forest-labs/flux_1-schnell',
+    unlocksImage: ['Flux.1 Schnell (NVIDIA NIM)'],
+    unlocksVideo: [],
+  },
+  {
     id: 'CLOUDFLARE_API_TOKEN',
     label: 'Cloudflare Workers AI · Flux-1 Schnell',
     envVar: 'CLOUDFLARE_API_TOKEN',
@@ -706,9 +722,11 @@ function listMediaStudioCatalog(opts = {}) {
     { id: 'auto', label: 'Auto (Best Available AI)', provider: 'Akron Router', badge: 'Auto', available: true },
     { id: 'grok-2-image', label: 'Grok 2 Image', provider: 'xAI Grok', badge: 'Grok', configKeyId: 'XAI_API_KEY', requiredKeyLabel: 'XAI_API_KEY', available: hasCand(imgChain, (c) => /grok|xai/i.test(c.model + c.backend)) },
     { id: 'imagen-3.0-generate-002', label: 'Google Imagen 3', provider: 'Google Gemini', badge: 'Imagen 3', configKeyId: 'GEMINI_API_KEY', requiredKeyLabel: 'GEMINI_API_KEY', available: hasCand(imgChain, (c) => c.model === 'imagen-3.0-generate-002') },
-    { id: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash Image', provider: 'Google Gemini / Antigravity', badge: 'Gemini', configKeyId: 'GEMINI_API_KEY', requiredKeyLabel: 'GEMINI_API_KEY', available: hasCand(imgChain, (c) => c.model === 'gemini-2.5-flash-image') },
-    { id: 'gpt-image-1', label: 'OpenAI GPT-Image-1', provider: 'OpenAI / ChatGPT', badge: 'GPT-Image', configKeyId: 'OPENAI_API_KEY', requiredKeyLabel: 'OPENAI_API_KEY', available: hasCand(imgChain, (c) => c.model === 'gpt-image-1') },
-    { id: 'dall-e-3', label: 'OpenAI DALL·E 3', provider: 'OpenAI', badge: 'DALL·E 3', configKeyId: 'OPENAI_API_KEY', requiredKeyLabel: 'OPENAI_API_KEY', available: hasCand(imgChain, (c) => c.model === 'dall-e-3') },
+    { id: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash Image', provider: 'Google Gemini API', badge: 'Gemini', configKeyId: 'GEMINI_API_KEY', requiredKeyLabel: 'GEMINI_API_KEY', available: hasCand(imgChain, (c) => c.model === 'gemini-2.5-flash-image') },
+    { id: 'gemini-3-pro-image', label: 'Gemini 3 Pro Image', provider: 'Google Gemini API', badge: 'Gemini 3', configKeyId: 'GEMINI_API_KEY', requiredKeyLabel: 'GEMINI_API_KEY', available: hasCand(imgChain, (c) => c.model === 'gemini-3-pro-image') },
+    { id: 'gpt-image-1', label: 'OpenAI GPT-Image-1', provider: 'OpenAI API', badge: 'GPT-Image', configKeyId: 'OPENAI_API_KEY', requiredKeyLabel: 'OPENAI_API_KEY', available: hasCand(imgChain, (c) => c.model === 'gpt-image-1') },
+    { id: 'dall-e-3', label: 'OpenAI DALL·E 3', provider: 'OpenAI API', badge: 'DALL·E 3', configKeyId: 'OPENAI_API_KEY', requiredKeyLabel: 'OPENAI_API_KEY', available: hasCand(imgChain, (c) => c.model === 'dall-e-3') },
+    { id: 'black-forest-labs/flux.1-schnell', label: 'Flux.1 Schnell (NVIDIA NIM)', provider: 'NVIDIA NIM', badge: 'NVIDIA Flux', configKeyId: 'NVIDIA_API_KEY', requiredKeyLabel: 'NVIDIA_API_KEY', available: hasCand(imgChain, (c) => c.backend === 'nvidia-flux') },
     { id: '@cf/black-forest-labs/flux-1-schnell', label: 'Cloudflare Flux-1 Schnell', provider: 'FreeLLMAPI / Cloudflare', badge: 'Workers AI', configKeyId: 'CLOUDFLARE_API_TOKEN', requiredKeyLabel: 'CLOUDFLARE_API_TOKEN', available: hasCand(imgChain, (c) => c.backend === 'cloudflare-flux') },
     { id: 'flux-1.1-pro', label: 'Flux 1.1 Pro', provider: 'ElectronHub / Together / Replicate', badge: 'Flux Pro', configKeyId: 'TOGETHER_API_KEY', requiredKeyLabel: 'TOGETHER_API_KEY / REPLICATE_API_TOKEN', available: hasCand(imgChain, (c) => /flux[-.]?1\.1[-.]?pro/i.test(c.model)) },
     { id: 'flux-1-schnell', label: 'Flux 1 Schnell (Free AI)', provider: 'Pollinations Flux', badge: 'Free AI', available: true },
