@@ -206,27 +206,63 @@ function listDirs(dir) {
   }
 }
 
+function isUnconfiguredMcpEntry(name, def) {
+  if (!def || typeof def !== 'object') return true;
+  if (def.disabled === true) return true;
+  const badToken = /(?:^|[/:.@])not[-_]?setup(?:$|[/:.?&#])|<[^>]+>|YOUR_API_KEY|\bplaceholder\b/i;
+  if (def.url != null) {
+    const rawUrl = String(def.url || '').trim();
+    if (!rawUrl || !/^https?:\/\//i.test(rawUrl) || badToken.test(rawUrl)) return true;
+  } else {
+    const cmd = String(def.command || '').trim();
+    if (!cmd || badToken.test(cmd)) return true;
+  }
+  if (Array.isArray(def.args)) {
+    for (const a of def.args) {
+      const s = String(a == null ? '' : a).trim();
+      if (s === 'not-setup' || /^https?:\/\/not[-_]?setup\b/i.test(s) || badToken.test(s)) return true;
+    }
+  }
+  if (def.env && typeof def.env === 'object') {
+    for (const v of Object.values(def.env)) {
+      const s = String(v == null ? '' : v).trim();
+      if (s === 'not-setup' || /^https?:\/\/not[-_]?setup\b/i.test(s)) return true;
+    }
+  }
+  if (/^plugin:.*(?:zoom|datadog|definite)/i.test(String(name || '')) && def.url && badToken.test(String(def.url))) {
+    return true;
+  }
+  return false;
+}
+
 // ── mcp config ─────────────────────────────────────────────────────────────
 // Example reads .mcp.json (project, `mcpServers`) and ~/.claude.json (user).
 function loadMcpServers(cwd) {
   const merged = {};
   const sources = [];
+  const mergeValid = (tbl) => {
+    if (!isPlainObject(tbl)) return false;
+    let added = false;
+    for (const [k, v] of Object.entries(tbl)) {
+      if (isUnconfiguredMcpEntry(k, v)) continue;
+      merged[k] = v;
+      added = true;
+    }
+    return added || Object.keys(tbl).length > 0;
+  };
   const globalFile = path.join(os.homedir(), '.claude.json');
   const global = safeJSON(globalFile);
-  if (global && isPlainObject(global.mcpServers)) {
-    Object.assign(merged, global.mcpServers);
+  if (global && mergeValid(global.mcpServers)) {
     sources.push(globalFile);
   }
   if (cwd) {
     const proj = safeJSON(path.join(cwd, '.mcp.json'));
-    if (proj && isPlainObject(proj.mcpServers)) {
-      Object.assign(merged, proj.mcpServers);
+    if (proj && mergeValid(proj.mcpServers)) {
       sources.push(path.join(cwd, '.mcp.json'));
     }
   }
   const extra = safeJSON(path.join(AUTOBOT_DIR, 'mcp.json'));
-  if (extra && isPlainObject(extra.mcpServers)) {
-    Object.assign(merged, extra.mcpServers);
+  if (extra && mergeValid(extra.mcpServers)) {
     sources.push(path.join(AUTOBOT_DIR, 'mcp.json'));
   }
   return { servers: merged, sources };
@@ -244,5 +280,6 @@ module.exports = {
   deepMerge,
   listMarkdown,
   listDirs,
+  isUnconfiguredMcpEntry,
   loadMcpServers,
 };

@@ -6,12 +6,13 @@ function cleanLine(v) {
 }
 
 const PROVIDER_META = {
-  claude: { label: 'Claude', cliLabel: 'Claude Code CLI', hint: 'Runs native `claude auth login` so your CLI and desktop share one session.' },
-  chatgpt: { label: 'ChatGPT / Codex', cliLabel: 'Codex CLI', hint: 'Runs native `codex login` via ChatGPT Plus/Pro OAuth (or device code).' },
-  antigravity: { label: 'Google Gemini / Antigravity CLI', cliLabel: 'Gemini / Antigravity CLI', hint: 'Runs native Google Gemini CLI authentication without token scraping.' },
-  grok: { label: 'Grok', cliLabel: 'Grok CLI', hint: 'Runs native `grok login` via your xAI / SuperGrok subscription.' },
-  kimi: { label: 'Kimi K3 (Kimi Code)', cliLabel: 'Kimi Code CLI', hint: 'Runs native `kimi login` device-code authorization for Kimi K3 & K3.1 Pro.' },
-  zai: { label: 'Z.ai (GLM Coding Plan)', cliLabel: 'Z.ai Coding Plan', hint: 'Uses https://api.z.ai/api/coding/paas/v4 with your Z.ai subscription key (or `zcode` CLI).' },
+  claude: { label: 'Claude', cliLabel: 'Claude Code CLI', cmd: 'claude auth login', hint: 'Runs native `claude auth login` so your CLI and desktop share one session.' },
+  chatgpt: { label: 'ChatGPT / Codex', cliLabel: 'Codex CLI', cmd: 'codex login', hint: 'Runs native `codex login` via ChatGPT Plus/Pro OAuth (or device code).' },
+  antigravity: { label: 'Google Gemini / Antigravity', cliLabel: 'Antigravity CLI (agy)', cmd: 'agy acp --login', hint: 'Uses official Antigravity CLI (`agy`) authentication or a GEMINI_API_KEY.' },
+  grok: { label: 'Grok', cliLabel: 'Grok CLI', cmd: 'grok login', hint: 'Runs native `grok login` via your xAI / SuperGrok subscription.' },
+  kimi: { label: 'Kimi K3 (Kimi Code)', cliLabel: 'Kimi Code CLI', cmd: 'kimi login', hint: 'Runs native `kimi login` device-code authorization for Kimi K3 & K3.1 Pro.' },
+  zai: { label: 'Z.ai (GLM Coding Plan)', cliLabel: 'Z.ai Coding Plan', cmd: 'zcode login', hint: 'Uses https://api.z.ai/api/coding/paas/v4 with your Z.ai subscription key (or `zcode` CLI).' },
+  copilot: { label: 'GitHub Copilot', cliLabel: 'GitHub Copilot CLI', cmd: 'copilot login --device-code', hint: 'Runs official `copilot login --device-code` (or accepts a fine-grained GitHub PAT with Copilot Requests).' },
 };
 
 /**
@@ -23,6 +24,7 @@ export function useCliLogin({ onSuccess, onNotice } = {}) {
   const [busy, setBusy] = useState(false);
   const [codeInput, setCodeInput] = useState('');
   const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedCmd, setCopiedCmd] = useState(false);
 
   const onSuccessRef = useRef(onSuccess);
   onSuccessRef.current = onSuccess;
@@ -45,6 +47,15 @@ export function useCliLogin({ onSuccess, onNotice } = {}) {
         setTimeout(() => {
           setFlow((prev) => (prev && prev.status === 'done' && prev.flowId === evt.flowId ? null : prev));
         }, 700);
+        return;
+      }
+      if (evt.phase === 'watchdog') {
+        setFlow((prev) => (prev ? {
+          ...prev,
+          watchdogTriggered: true,
+          cliCommand: evt.cliCommand || prev.cliCommand,
+          lines: Array.isArray(evt.lines) && evt.lines.length ? evt.lines : prev.lines,
+        } : prev));
         return;
       }
       if (evt.phase === 'error' || evt.phase === 'cancelled') {
@@ -81,7 +92,9 @@ export function useCliLogin({ onSuccess, onNotice } = {}) {
       provider: pid,
       label: meta.label,
       cliLabel: meta.cliLabel,
+      cliCommand: meta.cmd || pid,
       hint: meta.hint,
+      watchdogTriggered: false,
       flowId: '',
       url: '',
       userCode: '',
@@ -106,8 +119,16 @@ export function useCliLogin({ onSuccess, onNotice } = {}) {
       }
       if (!res || res.ok === false) {
         const err = cleanLine((res && res.error) || `Could not start ${meta.label} sign-in.`);
-        setFlow((prev) => (prev ? { ...prev, status: 'error', error: err } : prev));
+        setFlow((prev) => (prev ? { ...prev, status: 'error', error: err, cliCommand: (res && res.cliCommand) || prev.cliCommand } : prev));
         if (typeof onNoticeRef.current === 'function') onNoticeRef.current(err);
+        return res;
+      }
+      if (res.alreadySignedIn || res.status === 'done') {
+        setFlow((prev) => (prev ? { ...prev, status: 'done', error: '', cliCommand: res.cliCommand || prev.cliCommand } : prev));
+        if (typeof onSuccessRef.current === 'function') {
+          try { await onSuccessRef.current({ ...res, provider: pid, ok: true }); } catch (_) {}
+        }
+        setTimeout(() => { setFlow((prev) => (prev && prev.status === 'done' ? null : prev)); }, 500);
         return res;
       }
       if (res.mode === 'api-key') {
@@ -117,12 +138,14 @@ export function useCliLogin({ onSuccess, onNotice } = {}) {
           status: 'waiting',
           docsUrl: res.docsUrl || '',
           url: res.docsUrl || '',
+          hint: res.hint || prev.hint,
         } : prev));
         return res;
       }
       setFlow((prev) => (prev ? {
         ...prev,
         flowId: res.flowId || prev.flowId,
+        cliCommand: res.cliCommand || prev.cliCommand,
         url: res.url || prev.url,
         userCode: res.userCode || prev.userCode,
         requiresCodePaste: res.requiresCodePaste !== undefined ? !!res.requiresCodePaste : prev.requiresCodePaste,
@@ -212,23 +235,45 @@ export function useCliLogin({ onSuccess, onNotice } = {}) {
     } catch (_) {}
   }, []);
 
+  const copyTerminalCommand = useCallback(async () => {
+    const cur = flowRef.current;
+    const cmd = cur && cur.cliCommand;
+    if (!cmd) return;
+    try {
+      if (window.autobot && typeof window.autobot.clipboardWrite === 'function') {
+        await window.autobot.clipboardWrite(cmd);
+      } else if (navigator.clipboard) {
+        await navigator.clipboard.writeText(cmd);
+      }
+      setCopiedCmd(true);
+      setTimeout(() => setCopiedCmd(false), 1800);
+    } catch (_) {}
+  }, []);
+
+  const switchToApiKey = useCallback(() => {
+    setFlow((prev) => (prev ? { ...prev, mode: 'api-key', status: 'waiting', error: '' } : prev));
+  }, []);
+
   return {
     flow,
     busy,
     codeInput,
     setCodeInput,
     copiedCode,
+    copiedCmd,
     start,
     cancel,
     submitCode,
     copyCode,
+    copyTerminalCommand,
+    switchToApiKey,
     openLoginLink,
   };
 }
 
 export function CliLoginModal({ controller }) {
   if (!controller || !controller.flow) return null;
-  const { flow, busy, codeInput, setCodeInput, copiedCode, cancel, submitCode, copyCode, openLoginLink, start } = controller;
+  const { flow, busy, codeInput, setCodeInput, copiedCode, copiedCmd, cancel, submitCode, copyCode, copyTerminalCommand, switchToApiKey, openLoginLink, start } = controller;
   const isDone = flow.status === 'done';
   const isError = flow.status === 'error';
   const isApiKeyMode = flow.mode === 'api-key';
@@ -240,7 +285,9 @@ export function CliLoginModal({ controller }) {
           <div className="cli-login-title-wrap">
             <ModelLogo provider={flow.provider} size={22} />
             <div>
-              <div className="cli-login-title">{isDone ? `${flow.label} Connected` : `Sign in with ${flow.cliLabel}`}</div>
+              <div className="cli-login-title">
+                {isDone ? `${flow.label} Connected` : (isApiKeyMode ? `Configure ${flow.label} API Key` : `Sign in with ${flow.cliLabel}`)}
+              </div>
               <div className="cli-login-sub">{flow.hint}</div>
             </div>
           </div>
@@ -258,8 +305,10 @@ export function CliLoginModal({ controller }) {
                   : (flow.status === 'starting'
                     ? `Launching ${flow.cliLabel} sign-in…`
                     : (isApiKeyMode
-                      ? 'Paste your Z.ai Coding Plan API key (encrypted in local Secret Store).'
-                      : 'Complete sign-in in your browser, or use the link/code below…')))}
+                      ? `Paste your ${flow.provider === 'zai' ? 'Z.ai Coding Plan API key' : (flow.provider === 'copilot' ? 'GitHub PAT with "Copilot Requests" permission' : `${flow.label} API key`)} (encrypted in local Secret Store).`
+                      : (flow.watchdogTriggered
+                        ? `Still waiting on \`${flow.cliCommand}\` — complete it below or copy the terminal command.`
+                        : 'Complete sign-in in your browser, or use the link/code below…'))))}
             </span>
           </div>
 
@@ -281,7 +330,9 @@ export function CliLoginModal({ controller }) {
                 type={isApiKeyMode ? 'password' : 'text'}
                 className="cli-paste-input"
                 data-testid="cli-login-code-input"
-                placeholder={isApiKeyMode ? 'Paste Z.ai Coding Plan API key…' : 'Paste browser verification code (e.g. code#state)…'}
+                placeholder={isApiKeyMode
+                  ? (flow.provider === 'zai' ? 'Paste Z.ai Coding Plan API key…' : (flow.provider === 'copilot' ? 'Paste fine-grained GitHub PAT…' : `Paste ${flow.label} API key…`))
+                  : 'Paste browser verification code (e.g. code#state)…'}
                 value={codeInput}
                 disabled={busy || flow.sentCode}
                 onChange={(e) => setCodeInput(e.target.value)}
@@ -309,7 +360,17 @@ export function CliLoginModal({ controller }) {
         <div className="cli-login-foot">
           {(flow.url || flow.docsUrl) && (
             <button type="button" className="btn-mini" data-testid="cli-login-open-link" onClick={openLoginLink}>
-              <Icon name="ArrowInSquare" size={12} /> {isApiKeyMode ? 'Get Z.ai Coding Key' : 'Open Login Link'}
+              <Icon name="ArrowInSquare" size={12} /> {isApiKeyMode ? (flow.provider === 'zai' ? 'Get Z.ai Coding Key' : 'Get API Key') : 'Open Login Link'}
+            </button>
+          )}
+          {!isApiKeyMode && !isDone && flow.cliCommand && (
+            <button type="button" className="btn-mini" data-testid="cli-login-copy-cmd" onClick={copyTerminalCommand}>
+              <Icon name={copiedCmd ? 'Check' : 'Copy'} size={12} /> {copiedCmd ? 'Copied Command' : 'Copy Terminal Command'}
+            </button>
+          )}
+          {!isApiKeyMode && !isDone && (
+            <button type="button" className="btn-mini" data-testid="cli-login-use-apikey" onClick={switchToApiKey}>
+              Use API Key Instead
             </button>
           )}
           {flow.supportsDeviceAuth && !isDone && (

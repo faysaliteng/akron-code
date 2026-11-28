@@ -9,6 +9,7 @@ export function resolveModelBrand({ model = '', provider = '', baseURL = '', lab
   const p = `${String(provider || '')} ${String(baseURL || '')}`.toLowerCase();
 
   // 1. Specific model / family match first
+  if (/(?:^|[^a-z])copilot\b|^mai-code-/i.test(m) && !/^copilot-(?:claude|gpt|gemini)-/i.test(String(model || '').trim())) return 'copilot';
   if (/deepseek|v4\.?1-flash|v4-flash|\br1[-\s/]|\bv3[-\s/]/.test(m)) return 'deepseek';
   if (/claude|opus|sonnet|haiku|fable/.test(m)) return 'claude';
   if (/(?:^|[^a-z])(gpt|chatgpt|codex|dall-e|sora|gpt-image|terra|luna)\b|(?:^|[^a-z])o[134](?:-mini|-preview|-pro|\b)/.test(m)) return 'openai';
@@ -36,6 +37,7 @@ export function resolveModelBrand({ model = '', provider = '', baseURL = '', lab
   if (/deepseek|api\.deepseek/.test(p)) return 'deepseek';
   if (/anthropic|claude/.test(p)) return 'claude';
   if (/openai|chatgpt|api\.openai/.test(p)) return 'openai';
+  if (/copilot|github/.test(p)) return 'copilot';
   if (/google|gemini|antigravity|generativelanguage\.googleapis/.test(p)) return 'gemini';
   if (/xai|x\.ai|grok/.test(p)) return 'grok';
   if (/(?:^|[^a-z])(meta|llama)\b/.test(p)) return 'meta';
@@ -61,6 +63,7 @@ const BRAND_TITLE = {
   deepseek: 'DeepSeek',
   claude: 'Anthropic Claude',
   openai: 'OpenAI',
+  copilot: 'GitHub Copilot',
   gemini: 'Google Gemini',
   grok: 'xAI Grok',
   meta: 'Meta Llama',
@@ -421,6 +424,18 @@ function renderBrandSvg(brand, uid) {
           <polygon points="12,4.8 18.2,8.4 18.2,15.6 12,19.2 5.8,15.6 5.8,8.4" fill="#10B981" fillOpacity="0.22" stroke="#34D399" strokeWidth="1.5" strokeLinejoin="round" />
           <circle cx="12" cy="12" r="2.1" fill="#6EE7B7" />
           <path d="M12 5.2v4.6M17.8 15.2l-4-2.2M6.2 15.2l4-2.2" stroke="#A7F3D0" strokeWidth="1.35" strokeLinecap="round" />
+        </>
+      );
+    }
+
+    case 'copilot': {
+      // GitHub Copilot visor/goggles vector mark
+      return (
+        <>
+          <rect x="1.5" y="1.5" width="21" height="21" rx="5.5" fill="#6366F1" fillOpacity="0.16" stroke="#818CF8" strokeOpacity="0.55" strokeWidth="1" />
+          <path d="M5.5 13.5c0-2.9 2.2-5 6.5-5s6.5 2.1 6.5 5v1.6c0 1-.8 1.9-1.9 1.9H7.4c-1.1 0-1.9-.9-1.9-1.9v-1.6Z" fill="#A5B4FC" fillOpacity="0.22" stroke="#A5B4FC" strokeWidth="1.4" />
+          <rect x="7.4" y="10.8" width="3.7" height="3.2" rx="1.2" fill="#E0E7FF" />
+          <rect x="12.9" y="10.8" width="3.7" height="3.2" rx="1.2" fill="#E0E7FF" />
         </>
       );
     }

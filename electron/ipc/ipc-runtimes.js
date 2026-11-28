@@ -237,7 +237,9 @@ const RUNTIME_TO_PROVIDER = {
   codex: 'chatgpt',
   grok: 'grok',
   'gemini-cli': 'antigravity',
+  'antigravity-cli': 'antigravity',
   'kimi-code': 'kimi',
+  'github-copilot': 'copilot',
 };
 
 function enrichRuntimesWithAuth(rows) {

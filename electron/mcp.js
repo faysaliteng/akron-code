@@ -44,6 +44,35 @@ async function parseSSE(res, targetId = null) {
   return rpc || frames[frames.length - 1];
 }
 
+let _activeMcpClient = null;
+const DEFAULT_MCP_CONNECT_TIMEOUT_MS = 1500;
+
+function isValidMcpConnectorConfig(cfg) {
+  if (!cfg || typeof cfg !== 'object' || cfg.disabled === true) return false;
+  const badToken = /(?:^|[/:.@])not[-_]?setup(?:$|[/:.?&#])|<[^>]+>|YOUR_API_KEY|\bplaceholder\b/i;
+  const transport = String(cfg.transport || cfg.type || '').toLowerCase();
+  if (cfg.url != null || transport === 'http' || transport === 'sse') {
+    const u = String(cfg.url || '').trim();
+    if (!u || !/^https?:\/\//i.test(u) || badToken.test(u)) return false;
+    return true;
+  }
+  const cmd = String(cfg.command || '').trim();
+  if (!cmd || badToken.test(cmd)) return false;
+  if (Array.isArray(cfg.args)) {
+    for (const a of cfg.args) {
+      const s = String(a == null ? '' : a).trim();
+      if (s === 'not-setup' || /^https?:\/\/not[-_]?setup\b/i.test(s) || badToken.test(s)) return false;
+    }
+  }
+  if (cfg.env && typeof cfg.env === 'object') {
+    for (const v of Object.values(cfg.env)) {
+      const s = String(v == null ? '' : v).trim();
+      if (s === 'not-setup' || /^https?:\/\/not[-_]?setup\b/i.test(s)) return false;
+    }
+  }
+  return true;
+}
+
 class MCPClient {
   constructor(opts) {
     this.servers = new Map(); // serverId -> entry
@@ -51,10 +80,16 @@ class MCPClient {
     // async (url) => bearer token | null — supplied by main.js so OAuth-gated
     // hosted servers authenticate without the caller passing a header.
     this.authProvider = (opts && opts.authProvider) || null;
+    if ((opts && opts.authProvider) || !_activeMcpClient) {
+      _activeMcpClient = this;
+    }
   }
 
   async connect(cfg) {
     cfg = cfg || {};
+    if (!isValidMcpConnectorConfig(cfg)) {
+      throw new Error(`Skipping unconfigured MCP server "${(cfg && (cfg.name || cfg.url || cfg.command)) || 'not-setup'}"`);
+    }
     if (cfg.url && (cfg.transport === 'sse' || cfg.transport === 'http')) {
       return this._connectHttp(cfg);
     }
@@ -78,6 +113,11 @@ class MCPClient {
     const entry = {
       type: 'http', url, headers, nextId: 1, tools: [], fullTools: [], prompts: [], name: cfg.name || url,
       pending: new Map(), stderr: () => '', sessionId: null,
+      rawConfig: {
+        type: cfg.transport || 'http',
+        url,
+        ...(Object.keys(headers).length ? { headers: { ...headers } } : {}),
+      },
     };
     const post = async (body, timeoutMs = 60000) => {
       const limit = Number(timeoutMs) > 0 ? Number(timeoutMs) : 60000;
@@ -109,7 +149,7 @@ class MCPClient {
     entry.post = post;
     this.servers.set(serverId, entry);
 
-    const initTimeout = Number(cfg.initTimeoutMs) || 30000;
+    const initTimeout = Number(cfg.initTimeoutMs) || DEFAULT_MCP_CONNECT_TIMEOUT_MS;
     await this._request(serverId, 'initialize', {
       protocolVersion: '2025-03-26',
       capabilities: {},
@@ -125,7 +165,7 @@ class MCPClient {
     entry.tools = entry.fullTools.map((t) => t.name);
     let prompts = [];
     try {
-      const pr = await this._request(serverId, 'prompts/list', {}, Math.min(initTimeout, 5000));
+      const pr = await this._request(serverId, 'prompts/list', {}, Math.min(initTimeout, DEFAULT_MCP_CONNECT_TIMEOUT_MS));
       prompts = (pr && Array.isArray(pr.prompts)) ? pr.prompts : [];
     } catch (_) {}
     entry.prompts = prompts;
@@ -151,7 +191,14 @@ class MCPClient {
     proc.stderr.on('data', (d) => {
       if (stderr.length < 32768) stderr += d.toString();
     });
-    const entry = { type: 'stdio', proc, nextId: 1, tools: [], fullTools: [], prompts: [], name: cfg.name || command, pending: new Map(), stderr: () => stderr, exited: false };
+    const entry = {
+      type: 'stdio', proc, nextId: 1, tools: [], fullTools: [], prompts: [], name: cfg.name || command, pending: new Map(), stderr: () => stderr, exited: false,
+      rawConfig: {
+        command,
+        args: Array.isArray(args) ? [...args] : [],
+        ...(cfg.env && Object.keys(cfg.env).length ? { env: { ...cfg.env } } : {}),
+      },
+    };
     this.servers.set(serverId, entry);
 
     proc.on('error', (err) => {
@@ -207,7 +254,7 @@ class MCPClient {
       entry.exited = true;
     });
 
-    const initTimeout = Number(cfg.initTimeoutMs) || 30000;
+    const initTimeout = Number(cfg.initTimeoutMs) || DEFAULT_MCP_CONNECT_TIMEOUT_MS;
     try {
       await this._request(serverId, 'initialize', {
         protocolVersion: '2025-03-26',
@@ -224,7 +271,7 @@ class MCPClient {
       entry.tools = entry.fullTools.map((t) => t.name);
       let prompts = [];
       try {
-        const pr = await this._request(serverId, 'prompts/list', {}, Math.min(initTimeout, 5000));
+        const pr = await this._request(serverId, 'prompts/list', {}, Math.min(initTimeout, DEFAULT_MCP_CONNECT_TIMEOUT_MS));
         prompts = (pr && Array.isArray(pr.prompts)) ? pr.prompts : [];
       } catch (_) {}
       entry.prompts = prompts;
@@ -390,6 +437,18 @@ class MCPClient {
     return text;
   }
 
+  getHealthyMcpServersMap({ includeInternalRea = false } = {}) {
+    const out = {};
+    for (const [sid, entry] of this.servers.entries()) {
+      if (!entry || entry.exited || !entry.rawConfig) continue;
+      if (!includeInternalRea && (sid === 'rea' || /\brea\b/i.test(String(entry.name || '')))) continue;
+      if (!isValidMcpConnectorConfig(entry.rawConfig)) continue;
+      const key = String(entry.name || sid).trim() || sid;
+      out[key] = entry.rawConfig;
+    }
+    return out;
+  }
+
   disconnect(serverId) {
     const entry = this.servers.get(serverId);
     if (entry) {
@@ -403,4 +462,17 @@ class MCPClient {
   }
 }
 
-module.exports = { MCPClient };
+function getActiveHealthyMcpServers(opts = {}) {
+  if (!_activeMcpClient || typeof _activeMcpClient.getHealthyMcpServersMap !== 'function') {
+    return {};
+  }
+  return _activeMcpClient.getHealthyMcpServersMap(opts);
+}
+
+module.exports = {
+  MCPClient,
+  isValidMcpConnectorConfig,
+  DEFAULT_MCP_CONNECT_TIMEOUT_MS,
+  getActiveMcpClient: () => _activeMcpClient,
+  getActiveHealthyMcpServers,
+};

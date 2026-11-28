@@ -83,28 +83,48 @@ const PROVIDERS = {
   },
   antigravity: {
     id: 'antigravity',
-    label: 'Google Gemini / Antigravity CLI',
+    label: 'Google Gemini / Antigravity',
     vendor: 'Google',
     kind: 'cli',
     transport: 'cli',
-    cliId: 'gemini-cli',
-    bin: 'gemini',
-    fallbackBins: ['agy'],
-    authLoginArgs: [],
-    authStatusArgs: ['--version'],
-    authLogoutArgs: [],
+    cliId: 'antigravity-cli',
+    bin: 'agy',
+    fallbackBins: ['gemini'],
+    authLoginArgs: ['acp', '--login'],
+    authStatusArgs: ['models'],
+    authLogoutArgs: ['logout'],
     allowBearer: true,
     bearerBaseURL: 'https://generativelanguage.googleapis.com/v1beta',
     models: [
-      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', contextWindow: 1048576 },
-      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', contextWindow: 1048576 },
-      { id: 'gemini-3-flash', label: 'Gemini 3 Flash', contextWindow: 1048576 },
-      { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview', contextWindow: 1048576 },
-      { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview', contextWindow: 1048576 },
-      { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', contextWindow: 1048576 },
-      { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', contextWindow: 1048576 },
+      { id: 'gemini-pro-orchestrator-neon', label: 'Orchestrator (Neon)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-pro-orchestrator-argon', label: 'Orchestrator (Argon)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-carbon-medium', label: 'Gemini 4 Carbon (Medium)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-carbon-low', label: 'Gemini 4 Carbon (Low)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon (XHigh)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-neon-medium', label: 'Gemini 4 Neon (Medium)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-neon-low', label: 'Gemini 4 Neon (Low)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-hydrogen-xhigh', label: 'Gemini 4 Hydrogen (XHigh)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-hydrogen-medium', label: 'Gemini 4 Hydrogen (Medium)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)', contextWindow: 1048576, thinking: true },
+      { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)', contextWindow: 1048576, thinking: true },
+      { id: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High · Agy)', contextWindow: 1000000, thinking: true },
+      { id: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium · Agy)', contextWindow: 1000000, thinking: true },
+      { id: 'claude-opus-5-5-low', label: 'Claude Opus 5.5 (Low · Agy)', contextWindow: 1000000, thinking: true },
+      { id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High · Agy)', contextWindow: 1000000, thinking: true },
+      { id: 'claude-sonnet-5-5-medium', label: 'Claude Sonnet 5.5 (Medium · Agy)', contextWindow: 1000000, thinking: true },
+      { id: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low · Agy)', contextWindow: 1000000, thinking: true },
+      { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium · Agy)', contextWindow: 131072, thinking: true },
     ],
-    docs: 'https://ai.google.dev/gemini-api/docs',
+    docs: 'https://antigravity.google',
   },
   grok: {
     id: 'grok',
@@ -176,6 +196,29 @@ const PROVIDERS = {
     ],
     docs: 'https://z.ai/manage-apikey/apikey-list',
   },
+  copilot: {
+    id: 'copilot',
+    label: 'GitHub Copilot',
+    vendor: 'GitHub',
+    kind: 'cli',
+    transport: 'cli',
+    cliId: 'github-copilot',
+    bin: 'copilot',
+    authLoginArgs: ['login', '--device-code'],
+    authStatusArgs: ['--version'],
+    authLogoutArgs: [],
+    allowBearer: true,
+    bearerBaseURL: 'https://api.githubcopilot.com',
+    models: [
+      { id: 'copilot-auto', label: 'Copilot Auto', contextWindow: 1000000, thinking: true },
+      { id: 'copilot-claude-opus-4-6', label: 'Claude Opus 4.6 (Copilot)', contextWindow: 1000000, thinking: true },
+      { id: 'copilot-claude-sonnet-4-5', label: 'Claude Sonnet 4.5 (Copilot)', contextWindow: 1000000, thinking: true },
+      { id: 'copilot-gpt-5-4', label: 'GPT-5.4 (Copilot)', contextWindow: 1000000, thinking: true },
+      { id: 'copilot-gpt-5', label: 'GPT-5 (Copilot)', contextWindow: 400000, thinking: true },
+      { id: 'copilot-gemini-3-1-pro', label: 'Gemini 3.1 Pro (Copilot)', contextWindow: 1048576, thinking: true },
+    ],
+    docs: 'https://docs.github.com/copilot/how-tos/copilot-cli',
+  },
 };
 
 const ALIAS_MAP = {
@@ -192,6 +235,8 @@ const ALIAS_MAP = {
   glm: 'zai',
   'zai-coding': 'zai',
   zcode: 'zai',
+  'github-copilot': 'copilot',
+  github: 'copilot',
 };
 
 function providerIds() {
@@ -249,6 +294,35 @@ function writeDb(db) {
   try { fs.chmodSync(DB_FILE, 0o600); } catch (_) {}
 }
 
+function resolveZaiStoredKey(acct = 'coding-plan') {
+  try {
+    return String(
+      secretstore.get(slotKey('zai', acct))
+      || secretstore.get('provider-api:zai:coding-plan')
+      || secretstore.get('autobot.orch_api_key.zai_coding')
+      || secretstore.get('ZAI_CODING_API_KEY')
+      || ''
+    ).trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function resolveCopilotStoredToken(acct = 'github-pat') {
+  try {
+    return String(
+      secretstore.get(slotKey('copilot', acct))
+      || secretstore.get('provider-api:copilot:github-pat')
+      || secretstore.get('COPILOT_GITHUB_TOKEN')
+      || secretstore.get('GH_TOKEN')
+      || (!process.env.NODE_TEST_CONTEXT && (process.env.COPILOT_GITHUB_TOKEN || process.env.GH_TOKEN))
+      || ''
+    ).trim();
+  } catch (_) {
+    return '';
+  }
+}
+
 function bearerHasKey(provId, account) {
   try {
     const raw = secretstore.get(slotKey(provId, account));
@@ -258,23 +332,40 @@ function bearerHasKey(provId, account) {
   }
 }
 
+function cleanCliLabel(text) {
+  return String(text || '').replace(/\bCLI\s+CLI\b/gi, 'CLI').trim();
+}
+
 function publicRecord(rec, provId) {
   if (!rec) return null;
   const prov = provider(provId || rec.provider);
   const pid = (prov && prov.id) || rec.provider;
   const acct = String(rec.account || 'cli');
-  const isBearer = rec.source === 'api-key';
-  const hasKey = isBearer ? bearerHasKey(pid, acct) : true;
+  let isBearer = rec.source === 'api-key';
+  let hasZaiSecret = false;
+  let hasCopilotSecret = false;
+  if (pid === 'zai' && !(cliRunner.detectZcodeCli && cliRunner.detectZcodeCli())) {
+    const zKey = resolveZaiStoredKey(acct);
+    if (zKey) {
+      hasZaiSecret = true;
+      isBearer = true;
+    }
+  }
+  if (pid === 'copilot') {
+    hasCopilotSecret = Boolean(resolveCopilotStoredToken(acct));
+  }
+  const hasKey = isBearer ? (bearerHasKey(pid, acct) || hasZaiSecret || hasCopilotSecret) : true;
+  const ready = (hasZaiSecret || hasCopilotSecret) ? true : (!Boolean(rec.needsSignIn) && hasKey);
   return {
     id: `${pid}:${acct}`,
     provider: pid,
     account: acct,
-    label: rec.label || (prov ? prov.label : pid),
-    plan: rec.plan || (isBearer ? 'API Key' : 'CLI Subscription'),
-    source: rec.source || 'cli',
-    needsSignIn: !hasKey,
-    hasToken: hasKey,
-    cliMode: !isBearer,
+    label: cleanCliLabel(rec.label || (prov ? prov.label : pid)),
+    plan: rec.plan || (pid === 'zai' && isBearer ? 'Coding Plan' : 'CLI Subscription'),
+    source: isBearer ? 'api-key' : (rec.source || 'cli'),
+    needsSignIn: !ready,
+    hasToken: ready,
+    cliMode: pid === 'copilot' ? true : !isBearer,
     addedAt: rec.addedAt || Date.now(),
     verifiedAt: rec.verifiedAt || null,
   };
@@ -297,6 +388,14 @@ function activeAccount(provId) {
   return hit ? hit.account : '';
 }
 
+const AUTH_PROBE_CACHE_TTL_MS = 60 * 1000;
+const _authProbeCache = new Map();
+function invalidateAuthProbeCache(provId = '') {
+  if (!provId) { _authProbeCache.clear(); return; }
+  const p = provider(provId);
+  _authProbeCache.delete(p ? p.id : String(provId).toLowerCase());
+}
+
 function setActive(provId, account) {
   const p = provider(provId);
   if (!p) throw new Error(`unknown provider: ${provId}`);
@@ -315,9 +414,10 @@ function addAccount(provId, info = {}) {
   const entry = {
     provider: p.id,
     account,
-    label: info.label || `${p.label} · ${account}`,
+    label: cleanCliLabel(info.label || `${p.label} · ${account}`),
     plan: info.plan || 'CLI Subscription',
     source: info.source || 'cli',
+    needsSignIn: info.needsSignIn === true,
     addedAt: (idx >= 0 && db.accounts[idx].addedAt) || Date.now(),
     verifiedAt: info.verifiedAt || Date.now(),
   };
@@ -325,6 +425,7 @@ function addAccount(provId, info = {}) {
   else db.accounts.push(entry);
   if (!db.active[p.id]) db.active[p.id] = account;
   writeDb(db);
+  invalidateAuthProbeCache(p.id);
   return publicRecord(entry, p.id);
 }
 
@@ -334,15 +435,17 @@ async function addBearer(id, key, opts = {}) {
   if (!p) throw new Error(`unknown provider: ${id}`);
   const cleanKey = String(key || '').trim();
   if (!cleanKey) throw new Error('API key is required');
-  const account = slug(rest.join(':') || opts.account || (p.id === 'zai' ? 'coding-plan' : 'api-key'));
+  const account = slug(rest.join(':') || opts.account || (p.id === 'zai' ? 'coding-plan' : (p.id === 'copilot' ? 'github-pat' : 'api-key')));
   secretstore.set(slotKey(p.id, account), cleanKey);
   if (p.id === 'zai') {
     try { secretstore.set('autobot.orch_api_key.zai_coding', cleanKey); } catch (_) {}
+  } else if (p.id === 'copilot') {
+    try { secretstore.set('COPILOT_GITHUB_TOKEN', cleanKey); } catch (_) {}
   }
   return addAccount(p.id, {
     account,
-    label: opts.label || (p.id === 'zai' ? 'Z.ai Coding Plan Key' : `${p.label} API Key`),
-    plan: p.id === 'zai' ? 'Coding Plan' : 'API Key',
+    label: opts.label || (p.id === 'zai' ? 'Z.ai Coding Plan Key' : (p.id === 'copilot' ? 'GitHub Copilot (PAT)' : `${p.label} API Key`)),
+    plan: p.id === 'zai' ? 'Coding Plan' : (p.id === 'copilot' ? 'CLI Subscription' : 'API Key'),
     source: 'api-key',
   });
 }
@@ -361,6 +464,7 @@ function removeAccount(provId, account) {
   }
   try { secretstore.del(slotKey(p.id, target)); } catch (_) {}
   writeDb(db);
+  invalidateAuthProbeCache(p.id);
   return db.accounts.length !== before;
 }
 
@@ -389,7 +493,7 @@ function status() {
       bin: p.bin,
       accounts: accts,
       active: db.active[pid] || (accts[0] ? accts[0].account : ''),
-      signedIn: accts.some((a) => a && a.hasToken),
+      signedIn: accts.some((a) => a && a.hasToken && !a.needsSignIn && !a.expired),
       models: p.models,
       docs: p.docs,
     };
@@ -429,6 +533,18 @@ async function probeCliAuthStatus(provId, opts = {}) {
   const p = provider(provId);
   if (!p) return { ok: false, loggedIn: false, error: `unknown provider ${provId}` };
 
+  const canCache = !opts.force && !opts.execCli && !opts.resolveBin;
+  if (canCache) {
+    const cached = _authProbeCache.get(p.id);
+    if (cached && (Date.now() - cached.ts) < AUTH_PROBE_CACHE_TTL_MS) {
+      return cached.val;
+    }
+  }
+  const cacheOut = (val) => {
+    if (canCache && val && val.ok !== false) _authProbeCache.set(p.id, { ts: Date.now(), val });
+    return val;
+  };
+
   if (p.id === 'zai') {
     const zcodeBin = await resolveCliPathForProvider(p, opts);
     if (zcodeBin) {
@@ -436,53 +552,71 @@ async function probeCliAuthStatus(provId, opts = {}) {
       const res = await execFn(zcodeBin, p.authStatusArgs || ['--version'], opts);
       const raw = `${res.stdout}\n${res.stderr}`.trim();
       const loggedIn = res.ok && !/not logged in|login required|unauthorized/i.test(raw);
-      return { ok: true, bin: zcodeBin, loggedIn, account: 'zcode-cli', label: 'Z.ai zcode CLI', plan: 'Coding Plan' };
+      return cacheOut({ ok: true, bin: zcodeBin, loggedIn, account: 'zcode-cli', label: 'Z.ai zcode CLI', plan: 'Coding Plan' });
     }
-    try {
-      const key = secretstore.get('autobot.orch_api_key.zai_coding') || secretstore.get('ZAI_CODING_API_KEY') || '';
-      if (key && String(key).trim()) {
-        return { ok: true, bin: '', loggedIn: true, account: 'coding-plan', label: 'Z.ai Coding Plan', plan: 'Coding Plan', source: 'api-key' };
-      }
-    } catch (_) {}
-    return { ok: true, bin: '', loggedIn: false, account: '', label: p.label, plan: 'Coding Plan' };
+    const zKey = resolveZaiStoredKey('coding-plan');
+    if (zKey) {
+      return cacheOut({ ok: true, bin: '', loggedIn: true, account: 'coding-plan', label: 'Z.ai Coding Plan', plan: 'Coding Plan', source: 'api-key' });
+    }
+    return cacheOut({ ok: true, bin: '', loggedIn: false, account: '', label: p.label, plan: 'Coding Plan' });
   }
 
   const bin = await resolveCliPathForProvider(p, opts);
-  if (!bin) return { ok: false, loggedIn: false, bin: '', error: `${p.bin} CLI not installed` };
+  if (!bin) {
+    if (p.id === 'antigravity') {
+      try {
+        const gKey = secretstore.get('autobot.orch_api_key.gemini_api')
+          || secretstore.get('GEMINI_API_KEY')
+          || (!process.env.NODE_TEST_CONTEXT && process.env.GEMINI_API_KEY)
+          || '';
+        if (gKey && String(gKey).trim()) {
+          return cacheOut({ ok: true, bin: '', loggedIn: true, account: 'gemini-api-key', label: 'Google Gemini API Key', plan: 'API Key', source: 'api-key' });
+        }
+      } catch (_) {}
+    }
+    return { ok: false, loggedIn: false, bin: '', error: `${p.bin} CLI not installed` };
+  }
 
   const execFn = opts.execCli || execCli;
-  const res = await execFn(bin, p.authStatusArgs || ['--version'], opts);
-  const raw = `${res.stdout}\n${res.stderr}`.trim();
+  const binBase = path.basename(String(bin)).toLowerCase();
 
   if (p.id === 'claude') {
+    const res = await execFn(bin, p.authStatusArgs || ['auth', 'status'], opts);
+    const raw = `${res.stdout}\n${res.stderr}`.trim();
     try {
       const parsed = JSON.parse(res.stdout.trim());
       if (parsed && typeof parsed === 'object') {
-        return {
+        return cacheOut({
           ok: true,
           bin,
           loggedIn: Boolean(parsed.loggedIn),
           account: parsed.email || 'claude-cli',
           label: parsed.email ? `Claude · ${parsed.subscriptionType || 'CLI'} (${parsed.email})` : 'Claude CLI',
           plan: parsed.subscriptionType || 'CLI Subscription',
-        };
+        });
       }
     } catch (_) {}
     const loggedIn = res.ok && !/not logged in|loggedIn":false|please log in/i.test(raw);
-    return { ok: true, bin, loggedIn, account: 'claude-cli', label: 'Claude CLI', plan: 'CLI Subscription' };
+    return cacheOut({ ok: true, bin, loggedIn, account: 'claude-cli', label: 'Claude CLI', plan: 'CLI Subscription' });
   }
 
   if (p.id === 'chatgpt') {
+    const res = await execFn(bin, p.authStatusArgs || ['login', 'status'], opts);
+    const raw = `${res.stdout}\n${res.stderr}`.trim();
     const loggedIn = res.ok && !/not logged in|unauthorized|login required/i.test(raw);
-    return { ok: true, bin, loggedIn, account: 'codex-cli', label: 'Codex CLI', plan: 'CLI Subscription' };
+    return cacheOut({ ok: true, bin, loggedIn, account: 'codex-cli', label: 'Codex CLI', plan: 'CLI Subscription' });
   }
 
   if (p.id === 'grok') {
+    const res = await execFn(bin, p.authStatusArgs || ['models'], opts);
+    const raw = `${res.stdout}\n${res.stderr}`.trim();
     const loggedIn = res.ok && !/not logged in|sign in|login required|unauthorized/i.test(raw);
-    return { ok: true, bin, loggedIn, account: 'grok-cli', label: 'Grok CLI', plan: 'CLI Subscription' };
+    return cacheOut({ ok: true, bin, loggedIn, account: 'grok-cli', label: 'Grok CLI', plan: 'CLI Subscription' });
   }
 
   if (p.id === 'kimi') {
+    const res = await execFn(bin, p.authStatusArgs || ['provider', 'list', '--json'], opts);
+    const raw = `${res.stdout}\n${res.stderr}`.trim();
     let loggedIn = false;
     try {
       const parsed = JSON.parse(res.stdout.trim());
@@ -493,12 +627,93 @@ async function probeCliAuthStatus(provId, opts = {}) {
     } catch (_) {
       loggedIn = Boolean(res.ok && /kimi|moonshot|logged in/i.test(raw) && !/not logged in|unauthoriz|no providers/i.test(raw));
     }
-    return { ok: true, bin, loggedIn, account: 'kimi-cli', label: 'Kimi Code CLI', plan: 'CLI Subscription' };
+    return cacheOut({ ok: true, bin, loggedIn, account: 'kimi-cli', label: 'Kimi Code CLI', plan: 'CLI Subscription' });
   }
 
-  // Gemini / Antigravity CLI
+  // Google Gemini / Antigravity: official `agy models` (or GEMINI_API_KEY). Never treat `gemini --version` as signed in.
+  if (p.id === 'antigravity') {
+    if (opts.execCli) {
+      const res = await execFn(bin, p.authStatusArgs || ['models'], opts);
+      const raw = `${res.stdout}\n${res.stderr}`.trim();
+      const loggedIn = Boolean(res.ok && !/not logged in|sign in|login required|unauthorized|no longer supported/i.test(raw));
+      return cacheOut({ ok: true, bin, loggedIn, account: binBase.startsWith('agy') ? 'agy' : path.basename(bin), label: 'Google Antigravity CLI', plan: 'Antigravity' });
+    }
+    if (binBase.startsWith('agy') || binBase.startsWith('antigravity')) {
+      const res = await execCli(bin, ['models'], { timeoutMs: Number(opts.timeoutMs) || 8000 });
+      const raw = `${res.stdout}\n${res.stderr}`.trim();
+      const loggedIn = Boolean(res.ok && /\b(gemini-|claude-|gpt-oss)/i.test(raw) && !/not logged in|sign in|login required|unauthorized/i.test(raw));
+      if (loggedIn) {
+        return cacheOut({ ok: true, bin, loggedIn: true, account: 'agy', label: 'Google Antigravity CLI', plan: 'Antigravity' });
+      }
+    }
+    try {
+      const gKey = secretstore.get('autobot.orch_api_key.gemini_api')
+        || secretstore.get('GEMINI_API_KEY')
+        || (!process.env.NODE_TEST_CONTEXT && process.env.GEMINI_API_KEY)
+        || '';
+      if (gKey && String(gKey).trim()) {
+        return cacheOut({ ok: true, bin, loggedIn: true, account: 'gemini-api-key', label: 'Google Gemini API Key', plan: 'API Key', source: 'api-key' });
+      }
+    } catch (_) {}
+    return cacheOut({ ok: true, bin, loggedIn: false, account: 'agy', label: 'Google Antigravity CLI', plan: 'CLI Subscription' });
+  }
+
+  if (p.id === 'copilot') {
+    if (opts.execCli) {
+      const res = await execFn(bin, p.authStatusArgs || ['--version'], opts);
+      const raw = `${res.stdout}\n${res.stderr}`.trim();
+      const loggedIn = Boolean(res.ok && !/not logged in|login required|unauthorized/i.test(raw));
+      return cacheOut({ ok: true, bin, loggedIn, account: 'copilot-cli', label: 'GitHub Copilot CLI', plan: 'CLI Subscription' });
+    }
+    const pat = resolveCopilotStoredToken('github-pat');
+    if (pat) {
+      return cacheOut({ ok: true, bin, loggedIn: true, account: 'github-pat', label: 'GitHub Copilot (PAT)', plan: 'CLI Subscription', source: 'api-key' });
+    }
+    try {
+      const cfgPath = path.join(os.homedir(), '.copilot', 'config.json');
+      if (fs.existsSync(cfgPath)) {
+        const cleanJson = fs.readFileSync(cfgPath, 'utf8').replace(/^\s*\/\/.*$/gm, '');
+        const cfg = JSON.parse(cleanJson);
+        const users = Array.isArray(cfg && cfg.logged_in_users) ? cfg.logged_in_users : [];
+        const userLogin = (users[0] && (users[0].login || users[0].username)) || cfg.user || cfg.login || '';
+        if (users.length || cfg.oauth_token || cfg.github_token || userLogin) {
+          return cacheOut({
+            ok: true,
+            bin,
+            loggedIn: true,
+            account: slug(userLogin || 'copilot-cli'),
+            label: userLogin ? `GitHub Copilot (${userLogin})` : 'GitHub Copilot CLI',
+            plan: 'CLI Subscription',
+          });
+        }
+      }
+    } catch (_) {}
+    if (process.env.AKRON_ISOLATE_RUNTIMES !== '1' && !process.env.NODE_TEST_CONTEXT) {
+      const ghBin = cliRunner.whichOnPath('gh');
+      if (ghBin) {
+        const ghRes = await execCli(ghBin, ['auth', 'status'], { timeoutMs: 3000 });
+        const ghRaw = `${ghRes.stdout}\n${ghRes.stderr}`;
+        if (ghRes.ok && !/not logged in/i.test(ghRaw)) {
+          const um = /account\s+([^\s(]+)/i.exec(ghRaw);
+          const ghUser = um ? um[1] : '';
+          return cacheOut({
+            ok: true,
+            bin,
+            loggedIn: true,
+            account: slug(ghUser || 'copilot-cli'),
+            label: ghUser ? `GitHub Copilot (${ghUser})` : 'GitHub Copilot CLI',
+            plan: 'CLI Subscription',
+          });
+        }
+      }
+    }
+    return cacheOut({ ok: true, bin, loggedIn: false, account: 'copilot-cli', label: 'GitHub Copilot CLI', plan: 'CLI Subscription' });
+  }
+
+  const res = await execFn(bin, p.authStatusArgs || ['--version'], opts);
+  const raw = `${res.stdout}\n${res.stderr}`.trim();
   const loggedIn = res.ok && !/not logged in|login required|unauthorized/i.test(raw);
-  return { ok: true, bin, loggedIn, account: path.basename(bin), label: `${p.label} CLI`, plan: 'CLI Subscription' };
+  return cacheOut({ ok: true, bin, loggedIn, account: path.basename(bin), label: cleanCliLabel(`${p.label} CLI`), plan: 'CLI Subscription' });
 }
 
 async function syncCliAccounts(onlyProvId, opts = {}) {
@@ -508,16 +723,39 @@ async function syncCliAccounts(onlyProvId, opts = {}) {
   for (const rawId of targets) {
     const p = provider(rawId);
     if (!p) continue;
-    const probe = await probeCliAuthStatus(p.id, opts).catch(() => ({ ok: false, loggedIn: false }));
+    const probe = await probeCliAuthStatus(p.id, { ...opts, force: true }).catch(() => ({ ok: false, loggedIn: false }));
     if (probe && probe.loggedIn) {
+      if (p.id === 'antigravity' && probe.account === 'agy') {
+        const db = readDb();
+        const filtered = db.accounts.filter((a) => !(a && a.provider === 'antigravity' && a.account === 'gemini' && a.source !== 'api-key'));
+        if (filtered.length !== db.accounts.length) {
+          db.accounts = filtered;
+          if (db.active.antigravity === 'gemini') db.active.antigravity = 'agy';
+          writeDb(db);
+        }
+      }
       const rec = addAccount(p.id, {
         account: probe.account || 'cli',
-        label: probe.label || `${p.label} CLI`,
+        label: probe.label || cleanCliLabel(`${p.label} CLI`),
         plan: probe.plan || 'CLI Subscription',
-        source: 'cli',
+        source: probe.source || 'cli',
+        needsSignIn: false,
       });
       imported.push(rec.id);
       healed.push(rec.id);
+    } else if (probe && probe.ok !== false && !probe.loggedIn) {
+      const db = readDb();
+      let dirty = false;
+      for (const a of db.accounts) {
+        if (a && a.provider === p.id && a.source !== 'api-key' && a.needsSignIn !== true) {
+          a.needsSignIn = true;
+          dirty = true;
+        }
+      }
+      if (dirty) {
+        writeDb(db);
+        invalidateAuthProbeCache(p.id);
+      }
     }
   }
   return { ok: true, imported, healed };
@@ -610,21 +848,49 @@ async function resolve(id) {
   if (!prov) throw new Error(`unknown provider in "${raw}"`);
   const acct = rest.join(':') || activeAccount(prov.id) || 'cli';
   let rec = getAccount(prov.id, acct);
-  if (!rec) {
-    const probe = await probeCliAuthStatus(prov.id).catch(() => ({ loggedIn: false }));
-    if (probe && probe.loggedIn) {
-      await syncCliAccounts(prov.id);
-      rec = getAccount(prov.id);
+  if (!rec || rec.needsSignIn) {
+    const db = readDb();
+    const fallbackAcct = db.accounts.find((a) => a && a.provider === prov.id && !a.needsSignIn);
+    if (fallbackAcct) {
+      rec = fallbackAcct;
+    } else {
+      const probe = await probeCliAuthStatus(prov.id).catch(() => ({ loggedIn: false }));
+      if (probe && probe.loggedIn) {
+        await syncCliAccounts(prov.id);
+        rec = getAccount(prov.id);
+      }
     }
   }
-  const viaKey = Boolean(rec && rec.source === 'api-key' && prov.bearerBaseURL);
+  const zaiStoredKey = prov.id === 'zai' ? resolveZaiStoredKey(acct) : '';
+  if (prov.id === 'zai' && !(cliRunner.detectZcodeCli && cliRunner.detectZcodeCli()) && zaiStoredKey) {
+    return {
+      provider: 'zai',
+      account: acct,
+      label: cleanCliLabel((rec && rec.label) || 'Z.ai Coding Plan'),
+      apiKey: zaiStoredKey,
+      accessToken: '',
+      transport: 'zai',
+      baseURL: prov.bearerBaseURL,
+      models: prov.models,
+      plan: (rec && rec.plan) || 'Coding Plan',
+      cliMode: false,
+      oauth: false,
+    };
+  }
+  if (rec && rec.needsSignIn) {
+    const err = new Error(`${prov.label} CLI is not signed in — click Sign in / Reconnect.`);
+    err.code = 'provider_needs_signin';
+    err.human = true;
+    throw err;
+  }
+  const viaKey = Boolean(rec && rec.source === 'api-key' && prov.bearerBaseURL && prov.id !== 'copilot');
   if (viaKey) {
     const apiKey = secretstore.get(slotKey(prov.id, rec.account)) || '';
     const transportMap = { claude: 'anthropic', chatgpt: 'codex', antigravity: 'google', grok: 'grok', kimi: 'openai', zai: 'zai' };
     return {
       provider: prov.id,
       account: rec.account,
-      label: rec.label,
+      label: cleanCliLabel(rec.label),
       apiKey,
       accessToken: '',
       transport: transportMap[prov.id] || 'openai',
@@ -636,12 +902,36 @@ async function resolve(id) {
     };
   }
   const resolvedBin = await resolveCliPathForProvider(prov).catch(() => prov.bin);
+  const resolvedBase = path.basename(String(resolvedBin || '')).toLowerCase();
+  if (prov.id === 'copilot') {
+    return {
+      provider: 'copilot',
+      account: (rec && rec.account) || acct,
+      label: cleanCliLabel((rec && rec.label) || prov.label),
+      transport: 'cli',
+      cliId: prov.cliId,
+      cliBin: resolvedBin || prov.bin,
+      cliKind: 'copilot',
+      cliMode: true,
+      oauth: false,
+      baseURL: '',
+      apiKey: '',
+      accessToken: '',
+      copilotToken: resolveCopilotStoredToken((rec && rec.account) || acct),
+      models: prov.models,
+      plan: (rec && rec.plan) || 'CLI Subscription',
+    };
+  }
   if (prov.id === 'zai' && !resolvedBin) {
-    const zKey = secretstore.get(slotKey('zai', acct)) || secretstore.get('autobot.orch_api_key.zai_coding') || '';
+    const zKey = secretstore.get(slotKey('zai', acct))
+      || secretstore.get('provider-api:zai:coding-plan')
+      || secretstore.get('autobot.orch_api_key.zai_coding')
+      || secretstore.get('ZAI_CODING_API_KEY')
+      || '';
     return {
       provider: 'zai',
       account: acct,
-      label: (rec && rec.label) || 'Z.ai Coding Plan',
+      label: cleanCliLabel((rec && rec.label) || 'Z.ai Coding Plan'),
       apiKey: zKey,
       accessToken: '',
       transport: 'zai',
@@ -655,9 +945,9 @@ async function resolve(id) {
   return {
     provider: prov.id,
     account: (rec && rec.account) || acct,
-    label: (rec && rec.label) || `${prov.label} CLI`,
+    label: cleanCliLabel((rec && rec.label) || `${prov.label} CLI`),
     transport: 'cli',
-    cliId: prov.cliId,
+    cliId: (prov.id === 'antigravity' && resolvedBase.startsWith('gemini')) ? 'gemini-cli' : prov.cliId,
     cliBin: resolvedBin || prov.bin,
     cliKind: prov.id,
     cliMode: true,
@@ -712,6 +1002,7 @@ module.exports = {
   authorize,
   resolve,
   probeCliAuthStatus,
+  invalidateAuthProbeCache,
   syncCliAccounts,
   // Safe compatibility aliases for existing IPC callers:
   importLocal: syncCliAccounts,

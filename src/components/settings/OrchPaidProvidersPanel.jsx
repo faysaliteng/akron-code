@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Icon, ModelLogo } from '../Icon.jsx';
 import { CliLoginModal, useCliLogin } from '../CliLoginModal.jsx';
 
@@ -18,6 +18,7 @@ export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoad
   const [oauthProviders, setOauthProviders] = useState([]);
   const [oauthBusy, setOauthBusy] = useState('');
   const [detectingAll, setDetectingAll] = useState(false);
+  const keyInputRef = useRef(null);
 
   const loadOauthStatus = useCallback(async () => {
     if (!window.autobot || !window.autobot.providerStatus) return;
@@ -54,6 +55,13 @@ export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoad
     if (!pv) return;
     setErrMsg('');
     setStatusMsg('');
+    if (pv.id === 'zai' && !pv.zcodeInstalled) {
+      setCreatingCustom(false);
+      setSelectedId('zai_coding');
+      setTimeout(() => { try { keyInputRef.current?.focus(); } catch (_) {} }, 40);
+      await cliLogin.start('zai', { forceApiKey: true });
+      return;
+    }
     await cliLogin.start(pv.id);
   };
 
@@ -311,6 +319,10 @@ export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoad
           {oauthProviders.map((pv) => {
             const accts = (pv.accounts || []).filter((a) => !a.needsSignIn && !a.expired);
             const activeCount = accts.length;
+            const cleanLabel = String(pv.label || '').replace(/\bCLI\s+CLI\b/gi, 'CLI');
+            const actionLabel = pv.id === 'zai' && !pv.zcodeInstalled
+              ? (activeCount ? '· API Key ✓' : '· Set API Key')
+              : (activeCount ? '· Reconnect' : '· Sign in');
             return (
               <button
                 key={'oauth:' + pv.id}
@@ -319,10 +331,10 @@ export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoad
                 className={'orch-paid-pill' + (activeCount ? ' ready' : '')}
                 disabled={cliLogin.busy || oauthBusy === pv.id}
                 onClick={() => handleOauthConnect(pv)}
-                title={activeCount ? `${pv.label}: ${activeCount} connected account(s) — click to Reconnect` : `Sign in to ${pv.label}`}
+                title={activeCount ? `${cleanLabel}: ${activeCount} connected account(s) — click to Reconnect` : `Sign in to ${cleanLabel}`}
               >
                 <ModelLogo provider={pv.id} size={13} />
-                <span>{pv.label} {activeCount ? '· Reconnect' : '· Sign in'}</span>
+                <span>{cleanLabel} {actionLabel}</span>
               </button>
             );
           })}
@@ -380,6 +392,8 @@ export function OrchPaidProvidersPanel({ orchestrator, saveOrch, onProvidersLoad
           <label className="orch-paid-field">
             <span>API Key {selected && selected.hasKey ? `(saved ${selected.keyHint})` : '(encrypted in Secret Store)'}</span>
             <input
+              ref={keyInputRef}
+              data-testid="orch-paid-key-input"
               type="password"
               value={draftKey}
               onChange={(e) => setDraftKey(e.target.value)}

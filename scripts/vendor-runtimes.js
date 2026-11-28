@@ -109,7 +109,15 @@ function localRoot(id) {
         if (existsFile(gb)) return gb;
       }
       if (id === 'gemini-cli' && existsFile(path.join(cur, 'bundle', 'gemini.js'))) return cur;
+      if (id === 'antigravity-cli') {
+        const ab = path.join(cur, 'bin', process.platform === 'win32' ? 'agy.exe' : 'agy');
+        if (existsFile(ab)) return ab;
+      }
       if (id === 'kimi-code' && existsFile(path.join(cur, 'dist', 'main.mjs'))) return cur;
+      if (id === 'github-copilot') {
+        const cb = path.join(cur, 'bin', process.platform === 'win32' ? 'copilot.exe' : 'copilot');
+        if (existsFile(cb)) return cb;
+      }
     }
   }
 
@@ -170,6 +178,18 @@ function localRoot(id) {
     for (const c of cands) if (existsFile(path.join(c, 'bundle', 'gemini.js'))) return c;
     return '';
   }
+  if (id === 'antigravity-cli') {
+    const exe = process.platform === 'win32' ? 'agy.exe' : 'agy';
+    const cands = [
+      path.join(home, '.local', 'bin', exe),
+      '/Applications/Antigravity.app/Contents/Resources/app/bin/' + exe,
+      '/Applications/Antigravity.app/Contents/Resources/bin/' + exe,
+      process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'agy', 'bin', exe) : '',
+      which('agy'),
+    ];
+    for (const c of cands) if (c && existsFile(realpath(c))) return realpath(c);
+    return '';
+  }
   if (id === 'kimi-code') {
     const cands = [
       path.join(npmG, '@moonshot-ai', 'kimi-code'),
@@ -182,6 +202,18 @@ function localRoot(id) {
       cands.push(path.dirname(path.dirname(rp)));
     }
     for (const c of cands) if (existsFile(path.join(c, 'dist', 'main.mjs'))) return c;
+    return '';
+  }
+  if (id === 'github-copilot') {
+    const exe = process.platform === 'win32' ? 'copilot.exe' : 'copilot';
+    const w = which('copilot');
+    if (w && existsFile(realpath(w))) return realpath(w);
+    const cands = [
+      path.join(home, '.local', 'bin', exe),
+      '/opt/homebrew/bin/' + exe,
+      '/usr/local/bin/' + exe,
+    ];
+    for (const c of cands) if (existsFile(realpath(c))) return realpath(c);
     return '';
   }
   return '';

@@ -1887,6 +1887,8 @@ async function runToolInner(name, args, ctx) {
         permissionMode: ctx.permissionMode,
         worktreeIsolation: args.isolation || args.worktreeIsolation || undefined,
         critique: args.critique !== false,
+        allowTrivialFastPath: true,
+        filterConnectedCli: true,
         cwd: args.cwd || ctx.cwd,
         maxSteps: Number(args.maxSteps) || 0,
       }), toolTimeoutMs(name, args), name, ctx.signal, ctx._toolAbort);

@@ -34,6 +34,41 @@
 
 const { randomUUID } = require('node:crypto');
 
+const _initialFetch = typeof fetch === 'function' ? fetch : null;
+let _keepAliveDispatcher = null;
+function getKeepAliveDispatcher() {
+  if (_keepAliveDispatcher !== null) return _keepAliveDispatcher || undefined;
+  try {
+    const { Agent } = require('undici');
+    _keepAliveDispatcher = new Agent({
+      keepAliveTimeout: 60000,
+      keepAliveMaxTimeout: 300000,
+      connections: 32,
+      pipelining: 1,
+      allowH2: true,
+    });
+    return _keepAliveDispatcher;
+  } catch (_) {
+    _keepAliveDispatcher = false;
+    return undefined;
+  }
+}
+
+function warmHttpEndpoint(baseURL) {
+  try {
+    const raw = String(baseURL || '').trim();
+    if (!raw || !/^https?:\/\//i.test(raw)) return;
+    if (globalThis.fetch !== _initialFetch) return;
+    const u = new URL(raw);
+    const dispatcher = getKeepAliveDispatcher();
+    Promise.resolve(_initialFetch(u.origin, {
+      method: 'HEAD',
+      ...(dispatcher ? { dispatcher } : {}),
+      signal: AbortSignal.timeout(1500),
+    })).catch(() => {});
+  } catch (_) {}
+}
+
 const DEFAULT_ANTHROPIC_BASE = 'https://api.anthropic.com';
 const DEFAULT_OPENAI_BASE = 'https://api.openai.com/v1';
 const DEFAULT_GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -90,9 +125,14 @@ async function fetchWithTimeout(url, options, label, customTimeoutMs = 0) {
     parent.addEventListener('abort', onParentAbort, { once: true });
   }
   const fn = (options && options.fetchImpl) || fetch;
+  const fetchOpts = { ...options, signal: ctrl.signal };
+  if (!fetchOpts.dispatcher && fn === _initialFetch) {
+    const dispatcher = getKeepAliveDispatcher();
+    if (dispatcher) fetchOpts.dispatcher = dispatcher;
+  }
   let keepParentLink = false;
   try {
-    const res = await fn(url, { ...options, signal: ctrl.signal });
+    const res = await fn(url, fetchOpts);
     // Keep Stop wired to `ctrl` while `res.body` streams so Stop mid-reply
     // immediately cancels the underlying socket; `openStream` / response cleanup
     // invokes `res._cleanupAbort()` when the body settles.
@@ -1960,18 +2000,95 @@ function needsTransport(provider) {
   return !!(provider && ADAPTERS[provider.transport]);
 }
 
+async function cliChat(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
+  const cliRunner = require('./cli-runner');
+  const isHealthPing = Number(maxTokensOverride) > 0
+    && Number(maxTokensOverride) <= 32
+    && Array.isArray(messages)
+    && messages.length === 1
+    && String((messages[0] && messages[0].content) || '').trim().toLowerCase() === 'ping';
+
+  if (isHealthPing) {
+    const resolved = await cliRunner.resolveCliBinary(provider);
+    if (!resolved || !resolved.bin) {
+      const kind = cliRunner.providerKind(provider) || 'CLI';
+      throw new Error(`${kind} CLI binary is not installed — check Settings → Runtimes & Updates.`);
+    }
+    const kind = cliRunner.providerKind(provider);
+    if (kind) {
+      try {
+        const providerOauth = require('./provider-oauth');
+        const auth = await providerOauth.probeCliAuthStatus(kind).catch(() => null);
+        if (auth && auth.ok && auth.loggedIn === false) {
+          const err = new Error(`${auth.label || kind} is not signed in — click Sign in / Reconnect first.`);
+          err.code = 'provider_needs_signin';
+          err.human = true;
+          throw err;
+        }
+      } catch (e) {
+        if (e && e.code === 'provider_needs_signin') throw e;
+      }
+    }
+    return cliRunner.runCliTurn({
+      provider,
+      messages: [{ role: 'user', content: 'Reply with OK only.' }],
+      onDelta: onDelta || (() => {}),
+      onToolDelta,
+      signal,
+      singleTurn: true,
+      timeoutMs: 25000,
+    });
+  }
+
+  return cliRunner.runCliTurn({
+    provider,
+    messages,
+    onDelta: onDelta || (() => {}),
+    onToolDelta,
+    signal,
+    singleTurn: !tools || tools.length === 0,
+  });
+}
+
 function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
-  const fn = ADAPTERS[provider && provider.transport];
+  const cliRunner = require('./cli-runner');
+  const explicitAdapter = provider && provider.transport && ADAPTERS[provider.transport];
+  if ((provider && (provider.transport === 'cli' || provider.cliMode === true)) || (!explicitAdapter && cliRunner.isCliProvider(provider))) {
+    return cliChat(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta);
+  }
+  const fn = explicitAdapter;
   if (!fn) throw new Error('no transport for ' + (provider && provider.transport));
   return fn(provider, messages, tools, onDelta || (() => {}), signal, maxTokensOverride, onToolDelta);
 }
 
 /**
- * Fetch a provider's model catalog using official API keys only.
+ * Fetch a provider's model catalog using official API keys or CLI probes.
  */
 async function listModels(provider, signal) {
   const effSignal = signal || AbortSignal.timeout(15000);
   const transport = String((provider && provider.transport) || '');
+  const cliRunner = require('./cli-runner');
+
+  if (transport === 'cli' || cliRunner.isCliProvider(provider)) {
+    const kind = cliRunner.providerKind(provider);
+    const resolved = await cliRunner.resolveCliBinary(provider).catch(() => ({ bin: '' }));
+    const live = (kind && resolved && resolved.bin && typeof cliRunner.probeCliModels === 'function')
+      ? await cliRunner.probeCliModels(kind, resolved.bin).catch(() => [])
+      : [];
+    let fallback = [];
+    try {
+      const def = kind ? require('./provider-oauth').provider(kind) : null;
+      if (def && Array.isArray(def.models)) fallback = def.models;
+    } catch (_) {}
+    const seen = new Set(live.map((m) => String((m && m.id) || '').toLowerCase()));
+    const merged = [...live];
+    for (const fm of fallback) {
+      if (fm && fm.id && !seen.has(String(fm.id).toLowerCase())) {
+        merged.push({ ...fm });
+      }
+    }
+    return merged;
+  }
 
   if (transport === 'google') {
     return googleModels(provider, effSignal);
@@ -2081,6 +2198,7 @@ module.exports = {
   needsTransport,
   listModels,
   setClientVersions,
+  warmHttpEndpoint,
   adapters: ADAPTERS,
   // exported for tests
   _internal: {
@@ -2088,7 +2206,7 @@ module.exports = {
     toCodexInput, toCodexTools, toGeminiContents, geminiFinish, responsesChat, zaiChat, zaiModels, resolveZaiBase, toZaiMessages,
     googleModels, googleModelList, OFFICIAL_USER_AGENT,
     toGeminiSchema, toGeminiDeclarations,
-    setClientVersions, formatResetIn, assertOfficialApiKey,
+    setClientVersions, formatResetIn, assertOfficialApiKey, cliChat,
     DEFAULT_ANTHROPIC_BASE, DEFAULT_OPENAI_BASE, DEFAULT_GEMINI_BASE, DEFAULT_XAI_BASE, DEFAULT_ZAI_CODING_BASE, DEFAULT_ZAI_BASE,
   },
 };

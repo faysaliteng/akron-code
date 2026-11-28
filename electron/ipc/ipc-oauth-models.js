@@ -95,6 +95,7 @@ async function hydrateProvider(provider) {
       else if (/^grok-/i.test(lowerModel)) preferredVendor = 'grok';
       else if (/^kimi-/i.test(lowerModel)) preferredVendor = 'kimi';
       else if (/^glm-/i.test(lowerModel)) preferredVendor = 'zai';
+      else if (/^copilot-/i.test(lowerModel)) preferredVendor = 'copilot';
       const providers = (st && Array.isArray(st.providers)) ? st.providers : [];
       const exactHit = (pv) => {
         if (modelCatalog.hasLiveCatalog && modelCatalog.hasLiveCatalog(pv.id)) {
@@ -103,7 +104,7 @@ async function hydrateProvider(provider) {
         const def = providerOauth.provider ? providerOauth.provider(pv.id) : null;
         return Boolean(def && Array.isArray(def.models) && def.models.some((m) => m && String(m.id || '').toLowerCase() === lowerModel));
       };
-      const signedWithAcct = providers.filter((pv) => pv && Array.isArray(pv.accounts) && pv.accounts.some((a) => a && a.hasToken !== false));
+      const signedWithAcct = providers.filter((pv) => pv && Array.isArray(pv.accounts) && pv.accounts.some((a) => a && a.hasToken !== false && !a.needsSignIn && !a.expired));
       const matchedPv = signedWithAcct.find((pv) => pv.id === preferredVendor && exactHit(pv))
         || signedWithAcct.find((pv) => exactHit(pv))
         || signedWithAcct.find((pv) => pv.id === preferredVendor);
@@ -145,6 +146,7 @@ async function hydrateProvider(provider) {
   }
   const out = Object.assign({}, provider, {
     transport: r.transport,
+    baseURL: r.baseURL || provider.baseURL || '',
     cliId: r.cliId || provider.cliId || '',
     cliBin: r.cliBin || provider.cliBin || '',
     cliKind: r.cliKind || provider.cliKind || '',
@@ -168,6 +170,16 @@ async function hydrateProvider(provider) {
     out.baseURL = r.baseURL || provider.baseURL || '';
     out.supportsTools = true;
   }
+  if (!process.env.NODE_TEST_CONTEXT && process.env.AKRON_NO_DIALOG !== '1') {
+    const wt = setImmediate(() => {
+      if (out.cliMode && cliRunner && typeof cliRunner.warmCliWorker === 'function') {
+        cliRunner.warmCliWorker(out).catch(() => {});
+      } else if (!out.cliMode && out.baseURL && providertransport && typeof providertransport.warmHttpEndpoint === 'function') {
+        providertransport.warmHttpEndpoint(out.baseURL);
+      }
+    });
+    if (wt && typeof wt.unref === 'function') wt.unref();
+  }
   return out;
 }
 
@@ -185,24 +197,86 @@ async function hydrateProvider(provider) {
 // we cannot ask (down, 401, empty catalogue) leaves its row alone: the app
 // never invents a failure it did not observe. Subscription rows have no
 // anonymous endpoint and are never probed.
+const LEGACY_GEMINI_MODEL_RE = /^gemini-(?:2\.5|3-flash|3\.1|3\.5)/i;
+
+function normalizeSavedOrchestratorRows(rows, provById, options = {}) {
+  const dropLegacyAgy = options.dropLegacyAgy === true;
+  const remapped = [];
+  const nextRows = [];
+  const seen = new Set();
+
+  for (const row of (Array.isArray(rows) ? rows : [])) {
+    if (!row || typeof row !== 'object') continue;
+    let updated = row;
+    const rawOauth = String(updated.oauthProvider || '');
+    if (rawOauth) {
+      const provKey = rawOauth.split(':')[0];
+      const reqAcct = rawOauth.includes(':') ? rawOauth.slice(rawOauth.indexOf(':') + 1) : '';
+      const pv = provById.get(provKey);
+
+      if (pv && pv.signedIn && pv.active && (!reqAcct || reqAcct !== pv.active)) {
+        const hasReq = (pv.accounts || []).some((a) => a && a.account === reqAcct && !a.needsSignIn && !a.expired);
+        if (!hasReq) {
+          updated = { ...updated, oauthProvider: `${provKey}:${pv.active}` };
+        }
+      }
+
+      if ((updated.transport === 'anthropic' || updated.transport === 'google') && (!pv || pv.transport === 'cli')) {
+        updated = { ...updated, transport: 'cli' };
+      }
+
+      if (provKey === 'antigravity') {
+        const curModel = String(updated.model || '').trim();
+        if (LEGACY_GEMINI_MODEL_RE.test(curModel)) {
+          if (dropLegacyAgy) continue;
+          const normId = cliRunner.normalizeAgyModelSlug ? cliRunner.normalizeAgyModelSlug(curModel, updated.reasoningLevel) : curModel;
+          if (normId && normId !== curModel) {
+            remapped.push(`${curModel} → ${normId}`);
+            updated = { ...updated, model: normId };
+          }
+        } else if (curModel && cliRunner.normalizeAgyModelSlug) {
+          const normId = cliRunner.normalizeAgyModelSlug(curModel, updated.reasoningLevel);
+          if (normId && normId !== curModel) {
+            remapped.push(`${curModel} → ${normId}`);
+            updated = { ...updated, model: normId };
+          }
+        }
+        if (updated.model && updated.name && /6969loavbal|gemini-2\.5|gemini-3-flash|tiered|worker-agy|sonar/i.test(updated.name)) {
+          updated = { ...updated, name: `Google Antigravity · ${updated.model}` };
+        }
+      }
+
+      if (updated.model && modelCatalog.hasLiveCatalog(provKey) && !modelCatalog.isModelAvailable(provKey, updated.model)) {
+        const repl = modelCatalog.resolveReplacementModel(provKey, updated.model);
+        if (repl && repl.id) {
+          remapped.push(`${updated.model} → ${repl.id}`);
+          updated = { ...updated, model: repl.id };
+        }
+      }
+    }
+
+    const dedupeKey = updated.oauthProvider
+      ? `oauth|${updated.oauthProvider}|${String(updated.model || '').toLowerCase()}`
+      : `${String(updated.baseURL || '').toLowerCase()}|${String(updated.model || '').toLowerCase()}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    nextRows.push(updated);
+  }
+  return { nextRows, remapped };
+}
+
 async function validateOrchestrator(orch, emit) {
   if (!orch || !Array.isArray(orch.providers) || !orch.providers.length) {
     poolNoticeDeduper.shouldEmitPruned('');
     return orch;
   }
-  const remapped = [];
-  const nextRows = orch.providers.map((row) => {
-    if (!row || !row.oauthProvider || !row.model) return row;
-    const provKey = String(row.oauthProvider).split(':')[0];
-    if (modelCatalog.hasLiveCatalog(provKey) && !modelCatalog.isModelAvailable(provKey, row.model)) {
-      const repl = modelCatalog.resolveReplacementModel(provKey, row.model);
-      if (repl && repl.id) {
-        remapped.push(`${row.model} → ${repl.id}`);
-        return { ...row, model: repl.id };
-      }
-    }
-    return row;
-  });
+  const oauthStatus = providerOauth.status ? providerOauth.status() : null;
+  const provById = new Map(((oauthStatus && oauthStatus.providers) || []).map((pv) => [pv.id, pv]));
+  let { nextRows, remapped } = normalizeSavedOrchestratorRows(orch.providers, provById, { dropLegacyAgy: false });
+  if (typeof orchRouter.filterConnectedCliRows === 'function') {
+    const filteredCli = orchRouter.filterConnectedCliRows(nextRows, { providerStatus: oauthStatus });
+    if (Array.isArray(filteredCli) && filteredCli.length) nextRows = filteredCli;
+  }
   if (remapped.length && typeof emit === 'function') {
     try { emit({ type: 'notice', text: `Updated retired pool model(s): ${remapped.join(', ')}.` }); } catch (_) {}
   }
@@ -382,18 +456,29 @@ async function fetchProviderModels(id) {
  */
 async function warmOpenRouterContextMetadata(force = false) {
   const cur = readModelWindowsCache();
+  let cacheDirty = false;
   if (cur.providers && typeof cur.providers === 'object') {
     for (const [pid, rows] of Object.entries(cur.providers)) {
       if (Array.isArray(rows) && rows.length) {
-        const sanitized = rows.map((r) => {
+        const filtered = pid === 'antigravity'
+          ? rows.filter((r) => !(r && r.id && LEGACY_GEMINI_MODEL_RE.test(String(r.id))))
+          : rows;
+        if (filtered.length !== rows.length) {
+          cur.providers[pid] = filtered;
+          cacheDirty = true;
+        }
+        const sanitized = filtered.map((r) => {
           if (!r || !r.id) return r;
           const floor = modelCatalog.ruleContextWindowFor ? modelCatalog.ruleContextWindowFor(r.id) : 0;
           const w = Number(r.contextWindow) || 0;
           return (floor >= 1000000 && w > 0 && w < floor) ? { ...r, contextWindow: floor } : r;
         });
-        modelCatalog.register(pid, sanitized);
+        if (sanitized.length) modelCatalog.register(pid, sanitized);
       }
     }
+  }
+  if (cacheDirty && !process.env.NODE_TEST_CONTEXT && process.env.AKRON_NO_DIALOG !== '1') {
+    writeModelWindowsCache(cur);
   }
   if (!force && (process.env.AKRON_NO_DIALOG === '1' || process.env.AKRON_ISOLATE_RUNTIMES === '1')) {
     return 0;
@@ -442,16 +527,125 @@ async function warmOpenRouterContextMetadata(force = false) {
  * over the model's real window. Best-effort and serial: a dead token must not
  * delay boot.
  */
+function healSavedOrchestratorAndSettings() {
+  if (process.env.NODE_TEST_CONTEXT) return { changed: false };
+  let changed = false;
+  try {
+    const oauthStatus = providerOauth.status ? providerOauth.status() : null;
+    const provById = new Map(((oauthStatus && oauthStatus.providers) || []).map((pv) => [pv.id, pv]));
+
+    if (store && typeof store.getOrchestrator === 'function' && typeof store.setOrchestrator === 'function') {
+      const orch = store.getOrchestrator() || {};
+      const origRows = Array.isArray(orch.providers) ? orch.providers : [];
+      const { nextRows } = normalizeSavedOrchestratorRows(origRows, provById, { dropLegacyAgy: true });
+      const agyPv = provById.get('antigravity');
+      if (agyPv && agyPv.signedIn) {
+        const agyAcct = agyPv.active || (agyPv.accounts && agyPv.accounts[0] && agyPv.accounts[0].account) || 'agy';
+        const coreAgy = [
+          { id: 'gemini-pro-orchestrator-neon', label: 'Orchestrator (Neon)', tier: 'critical' },
+          { id: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)', tier: 'critical' },
+          { id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)', tier: 'critical' },
+          { id: 'gemini-4-neon-low', label: 'Gemini 4 Neon (Low)', tier: 'small' },
+          { id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)', tier: 'critical' },
+          { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)', tier: 'heavy' },
+          { id: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)', tier: 'heavy' },
+          { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)', tier: 'small' },
+        ];
+        const existingAgy = new Set(
+          nextRows
+            .filter((r) => r && String(r.oauthProvider || '').startsWith('antigravity:'))
+            .map((r) => String(r.model || '').toLowerCase())
+        );
+        for (const cm of coreAgy) {
+          if (existingAgy.has(cm.id.toLowerCase())) continue;
+          nextRows.push({
+            id: `oauth|antigravity:${agyAcct}|${cm.id}`,
+            name: `Google Antigravity · ${cm.label}`,
+            baseURL: '',
+            apiKey: '',
+            orchProviderId: '',
+            model: cm.id,
+            tier: cm.tier,
+            oauth: true,
+            oauthProvider: `antigravity:${agyAcct}`,
+            transport: 'cli',
+            contextWindow: 1048576,
+            enabled: true,
+          });
+        }
+      }
+      if (JSON.stringify(nextRows) !== JSON.stringify(origRows)) {
+        store.setOrchestrator({ providers: nextRows });
+        changed = true;
+      }
+    }
+
+    if (store && typeof store.getSettings === 'function' && typeof store.setSettings === 'function') {
+      const s = store.getSettings() || {};
+      const sp = s.provider;
+      if (sp && typeof sp === 'object') {
+        const oauthId = String(sp.oauthProvider || '');
+        const provKey = oauthId.split(':')[0];
+        if (provKey === 'antigravity') {
+          const agyPv = provById.get('antigravity');
+          const agyAcct = (agyPv && (agyPv.active || (agyPv.accounts && agyPv.accounts[0] && agyPv.accounts[0].account))) || 'agy';
+          const curModel = String(sp.model || '').trim();
+          const needModelFix = !curModel || LEGACY_GEMINI_MODEL_RE.test(curModel);
+          const nextModel = needModelFix
+            ? 'gemini-pro-orchestrator-neon'
+            : (cliRunner.normalizeAgyModelSlug ? cliRunner.normalizeAgyModelSlug(curModel, sp.reasoningLevel) : curModel);
+          const nextOauth = agyPv && agyPv.signedIn ? `antigravity:${agyAcct}` : oauthId;
+          if (sp.transport === 'google' || nextModel !== curModel || nextOauth !== oauthId) {
+            store.setSettings({
+              provider: {
+                ...sp,
+                oauthProvider: nextOauth,
+                transport: 'cli',
+                model: nextModel,
+              },
+            });
+            changed = true;
+          }
+        } else if (provKey && (sp.transport === 'anthropic' || sp.transport === 'google')) {
+          const pv = provById.get(provKey);
+          const nextAcct = (pv && pv.signedIn && pv.active) ? `${provKey}:${pv.active}` : oauthId;
+          store.setSettings({
+            provider: { ...sp, oauthProvider: nextAcct, transport: 'cli' },
+          });
+          changed = true;
+        }
+      }
+    }
+  } catch (_) {}
+  return { changed };
+}
+
 async function warmModelCatalogs() {
   await warmOpenRouterContextMetadata(false).catch(() => {});
+  if (providerOauth && typeof providerOauth.syncCliAccounts === 'function') {
+    await providerOauth.syncCliAccounts().catch(() => {});
+  }
   let providers = [];
   try { providers = (providerOauth.status() || {}).providers || []; } catch (_) { return; }
   for (const p of providers) {
     const accounts = Array.isArray(p.accounts) ? p.accounts : [];
     for (const acct of accounts) {
+      if (acct && (acct.needsSignIn || acct.expired)) continue;
       const id = acct && acct.id ? String(acct.id) : `${p.id}:${acct && acct.account}`;
       try { await fetchProviderModels(id); } catch (_) {}
     }
+  }
+  healSavedOrchestratorAndSettings();
+  try { broadcast({ type: 'provider-status-updated' }); } catch (_) {}
+  if (!process.env.NODE_TEST_CONTEXT && process.env.AKRON_NO_DIALOG !== '1' && cliRunner && typeof cliRunner.warmCliWorker === 'function') {
+    try {
+      const s = store && typeof store.getSettings === 'function' ? (store.getSettings() || {}) : {};
+      const activeP = s.provider;
+      if (activeP && (activeP.oauthProvider || activeP.transport === 'cli')) {
+        const hp = await hydrateProvider(activeP).catch(() => null);
+        if (hp && hp.cliMode) cliRunner.warmCliWorker(hp).catch(() => {});
+      }
+    } catch (_) {}
   }
 }
 
@@ -746,6 +940,15 @@ async function mirrorLoopbackOnIpv6(flow) {
 
 async function cliPathForProvider(prov) {
   if (!prov) return '';
+  if (process.env.AKRON_ISOLATE_RUNTIMES === '1') {
+    const bins = [prov.bin, ...(prov.fallbackBins || [])].filter(Boolean);
+    for (const dir of String(process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+      for (const b of bins) {
+        const cand = path.join(dir, b);
+        try { if (fs.existsSync(cand) && fs.statSync(cand).isFile()) return cand; } catch (_) {}
+      }
+    }
+  }
   try {
     const rt = typeof getRuntimes === 'function' ? getRuntimes() : null;
     const resolved = await cliRunner.resolveCliBinary({ cliKind: prov.id, cliId: prov.cliId, cliBin: prov.bin }, { runtimes: rt });
@@ -782,38 +985,126 @@ const cliLoginStarts = new Map(); // provId -> Promise
 
 function extractDeviceUserCode(text) {
   const clean = String(text || '');
-  const explicit = clean.match(/(?:code|enter\s+code|user\s+code|verification\s+code)\s*[:=]\s*([A-Z0-9]{4,6}-[A-Z0-9]{4,6})/i);
+  const explicit = clean.match(/(?:code|enter\s+code|user\s+code|verification\s+code)\s*[:=]?\s*([A-Z0-9]{4,6}-[A-Z0-9]{4,6})/i);
   if (explicit) return explicit[1].toUpperCase();
   const dash = clean.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/);
   if (dash && !/^20[0-9]{2}-[0-9]{2}$/.test(dash[1])) return dash[1].toUpperCase();
   return '';
 }
 
+function ensureGeminiApiKeyAuthSetting() {
+  try {
+    const gDir = path.join(os.homedir(), '.gemini');
+    const sPath = path.join(gDir, 'settings.json');
+    let cur = {};
+    if (fs.existsSync(sPath)) {
+      try { cur = JSON.parse(fs.readFileSync(sPath, 'utf8')) || {}; } catch (_) {}
+    }
+    if (!cur.security || typeof cur.security !== 'object') cur.security = {};
+    if (!cur.security.auth || typeof cur.security.auth !== 'object') cur.security.auth = {};
+    if (cur.security.auth.selectedType !== 'gemini-api-key') {
+      cur.security.auth.selectedType = 'gemini-api-key';
+      fs.mkdirSync(gDir, { recursive: true });
+      fs.writeFileSync(sPath, JSON.stringify(cur, null, 2) + '\n', { mode: 0o600 });
+    }
+  } catch (_) {}
+}
+
+function createBrowserUrlEchoShim(flowId) {
+  if (process.platform === 'win32') return null;
+  try {
+    const shimPath = path.join(os.tmpdir(), `akron-browser-${flowId.replace(/[^a-zA-Z0-9_-]/g, '_')}.sh`);
+    fs.writeFileSync(shimPath, '#!/bin/sh\necho "$1"\n', { mode: 0o755 });
+    return shimPath;
+  } catch (_) {
+    return null;
+  }
+}
+
+function spawnInteractiveCli(bin, args, { env, cwd, spawnImpl } = {}) {
+  if (typeof spawnImpl === 'function') {
+    return spawnImpl(bin, args, { stdio: ['pipe', 'pipe', 'pipe'], env, cwd: cwd || os.homedir(), windowsHide: true });
+  }
+  const childEnv = { ...env };
+  if (bin === process.execPath) childEnv.ELECTRON_RUN_AS_NODE = '1';
+  try {
+    const pty = require('node-pty');
+    const { EventEmitter } = require('events');
+    const ptyProc = pty.spawn(bin, args, {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 32,
+      cwd: cwd || os.homedir(),
+      env: { ...childEnv, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
+    });
+    const wrapper = new EventEmitter();
+    wrapper.stdout = new EventEmitter();
+    wrapper.stderr = new EventEmitter();
+    wrapper.stdin = {
+      destroyed: false,
+      writable: true,
+      write: (d) => { try { ptyProc.write(String(d)); } catch (_) {} },
+      end: () => {},
+    };
+    wrapper.pid = ptyProc.pid;
+    wrapper.exitCode = null;
+    wrapper.signalCode = null;
+    wrapper.kill = (sig) => { try { ptyProc.kill(sig); } catch (_) {} };
+    ptyProc.onData((data) => { wrapper.stdout.emit('data', Buffer.from(String(data), 'utf8')); });
+    ptyProc.onExit(({ exitCode, signal }) => {
+      wrapper.exitCode = typeof exitCode === 'number' ? exitCode : 0;
+      wrapper.signalCode = signal || null;
+      wrapper.stdin.writable = false;
+      wrapper.stdin.destroyed = true;
+      wrapper.emit('exit', wrapper.exitCode, wrapper.signalCode);
+      wrapper.emit('close', wrapper.exitCode, wrapper.signalCode);
+    });
+    return wrapper;
+  } catch (_) {
+    if (process.platform === 'darwin' && fs.existsSync('/usr/bin/script')) {
+      return spawn('/usr/bin/script', ['-q', '/dev/null', bin, ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: childEnv, cwd: cwd || os.homedir(), windowsHide: true });
+    }
+    if (process.platform === 'linux' && fs.existsSync('/usr/bin/script')) {
+      const cmdStr = [bin, ...args].map((a) => `'${String(a).replace(/'/g, "'\\''")}'`).join(' ');
+      return spawn('/usr/bin/script', ['-q', '-c', cmdStr, '/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'], env: childEnv, cwd: cwd || os.homedir(), windowsHide: true });
+    }
+    return spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'], env: childEnv, cwd: cwd || os.homedir(), windowsHide: true });
+  }
+}
+
 function cliLoginSpecForProvider(prov, bin, opts = {}) {
   const baseName = path.basename(String(bin || prov.bin || '')).toLowerCase();
   if (prov.id === 'claude') {
-    return { args: ['auth', 'login'], useIpv6Relay: true, requiresCodePaste: true };
+    return { args: ['auth', 'login'], cliCommand: 'claude auth login', useIpv6Relay: true, requiresCodePaste: true };
   }
   if (prov.id === 'chatgpt') {
     const args = opts.deviceAuth ? ['login', '--device-auth'] : ['login'];
-    return { args, useIpv6Relay: false, supportsDeviceAuth: true };
+    return { args, cliCommand: 'codex ' + args.join(' '), useIpv6Relay: false, supportsDeviceAuth: true };
   }
   if (prov.id === 'antigravity') {
-    if (baseName.startsWith('agy')) return { args: ['auth', 'login'], useIpv6Relay: false };
-    // Gemini CLI interactive/first-run auth prints an OAuth URL/code cleanly when NO_BROWSER=true
-    return { args: [], useIpv6Relay: false, extraEnv: { NO_BROWSER: 'true', GEMINI_CLI_NO_RELAUNCH: 'true' }, killAfterUrlSuccess: false };
+    if (baseName.startsWith('agy') || baseName.startsWith('antigravity')) {
+      return { args: ['acp', '--login'], cliCommand: 'agy acp --login', useIpv6Relay: false };
+    }
+    ensureGeminiApiKeyAuthSetting();
+    return { args: [], cliCommand: 'gemini', useIpv6Relay: false, isGeminiApiKeyOnly: true };
   }
   if (prov.id === 'grok') {
     const args = opts.deviceAuth ? ['login', '--device-auth'] : ['login'];
-    return { args, useIpv6Relay: false, supportsDeviceAuth: true };
+    return { args, cliCommand: 'grok ' + args.join(' '), useIpv6Relay: false, supportsDeviceAuth: true };
   }
   if (prov.id === 'kimi') {
-    return { args: opts.region ? ['login', '--region', String(opts.region)] : ['login'], useIpv6Relay: false };
+    const args = opts.region ? ['login', '--region', String(opts.region)] : ['login'];
+    return { args, cliCommand: 'kimi ' + args.join(' '), useIpv6Relay: false };
   }
   if (prov.id === 'zai') {
-    return { args: ['login'], useIpv6Relay: false };
+    return { args: ['login'], cliCommand: 'zcode login', useIpv6Relay: false };
   }
-  return { args: prov.authLoginArgs || ['login'], useIpv6Relay: false };
+  if (prov.id === 'copilot') {
+    const args = opts.webFlow ? ['login', '--web-flow'] : ['login', '--device-code'];
+    return { args, cliCommand: 'copilot ' + args.join(' '), useIpv6Relay: false, supportsDeviceAuth: true };
+  }
+  const fallbackArgs = prov.authLoginArgs || ['login'];
+  return { args: fallbackArgs, cliCommand: [prov.bin, ...fallbackArgs].filter(Boolean).join(' '), useIpv6Relay: false };
 }
 
 async function startCliLogin(event, providerId, opts = {}) {
@@ -821,18 +1112,15 @@ async function startCliLogin(event, providerId, opts = {}) {
     const prov = providerOauth.provider(providerId || 'claude');
     if (!prov) return { ok: false, error: `Unknown provider: ${providerId}` };
 
-    if (prov.id === 'zai' && !opts.useCli) {
-      const zcodeBin = await cliPathForProvider(prov);
-      if (!zcodeBin) {
-        return {
-          ok: true,
-          mode: 'api-key',
-          provider: prov.id,
-          label: prov.label,
-          docsUrl: prov.docs || 'https://z.ai/manage-apikey/apikey-list',
-          baseURL: prov.bearerBaseURL || 'https://api.z.ai/api/coding/paas/v4',
-        };
-      }
+    if (opts.forceApiKey || (prov.id === 'zai' && !opts.useCli && !(await cliPathForProvider(prov)))) {
+      return {
+        ok: true,
+        mode: 'api-key',
+        provider: prov.id,
+        label: prov.label,
+        docsUrl: prov.docs || 'https://z.ai/manage-apikey/apikey-list',
+        baseURL: prov.bearerBaseURL || 'https://api.z.ai/api/coding/paas/v4',
+      };
     }
 
     const existing = cliLoginFlows.get(prov.id);
@@ -842,6 +1130,7 @@ async function startCliLogin(event, providerId, opts = {}) {
         flowId: existing.flowId,
         provider: prov.id,
         label: prov.label,
+        cliCommand: existing.cliCommand || '',
         url: existing.url,
         userCode: existing.userCode || '',
         lines: existing.lines.slice(),
@@ -852,6 +1141,17 @@ async function startCliLogin(event, providerId, opts = {}) {
 
     const bin = await cliPathForProvider(prov);
     if (!bin) {
+      if (prov.id === 'antigravity') {
+        return {
+          ok: true,
+          mode: 'api-key',
+          provider: prov.id,
+          label: prov.label,
+          docsUrl: 'https://aistudio.google.com/apikey',
+          baseURL: prov.bearerBaseURL,
+          hint: 'Antigravity CLI (agy) not found — paste a GEMINI_API_KEY or install agy in Settings → Runtimes & Updates.',
+        };
+      }
       return {
         ok: false,
         provider: prov.id,
@@ -859,23 +1159,59 @@ async function startCliLogin(event, providerId, opts = {}) {
       };
     }
 
+    // Fast-path for Antigravity (`agy`): if already signed in via Keychain, adopt immediately in <1s
+    const isolatedTestMode = process.env.AKRON_ISOLATE_RUNTIMES === '1' || process.env.AKRON_NO_DIALOG === '1';
+    if (prov.id === 'antigravity' && !isolatedTestMode && !opts.forceInteractive && !opts.spawnImpl && !opts.mockPty) {
+      const preProbe = await providerOauth.probeCliAuthStatus('antigravity', { force: true }).catch(() => null);
+      if (preProbe && preProbe.loggedIn) {
+        await providerOauth.syncCliAccounts('antigravity').catch(() => {});
+        const rec = providerOauth.getAccount ? providerOauth.getAccount('antigravity') : null;
+        poolNoticeDeduper.reset();
+        try { if (rec && rec.id) await fetchProviderModels(rec.id); } catch (_) {}
+        try { broadcast({ type: 'models:updated', providerId: 'antigravity' }); } catch (_) {}
+        return {
+          ok: true,
+          alreadySignedIn: true,
+          status: 'done',
+          provider: prov.id,
+          label: prov.label,
+          cliCommand: 'agy acp --login',
+          account: rec,
+        };
+      }
+    }
+
     const spec = cliLoginSpecForProvider(prov, bin, opts);
+    if (prov.id === 'antigravity' && spec.isGeminiApiKeyOnly && !isolatedTestMode && !opts.spawnImpl) {
+      return {
+        ok: true,
+        mode: 'api-key',
+        provider: prov.id,
+        label: prov.label,
+        docsUrl: 'https://aistudio.google.com/apikey',
+        baseURL: prov.bearerBaseURL,
+        hint: 'Google deprecated individual consumer OAuth on gemini-cli. Use Antigravity CLI (`agy`) or paste a GEMINI_API_KEY.',
+      };
+    }
+
     const flowId = `${prov.id}-login:${Date.now()}`;
     const prefix = typeof runtimePathPrefix === 'function' ? await runtimePathPrefix().catch(() => '') : '';
     const mergedPath = prefix
       ? [prefix, ...String(process.env.PATH || '').split(path.delimiter).filter((d) => d && d !== prefix)].join(path.delimiter)
       : process.env.PATH;
+    const browserShim = createBrowserUrlEchoShim(flowId);
     const env = Object.assign({}, process.env, {
-      BROWSER: 'true',
+      BROWSER: browserShim || 'true',
       ...(mergedPath ? { PATH: mergedPath } : {}),
       ...(spec.extraEnv || {}),
     });
-    const spawnImpl = opts.spawnImpl || spawn;
-    const child = spawnImpl(bin, spec.args, { stdio: ['pipe', 'pipe', 'pipe'], env, windowsHide: true });
+    const child = spawnInteractiveCli(bin, spec.args, { env, spawnImpl: opts.spawnImpl });
     const flow = {
       flowId,
       provider: prov.id,
       label: prov.label,
+      cliCommand: spec.cliCommand || prov.bin,
+      browserShim,
       child,
       url: '',
       userCode: '',
@@ -885,6 +1221,7 @@ async function startCliLogin(event, providerId, opts = {}) {
       alive: true,
       relay: null,
       relayPort: 0,
+      watchdogTimer: null,
     };
     cliLoginFlows.set(prov.id, flow);
     if (prov.id === 'claude') claudeLoginFlow = flow;
@@ -967,6 +1304,8 @@ async function startCliLogin(event, providerId, opts = {}) {
     const settle = async (result) => {
       if (!flow.alive) return;
       flow.alive = false;
+      if (flow.watchdogTimer) { try { clearTimeout(flow.watchdogTimer); } catch (_) {} flow.watchdogTimer = null; }
+      if (flow.browserShim) { try { fs.unlinkSync(flow.browserShim); } catch (_) {} flow.browserShim = null; }
       if (cliLoginFlows.get(prov.id) === flow) cliLoginFlows.delete(prov.id);
       if (claudeLoginFlow === flow) claudeLoginFlow = null;
       if (flow.relay) { try { flow.relay.close(); } catch (_) {} flow.relay = null; }
@@ -1014,22 +1353,49 @@ async function startCliLogin(event, providerId, opts = {}) {
     });
     child.on('error', (e) => settle({ ok: false, error: e.message }));
 
+    const watchdogMs = opts.watchdogMs != null ? Number(opts.watchdogMs) : 15000;
+    if (watchdogMs > 0) {
+      flow.watchdogTimer = setTimeout(() => {
+        if (flowIsLive(flow) && !flow.url && !flow.userCode) {
+          emitEvent({
+            phase: 'watchdog',
+            cliCommand: flow.cliCommand,
+            lines: flow.lines.slice(),
+            message: `Waiting for ${flow.cliCommand} — if no browser URL appeared, run \`${flow.cliCommand}\` in Terminal.`,
+          });
+        }
+      }, watchdogMs);
+      if (flow.watchdogTimer && typeof flow.watchdogTimer.unref === 'function') flow.watchdogTimer.unref();
+    }
+
     // Give CLI up to 3.5s to emit URL / userCode, then return live flow immediately
     const waitMs = opts.waitMs != null ? Number(opts.waitMs) : (prov.id === 'claude' ? 6000 : 3500);
     const deadline = Date.now() + waitMs;
     while (!flow.url && !flow.userCode && Date.now() < deadline && flowIsLive(flow)) {
       await new Promise((r) => setTimeout(r, 100));
     }
-    if (prov.id === 'claude' && !flow.url && !flow.userCode && !flowIsLive(flow)) {
-      return { ok: false, provider: prov.id, error: (flow.lines.slice(-1)[0]) || 'Claude Code did not print a sign-in URL — try `claude auth login` in terminal' };
+    if (!flow.url && !flow.userCode && !flowIsLive(flow)) {
+      const checkProbe = await providerOauth.probeCliAuthStatus(prov.id, { force: true }).catch(() => null);
+      if (checkProbe && checkProbe.loggedIn) {
+        await providerOauth.syncCliAccounts(prov.id).catch(() => {});
+        const rec = providerOauth.getAccount ? providerOauth.getAccount(prov.id) : null;
+        return { ok: true, alreadySignedIn: true, status: 'done', provider: prov.id, label: prov.label, cliCommand: flow.cliCommand, account: rec };
+      }
+      return {
+        ok: false,
+        provider: prov.id,
+        cliCommand: flow.cliCommand,
+        error: (flow.lines.slice(-1)[0]) || `${prov.label} did not print a sign-in URL — try \`${flow.cliCommand}\` in terminal`,
+      };
     }
     await Promise.race([relayReady, new Promise((r) => setTimeout(() => r(0), 2500))]);
-    emitEvent({ phase: 'waiting', url: flow.url, userCode: flow.userCode });
+    emitEvent({ phase: 'waiting', url: flow.url, userCode: flow.userCode, cliCommand: flow.cliCommand });
     return {
       ok: true,
       flowId,
       provider: prov.id,
       label: prov.label,
+      cliCommand: flow.cliCommand,
       url: flow.url,
       userCode: flow.userCode,
       requiresCodePaste: Boolean(spec.requiresCodePaste),
@@ -1047,6 +1413,8 @@ function cancelCliLogin(providerId) {
   const f = cliLoginFlows.get(key) || (key === 'claude' ? claudeLoginFlow : null);
   if (!f) return { ok: true, cancelled: false };
   f.alive = false;
+  if (f.watchdogTimer) { try { clearTimeout(f.watchdogTimer); } catch (_) {} f.watchdogTimer = null; }
+  if (f.browserShim) { try { fs.unlinkSync(f.browserShim); } catch (_) {} f.browserShim = null; }
   cliLoginFlows.delete(key);
   if (claudeLoginFlow === f) claudeLoginFlow = null;
   try { f.child.kill('SIGTERM'); } catch (_) {}
@@ -1099,6 +1467,7 @@ function getCliLoginState(providerId) {
     provider: key,
     waiting: live,
     flowId: live ? f.flowId : '',
+    cliCommand: live ? (f.cliCommand || '') : '',
     url: live ? f.url : '',
     userCode: live ? (f.userCode || '') : '',
     lines: live ? f.lines.slice() : [],

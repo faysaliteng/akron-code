@@ -21,6 +21,17 @@ const router = require('./orch-router');
 const gate = require('./provider-gate');
 const usageEstimator = require('./usage-estimator');
 const modeCollab = require('./mode-collab');
+const cliRunner = require('./cli-runner');
+
+const TRIVIAL_CONVO_RE = /^(hi+|hello+|hey+|yo|sup|ping|test|ok|okay|thanks|thank you|thx|good\s+(?:morning|afternoon|evening)|how\s+are\s+you\??|who\s+are\s+you\??|what\s+model(?:\s+are\s+you)?\??|are\s+you\s+there\??)[!?. ]*$/i;
+const ACTION_OR_CODE_RE = /\b(fix|build|create|write|edit|refactor|implement|audit|test|run|search|inspect|read|check|analyze|debug|deploy|install|update|add|remove|delete|find|grep|scan|review|compare|parallel|subagent|swarm|worktree|file|repo|codebase|code|bug|app|website|script)\b|```|(?:[\w.-]+\/)+[\w.-]+|\b[\w.-]+\.(?:js|jsx|ts|tsx|mjs|cjs|py|go|rs|json|md|css|html|sh)\b/i;
+
+function isTrivialConversationalPrompt(text) {
+  const s = String(text || '').trim();
+  if (!s || s.length > 80) return false;
+  if (ACTION_OR_CODE_RE.test(s)) return false;
+  return TRIVIAL_CONVO_RE.test(s);
+}
 
 function ensureHighThinkingSupervisor(sup, roster = []) {
   if (!sup || typeof sup !== 'object') return sup;
@@ -772,6 +783,7 @@ async function swarm(goal, opts = {}) {
   if (!goal || !String(goal).trim()) throw new Error('swarm requires a goal');
   const emit = opts.emit || (() => {});
   const started = Date.now();
+  if (opts.cwd) cliRunner.ensureGeminiTrustedFolder(opts.cwd);
   const swarmUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0, context_tokens: 0, model: '' };
   const trackedRunAgent = async (agentOpts = {}) => {
     const callerEmit = typeof agentOpts.emit === 'function' ? agentOpts.emit : () => {};
@@ -816,6 +828,12 @@ async function swarm(goal, opts = {}) {
     roster = frontierPoolRows.length ? frontierPoolRows : rawPoolRows;
   } else {
     roster = buildRoster({ orchestrator: opts.orchestrator, provider: opts.provider, frontierOnly: true });
+  }
+  if (opts.filterConnectedCli === true && typeof router.filterConnectedCliRows === 'function') {
+    const filteredRoster = router.filterConnectedCliRows(roster, { providerStatus: opts.providerStatus, strict: true });
+    if (Array.isArray(filteredRoster) && filteredRoster.length) {
+      roster = filteredRoster;
+    }
   }
 
   // Track active swarm worker models so concurrent workers avoid colliding on the same model when idle ones exist.
@@ -897,6 +915,43 @@ async function swarm(goal, opts = {}) {
   if (!roster.some((r) => keyOf(r) === supKey)) {
     roster.push({ ...supervisor, tier: 'critical', role: 'supervisor' });
   }
+
+  if (opts.allowTrivialFastPath !== false && (!Array.isArray(opts.tasks) || !opts.tasks.length) && isTrivialConversationalPrompt(goal)) {
+    const fastProv = typeof router.selectFastConversationalModel === 'function'
+      ? router.selectFastConversationalModel(supervisor || opts.provider)
+      : { ...(supervisor || opts.provider), _disableThinking: true };
+    const out = await trackedRunAgent({
+      provider: fastProv,
+      orchestrator: supervisorOrch || opts.orchestrator || null,
+      messages: [{ role: 'user', content: String(goal) }],
+      maxSteps: 2,
+      cliSingleTurn: true,
+      fastTurn: true,
+      cwd: opts.cwd,
+      signal: opts.signal,
+      emit,
+    });
+    const lastMsg = [...(out || [])].reverse().find((m) => m && m.role === 'assistant' && String(m.content || '').trim());
+    const directAns = lastMsg ? String(lastMsg.content) : '';
+    const fastMs = Date.now() - started;
+    emit({ type: 'swarm', phase: 'done', ms: fastMs, fastPath: true, answer: directAns.slice(0, 4000) });
+    return {
+      supervisor: { model: fastProv ? fastProv.model : supervisor.model, baseURL: supervisor.baseURL, reasoningLevel: 'auto' },
+      planSource: 'fast-path',
+      pools: !!poolOrch,
+      threads: [],
+      tasks: [{ id: 't1', title: 'Direct reply', tier: 'small', model: fastProv ? fastProv.model : supervisor.model }],
+      results: [{ id: 't1', name: 'direct', title: 'Direct reply', tier: 'small', model: fastProv ? fastProv.model : supervisor.model, status: 'done', ms: fastMs, result: directAns, round: 1 }],
+      board: [],
+      members: [],
+      answer: directAns,
+      reviewError: null,
+      usage: swarmUsage.total_tokens > 0 ? { ...swarmUsage } : null,
+      ms: fastMs,
+      fastPath: true,
+    };
+  }
+
   const rosterText = poolOrch ? (router.summary(poolOrch, poolBase) || rosterSummary(roster)) : rosterSummary(roster);
 
   emit({
@@ -1161,7 +1216,7 @@ async function swarm(goal, opts = {}) {
     let servedBy = p ? p.model : null;
     let subCwd = opts.cwd;
     let worktreeInfo = null;
-    const workerTimeoutMs = Math.max(1000, Number(opts.workerTimeoutMs) || 10 * 60 * 1000);
+    const workerTimeoutMs = Math.max(1000, Number(opts.workerTimeoutMs) || 3 * 60 * 1000);
     let workerTimer = null;
     let workerTimedOut = false;
     const armWorkerTimer = () => {
@@ -1185,6 +1240,8 @@ async function swarm(goal, opts = {}) {
         execFileSync('git', ['worktree', 'add', '-b', wtBranch, wtDir, 'HEAD'], { cwd: gitRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
         const relSub = path.relative(gitRoot, subCwd);
         subCwd = relSub && !relSub.startsWith('..') ? path.join(wtDir, relSub) : wtDir;
+        cliRunner.ensureGeminiTrustedFolder(wtDir);
+        if (subCwd !== wtDir) cliRunner.ensureGeminiTrustedFolder(subCwd);
         worktreeInfo = { gitRoot, wtDir, wtBranch, baseHead };
       } catch (_) { worktreeInfo = null; }
     }
@@ -1192,11 +1249,14 @@ async function swarm(goal, opts = {}) {
     try {
       if (workerAc.signal.aborted) throw new Error('aborted');
       armWorkerTimer();
+      let lastProgressAt = 0;
+      let progressSnippet = '';
       const out = await trackedRunAgent({
         provider: p,
         orchestrator: task.chain || null,
         messages: [{ role: 'user', content: workerPrompt(String(goal), task, { me: workerName, channel }) + (briefing ? '\n\n' + briefing : '') }],
         maxSteps: opts.maxSteps || 0,
+        timeoutMs: workerTimeoutMs,
         cwd: subCwd,
         signal: workerAc.signal,
         useMemory: opts.useMemory,
@@ -1207,6 +1267,16 @@ async function swarm(goal, opts = {}) {
           if (evt.type === 'orchestrator' && evt.to) servedBy = evt.to;
           else if (evt.type === 'model' && evt.model && !/^(auto|fast|smart|fusion|default|free|akron-.*)$/i.test(String(evt.model).trim())) {
             servedBy = evt.model;
+          }
+          if (evt.type === 'delta' || evt.type === 'text') {
+            progressSnippet = (progressSnippet + String(evt.text || evt.delta || '')).slice(-140);
+          } else if (evt.type === 'tool_start' || evt.type === 'tool') {
+            if (evt.name) progressSnippet = `Running ${evt.name}…`;
+          }
+          const now = Date.now();
+          if (progressSnippet && (now - lastProgressAt) >= 400) {
+            lastProgressAt = now;
+            emit({ type: 'subagent', id: agentId, name, status: 'running', role: 'worker', jobRole: task.jobRole, tier: task.tier, model: servedBy, round, progress: progressSnippet.replace(/\s+/g, ' ').trim() });
           }
           emit({ ...evt, subagent: name, agentId, tier: task.tier, model: servedBy });
         },
@@ -1487,7 +1557,7 @@ async function swarm(goal, opts = {}) {
 }
 
 module.exports = {
-  TIER_RANK, normalizeTier, ensureHighThinkingSupervisor, buildRoster, pickProvider, rosterSummary, isFrontier,
+  TIER_RANK, normalizeTier, ensureHighThinkingSupervisor, isTrivialConversationalPrompt, buildRoster, pickProvider, rosterSummary, isFrontier,
   extractJSON, normalizePlan, swarm, decompose, reconcileWorkerWorktrees,
   createBoard, boardTools, STALL_NOTE, PLAN_TOOLS, READONLY_REVIEW_TOOLS, REVIEW_TOOLS, MAX_CONCURRENCY,
   SUPERVISOR_PLAN_PROMPT, SUPERVISOR_MERGE_PROMPT,

@@ -129,6 +129,24 @@ const kimiTgz = makeTgz('kimi', {
 });
 const KIMI_INTEGRITY = sri(kimiTgz);
 
+// A fake Antigravity CLI package: raw executable inside tarball + SHA-512 hex manifest
+const AGY_V2 = '1.5.18';
+const agyTgz = makeTgz('agy', {
+  'agy': sh('echo "' + AGY_V2 + '"'),
+});
+const AGY_SHA512_HEX = crypto.createHash('sha512').update(fs.readFileSync(agyTgz)).digest('hex');
+const agyPlatKey = rt.agyPlatformKey(process.platform, process.arch);
+
+// A fake GitHub Copilot CLI release: binary inside tarball + SHA256SUMS.txt
+const COPILOT_V2 = '1.0.117';
+const copilotTgz = makeTgz('copilot', {
+  'copilot': sh('echo "GitHub Copilot CLI ' + COPILOT_V2 + '"'),
+});
+const copilotAssetName = process.platform === 'win32'
+  ? `copilot-win32-${process.arch === 'arm64' ? 'arm64' : 'x64'}.zip`
+  : `copilot-${process.platform}-${process.arch === 'arm64' ? 'arm64' : 'x64'}.tar.gz`;
+const COPILOT_SHA256 = crypto.createHash('sha256').update(fs.readFileSync(copilotTgz)).digest('hex');
+
 /** A registry that speaks just enough npm + x.ai to drive one install. */
 function startRegistry() {
   const routes = new Map();
@@ -194,6 +212,38 @@ function startRegistry() {
     res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(kimiTgz).size });
     res.end(fs.readFileSync(kimiTgz));
   });
+  routes.set('/manifests/' + agyPlatKey + '.json', (req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ version: AGY_V2, url: base() + '/t/agy.tar.gz', sha512: AGY_SHA512_HEX }));
+  });
+  routes.set('/t/agy.tar.gz', (req, res) => {
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(agyTgz).size });
+    res.end(fs.readFileSync(agyTgz));
+  });
+  let badCopilotSum = false;
+  routes.set('/repos/github/copilot-cli/releases/latest', (req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      tag_name: 'v' + COPILOT_V2,
+      assets: [
+        { name: copilotAssetName, browser_download_url: base() + '/dl/' + copilotAssetName },
+        { name: 'SHA256SUMS.txt', browser_download_url: base() + '/dl/SHA256SUMS.txt' },
+      ],
+    }));
+  });
+  routes.set('/dl/' + copilotAssetName, (req, res) => {
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(copilotTgz).size });
+    res.end(fs.readFileSync(copilotTgz));
+  });
+  routes.set('/dl/SHA256SUMS.txt', (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    const sum = badCopilotSum ? '0'.repeat(64) : COPILOT_SHA256;
+    res.end([
+      'a'.repeat(64) + '  copilot-linux-x64.tar.gz',
+      sum + '  ./' + copilotAssetName,
+      'b'.repeat(64) + '  copilot-win32-x64.zip',
+    ].join('\n') + '\n');
+  });
   let base = () => '';
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
@@ -201,6 +251,7 @@ function startRegistry() {
       base = () => 'http://127.0.0.1:' + port;
       resolve({
         server, routes, hits,
+        setBadCopilotSum(v) { badCopilotSum = !!v; },
         base,
         opts(extra) {
           return {
@@ -210,6 +261,8 @@ function startRegistry() {
             arch: process.arch,
             npm: base() + '',
             grokPointers: [base() + '/cli/stable'],
+            agyManifestBase: base() + '',
+            githubApi: base() + '',
             allowHosts: new Set(['127.0.0.1']),
             allowInsecure: true,
             minArtifact: 0,
@@ -244,8 +297,8 @@ ok('codex payload triple matches Rust target naming', () => {
   assert.strictEqual(vendorTriple('win32', 'arm64'), 'aarch64-pc-windows-msvc');
 });
 
-ok('the five shipped runtimes are declared', () => {
-  assert.deepStrictEqual(rt.DESCRIPTORS.map((d) => d.id), ['claude-code', 'codex', 'grok', 'gemini-cli', 'kimi-code']);
+ok('the seven shipped runtimes are declared', () => {
+  assert.deepStrictEqual(rt.DESCRIPTORS.map((d) => d.id), ['claude-code', 'codex', 'grok', 'gemini-cli', 'antigravity-cli', 'kimi-code', 'github-copilot']);
   for (const d of rt.DESCRIPTORS) {
     assert.ok(d.label && d.vendor && d.bin, d.id + ' needs label/vendor/bin');
     assert.deepStrictEqual(d.versionArgs, ['--version'], d.id);
@@ -588,7 +641,7 @@ aok('an unreachable registry degrades to an error string, never a throw', async 
     assert.ok(row.error, 'status must carry the failure');
     assert.strictEqual(row.latest, '');
     const list = await mgr.list();
-    assert.strictEqual(list.length, 5);
+    assert.strictEqual(list.length, 7);
     for (const r of list) assert.ok(r.id && r.label, 'list rows stay well-formed');
   } finally { await reg.close(); }
 });
@@ -618,6 +671,20 @@ aok('install(kimi-code) stages dist/main.mjs and links bin/kimi', async () => {
     const r = await mgr.resolve('kimi-code');
     assert.strictEqual(r.source, 'installed');
     assert.match(execFileSync(r.bin, ['--version']).toString(), new RegExp(KIMI_V2));
+  } finally { await reg.close(); }
+});
+
+aok('install(antigravity-cli) verifies manifest sha512 and stages bin/agy', async () => {
+  const reg = await startRegistry();
+  try {
+    const mgr = createRuntimes(reg.opts());
+    const res = await mgr.install('antigravity-cli');
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.version, AGY_V2);
+    assert.strictEqual(res.integrity, true);
+    const r = await mgr.resolve('antigravity-cli');
+    assert.strictEqual(r.source, 'installed');
+    assert.match(execFileSync(r.bin, ['--version']).toString(), new RegExp(AGY_V2));
   } finally { await reg.close(); }
 });
 
@@ -651,6 +718,29 @@ aok('hydrateBundled() seeds userData cleanly without touching bundle and support
     const rolled = await mgr.rollback('claude-code');
     assert.strictEqual(rolled.ok, true);
     assert.strictEqual(rolled.version, '2.0.0');
+  } finally { await reg.close(); }
+});
+
+aok('install(github-copilot) verifies SHA256SUMS.txt asset line and stages bin/copilot', async () => {
+  const reg = await startRegistry();
+  try {
+    const mgr = createRuntimes(reg.opts());
+    const res = await mgr.install('github-copilot');
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.version, COPILOT_V2);
+    assert.strictEqual(res.integrity, true);
+    const r = await mgr.resolve('github-copilot');
+    assert.strictEqual(r.source, 'installed');
+    assert.match(execFileSync(r.bin, ['--version']).toString(), new RegExp(COPILOT_V2));
+  } finally { await reg.close(); }
+});
+
+aok('install(github-copilot) rejects mismatched SHA256SUMS.txt checksum', async () => {
+  const reg = await startRegistry();
+  reg.setBadCopilotSum(true);
+  try {
+    const mgr = createRuntimes(reg.opts());
+    await assert.rejects(() => mgr.install('github-copilot'), /integrity mismatch/);
   } finally { await reg.close(); }
 });
 

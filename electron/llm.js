@@ -502,6 +502,10 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   // (`claude`, `codex`, `grok`, `gemini`/`agy`) instead of direct spoofed HTTP.
   if (cliRunner.isCliProvider(provider)) {
     const cliOpts = extraOpts && typeof extraOpts === 'object' ? extraOpts : {};
+    const dedupedEmit = (e) => {
+      if (e && (e.type === 'text' || e.type === 'thinking') && typeof onDelta === 'function') return;
+      if (typeof cliOpts.emit === 'function') cliOpts.emit(e);
+    };
     return cliRunner.runCliTurn({
       provider,
       messages,
@@ -509,9 +513,10 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
       permissions: cliOpts.permissions,
       onDelta,
       onToolDelta,
-      emit: cliOpts.emit || (() => {}),
+      emit: dedupedEmit,
       signal,
       singleTurn: cliOpts.singleTurn === true,
+      fastTurn: cliOpts.fastTurn === true,
       timeoutMs: cliOpts.timeoutMs,
     });
   }
@@ -933,11 +938,11 @@ function isContextOverflow(e) {
 // while its Build/agent allowance is spent. Classified so the loop can degrade
 // to the text tool protocol instead of dying mid-task.
 function isCreditExhausted(e) {
-  if (e && Number(e.status) === 402) return true;
+  if (e && (e.creditExhausted === true || Number(e.status) === 402)) return true;
   const msg = String((e && e.message) || e || '');
   if (!msg) return false;
   if (/\b402\b/.test(msg)) return true;
-  return /out of credit|insufficient[_ ]?(?:quota|credit|balance|funds)|credit balance|exceeded your current quota|usage balance exhausted|allowance is \d+% used|payment required|billing (?:issue|problem|required)|extra usage|not your plan limits/i.test(msg);
+  return /out of credit|insufficient[_ ]?(?:quota|credit|balance|funds)|credit balance|exceeded your current quota|usage balance exhausted|allowance is \d+% used|payment required|billing (?:issue|problem|required)|extra usage|not your plan limits|subscription does not have access|upgrade your plan to keep coding/i.test(msg);
 }
 
 // True when an error is TRANSIENT — rate limit / quota / gateway blip / dropped
@@ -1159,6 +1164,7 @@ async function chatWithFailover(opts) {
           cwd: opts.cwd,
           permissions: opts.permissions,
           singleTurn: opts.cliSingleTurn === true || !tools || tools.length === 0,
+          fastTurn: opts.fastTurn === true,
           timeoutMs: opts.timeoutMs,
         });
         if (out && out.finish_reason === 'content_filter' && !(out.tool_calls && out.tool_calls.length) && n > 1) {
@@ -1274,8 +1280,8 @@ async function chatWithFailover(opts) {
             } catch (_) {}
           }
           if (!handledMissing) {
-            if ((modelMissing || st === 401 || st === 403) && n > 1) {
-              gate.markDead(p, humanizeLLMError(e).slice(0, 160), modelMissing ? 30 * 60000 : 10 * 60000);
+            if ((modelMissing || st === 401 || st === 403 || (e && e.cliFailover)) && n > 1) {
+              gate.markDead(p, humanizeLLMError(e).slice(0, 160), modelMissing ? 30 * 60000 : ((e && e.cliFailover) ? 5 * 60000 : 10 * 60000));
               if (nx) {
                 emit({ type: 'orchestrator', from: label(p), to: label(nx), reason: humanizeLLMError(e).slice(0, 200) });
                 continue;
@@ -1898,7 +1904,32 @@ async function runAgent(opts) {
     } catch (_) { /* routing hint only */ }
   }
   const depth = Number(opts.depth) || 0;
-  if ((depth === 0 && opts.swarm === true) || opts.role === 'supervisor' || opts.role === 'planner' || (autoRoutedMeta && autoRoutedMeta.role === 'planner')) {
+  const lastUserRow = [...(opts.messages || [])].reverse().find((m) => m && m.role === 'user');
+  const lastUserStr = lastUserRow
+    ? (typeof lastUserRow.content === 'string'
+      ? lastUserRow.content
+      : (Array.isArray(lastUserRow.content) ? lastUserRow.content.map((p) => (p && typeof p.text === 'string' ? p.text : '')).filter(Boolean).join(' ') : ''))
+    : '';
+  const isFastTrivialTurn = depth === 0
+    && typeof swarm.isTrivialConversationalPrompt === 'function'
+    && swarm.isTrivialConversationalPrompt(lastUserStr);
+
+  if (isFastTrivialTurn && providerList[activeIndex]) {
+    if (routingMode === 'auto') {
+      providerList[activeIndex] = { ...providerList[activeIndex], _disableThinking: true, reasoningLevel: 'auto' };
+    } else if ((orch && orch.enabled) || routingMode === 'orchestrator' || opts.swarm === true) {
+      const headOrig = providerList[activeIndex];
+      const fastHead = typeof router.selectFastConversationalModel === 'function'
+        ? router.selectFastConversationalModel(headOrig)
+        : { ...headOrig, _disableThinking: true, reasoningLevel: 'auto' };
+      if (fastHead && fastHead.model && fastHead.model !== headOrig.model) {
+        providerList = [fastHead, ...providerList];
+        activeIndex = 0;
+      } else {
+        providerList[activeIndex] = fastHead;
+      }
+    }
+  } else if ((depth === 0 && opts.swarm === true) || opts.role === 'supervisor' || opts.role === 'planner' || (autoRoutedMeta && autoRoutedMeta.role === 'planner')) {
     for (let pi = 0; pi < providerList.length; pi++) {
       if (providerList[pi] && !providerList[pi]._disableThinking) {
         providerList[pi] = { ...providerList[pi], reasoningLevel: 'high' };
@@ -2198,7 +2229,15 @@ async function runAgent(opts) {
     messages[0].content += `\n\n<project_workspace>\nYour project working directory is: ${currentCwd}\nCreate and edit files in this folder by default (prefer relative paths). Run shell commands in this folder unless the user specifies another location. When the user asks for code or a file, write it here.\n</project_workspace>`;
   }
 
-  if (opts.swarm === true && depth === 0 && allAllowedDefs.has('Swarm')) {
+  const lastUserForFastPath = [...messages].reverse().find((m) => m && m.role === 'user');
+  const lastUserFastText = lastUserForFastPath
+    ? (typeof lastUserForFastPath.content === 'string'
+      ? lastUserForFastPath.content
+      : (Array.isArray(lastUserForFastPath.content) ? lastUserForFastPath.content.map((p) => (p && typeof p.text === 'string' ? p.text : '')).filter(Boolean).join(' ') : ''))
+    : '';
+  const trivialTurn = depth === 0 && typeof swarm.isTrivialConversationalPrompt === 'function' && swarm.isTrivialConversationalPrompt(lastUserFastText);
+
+  if (opts.swarm === true && depth === 0 && !trivialTurn && allAllowedDefs.has('Swarm')) {
     messages[0].content += `\n\n<swarm_mode_active>\nSwarm mode is ON. For any non-trivial build, multi-file implementation, audit, or research task with 2 or more independent workstreams, call \`Swarm\` {"goal": "..."} (optionally passing "tasks") or spawn parallel \`Task\` workers right away after at most ONE quick directory check rather than doing every file sequentially yourself.\n</swarm_mode_active>`;
   }
 
@@ -2872,7 +2911,9 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         tools: withTools ? tools : undefined,
         cwd: currentCwd,
         permissions: permissionMode,
-        cliSingleTurn: !withTools,
+        cliSingleTurn: !withTools || trivialTurn,
+        fastTurn: trivialTurn,
+        timeoutMs: opts.timeoutMs,
         onDelta: (text, thinking) => {
           if (thinking) turnThink += text.length; else turnChars += text.length;
           emit({ type: thinking ? 'thinking' : 'delta', text });
@@ -3444,6 +3485,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         if (/^grok-/i.test(ml)) return op === 'grok';
         if (/^kimi-|^moonshot/i.test(ml)) return op === 'kimi';
         if (/^glm-|^zai/i.test(ml)) return op === 'zai';
+        if (/^copilot-/i.test(ml)) return op === 'copilot';
         return !op && Boolean(row.baseURL && (row.apiKey || /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(row.baseURL) && !/:(3001|31415)\b/.test(row.baseURL)));
       };
 

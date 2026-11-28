@@ -24,7 +24,7 @@ const eq = (name, actual, expected) => ok(name, JSON.stringify(actual) === JSON.
 (async () => {
   console.log('\nprovider registry (official CLI + optional encrypted API key)');
   {
-    eq('six first-party providers are catalogued', po.providerIds(), ['claude', 'chatgpt', 'antigravity', 'grok', 'kimi', 'zai']);
+    eq('seven first-party providers are catalogued', po.providerIds(), ['claude', 'chatgpt', 'antigravity', 'grok', 'kimi', 'zai', 'copilot']);
     for (const id of po.providerIds()) {
       const p = po.provider(id);
       eq(id + ' kind matches', p.kind, id === 'zai' ? 'coding-plan' : 'cli');
@@ -41,6 +41,8 @@ const eq = (name, actual, expected) => ok(name, JSON.stringify(actual) === JSON.
     eq('anthropic alias resolves to claude', po.provider('anthropic').id, 'claude');
     eq('moonshot alias resolves to kimi', po.provider('moonshot').id, 'kimi');
     eq('glm alias resolves to zai', po.provider('glm').id, 'zai');
+    eq('github-copilot alias resolves to copilot', po.provider('github-copilot').id, 'copilot');
+    eq('github alias resolves to copilot', po.provider('github').id, 'copilot');
     eq('unknown provider is null', po.provider('nope'), null);
   }
 

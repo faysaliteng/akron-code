@@ -2559,7 +2559,7 @@ ipcMain.handle('autobot:orchPaidProvidersGet', () => {
   }
 });
 
-ipcMain.handle('autobot:orchPaidProviderSave', (e, payload = {}) => {
+ipcMain.handle('autobot:orchPaidProviderSave', async (e, payload = {}) => {
   try {
     const orchRouter = require('../orch-router');
     const idRaw = String(payload.id || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
@@ -2588,9 +2588,13 @@ ipcMain.handle('autobot:orchPaidProviderSave', (e, payload = {}) => {
     })).filter((m) => m.id);
 
     const nextKeysMap = { ...(settings.providerKeys || {}) };
+    const isZaiProvider = id === 'zai_coding' || /api\.z\.ai\/api\/coding/i.test(baseURL);
     if (payload.clearKey) {
       try { secretstore.del('autobot.orch_api_key.' + id); } catch (_) {}
       try { secretstore.del('autobot.orch_base_key.' + nb); } catch (_) {}
+      if (isZaiProvider && providerOauth && typeof providerOauth.removeAccount === 'function') {
+        try { providerOauth.removeAccount('zai', 'coding-plan'); } catch (_) {}
+      }
       for (const k of Object.keys(nextKeysMap)) {
         if (orchRouter.normBase(k) === nb) delete nextKeysMap[k];
       }
@@ -2606,6 +2610,9 @@ ipcMain.handle('autobot:orchPaidProviderSave', (e, payload = {}) => {
         secretstore.set('autobot.orch_api_key.' + id, k);
         secretstore.set('autobot.orch_base_key.' + nb, k);
         nextKeysMap[nb] = k;
+        if (isZaiProvider && providerOauth && typeof providerOauth.addBearer === 'function') {
+          try { await providerOauth.addBearer('zai:coding-plan', k, { label: 'Z.ai Coding Plan Key' }); } catch (_) {}
+        }
       }
     }
 
@@ -2791,31 +2798,70 @@ ipcMain.handle('autobot:orchPaidProviderFetchModels', async (e, payload = {}) =>
 ipcMain.handle('autobot:orchAutoDetectModels', async () => {
   try {
     const orchRouter = require('../orch-router');
+    const cliRunner = require('../cli-runner');
+    const modelCatalog = require('../model-catalog');
     const settings = store.getSettings ? (store.getSettings() || {}) : {};
     const savedList = Array.isArray(settings.orchPaidProviders) ? settings.orchPaidProviders.slice() : [];
     const snap = buildOrchPaidProvidersSnapshot();
     const candidates = (snap.providers || []).filter((p) => p && p.baseURL && (p.hasKey || /^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(p.baseURL)));
     const probed = [];
     let dirty = false;
-    await Promise.all(candidates.map(async (p) => {
-      try {
-        const apiKey = orchRouter.resolvePaidProviderApiKey({ orchProviderId: p.id, baseURL: p.baseURL }, { settings, secretstore });
-        const res = await probeProviderModelsEndpoint(p.baseURL, apiKey, 5000);
-        if (res.ok && res.models.length) {
-          const rec = { id: p.id, name: p.name, baseURL: p.baseURL, custom: Boolean(p.custom), models: res.models };
-          const idx = savedList.findIndex((x) => x && x.id === p.id);
-          if (idx >= 0) savedList[idx] = rec;
-          else savedList.push(rec);
-          dirty = true;
-          probed.push({ id: p.id, name: p.name, count: res.models.length });
-        } else {
-          probed.push({ id: p.id, name: p.name, count: p.models.length, error: res.error || '' });
+
+    if (providerOauth && typeof providerOauth.syncCliAccounts === 'function') {
+      try { await providerOauth.syncCliAccounts(); } catch (_) {}
+    }
+    const subProviders = ((providerOauth && typeof providerOauth.status === 'function' ? providerOauth.status() : null)?.providers || [])
+      .filter((pv) => pv && pv.signedIn && (pv.transport === 'cli' || pv.id === 'zai'));
+
+    await Promise.all([
+      ...candidates.map(async (p) => {
+        try {
+          const apiKey = orchRouter.resolvePaidProviderApiKey({ orchProviderId: p.id, baseURL: p.baseURL }, { settings, secretstore });
+          const res = await probeProviderModelsEndpoint(p.baseURL, apiKey, 5000);
+          if (res.ok && res.models.length) {
+            const rec = { id: p.id, name: p.name, baseURL: p.baseURL, custom: Boolean(p.custom), models: res.models };
+            const idx = savedList.findIndex((x) => x && x.id === p.id);
+            if (idx >= 0) savedList[idx] = rec;
+            else savedList.push(rec);
+            dirty = true;
+            probed.push({ id: p.id, name: p.name, count: res.models.length });
+          } else {
+            probed.push({ id: p.id, name: p.name, count: p.models.length, error: res.error || '' });
+          }
+        } catch (err) {
+          probed.push({ id: p.id, name: p.name, count: p.models.length, error: oneLine(err) });
         }
-      } catch (err) {
-        probed.push({ id: p.id, name: p.name, count: p.models.length, error: oneLine(err) });
-      }
-    }));
+      }),
+      ...subProviders.map(async (pv) => {
+        try {
+          let merged = Array.isArray(pv.models) ? [...pv.models] : [];
+          if (pv.transport === 'cli') {
+            const resolved = await cliRunner.resolveCliBinary({ cliKind: pv.id, cliId: pv.cliId, cliBin: pv.bin }).catch(() => ({ bin: '' }));
+            const live = (resolved && resolved.bin && typeof cliRunner.probeCliModels === 'function')
+              ? await cliRunner.probeCliModels(pv.id, resolved.bin).catch(() => [])
+              : [];
+            if (live.length) {
+              merged = [...live];
+              if (Array.isArray(pv.models)) {
+                const seenIds = new Set(live.map((m) => String((m && m.id) || '').toLowerCase()));
+                for (const pm of pv.models) {
+                  if (pm && pm.id && !seenIds.has(String(pm.id).toLowerCase())) merged.push({ ...pm });
+                }
+              }
+            }
+          }
+          if (merged.length && modelCatalog && typeof modelCatalog.register === 'function') {
+            modelCatalog.register(pv.id, merged);
+          }
+          probed.push({ id: pv.id, name: pv.label || pv.id, count: merged.length });
+        } catch (err) {
+          probed.push({ id: pv.id, name: pv.label || pv.id, count: (pv.models && pv.models.length) || 0, error: oneLine(err) });
+        }
+      }),
+    ]);
+
     if (dirty) store.setSettings({ orchPaidProviders: savedList });
+    try { if (typeof broadcast === 'function') broadcast({ type: 'model-catalog-updated' }); } catch (_) {}
     return { ...buildOrchPaidProvidersSnapshot(), probed };
   } catch (err) {
     return { ok: false, providers: [], probed: [], error: oneLine(err) };

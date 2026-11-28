@@ -1063,6 +1063,109 @@ function resolvePaidProviderApiKey(providerOrRow, { settings = null, secretstore
   return '';
 }
 
+function filterConnectedCliRows(rows, opts = {}) {
+  if (!Array.isArray(rows) || !rows.length) return rows;
+  let st = opts.providerStatus || null;
+  if (!st) {
+    try {
+      const po = require('./provider-oauth');
+      if (po && typeof po.status === 'function') st = po.status();
+    } catch (_) {
+      return rows;
+    }
+  }
+  const providers = st && Array.isArray(st.providers) ? st.providers : [];
+  if (!providers.length) return rows;
+
+  const provMap = new Map();
+  let anyConnectedAnywhere = false;
+  for (const pv of providers) {
+    if (!pv || !pv.id) continue;
+    const accts = Array.isArray(pv.accounts) ? pv.accounts : [];
+    const connected = Boolean(pv.signedIn || accts.some((a) => a && a.hasToken !== false && !a.needsSignIn && !a.expired));
+    if (connected) anyConnectedAnywhere = true;
+    const activeAcct = (accts.find((a) => a && a.account === pv.active && !a.needsSignIn && !a.expired)
+      || accts.find((a) => a && !a.needsSignIn && !a.expired)
+      || accts[0]
+      || null);
+    provMap.set(pv.id, { connected, activeAccount: activeAcct ? activeAcct.account : (pv.active || '') });
+  }
+
+  const out = [];
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue;
+    const hasExplicitSecret = Boolean(String(r.apiKey || r.accessToken || '').trim());
+    const usesCliOrOauth = Boolean(r.oauthProvider || r.oauth || r.cliMode || r.transport === 'cli') && !hasExplicitSecret;
+    if (!usesCliOrOauth) {
+      out.push(r);
+      continue;
+    }
+    const rawOauth = String(r.oauthProvider || r.cliKind || '').trim();
+    const provKey = rawOauth.split(':')[0].toLowerCase();
+    const info = provKey ? provMap.get(provKey) : null;
+    if (info && !info.connected) continue;
+    if (info && info.activeAccount && rawOauth.includes(':')) {
+      const suffix = rawOauth.slice(rawOauth.indexOf(':') + 1);
+      const pv = providers.find((p) => p && p.id === provKey);
+      const hasSuffix = pv && Array.isArray(pv.accounts) && pv.accounts.some((a) => a && a.account === suffix && !a.needsSignIn && !a.expired);
+      if (!hasSuffix && suffix !== info.activeAccount) {
+        out.push({ ...r, oauthProvider: `${provKey}:${info.activeAccount}`, account: info.activeAccount });
+        continue;
+      }
+    }
+    out.push(r);
+  }
+  if (!opts.strict && out.length === 0 && !anyConnectedAnywhere) return rows;
+  return out;
+}
+
+function selectFastConversationalModel(provider, opts = {}) {
+  if (!provider || typeof provider !== 'object') return provider;
+  const provKey = String(provider.oauthProvider || '').split(':')[0].toLowerCase()
+    || String(provider.cliKind || '').toLowerCase()
+    || String(provider.transport || '').toLowerCase();
+  const rawModel = String(provider.model || '').trim();
+  const modelStr = rawModel.toLowerCase();
+
+  // Keep already-fast models intact (only disable heavy thinking)
+  if (/(?:haiku|flash|neon-low|hydrogen|mini|nano|-fast\b)/i.test(modelStr)) {
+    return { ...provider, _disableThinking: true, reasoningLevel: 'auto', _fastConversational: true };
+  }
+
+  let fastModel = '';
+  if (provKey === 'claude' || provKey === 'anthropic' || /^claude-/.test(modelStr)) {
+    fastModel = 'claude-haiku-4-5-20251001';
+    try {
+      const mc = require('./model-catalog');
+      if (mc && typeof mc.isModelAvailable === 'function' && mc.hasLiveCatalog && mc.hasLiveCatalog('claude') && mc.isModelAvailable('claude', 'claude-haiku-5-5')) {
+        fastModel = 'claude-haiku-5-5';
+      }
+    } catch (_) {}
+  } else if (provKey === 'antigravity' || provKey === 'google' || provKey === 'agy' || /^gemini-/.test(modelStr)) {
+    fastModel = 'gemini-4-neon-low';
+  } else if (provKey === 'chatgpt' || provKey === 'codex' || /^(gpt-|o[1-4]|codex)/.test(modelStr)) {
+    fastModel = 'gpt-5-4';
+  } else if (provKey === 'grok' || /^grok-/.test(modelStr)) {
+    fastModel = 'grok-4-fast';
+  } else if (provKey === 'kimi' || /^kimi-/.test(modelStr)) {
+    fastModel = 'kimi-k3';
+  } else if (provKey === 'zai' || /^glm-/.test(modelStr) || /api\.z\.ai/i.test(String(provider.baseURL || ''))) {
+    fastModel = 'glm-5.3-flash';
+  } else if (provKey === 'copilot' || provKey === 'github-copilot' || /^copilot-/.test(modelStr)) {
+    fastModel = 'copilot-auto';
+  }
+
+  if (!fastModel) return { ...provider, _disableThinking: true, reasoningLevel: 'auto', _fastConversational: true };
+  return {
+    ...provider,
+    model: fastModel,
+    reasoningLevel: 'auto',
+    _disableThinking: true,
+    _fastConversational: true,
+    ...(opts.maxTokens ? { maxTokens: opts.maxTokens } : {}),
+  };
+}
+
 function summary(orch, provider) {
   if (!poolsActive(orch, provider)) return '';
   return ROLES.map((r) => {
@@ -1077,4 +1180,5 @@ module.exports = {
   freellmPreset, summary, modelEntry, normBase, rotate,
   resolveMediaChain, resolveMediaProvider, isTextOnlyModelId, listMediaStudioCatalog, MEDIA_PROVIDER_KEYS,
   ORCH_PAID_API_PRESETS, resolvePaidProviderApiKey,
+  filterConnectedCliRows, selectFastConversationalModel,
 };

@@ -1017,40 +1017,71 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
     setModelMenuOpen(false);
   };
 
-  const activateOrchestratorSupervisor = (row = null) => {
-    if (!row && !guardOrchestratorAction(orchestrator, openSettings)) {
+  const activateOrchestratorSupervisor = (row = null, modeOpts = {}) => {
+    const preset = String((modeOpts && modeOpts.preset) || '').trim();
+    const baseRows = (orchestrator && Array.isArray(orchestrator.providers)) ? orchestrator.providers : [];
+    const seededRows = baseRows.length ? baseRows : (Array.isArray(orchModelChoices) ? orchModelChoices.slice(0, 6) : []);
+
+    if (!row && !preset && !guardOrchestratorAction(orchestrator, openSettings)) {
       setModelMenuOpen(false);
       return;
     }
-    const baseRows = (orchestrator && Array.isArray(orchestrator.providers)) ? orchestrator.providers : [];
-    if (row && row.model) {
-      const idx = baseRows.findIndex((p) => p && p.model === row.model && String(p.oauthProvider || '') === String(row.oauthProvider || ''));
-      const isOauthRow = !!(row.oauth || row.oauthProvider);
-      const ctxWin = isOauthRow ? 0 : (Number(row.contextWindow) > 0 ? Number(row.contextWindow) : 0);
-      const nextMaxTokens = row.maxTokens != null ? row.maxTokens : (ctxWin > 0 && ctxWin <= 16384 ? 4096 : 32000);
+
+    let pickedRow = row;
+    if (!pickedRow && preset === 'gemini-4-orchestrator') {
+      pickedRow = (Array.isArray(orchModelChoices) && orchModelChoices.find((r) => r && /gemini-pro-orchestrator|gemini-4-orchestrator/i.test(String(r.model || ''))))
+        || (Array.isArray(orchModelChoices) && orchModelChoices.find((r) => r && String(r.oauthProvider || '').startsWith('antigravity')))
+        || { model: 'gemini-pro-orchestrator-neon', oauthProvider: 'antigravity:agy', transport: 'cli', oauth: true, role: 'planner' };
+    } else if (!pickedRow && (preset === 'swarm-parallel' || preset === 'auto-orchestrator')) {
+      pickedRow = (Array.isArray(orchModelChoices) && (orchModelChoices.find((r) => r && (r.role === 'planner' || /opus|gemini-4-orchestrator|gemini-4-carbon|gpt-5|grok-4\.7/i.test(String(r.model || '')))) || orchModelChoices[0]))
+        || null;
+    }
+
+    if (!pickedRow && !guardOrchestratorAction({ ...(orchestrator || {}), providers: seededRows }, openSettings)) {
+      setModelMenuOpen(false);
+      return;
+    }
+
+    const wantSwarm = modeOpts && typeof modeOpts.swarm === 'boolean'
+      ? modeOpts.swarm
+      : (preset === 'auto-orchestrator' ? false : true);
+
+    if (pickedRow && pickedRow.model) {
+      const idx = seededRows.findIndex((p) => p && p.model === pickedRow.model && String(p.oauthProvider || '') === String(pickedRow.oauthProvider || ''));
+      const nextRows = idx >= 0 ? seededRows : [pickedRow, ...seededRows];
+      const nextIdx = idx >= 0 ? idx : 0;
+      const isOauthRow = !!(pickedRow.oauth || pickedRow.oauthProvider);
+      const ctxWin = isOauthRow ? 0 : (Number(pickedRow.contextWindow) > 0 ? Number(pickedRow.contextWindow) : 0);
+      const nextMaxTokens = pickedRow.maxTokens != null ? pickedRow.maxTokens : (ctxWin > 0 && ctxWin <= 16384 ? 4096 : 32000);
       setProvider((v) => cleanProviderSwitch(v, {
-        baseURL: row.baseURL != null ? row.baseURL : (row.oauthProvider ? '' : v.baseURL),
-        apiKey: row.apiKey != null ? row.apiKey : (row.oauthProvider ? '' : v.apiKey),
-        model: row.model,
+        baseURL: pickedRow.baseURL != null ? pickedRow.baseURL : (pickedRow.oauthProvider ? '' : v.baseURL),
+        apiKey: pickedRow.apiKey != null ? pickedRow.apiKey : (pickedRow.oauthProvider ? '' : v.apiKey),
+        model: pickedRow.model,
         maxTokens: nextMaxTokens,
         contextWindow: ctxWin,
-        supportsTools: row.supportsTools !== false,
-        oauthProvider: row.oauthProvider || '',
-        transport: row.transport || '',
+        supportsTools: pickedRow.supportsTools !== false,
+        oauthProvider: pickedRow.oauthProvider || '',
+        transport: pickedRow.transport || '',
         oauth: isOauthRow,
         accessToken: '',
         routingMode: 'orchestrator',
       }));
       if (setOrchestrator) {
-        setOrchestrator({ ...(orchestrator || { providers: [] }), enabled: true, activeIndex: idx >= 0 ? idx : 0 });
+        setOrchestrator({ ...(orchestrator || {}), enabled: true, providers: nextRows, activeIndex: nextIdx });
       }
-      if (typeof setSwarmEnabled === 'function') setSwarmEnabled(true);
+      if (typeof setSwarmEnabled === 'function') {
+        if (wantSwarm) setSwarmEnabled(true);
+        else setSwarmEnabled(false);
+      }
     } else {
       setProvider((v) => ({ ...v, routingMode: 'orchestrator' }));
       if (setOrchestrator) {
-        setOrchestrator({ ...(orchestrator || { providers: [] }), enabled: true, activeIndex: 0 });
+        setOrchestrator({ ...(orchestrator || {}), enabled: true, providers: seededRows, activeIndex: seededRows.length ? Math.max(0, Number(orchestrator?.activeIndex) || 0) : 0 });
       }
-      if (typeof setSwarmEnabled === 'function') setSwarmEnabled(true);
+      if (typeof setSwarmEnabled === 'function') {
+        if (wantSwarm) setSwarmEnabled(true);
+        else setSwarmEnabled(false);
+      }
     }
     setModelMenuOpen(false);
   };
@@ -1110,9 +1141,9 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
     // Also surface live signed-in subscription account models so Orchestrator pairs work out of the box.
     if (provOauth && Array.isArray(provOauth.providers)) {
       for (const pv of provOauth.providers) {
-        const accts = pv.accounts || [];
+        const accts = (pv.accounts || []).filter((a) => a && a.hasToken !== false && !a.needsSignIn && !a.expired);
         if (!accts.length) continue;
-        const firstAcct = accts[0];
+        const firstAcct = accts.find((a) => a.account === pv.active) || accts[0];
         const live = provModels[pv.id + ':' + firstAcct.account] || provModels[pv.id];
         const list = (live && live.models && live.models.length ? live.models : (pv.models || []));
         for (const m of list) {
@@ -1600,6 +1631,8 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
                   providerAction={providerAction}
                   pickOauthAccount={pickOauthAccount}
                   provNotice={provNotice}
+                  swarmEnabled={swarmEnabled}
+                  setSwarmEnabled={setSwarmEnabled}
                   settings={settings}
                   T={T}
                 />

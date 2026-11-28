@@ -120,8 +120,10 @@ const TIER_PREFERENCES = {
   fast: [
     'claude-haiku-5-5',
     'gemini-4-hydrogen-low',
+    'gemini-4-hydrogen',
     'claude-sonnet-5-5-low',
     'gemini-4-neon-low',
+    'gemini-4-neon',
     'gemini-2.5-flash',
     'grok-4-fast',
     'gpt-5.6-luna',
@@ -130,14 +132,19 @@ const TIER_PREFERENCES = {
     'qwen3.8-27b',
     'deepseek-v4-flash',
     'glm-4.7-flash',
+    'copilot-auto',
   ],
   coder: [
     'claude-sonnet-5-5',
     'claude-sonnet-5-5-medium',
     'claude-sonnet-5-5-high',
     'claude-sonnet-4-6',
+    'copilot-claude-sonnet-4-5',
+    'copilot-gpt-5-4',
     'gpt-5.6-terra',
+    'gemini-4-carbon',
     'gemini-4-carbon-medium',
+    'gemini-4-argon',
     'gemini-4-neon-medium',
     'grok-code-fast-1',
     'kimi-k3',
@@ -152,7 +159,11 @@ const TIER_PREFERENCES = {
     'claude-opus-5-5-high',
     'claude-opus-5-5-medium',
     'claude-opus-4-6',
+    'copilot-claude-opus-4-6',
+    'copilot-gemini-3-1-pro',
+    'gemini-4-orchestrator',
     'gemini-4-carbon-high',
+    'gemini-4-argon',
     'gemini-4-neon-high',
     'gpt-6-luna',
     'claude-fable-5-2',
@@ -203,8 +214,13 @@ const VENDOR_MODELS_BY_PROVIDER = {
     'codex-auto-review',
   ],
   antigravity: [
+    'gemini-4-orchestrator',
     'gemini-4-hydrogen-low',
+    'gemini-4-hydrogen',
     'gemini-4-neon-low',
+    'gemini-4-neon',
+    'gemini-4-argon',
+    'gemini-4-carbon',
     'gemini-4-carbon-medium',
     'gemini-4-neon-medium',
     'gemini-4-carbon-high',
@@ -232,6 +248,14 @@ const VENDOR_MODELS_BY_PROVIDER = {
     'glm-5.4',
     'glm-5.3',
     'glm-5.3-flash',
+  ],
+  copilot: [
+    'copilot-auto',
+    'copilot-claude-sonnet-4-5',
+    'copilot-claude-opus-4-6',
+    'copilot-gpt-5-4',
+    'copilot-gpt-5',
+    'copilot-gemini-3-1-pro',
   ],
 };
 
@@ -884,7 +908,12 @@ function collectCandidateModels({
   if (orchestrator && orchRouter.poolsConfig(orchestrator)) {
     const gw = orchestrator.pools && orchestrator.pools.gateway;
     const gwUrl = (gw && gw.baseURL) || (provider && provider.baseURL) || '';
-    let gwKey = String((gw && gw.apiKey) || (provider && provider.apiKey) || '').trim();
+    const normHost = (u) => String(u || '').trim().replace(/\/+$/, '').replace(/\/v1$/i, '').toLowerCase();
+    const samePoolHost = Boolean(
+      gw && gw.baseURL && provider && provider.baseURL && !provider.oauthProvider
+      && normHost(gw.baseURL) === normHost(provider.baseURL)
+    );
+    let gwKey = String((gw && gw.apiKey) || ((!gw || !gw.baseURL || samePoolHost) ? (provider && provider.apiKey) : '') || '').trim();
     if (!gwKey && gwUrl) gwKey = readLocalFreeLlmToken(gwUrl, store);
     if (orchRouter.isGatewayCredentialReady(gwUrl, gwKey)) {
       for (const r of ['fast', 'coder', 'planner', 'vision', 'longctx']) {
@@ -1704,8 +1733,14 @@ async function classifyAndSelect({
     }
   }
 
-  // Never downgrade an active multi-step engineering continuation or Swarm turn to fast/haiku.
-  if (swarm === true && (!classification || classification.role === 'fast' || classification.role === 'coder')) {
+  // Never downgrade an active multi-step engineering continuation or non-trivial Swarm turn to fast/haiku.
+  let trivialPrompt = false;
+  try {
+    const swarmMod = require('./swarm');
+    trivialPrompt = typeof swarmMod.isTrivialConversationalPrompt === 'function' && swarmMod.isTrivialConversationalPrompt(text);
+  } catch (_) {}
+
+  if (swarm === true && !trivialPrompt && (!classification || classification.role === 'fast' || classification.role === 'coder')) {
     const hasPlanner = roster && Array.isArray(roster.planner) && roster.planner.length > 0;
     const minRole = hasPlanner ? 'planner' : 'coder';
     classification = {

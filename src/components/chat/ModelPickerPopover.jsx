@@ -24,6 +24,7 @@ const SUBSCRIPTION_TIERS = {
   grok: 'CLI · SuperGrok',
   kimi: 'CLI · Kimi Code',
   zai: 'Coding Plan',
+  copilot: 'CLI · GitHub',
 };
 
 export function ModelPickerPopover({
@@ -58,6 +59,8 @@ export function ModelPickerPopover({
   providerAction,
   pickOauthAccount,
   provNotice,
+  swarmEnabled,
+  setSwarmEnabled,
   settings,
   T,
 }) {
@@ -65,6 +68,7 @@ export function ModelPickerPopover({
   const [search, setSearch] = useState('');
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const [collapsedProviders, setCollapsedProviders] = useState({});
+  const [expandedCards, setExpandedCards] = useState({});
   const [kbIdx, setKbIdx] = useState(0);
   const searchInputRef = useRef(null);
 
@@ -96,28 +100,31 @@ export function ModelPickerPopover({
       const acctKey = activeAcct ? `${pv.id}:${activeAcct.account}` : pv.id;
       const live = provModels[acctKey] || provModels[pv.id];
       const rawModels = (live && Array.isArray(live.models) && live.models.length ? live.models : (pv.models || []));
-      const models = rawModels.map((m) => {
-        const id = String((m && m.id) || m || '').trim();
-        const win = Number(m && m.contextWindow) || contextWindowFor(id);
-        const winLabel = (m && m.windowLabel) || fmtContextWindowBadge(win);
-        return {
-          id,
-          label: String((m && m.label) || id),
-          windowLabel: winLabel,
-          contextWindow: win,
-          group: (m && m.group) || '',
-          kind: 'oauth',
-          prov: pv,
-          account: activeAcct ? activeAcct.account : 'cli',
-          providerKey: pv.id,
-          pinKey: modelVisibilityKey(pv.id, id),
-        };
-      }).filter((m) => m.id);
+      const cleanLabel = String(pv.label || '').replace(/\bCLI\s+CLI\b/gi, 'CLI').trim();
+      const models = rawModels
+        .filter((m) => !(pv.id === 'antigravity' && m && m.id && /^gemini-(?:2\.5|3-flash|3\.1|3\.5)/i.test(String(m.id))))
+        .map((m) => {
+          const id = String((m && m.id) || m || '').trim();
+          const win = Number(m && m.contextWindow) || contextWindowFor(id);
+          const winLabel = (m && m.windowLabel) || fmtContextWindowBadge(win);
+          return {
+            id,
+            label: String((m && m.label) || id),
+            windowLabel: winLabel,
+            contextWindow: win,
+            group: (m && m.group) || '',
+            kind: 'oauth',
+            prov: pv,
+            account: activeAcct ? activeAcct.account : 'cli',
+            providerKey: pv.id,
+            pinKey: modelVisibilityKey(pv.id, id),
+          };
+        }).filter((m) => m.id);
       const connected = accounts.some((a) => a && a.hasToken !== false && !a.needsSignIn && !a.expired);
       const planBadge = (activeAcct && activeAcct.plan) || SUBSCRIPTION_TIERS[pv.id] || 'CLI';
       return {
         id: pv.id,
-        label: pv.label,
+        label: cleanLabel,
         vendor: pv.vendor,
         pv,
         accounts,
@@ -522,168 +529,53 @@ export function ModelPickerPopover({
 
       {/* Main Scroll Area */}
       <div className="mp-scroll">
-        {/* 2. Pinned Favorites / Quick-Switch Bar */}
-        {pinnedItems.length > 0 && (
-          <div data-testid="mp-pinned-section">
-            <div className="mp-section-head">
-              <span>★ Pinned Favorites</span>
-              <span>{pinnedItems.length}</span>
-            </div>
-            {prefs.layout === 'grid' ? (
-              <div className="mp-pinned-bar">
-                {pinnedItems.map((item) => {
-                  const active = isItemActive(item);
-                  return (
-                    <button
-                      key={'pinpill:' + item.pinKey}
-                      type="button"
-                      className={'mp-pin-pill' + (active ? ' on' : '')}
-                      onClick={() => selectItem(item)}
-                    >
-                      <ModelLogo model={item.id} provider={item.providerKey} size={13} />
-                      <span>{item.label}</span>
-                      {item.windowLabel && <span className="mp-pill ctx">{item.windowLabel}</span>}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <div>{pinnedItems.map((item) => renderModelItem(item, 'pin:' + item.pinKey, item))}</div>
-            )}
-          </div>
-        )}
-
-        {/* 3. Active Subscription & Coding Plan Accounts FIRST */}
-        {visibleSubscriptions.length > 0 && (
-          <div data-testid="mp-subscriptions-section">
-            <div className="mp-section-head">
-              <span>Subscription CLIs &amp; Coding Plans</span>
-              <button
-                type="button"
-                className="prov-link"
-                onClick={async () => {
-                  try {
-                    if (window.autobot?.refreshModelCatalogs) await window.autobot.refreshModelCatalogs();
-                    if (loadProvOauth) await loadProvOauth();
-                  } catch (_) {}
-                }}
-              >
-                <Icon name="Refresh" size={11} /> Refresh
-              </button>
-            </div>
-            {provOauth && provOauth.storeError && <ProvNotice warn text={T('account.storeError')} />}
-
-            {prefs.layout === 'compact' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {visibleSubscriptions.map((sg) => (
-                  <React.Fragment key={sg.id}>
-                    <div className="mp-model-row" style={{ justifyContent: 'space-between' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
-                        <ModelLogo provider={sg.id} size={15} />
-                        <span className="mp-model-label">{sg.label}</span>
-                        <span className={'mp-pill ' + (sg.connected ? 'plan' : 'cli')}>
-                          {sg.connected ? (sg.activeAcct?.plan || 'Connected') : sg.planBadge}
-                        </span>
-                      </div>
-                      <button type="button" data-testid={`picker-signin-${sg.id}`} className={'mp-signin-btn' + (!sg.connected ? ' primary' : '')} onClick={() => cliLogin.start(sg.id)}>
-                        {sg.connected ? 'Reconnect' : 'Sign in'}
-                      </button>
-                    </div>
-                    {sg.models.map((m) => renderModelItem(m, `cmp:${sg.id}:${m.id}`, m))}
-                  </React.Fragment>
-                ))}
-              </div>
-            ) : prefs.layout === 'grid' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div className="mp-acct-chip-row">
-                  {visibleSubscriptions.map((sg) => (
-                    <button
-                      key={'qsign:' + sg.id}
-                      type="button"
-                      data-testid={`picker-signin-${sg.id}`}
-                      className={'mp-signin-btn' + (!sg.connected ? ' primary' : '')}
-                      onClick={() => cliLogin.start(sg.id)}
-                    >
-                      {sg.label.split(' ')[0]} · {sg.connected ? 'Reconnect' : 'Sign in'}
-                    </button>
-                  ))}
-                </div>
-                <div className="mp-grid">
-                  {visibleSubscriptions.flatMap((sg) => sg.models.slice(0, query ? 20 : 4).map((m) => renderModelItem(m, `grd:${sg.id}:${m.id}`, m)))}
-                </div>
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                {visibleSubscriptions.map((sg) => {
-                  const isCollapsed = !!collapsedProviders[sg.id] && !query;
-                  return (
-                    <div key={sg.id} className={'mp-sub-card' + (sg.connected ? ' connected' : '')} data-testid={`sub-card-${sg.id}`}>
-                      <div className="mp-sub-head">
-                        <button
-                          type="button"
-                          className="mp-sub-title-btn"
-                          onClick={() => setCollapsedProviders((c) => ({ ...c, [sg.id]: !c[sg.id] }))}
-                          aria-expanded={!isCollapsed}
-                        >
-                          <ModelLogo provider={sg.id} size={16} />
-                          <span className="mp-sub-name">{sg.label}</span>
-                          <span className={'mp-pill ' + (sg.connected ? 'plan' : 'cli')}>
-                            {sg.connected ? (sg.activeAcct?.plan || 'Connected') : sg.planBadge}
-                          </span>
-                          <Icon name={isCollapsed ? 'CaretRight' : 'CaretDown'} size={11} />
-                        </button>
-                        <button
-                          type="button"
-                          data-testid={`picker-signin-${sg.id}`}
-                          className={'mp-signin-btn' + (!sg.connected ? ' primary' : '')}
-                          onClick={() => cliLogin.start(sg.id)}
-                        >
-                          {sg.connected ? 'Reconnect' : 'Sign in'}
-                        </button>
-                      </div>
-
-                      {sg.accounts.length > 0 && (
-                        <div className="mp-acct-chip-row">
-                          {sg.accounts.map((a) => {
-                            const on = provider.oauthProvider === a.id;
-                            return (
-                              <div key={a.id} className={'mp-acct-chip' + (on ? ' on' : '')}>
-                                <button type="button" className="mp-acct-chip-pick" onClick={() => pickOauthAccount(sg.pv, a.account)}>
-                                  <span className={'model-dot ' + (a.expired || a.needsSignIn ? 'out' : 'ok')} />
-                                  <span>{a.label || a.account}</span>
-                                </button>
-                                <button type="button" className="mp-acct-chip-x" title="Sign out" disabled={!!provBusy} onClick={() => providerAction('signout', sg.id, a.account)}>
-                                  <Icon name="X" size={11} />
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {!isCollapsed && (
-                        <div>
-                          {sg.models.slice(0, query ? 30 : 8).map((m) => renderModelItem(m, `crd:${sg.id}:${m.id}`, m))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* 4. Routing Modes (Auto DeepSeek & Orchestrator) */}
-        <div className="model-menu-divider" />
-        <div>
+        {/* 1. Pinned Top Orchestrator & Routing Modes */}
+        <div className="mp-orch-top" data-testid="mp-orchestrator-top-section">
           <div className="mp-section-head">
-            <span>Routing mode</span>
-            {onOpenTutorial && (
-              <button type="button" data-testid="open-mode-guide-btn" className="prov-link" onClick={() => { setModelMenuOpen(false); onOpenTutorial('guide'); }}>
-                Quick Guide →
+            <span>Orchestrator &amp; Routing mode</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {onOpenTutorial && (
+                <button type="button" data-testid="open-mode-guide-btn" className="prov-link" onClick={() => { setModelMenuOpen(false); onOpenTutorial('guide'); }}>
+                  Quick Guide →
+                </button>
+              )}
+              <button type="button" data-testid="orch-configure-pools-btn" className="prov-link" onClick={() => { setModelMenuOpen(false); openSettings({ section: 'orchestrator' }); }}>
+                Configure Pools…
               </button>
-            )}
+            </div>
+          </div>
+
+          <div className="mp-orch-preset-bar">
+            <button
+              type="button"
+              data-testid="orch-mode-auto"
+              className={'mp-orch-preset-btn' + (effectiveRoutingMode === 'orchestrator' && !swarmEnabled && !/^gemini-(?:4|pro)-orchestrator/i.test(provider.model || '') ? ' on' : '')}
+              onClick={() => activateOrchestratorSupervisor(null, { preset: 'auto-orchestrator', swarm: false })}
+              title="Auto Orchestrator — multi-provider supervisor with automatic failover"
+            >
+              <Icon name="Orbit" size={12} />
+              <span>Auto Orchestrator</span>
+            </button>
+            <button
+              type="button"
+              data-testid="orch-mode-gemini4"
+              className={'mp-orch-preset-btn' + (effectiveRoutingMode === 'orchestrator' && /^gemini-(?:4|pro)-orchestrator/i.test(provider.model || '') ? ' on' : '')}
+              onClick={() => activateOrchestratorSupervisor(null, { preset: 'gemini-4-orchestrator', swarm: true })}
+              title="Antigravity Gemini 4 Orchestrator (1M Supervisor + Parallel Swarm)"
+            >
+              <Icon name="Automatic" size={12} />
+              <span>Gemini 4 Orchestrator</span>
+            </button>
+            <button
+              type="button"
+              data-testid="orch-mode-swarm"
+              className={'mp-orch-preset-btn' + (effectiveRoutingMode === 'orchestrator' && swarmEnabled ? ' on' : '')}
+              onClick={() => activateOrchestratorSupervisor(null, { preset: 'swarm-parallel', swarm: true })}
+              title="Swarm Parallel Mode — parallel role-pooled workers across Git worktrees"
+            >
+              <Icon name="Users" size={12} />
+              <span>Swarm Parallel Mode</span>
+            </button>
           </div>
 
           <div className={'routing-mode-wrap' + (effectiveRoutingMode === 'auto' ? ' on' : '')}>
@@ -748,6 +640,172 @@ export function ModelPickerPopover({
             })()}
           </div>
         </div>
+
+        <div className="model-menu-divider" />
+
+        {/* 2. Pinned Favorites / Quick-Switch Bar */}
+        {pinnedItems.length > 0 && (
+          <div data-testid="mp-pinned-section">
+            <div className="mp-section-head">
+              <span>★ Pinned Favorites</span>
+              <span>{pinnedItems.length}</span>
+            </div>
+            {prefs.layout === 'grid' ? (
+              <div className="mp-pinned-bar">
+                {pinnedItems.map((item) => {
+                  const active = isItemActive(item);
+                  return (
+                    <button
+                      key={'pinpill:' + item.pinKey}
+                      type="button"
+                      className={'mp-pin-pill' + (active ? ' on' : '')}
+                      onClick={() => selectItem(item)}
+                    >
+                      <ModelLogo model={item.id} provider={item.providerKey} size={13} />
+                      <span>{item.label}</span>
+                      {item.windowLabel && <span className="mp-pill ctx">{item.windowLabel}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div>{pinnedItems.map((item) => renderModelItem(item, 'pin:' + item.pinKey, item))}</div>
+            )}
+          </div>
+        )}
+
+        {/* 3. Active Subscription & Coding Plan Accounts */}
+        {visibleSubscriptions.length > 0 && (
+          <div data-testid="mp-subscriptions-section">
+            <div className="mp-section-head">
+              <span>Subscription CLIs &amp; Coding Plans</span>
+              <button
+                type="button"
+                className="prov-link"
+                onClick={async () => {
+                  try {
+                    if (window.autobot?.refreshModelCatalogs) await window.autobot.refreshModelCatalogs();
+                    if (loadProvOauth) await loadProvOauth();
+                  } catch (_) {}
+                }}
+              >
+                <Icon name="Refresh" size={11} /> Refresh
+              </button>
+            </div>
+            {provOauth && provOauth.storeError && <ProvNotice warn text={T('account.storeError')} />}
+
+            {prefs.layout === 'compact' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {visibleSubscriptions.map((sg) => (
+                  <React.Fragment key={sg.id}>
+                    <div className="mp-model-row" style={{ justifyContent: 'space-between' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+                        <ModelLogo provider={sg.id} size={15} />
+                        <span className="mp-model-label">{sg.label}</span>
+                        <span className={'mp-pill ' + (sg.connected ? 'plan' : 'cli')}>
+                          {sg.connected ? (sg.activeAcct?.plan || 'Connected') : sg.planBadge}
+                        </span>
+                      </div>
+                      <button type="button" data-testid={`picker-signin-${sg.id}`} className={'mp-signin-btn' + (!sg.connected ? ' primary' : '')} onClick={() => cliLogin.start(sg.id)}>
+                        {sg.connected ? 'Reconnect' : 'Sign in'}
+                      </button>
+                    </div>
+                    {sg.models.map((m) => renderModelItem(m, `cmp:${sg.id}:${m.id}`, m))}
+                  </React.Fragment>
+                ))}
+              </div>
+            ) : prefs.layout === 'grid' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div className="mp-acct-chip-row">
+                  {visibleSubscriptions.map((sg) => (
+                    <button
+                      key={'qsign:' + sg.id}
+                      type="button"
+                      data-testid={`picker-signin-${sg.id}`}
+                      className={'mp-signin-btn' + (!sg.connected ? ' primary' : '')}
+                      onClick={() => cliLogin.start(sg.id)}
+                    >
+                      {sg.label.split(' ')[0]} · {sg.connected ? 'Reconnect' : 'Sign in'}
+                    </button>
+                  ))}
+                </div>
+                <div className="mp-grid">
+                  {visibleSubscriptions.flatMap((sg) => sg.models.slice(0, query ? 24 : 6).map((m) => renderModelItem(m, `grd:${sg.id}:${m.id}`, m)))}
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                {visibleSubscriptions.map((sg) => {
+                  const isCollapsed = !!collapsedProviders[sg.id] && !query;
+                  const cardLimit = (query || expandedCards[sg.id]) ? sg.models.length : (sg.id === 'antigravity' ? 28 : 14);
+                  return (
+                    <div key={sg.id} className={'mp-sub-card' + (sg.connected ? ' connected' : '')} data-testid={`sub-card-${sg.id}`}>
+                      <div className="mp-sub-head">
+                        <button
+                          type="button"
+                          className="mp-sub-title-btn"
+                          onClick={() => setCollapsedProviders((c) => ({ ...c, [sg.id]: !c[sg.id] }))}
+                          aria-expanded={!isCollapsed}
+                        >
+                          <ModelLogo provider={sg.id} size={16} />
+                          <span className="mp-sub-name">{sg.label}</span>
+                          <span className={'mp-pill ' + (sg.connected ? 'plan' : 'cli')}>
+                            {sg.connected ? (sg.activeAcct?.plan || 'Connected') : sg.planBadge}
+                          </span>
+                          <Icon name={isCollapsed ? 'CaretRight' : 'CaretDown'} size={11} />
+                        </button>
+                        <button
+                          type="button"
+                          data-testid={`picker-signin-${sg.id}`}
+                          className={'mp-signin-btn' + (!sg.connected ? ' primary' : '')}
+                          onClick={() => cliLogin.start(sg.id)}
+                        >
+                          {sg.connected ? 'Reconnect' : 'Sign in'}
+                        </button>
+                      </div>
+
+                      {sg.accounts.length > 0 && (
+                        <div className="mp-acct-chip-row">
+                          {sg.accounts.map((a) => {
+                            const on = provider.oauthProvider === a.id;
+                            const cleanAcctLabel = String(a.label || a.account || '').replace(/\bCLI\s+CLI\b/gi, 'CLI');
+                            return (
+                              <div key={a.id} className={'mp-acct-chip' + (on ? ' on' : '')}>
+                                <button type="button" className="mp-acct-chip-pick" onClick={() => pickOauthAccount(sg.pv, a.account)}>
+                                  <span className={'model-dot ' + (a.expired || a.needsSignIn ? 'out' : 'ok')} />
+                                  <span>{cleanAcctLabel}</span>
+                                </button>
+                                <button type="button" className="mp-acct-chip-x" title="Sign out" disabled={!!provBusy} onClick={() => providerAction('signout', sg.id, a.account)}>
+                                  <Icon name="X" size={11} />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {!isCollapsed && (
+                        <div>
+                          {sg.models.slice(0, cardLimit).map((m) => renderModelItem(m, `crd:${sg.id}:${m.id}`, m))}
+                          {sg.models.length > cardLimit && (
+                            <button
+                              type="button"
+                              className="prov-link"
+                              style={{ padding: '4px 6px', fontSize: 11 }}
+                              onClick={() => setExpandedCards((e) => ({ ...e, [sg.id]: true }))}
+                            >
+                              Show all {sg.models.length} models…
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* 5. Configured Local / Paid API Endpoints */}
         {(visibleConfigured.length > 0 || ollamaEmpty) && (

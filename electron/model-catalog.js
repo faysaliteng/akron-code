@@ -57,8 +57,8 @@ function supportsLongContext(model) {
 }
 
 const RULES = [
-  // Antigravity's Gemini 4 codenames
-  [/\bgemini-4-(carbon|neon|argon|hydrogen)\b/i, 1048576],
+  // Antigravity's Gemini 4 codenames + Orchestrator
+  [/\bgemini-4-(orchestrator|carbon|neon|argon|hydrogen)(?:-[a-z0-9-]+)?\b|\bgemini-pro-orchestrator(?:-[a-z0-9-]+)?\b/i, 1048576],
   // Vertex-hosted Claude through Antigravity: the live catalog reports 1M, and
   // this rule keeps the budget right before the catalog has warmed.
   [/^claude-(opus|sonnet)-5-5/, 1000000],
@@ -73,6 +73,13 @@ const RULES = [
   [/^(?:opus|sonnet|fable)(?:\[1m\])?$|\[1m\]$/i, 1000000],
   [/\bclaude-(opus|sonnet|haiku)-4/i, SHORT_CONTEXT_WINDOW],
   [/\bclaude|opus|sonnet|haiku/i, SHORT_CONTEXT_WINDOW],
+  // GitHub Copilot CLI (`copilot`)
+  [/^copilot-auto$/i, 1000000],
+  [/^copilot-claude-(?:opus|sonnet)-4/i, 1000000],
+  [/^copilot-gpt-5[.-](?:[4-9]|1[0-9])/i, 1000000],
+  [/^copilot-gpt-5\b/i, 400000],
+  [/^copilot-gemini-3/i, 1048576],
+  [/\bmai-code-2-flash\b/i, 256000],
   // OpenAI
   [/\bgpt-5[.-](?:[4-9]|1[0-9])\b|\bgpt-6\b/i, 1000000],
   [/\bgpt-5\.[12](?:-codex)?(?:-max)?\b/i, 400000],
@@ -258,7 +265,7 @@ function thinkingCapabilitiesFor(model, providerId) {
   // Heuristic fallback before live catalog warms or for API-key endpoints
   const nonThinking = /\b(gpt-4o(?:-mini)?|gpt-4-turbo|gpt-3\.5|claude-3-(?:haiku|sonnet|opus)|claude-2|llama-?3\.[0-3]?|mistral-7b)\b/i;
   if (nonThinking.test(id)) return { supported: false, levels: [], variants: null, discrete: false };
-  const hasXHigh = /\b(gpt-5\.[1-9]|codex|claude-opus-5|gemini-4-neon|gemini-4-hydrogen)\b|-xhigh$/i.test(id);
+  const hasXHigh = /\b(gpt-5\.[1-9]|codex|claude-opus-5|gemini-4-neon|gemini-4-hydrogen|gemini-4-orchestrator|gemini-pro-orchestrator)\b|-xhigh$/i.test(id);
   const discreteSuffix = /-(minimal|low|medium|high|xhigh)$/i.exec(id);
   if (discreteSuffix) {
     return {
@@ -268,7 +275,7 @@ function thinkingCapabilitiesFor(model, providerId) {
       discrete: true,
     };
   }
-  const thinkingCapable = /^(?:gemini-(?:2\.5|[3-9])|claude-(?:opus|sonnet|fable)-(?:3-7|[4-9])|claude-haiku-(?:4-5|[5-9])|o[1-9]|gpt-[5-9]|codex|grok-[3-9]|deepseek-(?:r1|reasoner)|qwq|kimi-k[23]|glm-5)/i.test(id);
+  const thinkingCapable = /^(?:gemini-(?:2\.5|[3-9])|gemini-pro-orchestrator|claude-(?:opus|sonnet|fable)-(?:3-7|[4-9])|claude-haiku-(?:4-5|[5-9])|o[1-9]|gpt-[5-9]|codex|grok-[3-9]|deepseek-(?:r1|reasoner)|qwq|kimi-k[23]|glm-5)/i.test(id);
   return {
     supported: thinkingCapable,
     levels: thinkingCapable ? (hasXHigh ? ['auto', 'low', 'medium', 'high', 'xhigh'] : ['auto', 'low', 'medium', 'high']) : [],

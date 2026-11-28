@@ -2,15 +2,17 @@
 /**
  * Bundled agent runtimes + self-update.
  *
- * Akron Code ships the four CLI agents it can drive (Claude Code, Codex, Grok,
- * Gemini CLI) inside the app bundle so a fresh install works with no manual
- * `npm i -g` step, hydrates them to `userData/runtimes/<id>/current`, and keeps
- * them current from the same upstream the vendors publish to:
+ * Akron Code ships the six CLI agents it can drive (Claude Code, Codex, Grok,
+ * Gemini CLI, Antigravity CLI, Kimi Code CLI) inside the app bundle so a fresh
+ * install works with no manual `npm i -g` step, hydrates them to
+ * `userData/runtimes/<id>/current`, and keeps them current from upstream:
  *
- *   Claude Code  npm  @anthropic-ai/claude-code(-<platform>)   dist.integrity (sha512)
- *   Codex        npm  @openai/codex(-<platform>)               dist.integrity (sha512)
- *   Grok         x.ai https://x.ai/cli/<channel> → binary      sha256 sidecar / OS signature
- *   Gemini CLI   npm  @google/gemini-cli                       dist.integrity (sha512)
+ *   Claude Code      npm   @anthropic-ai/claude-code(-<platform>)  dist.integrity (sha512)
+ *   Codex            npm   @openai/codex(-<platform>)              dist.integrity (sha512)
+ *   Grok             x.ai  https://x.ai/cli/<channel> -> binary    sha256 sidecar / OS signature
+ *   Gemini CLI       npm   @google/gemini-cli                      dist.integrity (sha512)
+ *   Antigravity CLI  goog  antigravity-cli-auto-updater.../manifests sha512
+ *   Kimi Code CLI    npm   @moonshot-ai/kimi-code                  dist.integrity (sha512)
  *
  * Resolution order, per runtime:
  *   1. `<userData>/runtimes/<id>/current`  (hydrated & self-updated)
@@ -38,7 +40,18 @@ const GROK_POINTERS = [
   'https://x.ai/cli/stable',
   'https://storage.googleapis.com/grok-build-public-artifacts/cli/stable',
 ];
-const ALLOWED_HOSTS = new Set(['registry.npmjs.org', 'x.ai', 'storage.googleapis.com']);
+const AGY_MANIFEST_BASE = 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app';
+const GITHUB_API = 'https://api.github.com';
+const ALLOWED_HOSTS = new Set([
+  'registry.npmjs.org',
+  'x.ai',
+  'storage.googleapis.com',
+  'antigravity-cli-auto-updater-974169037036.us-central1.run.app',
+  'api.github.com',
+  'github.com',
+  'objects.githubusercontent.com',
+  'release-assets.githubusercontent.com',
+]);
 const MAX_ARTIFACT = 900 * 1024 * 1024;   // hard cap: a runtime tarball is ~100–400 MB
 const MIN_ARTIFACT = 1024 * 1024;         // anything small is a redirect page / HTML error
 const CHECK_TTL = 10 * 60 * 1000;         // in-memory metadata cache
@@ -70,6 +83,17 @@ function vendorTriple(platform, arch) {
   if (platform === 'darwin') return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
   if (platform === 'linux') return arch === 'arm64' ? 'aarch64-unknown-linux-gnu' : 'x86_64-unknown-linux-gnu';
   return arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
+}
+
+function agyPlatformKey(platform, arch) {
+  const osKey = platform === 'darwin' ? 'darwin' : (platform === 'win32' ? 'windows' : (platform === 'linux' ? 'linux' : ''));
+  const archKey = arch === 'arm64' ? 'arm64' : (arch === 'x64' ? 'amd64' : '');
+  if (!osKey || !archKey) {
+    const e = new Error('unsupported platform for agy: ' + platform + '-' + arch);
+    e.code = 'runtime_platform';
+    throw e;
+  }
+  return osKey + '_' + archKey;
 }
 
 // ---------------------------------------------------------------- descriptors
@@ -243,6 +267,54 @@ const DESCRIPTORS = [
     binPath: (dir, platform) => path.join(dir, 'bin', platform === 'win32' ? 'gemini.cmd' : 'gemini'),
   },
   {
+    id: 'antigravity-cli',
+    label: 'Antigravity CLI',
+    vendor: 'Google',
+    bin: 'agy',
+    versionArgs: ['--version'],
+    async meta(ctx) {
+      const pKey = agyPlatformKey(ctx.platform, ctx.arch);
+      const base = String(ctx.agyBase || AGY_MANIFEST_BASE).replace(/\/+$/, '');
+      const j = await ctx.json(base + '/manifests/' + pKey + '.json');
+      const version = String(j.version || '').trim();
+      const url = String(j.url || '').trim();
+      if (!version || !url) throw new Error('antigravity-cli: manifest missing version or url');
+      let integrity = '';
+      if (j.integrity && String(j.integrity).startsWith('sha512-')) {
+        integrity = String(j.integrity);
+      } else if (/^[0-9a-f]{128}$/i.test(String(j.sha512 || ''))) {
+        integrity = 'sha512-' + Buffer.from(String(j.sha512), 'hex').toString('base64');
+      }
+      const kind = /\.tar\.gz(\?|$)|\.tgz(\?|$)/i.test(url) ? 'tgz' : 'bin';
+      return { version, url, integrity, kind };
+    },
+    async stage(pkgRoot, dest, ctx) {
+      await fsp.mkdir(path.join(dest, 'bin'), { recursive: true });
+      const destBin = path.join(dest, 'bin', ctx.platform === 'win32' ? 'agy.exe' : 'agy');
+      let src = '';
+      try {
+        if (fs.existsSync(pkgRoot) && fs.statSync(pkgRoot).isFile()) src = pkgRoot;
+      } catch (_) {}
+      if (!src) {
+        const names = ctx.platform === 'win32'
+          ? ['antigravity.exe', 'agy.exe', 'bin/agy.exe', 'bin/antigravity.exe']
+          : ['antigravity', 'agy', 'bin/agy', 'bin/antigravity', 'agy.exe'];
+        for (const rel of names) {
+          const cand = path.join(pkgRoot, rel);
+          try {
+            if (fs.existsSync(cand) && fs.statSync(cand).isFile()) { src = cand; break; }
+          } catch (_) {}
+        }
+      }
+      if (!src) throw new Error('antigravity-cli: extracted package does not contain agy/antigravity binary');
+      await copyExecutable(src, destBin);
+      if (ctx.platform === 'darwin') {
+        await run('xattr', ['-d', 'com.apple.quarantine', destBin], { timeout: 5000 }).catch(() => {});
+      }
+    },
+    binPath: (dir, platform) => path.join(dir, 'bin', platform === 'win32' ? 'agy.exe' : 'agy'),
+  },
+  {
     id: 'kimi-code',
     label: 'Kimi Code CLI',
     vendor: 'Moonshot AI',
@@ -284,6 +356,69 @@ const DESCRIPTORS = [
       }
     },
     binPath: (dir, platform) => path.join(dir, 'bin', platform === 'win32' ? 'kimi.cmd' : 'kimi'),
+  },
+  {
+    id: 'github-copilot',
+    label: 'GitHub Copilot CLI',
+    vendor: 'GitHub',
+    bin: 'copilot',
+    versionArgs: ['--version'],
+    async meta(ctx) {
+      const assets = {
+        'darwin-arm64': { asset: 'copilot-darwin-arm64.tar.gz', kind: 'tgz' },
+        'darwin-x64': { asset: 'copilot-darwin-x64.tar.gz', kind: 'tgz' },
+        'linux-arm64': { asset: 'copilot-linux-arm64.tar.gz', kind: 'tgz' },
+        'linux-x64': { asset: 'copilot-linux-x64.tar.gz', kind: 'tgz' },
+        'win32-arm64': { asset: 'copilot-win32-arm64.zip', kind: 'zip' },
+        'win32-x64': { asset: 'copilot-win32-x64.zip', kind: 'zip' },
+      };
+      const key = `${ctx.platform}-${ctx.arch}`;
+      const spec = assets[key];
+      if (!spec) {
+        const e = new Error('unsupported platform for github-copilot: ' + key);
+        e.code = 'runtime_platform';
+        throw e;
+      }
+      const apiBase = String(ctx.githubApi || GITHUB_API).replace(/\/+$/, '');
+      const j = await ctx.json(apiBase + '/repos/github/copilot-cli/releases/latest');
+      const tag = String(j.tag_name || '').trim();
+      const version = tag.replace(/^v/i, '') || String(j.name || '').trim();
+      if (!version) throw new Error('github-copilot: release API returned no version');
+      const relAssets = Array.isArray(j.assets) ? j.assets : [];
+      const assetObj = relAssets.find((a) => a && a.name === spec.asset);
+      const sumsObj = relAssets.find((a) => a && /^SHA256SUMS(?:\.txt)?$/i.test(String(a.name || '')));
+      const dlBase = tag ? `https://github.com/github/copilot-cli/releases/download/${tag}` : '';
+      const url = (assetObj && assetObj.browser_download_url) || (dlBase ? `${dlBase}/${spec.asset}` : '');
+      const sha256Url = (sumsObj && sumsObj.browser_download_url) || (dlBase ? `${dlBase}/SHA256SUMS.txt` : '');
+      if (!url) throw new Error('github-copilot: release missing asset ' + spec.asset);
+      return { version, url, sha256Url, sha256AssetName: spec.asset, integrity: '', kind: spec.kind };
+    },
+    async stage(pkgRoot, dest, ctx) {
+      await fsp.mkdir(path.join(dest, 'bin'), { recursive: true });
+      const exe = ctx.platform === 'win32' ? 'copilot.exe' : 'copilot';
+      const destBin = path.join(dest, 'bin', exe);
+      let src = '';
+      try {
+        if (fs.existsSync(pkgRoot) && fs.statSync(pkgRoot).isFile()) src = pkgRoot;
+      } catch (_) {}
+      if (!src) {
+        const names = ctx.platform === 'win32'
+          ? ['copilot.exe', 'bin/copilot.exe', 'copilot', 'bin/copilot']
+          : ['copilot', 'bin/copilot', 'copilot.exe'];
+        for (const rel of names) {
+          const cand = path.join(pkgRoot, rel);
+          try {
+            if (fs.existsSync(cand) && fs.statSync(cand).isFile()) { src = cand; break; }
+          } catch (_) {}
+        }
+      }
+      if (!src) throw new Error('github-copilot: extracted package does not contain copilot binary');
+      await copyExecutable(src, destBin);
+      if (ctx.platform === 'darwin') {
+        await run('xattr', ['-d', 'com.apple.quarantine', destBin], { timeout: 5000 }).catch(() => {});
+      }
+    },
+    binPath: (dir, platform) => path.join(dir, 'bin', platform === 'win32' ? 'copilot.exe' : 'copilot'),
   },
 ];
 
@@ -399,10 +534,12 @@ function createRuntimes(opts) {
   const net = { hosts: o.allowHosts || ALLOWED_HOSTS, insecure: !!o.allowInsecure };
   const npmBase = String(o.npm || NPM).replace(/\/+$/, '');
   const grokPointers = Array.isArray(o.grokPointers) ? o.grokPointers : GROK_POINTERS;
+  const agyBase = String(o.agyManifestBase || AGY_MANIFEST_BASE).replace(/\/+$/, '');
+  const githubApi = String(o.githubApi || GITHUB_API).replace(/\/+$/, '');
   const minArtifact = Number.isFinite(o.minArtifact) ? Number(o.minArtifact) : MIN_ARTIFACT;
 
   const ctx = { platform, arch };
-  const ctxNet = { ...ctx, npm: npmBase, grokPointers, ...net };
+  const ctxNet = { ...ctx, npm: npmBase, grokPointers, agyBase, githubApi, ...net };
 
   function emit(ev) {
     try { onEvent(ev); } catch (_) { /* never let a listener break an install */ }
@@ -657,6 +794,27 @@ function createRuntimes(opts) {
     return into;
   }
 
+  async function extractZip(file, into) {
+    await fsp.mkdir(into, { recursive: true });
+    let res;
+    if (platform === 'win32') {
+      res = await run('tar', ['-xf', file, '-C', into], { timeout: 5 * 60 * 1000 });
+      if (!res.ok) {
+        const psCmd = `Expand-Archive -LiteralPath '${file.replace(/'/g, "''")}' -DestinationPath '${into.replace(/'/g, "''")}' -Force`;
+        res = await run('powershell.exe', ['-NoProfile', '-Command', psCmd], { timeout: 5 * 60 * 1000 });
+      }
+    } else {
+      res = await run('unzip', ['-q', '-o', file, '-d', into], { timeout: 5 * 60 * 1000 });
+      if (!res.ok) res = await run('tar', ['-xf', file, '-C', into], { timeout: 5 * 60 * 1000 });
+    }
+    if (!res.ok) throw new Error('runtime: could not extract zip archive — ' + (res.err || res.code));
+    const entries = await fsp.readdir(into, { withFileTypes: true });
+    const dirs = entries.filter((e) => e.isDirectory());
+    if (dirs.length === 1 && entries.length === 1) return path.join(into, dirs[0].name);
+    if (dirs.some((e) => e.name === 'package')) return path.join(into, 'package');
+    return into;
+  }
+
   // -- install -------------------------------------------------------------
 
   async function install(id, wanted, opts) {
@@ -675,15 +833,26 @@ function createRuntimes(opts) {
         return { ok: true, version, unchanged: true };
       }
       await fsp.mkdir(work, { recursive: true });
-      const artifact = path.join(work, m.kind === 'tgz' ? 'artifact.tgz' : 'artifact.bin');
+      const artifact = path.join(work, m.kind === 'tgz' ? 'artifact.tgz' : (m.kind === 'zip' ? 'artifact.zip' : 'artifact.bin'));
       const got = await download(m.url, artifact, { id, version });
       const integ = integrityOf(m.integrity, got.sri);
       if (!integ.verified && m.sha256Url) {
         try {
           const sumTxt = await text(m.sha256Url);
-          const hexMatch = /\b([0-9a-f]{64})\b/i.exec(String(sumTxt || ''));
-          if (hexMatch) {
-            const expectedHex = hexMatch[1].toLowerCase();
+          let expectedHex = '';
+          if (m.sha256AssetName) {
+            for (const line of String(sumTxt || '').split(/\r?\n/)) {
+              const mm = /^\s*([0-9a-f]{64})\s+\*?([^\s]+)\s*$/i.exec(line);
+              if (mm && path.basename(mm[2]) === m.sha256AssetName) {
+                expectedHex = mm[1].toLowerCase();
+                break;
+              }
+            }
+          } else {
+            const hexMatch = /\b([0-9a-f]{64})\b/i.exec(String(sumTxt || ''));
+            if (hexMatch) expectedHex = hexMatch[1].toLowerCase();
+          }
+          if (expectedHex) {
             if (expectedHex !== String(got.sha256 || '').toLowerCase()) {
               throw new Error('runtime: integrity mismatch — sha256 sidecar rejected');
             }
@@ -702,6 +871,7 @@ function createRuntimes(opts) {
       await fsp.mkdir(stage, { recursive: true });
       let pkgRoot = artifact;
       if (m.kind === 'tgz') pkgRoot = await extractTgz(artifact, path.join(work, 'unpacked'));
+      else if (m.kind === 'zip') pkgRoot = await extractZip(artifact, path.join(work, 'unpacked'));
       await d.stage(pkgRoot, stage, ctx);
 
       const bin = d.binPath(stage, platform);
@@ -959,6 +1129,7 @@ module.exports = {
   DESCRIPTORS,
   platformSuffix,
   vendorTriple,
+  agyPlatformKey,
   parseVersion,
   sanitizeVersion,
   assertHttps,

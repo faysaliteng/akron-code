@@ -477,6 +477,7 @@ export const MODEL_WINDOW_CACHE = 'autobot:modelWindows';
 export const builtinContextWindowFor = (model) => {
   const m = String(model || '').trim();
   if (!m) return 128000;
+  if (/^copilot-auto$/i.test(m)) return 1000000;
   if (/kimi[ -]?k3/i.test(m)) return 1048576;
   if (/kimi|moonshot/i.test(m)) return 256000;
   if (/deepseek/i.test(m)) return 128000;
