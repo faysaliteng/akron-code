@@ -51,7 +51,7 @@ jobs:
             cmd: npm run build && npx electron-builder --win --config.compression=normal --publish never
           - os: ubuntu-latest
             platform: linux
-            cmd: npm run build && npx electron-builder --linux AppImage tar.gz --config.compression=normal --publish never
+            cmd: npm run build && npx electron-builder --linux AppImage tar.gz --x64 --config.compression=normal --publish never && npx electron-builder --linux tar.gz --arm64 --config.compression=normal --publish never
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -96,12 +96,23 @@ jobs:
           "
           [ "$(find "$ASAR_TMP" -name '*.map' | wc -l | tr -d ' ')" -eq 0 ]
           rm -rf "$ASAR_TMP"
-      - name: Verify Electron Fuses (Windows)
+      - name: Verify Electron Fuses & ASAR Brand Seal (Windows)
         if: matrix.platform == 'win'
         shell: pwsh
         run: |
-          $exe = if (Test-Path "./release/win-unpacked/Akron Code.exe") { "./release/win-unpacked/Akron Code.exe" } else { "./release/win-arm64-unpacked/Akron Code.exe" }
+          $unpacked = if (Test-Path "./release/win-unpacked") { "./release/win-unpacked" } else { "./release/win-arm64-unpacked" }
+          $exe = Join-Path $unpacked "Akron Code.exe"
+          $asar = Join-Path $unpacked "resources/app.asar"
           $env:WIN_EXE = $exe
+          $env:WIN_ASAR = $asar
+          npx --yes @electron/asar extract $asar ./release/_win_asar_check
+          node -e "
+          const { verifyBrandIntegrity } = require('./electron/brand-guard');
+          const res = verifyBrandIntegrity({ appRoot: './release/_win_asar_check' });
+          console.log('WIN_BRAND_CHECK:', JSON.stringify(res));
+          if (!res.ok) process.exit(1);
+          "
+          Remove-Item -Recurse -Force ./release/_win_asar_check
           node -e "
           const { getCurrentFuseWire, FuseV1Options } = require('@electron/fuses');
           getCurrentFuseWire(process.env.WIN_EXE).then(w => {
@@ -110,6 +121,22 @@ jobs:
             if (!ok) process.exit(1);
           });
           "
+
+      - name: Verify ASAR Brand Seal & Headless Cold-Boot (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          npx --yes @electron/asar extract ./release/linux-unpacked/resources/app.asar ./release/_linux_asar_check
+          node -e "
+          const { verifyBrandIntegrity } = require('./electron/brand-guard');
+          const res = verifyBrandIntegrity({ appRoot: './release/_linux_asar_check' });
+          console.log('LINUX_BRAND_CHECK:', JSON.stringify(res));
+          if (!res.ok) process.exit(1);
+          "
+          rm -rf ./release/_linux_asar_check
+          if ! command -v xvfb-run >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y xvfb; fi
+          timeout 60 xvfb-run -a env AKRON_COLD_BOOT_CHECK=1 AKRON_NO_DIALOG=1 ./release/linux-unpacked/akronbot --no-sandbox --disable-gpu > /tmp/linux-cold-boot.log 2>&1 || true
+          cat /tmp/linux-cold-boot.log
+          grep -q 'COLD_BOOT_OK.*"ok":true' /tmp/linux-cold-boot.log
       - uses: actions/upload-artifact@v4
         with:
           name: akron-code-${{ matrix.platform }}

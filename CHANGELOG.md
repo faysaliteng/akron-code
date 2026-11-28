@@ -2,6 +2,16 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.6.8] - 2026-11-28
+
+### Fixed & Verified Live Across All 3 Platforms (macOS, Windows 11, Kali Linux)
+- **Windows SVG CRLF Integrity Fix (`.gitattributes`, `electron/brand-guard.js`, `test/brand-integrity.test.js`):**
+  - Added repository-wide `.gitattributes` enforcing `eol=lf` on `.svg`, source, script, and config files (and `eol=crlf` for `.bat`/`.ps1`) so Windows CI checkouts never alter sealed `.svg` byte hashes (`build/icon.svg`, `build/logo-mark.svg`, `resources/akron-browser-bot/icons/logo.svg`).
+  - Normalized `\r\n` → `\n` inside `sha256File()` for `.svg` assets in `electron/brand-guard.js` and added CRLF seal-pass + CRLF-tamper-fail regression coverage in `test/brand-integrity.test.js`.
+- **Windows/macOS ARM64 `esbuild` Unpacked Fallback (`electron/ide/edit-guard.js`):** Updated `ensureUnpackedEsbuildBinary()` on `win32`/`darwin` `arm64` hosts to fall back cleanly to `x64` unpacked `esbuild` when running x64 bundles under Prism or Rosetta.
+- **CI Cross-OS Release & Verification Hardening (`.github/workflows/build-desktop.yml`):** Added Linux `arm64` `.tar.gz` packaging alongside `x64`, added Windows extracted-ASAR `verifyBrandIntegrity()` verification, and added Linux extracted-ASAR brand check + headless `xvfb-run` `AKRON_COLD_BOOT_CHECK=1` gate.
+- **Live 3-OS Verification & Fresh Screenshots:** Verified `COLD_BOOT_OK` (`15` checked files, `0` console errors) and live rendered GUI windows on macOS Apple Silicon, Windows 11 ARM64 VM (`AkronCode-1.6.8-win-setup-arm64.exe`), and Kali Linux 7.1 ARM64 VM (`AkronCode-1.6.8-linux-arm64.tar.gz`), and refreshed `docs/screenshots/` (`40+` captures).
+
 ## [1.6.7] - 2026-11-28
 
 ### Fixed, Hardened & Visualized Across All 3 Platforms

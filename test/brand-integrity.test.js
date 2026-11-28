@@ -65,6 +65,15 @@ try {
   // Tamper icon byte
   const logoPath = path.join(tmp, 'build', 'logo-mark.svg');
   const origSvg = fs.readFileSync(logoPath, 'utf8');
+  // Windows CRLF line endings on sealed SVG assets must normalize cleanly and still pass
+  fs.writeFileSync(logoPath, origSvg.replace(/\n/g, '\r\n'), 'utf8');
+  const crlfRes = brandGuard.verifyBrandIntegrity({ appRoot: tmp });
+  assert(crlfRes.ok, 'Should accept sealed SVG even with CRLF line endings');
+  // Tampered CRLF SVG must still fail
+  fs.writeFileSync(logoPath, origSvg.replace(/\n/g, '\r\n') + ' ', 'utf8');
+  const crlfTampered = brandGuard.verifyBrandIntegrity({ appRoot: tmp });
+  assert(!crlfTampered.ok && crlfTampered.problems.some((p) => p.includes('logo-mark.svg')), 'Should detect tampered CRLF logo-mark.svg');
+  // Tamper icon byte on LF SVG
   fs.writeFileSync(logoPath, origSvg + ' ', 'utf8');
   const t1 = brandGuard.verifyBrandIntegrity({ appRoot: tmp });
   assert(!t1.ok && t1.problems.some((p) => p.includes('logo-mark.svg')), 'Should detect tampered logo-mark.svg');

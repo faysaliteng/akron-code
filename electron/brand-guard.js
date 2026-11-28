@@ -4,7 +4,15 @@ const path = require('path');
 const crypto = require('crypto');
 
 function sha256File(absPath) {
-  const buf = fs.readFileSync(absPath);
+  let buf = fs.readFileSync(absPath);
+  // Normalize CRLF -> LF on sealed SVG assets so Windows checkouts never fail
+  // brand integrity verification due to text line-ending conversion.
+  if (absPath.toLowerCase().endsWith('.svg')) {
+    const text = buf.toString('utf8');
+    if (text.includes('\r\n')) {
+      buf = Buffer.from(text.replace(/\r\n/g, '\n'), 'utf8');
+    }
+  }
   return {
     sha256: crypto.createHash('sha256').update(buf).digest('hex'),
     size: buf.length,

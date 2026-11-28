@@ -10,17 +10,25 @@ function ensureUnpackedEsbuildBinary() {
   if (cur && fs.existsSync(cur) && !/app\.asar(?:[/\\]|$)/i.test(cur)) {
     return cur;
   }
-  const pkg = `${process.platform}-${process.arch}`;
+  const archCandidates = [process.arch];
+  // On Windows 11 ARM64 running x64 build under Prism (or Apple Silicon running x64),
+  // fall back to the x64 unpacked esbuild binary if the native arch binary isn't bundled.
+  if ((process.platform === 'win32' || process.platform === 'darwin') && process.arch === 'arm64') {
+    archCandidates.push('x64');
+  }
   const binName = process.platform === 'win32' ? 'esbuild.exe' : 'esbuild';
   const candidates = [];
-  if (process.resourcesPath) {
-    candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', '@esbuild', pkg, 'bin', binName));
+  for (const arch of archCandidates) {
+    const pkg = `${process.platform}-${arch}`;
+    if (process.resourcesPath) {
+      candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', '@esbuild', pkg, 'bin', binName));
+    }
+    if (__dirname.includes('app.asar')) {
+      const unpackedRoot = __dirname.replace(/app\.asar(?:[/\\][^]*)$/, 'app.asar.unpacked');
+      candidates.push(path.join(unpackedRoot, 'node_modules', '@esbuild', pkg, 'bin', binName));
+    }
+    candidates.push(path.join(__dirname, '..', '..', 'node_modules', '@esbuild', pkg, 'bin', binName));
   }
-  if (__dirname.includes('app.asar')) {
-    const unpackedRoot = __dirname.replace(/app\.asar(?:[/\\][^]*)$/, 'app.asar.unpacked');
-    candidates.push(path.join(unpackedRoot, 'node_modules', '@esbuild', pkg, 'bin', binName));
-  }
-  candidates.push(path.join(__dirname, '..', '..', 'node_modules', '@esbuild', pkg, 'bin', binName));
   for (const c of candidates) {
     try {
       if (c && fs.existsSync(c)) {

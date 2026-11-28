@@ -619,7 +619,7 @@ async function run() {
             '',
             '- **3-OS Computer Use 2.0 & Live Emerald HUD:** 60Hz cubic ease-out mouse glide across macOS (`CGEvent`), Windows 11 (`PerMonitorV2` + `SendInput` Unicode + `winAppMenu`), and Linux (`X11` + `Wayland`), with non-activating `#10b981` screen glow & `Stop (Esc)` pill.',
             `- **Orchestrator Auto-Swarm & Built-In Browser Bot (\`v${EXT_VER}\`):** Mandatory model guard, OAuth + Paid API Auto-Detect (\`Kimi\` / \`Z.AI\` / \`DeepSeek\` / \`Grok\`), Swarm ON by default, and \`:8766\` live Chrome/Brave control.`,
-            '- **Editable `AGENTS.md` & Security:** Global + Workspace `AGENTS.md` editor in Settings (`Reset to Default`), `6 / 6` Electron Fuses verified (`198/198` tests, `70/70` evals), and zero `.map` files in `dist/`.',
+            '- **Editable `AGENTS.md` & Security:** Global + Workspace `AGENTS.md` editor in Settings (`Reset to Default`), `6 / 6` Electron Fuses verified (`199/199` tests, `70/70` evals), and zero `.map` files in `dist/`.',
           ].join('\n'),
         },
       ],
