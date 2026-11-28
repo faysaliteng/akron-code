@@ -54,8 +54,10 @@ function toolTargetHint(name, args, fallbackTarget) {
 
 export function LiveToolActivityCard({ tools = [], streamingTool = null, paused = false, describeTool, Icon }) {
   const [expanded, setExpanded] = useState(true);
-  const running = [...(tools || [])].reverse().find((t) => t && t.status === 'running') || null;
-  const active = Boolean(running || (streamingTool && streamingTool.name));
+  // A running Swarm already has its own live panel (supervisor + worker cards)
+  // and tool row; a second "Orchestrating swarm…" card here only repeated it.
+  const running = [...(tools || [])].reverse().find((t) => t && t.status === 'running' && t.name !== 'Swarm') || null;
+  const active = Boolean(running || (streamingTool && streamingTool.name && streamingTool.name !== 'Swarm'));
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!active || paused) return;
@@ -253,6 +255,7 @@ export function LiveChecklistCard({ tools = [], subAgents = [], swarmInfo = null
       content: readCount > 0 ? `Inspect workspace & context (${readCount} reads)` : 'Inspect workspace & context',
       status: tools.length > 0 || subAgents.length > 0 ? 'completed' : 'in_progress',
     });
+    let workersActive = false;
     if (swarmInfo || subAgents.length > 0) {
       const doneCount = subAgents.filter((a) => a.status === 'done').length;
       const anyActive = subAgents.some((a) => a.status === 'running' || a.status === 'working' || a.status === 'queued' || a.status === 'waiting')
@@ -263,10 +266,12 @@ export function LiveChecklistCard({ tools = [], subAgents = [], swarmInfo = null
           : `Run sub-agents (${doneCount}/${subAgents.length})`,
         status: anyActive ? 'in_progress' : 'completed',
       });
+      workersActive = anyActive;
     }
     items.push({
       content: editRows.length ? `Write & update files (${editRows.length})` : 'Write & update project files',
-      status: anyRunningEdit ? 'in_progress' : (editRows.length > 0 ? 'completed' : (verifyRows.length > 0 ? 'completed' : 'in_progress')),
+      // While Swarm workers run, this step waits instead of showing a second spinner.
+      status: anyRunningEdit ? 'in_progress' : (editRows.length > 0 ? 'completed' : (verifyRows.length > 0 ? 'completed' : (workersActive ? 'pending' : 'in_progress'))),
     });
     items.push({
       content: verifyRows.length ? `Verify & run commands (${verifyRows.length})` : 'Run tests & verify build',

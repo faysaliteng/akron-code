@@ -3158,7 +3158,7 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
   animation: rise-in .22s ease-out both;
 }
 .mc-card:hover { transform: translateY(-1px); border-color: var(--border-strong); background: color-mix(in srgb, var(--bg-200) 45%, var(--bg-000)); }
-.mc-card.running, .mc-card.working, .mc-card.planning, .mc-card.reviewing {
+.mc-card.running, .mc-card.working, .mc-card.planning, .mc-card.supervising, .mc-card.reviewing {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent), 0 4px 16px rgba(16, 185, 129, 0.08);
 }
@@ -3170,7 +3170,7 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
 
 .mc-card-top { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; overflow: hidden; }
 .mc-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--text-400); }
-.mc-dot.running, .mc-dot.working, .mc-dot.planning, .mc-dot.reviewing {
+.mc-dot.running, .mc-dot.working, .mc-dot.planning, .mc-dot.supervising, .mc-dot.reviewing {
   background: var(--accent);
   box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
   animation: mc-pulse 1.5s ease-out infinite;
@@ -3348,7 +3348,7 @@ body.pane-resizing .session-pane-divider { background: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   .mc-panel.active .mc-head-ico .icon,
   .mc-phase.active,
-  .mc-dot.running, .mc-dot.working, .mc-dot.planning, .mc-dot.reviewing,
+  .mc-dot.running, .mc-dot.working, .mc-dot.planning, .mc-dot.supervising, .mc-dot.reviewing,
   .mc-dot.waiting,
   .composer.is-streaming,
   .activity-text,

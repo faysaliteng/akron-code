@@ -429,3 +429,26 @@ test('agy: no --effort next to a model slug that already carries the effort', ()
   const bare = cr.buildCliInvocation('antigravity', { model: 'gemini-pro-orchestrator', reasoningLevel: 'high' }, 'hi', '', { cwd: '/tmp', bin });
   assert.ok(!bare.includes('--effort'));
 });
+
+test('CLI models can ask Akron for a Swarm with an <akron-swarm> plan', () => {
+  const { parseCliSwarmRequest } = require('../electron/llm');
+  const plan = parseCliSwarmRequest('<akron-swarm>{"goal":"build app","tasks":[{"title":"api","prompt":"write the API"},{"prompt":"write the UI"}]}</akron-swarm>');
+  assert.strictEqual(plan.goal, 'build app');
+  assert.strictEqual(plan.tasks.length, 2);
+  assert.strictEqual(plan.tasks[1].title, 'write the UI');
+  assert.deepStrictEqual(parseCliSwarmRequest('<akron-swarm>```json\n{"goal":"x"}\n```</akron-swarm>'), { goal: 'x' });
+  assert.deepStrictEqual(parseCliSwarmRequest('<akron-swarm>split the refactor</akron-swarm>'), { goal: 'split the refactor' });
+  assert.strictEqual(parseCliSwarmRequest('Hi! 4'), null);
+  assert.deepStrictEqual(parseCliSwarmRequest('<akron-swarm>{"tasks":[]}</akron-swarm>', 'user goal'), { goal: 'user goal' });
+});
+
+test('swarm: the DeepSeek Flash dispatcher picks the supervisor among usable frontier models', async () => {
+  const swarm = require('../electron/swarm');
+  const roster = [{ model: 'claude-opus-5-5', frontier: true }, { model: 'gemini-4-neon-high', frontier: true }, { model: 'small-x', frontier: false }];
+  const taskRouter = { dispatchWithDeepSeekFlash: async ({ availableModels }) => ({ model: availableModels[1] }) };
+  const picked = await swarm.pickSupervisorWithDispatcher('build it', roster, { autoRouterConfig: { hasKey: true }, taskRouter });
+  assert.strictEqual(picked && picked.model, 'gemini-4-neon-high');
+  assert.strictEqual(await swarm.pickSupervisorWithDispatcher('x', roster, { autoRouterConfig: { hasKey: false }, taskRouter }), null);
+  const bogus = { dispatchWithDeepSeekFlash: async () => ({ model: 'not-available' }) };
+  assert.strictEqual(await swarm.pickSupervisorWithDispatcher('x', roster, { autoRouterConfig: { hasKey: true }, taskRouter: bogus }), null);
+});

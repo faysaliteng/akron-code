@@ -497,6 +497,23 @@ function sanitizeOpenAIWireMessages(messages, provider) {
   });
 }
 
+// `<akron-swarm>{"goal": …, "tasks": […]}</akron-swarm>` from a CLI model ->
+// Swarm arguments, or null. A bare goal (not JSON) is accepted too.
+function parseCliSwarmRequest(content, fallbackGoal = '') {
+  const m = /<akron-swarm>\s*([\s\S]*?)\s*<\/akron-swarm>/i.exec(String(content || ''));
+  if (!m) return null;
+  let args = null;
+  const body = m[1].replace(/^```(?:json)?\s*|\s*```$/g, '').trim();
+  try { args = JSON.parse(body); } catch (_) { args = body ? { goal: body } : null; }
+  if (!args || typeof args !== 'object') return null;
+  const tasks = Array.isArray(args.tasks)
+    ? args.tasks.filter((t) => t && (t.prompt || t.title)).slice(0, 8).map((t) => ({ ...t, title: String(t.title || t.prompt).slice(0, 80), prompt: String(t.prompt || t.title) }))
+    : [];
+  const goal = String(args.goal || fallbackGoal || '').trim();
+  if (!goal) return null;
+  return tasks.length ? { goal, tasks } : { goal };
+}
+
 async function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta, extraOpts) {
   // Route signed-in consumer subscription rows through their official CLI binary
   // (`claude`, `codex`, `grok`, `gemini`/`agy`) instead of direct spoofed HTTP.
@@ -2257,7 +2274,14 @@ async function runAgent(opts) {
   }
   let hostSwarmCallId = '';
 
-  if (opts.swarm === true && depth === 0 && !trivialTurn && allAllowedDefs.has('Swarm')) {
+  // A subscription CLI cannot call Akron's Swarm tool, but it can ASK for one:
+  // it replies with an <akron-swarm> plan and Akron runs it (see the loop).
+  const cliSwarmAsk = opts.swarm === true && depth === 0 && !trivialTurn && allAllowedDefs.has('Swarm')
+    && opts._disableHostSwarm !== true && cliRunner.isCliProvider(provider) && !hostSwarmGoal
+    && String(opts.permissionMode || opts.permissions || 'auto') !== 'plan';
+  if (cliSwarmAsk) {
+    messages[0].content += `\n\n<swarm_mode_active>\nSwarm mode is ON. You cannot call a Swarm tool yourself, but Akron can run one for you. If this request splits into 2 or more independent workstreams that separate workers could do at the same time (for example frontend and backend, several modules or files, several research angles), do NOT start the work yourself: reply with ONLY\n<akron-swarm>{"goal": "<the overall objective>", "tasks": [{"title": "<short>", "prompt": "<complete instructions for one worker>"}]}</akron-swarm>\nand nothing else. Akron runs the workers in parallel git worktrees, merges their work and reports back. For a small, single-step or conversational request, answer normally.\n</swarm_mode_active>`;
+  } else if (opts.swarm === true && depth === 0 && !trivialTurn && allAllowedDefs.has('Swarm')) {
     messages[0].content += `\n\n<swarm_mode_active>\nSwarm mode is ON. For any non-trivial build, multi-file implementation, audit, or research task with 2 or more independent workstreams, call \`Swarm\` {"goal": "..."} (optionally passing "tasks") or spawn parallel \`Task\` workers right away after at most ONE quick directory check rather than doing every file sequentially yourself.\n</swarm_mode_active>`;
   }
 
@@ -3086,6 +3110,14 @@ ${cliRunner.isCliProvider(provider)
         };
       } else {
         message = await chatRound(toolMode, outCeiling || undefined);
+        const ask = cliSwarmAsk && step === 0 && message && message.cliHandledTools
+          ? parseCliSwarmRequest(message.content, lastUserFastText) : null;
+        if (ask) {
+          hostSwarmCallId = 'cli_swarm_' + Date.now().toString(36);
+          emit({ type: 'retry', chars: String(message.content || '').length }); // take the raw plan back out of the chat
+          emit({ type: 'notice', text: `The model split this task into ${Array.isArray(ask.tasks) && ask.tasks.length ? ask.tasks.length + ' ' : ''}parallel workers — running the Swarm.` });
+          message = { role: 'assistant', content: '', tool_calls: [{ id: hostSwarmCallId, type: 'function', function: { name: 'Swarm', arguments: JSON.stringify(ask) } }] };
+        }
       }
     } catch (e) {
       // Two different reasons to stop using native tool calls, both recoverable:
@@ -3980,6 +4012,7 @@ ${cliRunner.isCliProvider(provider)
         ? effectiveOrch
         : null,
       swarmSupervisor: collab.pinSwarmSupervisor ? providerList[getIndex()] : null,
+      autoRouterConfig: opts.autoRouterConfig || null, // DeepSeek Flash picks the Swarm supervisor
       permissionMode,
       emit,
       agentRoster,
@@ -4491,4 +4524,4 @@ function createPauseController() {
   };
 }
 
-module.exports = { runAgent, createPauseController, normalizeProvider, chatOnce, chatWithFailover, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, chunkText, humanizeLLMError, isRateLimitError, isContextOverflow, isCreditExhausted, dispatchWithDeepSeekFlash: taskRouter.dispatchWithDeepSeekFlash, classifyPromptTier: taskRouter.classifyPromptTier, pickFromRolePool: taskRouter.pickFromRolePool, getDispatcherTelemetry: taskRouter.getDispatcherTelemetry };
+module.exports = { parseCliSwarmRequest, runAgent, createPauseController, normalizeProvider, chatOnce, chatWithFailover, SYSTEM_PROMPT, parseTextToolCalls, TEXT_TOOL_PROTOCOL, parseArgs, autoCaptureArtifacts, sanitizeHistory, chunkText, humanizeLLMError, isRateLimitError, isContextOverflow, isCreditExhausted, dispatchWithDeepSeekFlash: taskRouter.dispatchWithDeepSeekFlash, classifyPromptTier: taskRouter.classifyPromptTier, pickFromRolePool: taskRouter.pickFromRolePool, getDispatcherTelemetry: taskRouter.getDispatcherTelemetry };

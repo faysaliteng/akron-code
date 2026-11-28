@@ -15,6 +15,8 @@ All notable changes to **Akron Code** are documented here.
 
 ### Subscription models (Claude, Gemini/Antigravity, Codex, Grok)
 - **Swarm now works with subscription CLI models**: Akron starts the Swarm itself for medium-to-large or explicitly parallel tasks (say "use swarm" to force it) (supervisor plans, workers run in parallel worktrees, supervisor merges).
+- **Subscription models can ask for a Swarm themselves.** With Swarm ON, Claude / Antigravity / Codex / Grok CLI models reply with an `<akron-swarm>` plan when a task splits into independent parts, and Akron runs it (they cannot call Akron's Swarm tool directly).
+- **The Auto-router ("ignition") model picks the Swarm supervisor** from the frontier models available right now when its key is saved; a supervisor pinned in Settings still wins. Supervisor plans → workers run in parallel → supervisor reviews and approves.
 - **Plan mode works end to end**: the CLI model's plan goes to the approval card; approving switches back to your previous mode and implements it. The run's live mode is honoured when approving tools after plan approval.
 - HTML/SVG files written by CLI models open in Akron's preview; Claude CLI no longer publishes them to claude.ai.
 - The Swarm supervisor can give each worker only the tools it needs (`electron/swarm-tools.js`).
@@ -32,6 +34,7 @@ All notable changes to **Akron Code** are documented here.
 - Swarm applies workers' changes as uncommitted edits by default (opt in to auto-commit with `swarmAutoCommit`).
 
 ### Design
+- Swarm runs: no second "Orchestrating swarm…" card under the worker panel, "Write & update files" waits while workers run instead of spinning beside them, and the supervisor card says *supervising* (not *planning*) once the plan is made.
 - Six theme colours were never defined (error states, muted text, borders, small radii); account status pills show in full; Settings sections open at the top; per-message subagent/task counts; titles cut at a word; Mission Control idle count; duplicate tool rows; stale plan banner; IDE status bar model.
 
 ## [1.6.9] - 2026-11-28

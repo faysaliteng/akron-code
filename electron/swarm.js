@@ -807,6 +807,26 @@ async function reconcileWorkerWorktrees(doneResults, rootCwd, emit, { autoCommit
 }
 
 //         maxTasks?, maxSteps?, cwd?, signal?, critique?, supervisor? }
+// Ask the DeepSeek Flash dispatcher (Settings → Auto router) which available
+// frontier model should supervise this goal. Null without a key, on timeout,
+// or when it names a model that is not usable now — the caller keeps its pick.
+async function pickSupervisorWithDispatcher(goal, roster, opts = {}) {
+  const cfg = opts.autoRouterConfig;
+  if (!cfg || !cfg.hasKey || !Array.isArray(roster)) return null;
+  const usable = roster.filter((r) => r && r.model && r.frontier && (!gate || typeof gate.usable !== 'function' || gate.usable(r)));
+  if (usable.length < 2) return null;
+  const taskRouter = opts.taskRouter || require('./task-router');
+  const out = await taskRouter.dispatchWithDeepSeekFlash({
+    prompt: 'Pick the PLANNER/SUPERVISOR model for a multi-agent swarm. It plans the work, reviews and approves the workers\' results. Goal:\n' + String(goal || '').slice(0, 4000),
+    availableModels: usable.map((r) => r.model),
+    autoRouterConfig: cfg,
+    timeoutMs: 3500,
+    signal: opts.signal || null,
+  });
+  const id = String((out && (out.model || out.modelId)) || '').toLowerCase();
+  return id ? (usable.find((r) => String(r.model).toLowerCase() === id) || null) : null;
+}
+
 async function swarm(goal, opts = {}) {
   const { runAgent } = opts;
   if (typeof runAgent !== 'function') throw new Error('swarm requires a runAgent function');
@@ -933,6 +953,16 @@ async function swarm(goal, opts = {}) {
     supervisorOrch = defaultSupOrch;
     supervisor = supervisorOrch ? ensureHighThinkingSupervisor({ ...supervisorOrch.providers[0], tier: 'critical' }, roster)
       : (opts.provider ? ensureHighThinkingSupervisor({ ...opts.provider, tier: 'critical' }, roster) : null);
+    // Ignition: with a DeepSeek Flash dispatcher key saved, it chooses the
+    // supervisor from the frontier models that are available right now.
+    const picked = await pickSupervisorWithDispatcher(goal, roster, opts).catch(() => null);
+    if (picked && keyOf(picked) !== keyOf(supervisor)) {
+      supervisor = ensureHighThinkingSupervisor({ ...picked, tier: 'critical' }, roster);
+      const rest = ((supervisorOrch && Array.isArray(supervisorOrch.providers)) ? supervisorOrch.providers : roster)
+        .filter((r) => keyOf(r) !== keyOf(supervisor));
+      supervisorOrch = { enabled: true, activeIndex: 0, role: 'planner', providers: [supervisor, ...rest] };
+      emit({ type: 'notice', text: `DeepSeek Flash picked ${supervisor.model} to supervise this Swarm.` });
+    }
   }
   if (!supervisor) throw new Error('swarm has no model to run on (configure a provider or an orchestrator tier)');
   if (supervisorOrch && Array.isArray(supervisorOrch.providers)) {
@@ -1064,7 +1094,8 @@ async function swarm(goal, opts = {}) {
     onPost: (msg) => emit({ type: 'swarm', phase: 'board', msg }),
     onMember: (member) => emit({ type: 'swarm', phase: 'member', member }),
   });
-  board.setMember('supervisor', { state: 'planning', role: 'supervisor', model: supervisor.model });
+  // The plan is already made here; while workers run the supervisor watches them.
+  board.setMember('supervisor', { state: 'supervising', role: 'supervisor', model: supervisor.model });
   const poolCap = poolOrch ? (router.roleLimit(poolOrch, 'coder') || MAX_CONCURRENCY) : MAX_CONCURRENCY;
   const limit = Math.max(1, Math.min(Number(opts.concurrency) || 4, poolCap, MAX_CONCURRENCY));
   const results = new Array(tasks.length);
@@ -1595,6 +1626,7 @@ async function swarm(goal, opts = {}) {
 }
 
 module.exports = {
+  pickSupervisorWithDispatcher,
   TIER_RANK, normalizeTier, ensureHighThinkingSupervisor, isTrivialConversationalPrompt, buildRoster, pickProvider, rosterSummary, isFrontier,
   extractJSON, normalizePlan, swarm, decompose, reconcileWorkerWorktrees,
   createBoard, boardTools, STALL_NOTE, PLAN_TOOLS, READONLY_REVIEW_TOOLS, REVIEW_TOOLS, MAX_CONCURRENCY,

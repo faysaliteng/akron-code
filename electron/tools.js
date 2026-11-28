@@ -1877,6 +1877,7 @@ async function runToolInner(name, args, ctx) {
         provider: ctx.provider,
         orchestrator: ctx.orchestrator,
         supervisor: ctx.swarmSupervisor || undefined,
+        autoRouterConfig: ctx.autoRouterConfig || null,
         emit: ctx.emit || (() => {}),
         tasks: explicitTasks && explicitTasks.length ? explicitTasks : undefined,
         concurrency: Math.min(Number(args.concurrency) || 4, 8),
