@@ -2,11 +2,12 @@
 const { dialog } = require('electron'); dialog.showErrorBox = () => {};
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { app, BrowserWindow, ipcMain } = require('electron');
 
 const ROOT = path.join(__dirname, '..', '..');
-const ARTIFACTS = '/Users/saimon/.gemini/antigravity/brain/cb4ff1d8-186c-4ca3-9b84-bfe96acbf3bc';
+const ARTIFACTS = (process.env.AKRON_ARTIFACTS_DIR || os.tmpdir());
 
 function registerStubHandlers() {
   const noop = async () => null;

@@ -14,10 +14,10 @@
     <img src="https://github.com/faysaliteng/akron-code/actions/workflows/build-desktop.yml/badge.svg" alt="CI Build Status" />
   </a>
   <a href="https://github.com/faysaliteng/akron-code/releases/latest">
-    <img src="https://img.shields.io/badge/Release-v1.6.8-10b981?style=for-the-badge" alt="Release v1.6.8" />
+    <img src="https://img.shields.io/badge/Release-v1.6.9-10b981?style=for-the-badge" alt="Release v1.6.9" />
   </a>
   <a href="./VERIFICATION.md">
-    <img src="https://img.shields.io/badge/Verified-198%2F198%20Test%20Suites%20%C2%B7%2070%2F70%20Evals-059669?style=for-the-badge" alt="198/198 Test Suites · 70/70 Evals" />
+    <img src="https://img.shields.io/badge/Verified-207%2F207%20Test%20Suites%20%C2%B7%2070%2F70%20Evals-059669?style=for-the-badge" alt="207/207 Test Suites · 70/70 Evals" />
   </a>
   <a href="https://github.com/faysaliteng/akron-code/releases/latest">
     <img src="https://img.shields.io/badge/Platforms-macOS%20%7C%20Windows%20%7C%20Linux-111827?style=for-the-badge" alt="Cross-Platform Desktop" />
@@ -31,7 +31,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/faysaliteng/akron-code/releases/latest"><strong>⬇️ Download v1.6.8</strong></a>
+  <a href="https://github.com/faysaliteng/akron-code/releases/latest"><strong>⬇️ Download v1.6.9</strong></a>
   ·
   <a href="#how-it-works">How It Works</a>
   ·
@@ -52,16 +52,16 @@
 
 ---
 
-## Downloads (Official Releases `v1.6.8`)
+## Downloads (Official Releases `v1.6.9`)
 
 All desktop installers are hardened with **6/6 Electron Fuses** + cryptographic **SHA-256 Brand Seal** integrity verification, paired with `latest*.yml` auto-updater manifests (`latest-mac.yml`, `latest.yml`, `latest-linux.yml`) and `SHA256SUMS.txt` on the [**GitHub Releases Page**](https://github.com/faysaliteng/akron-code/releases/latest) (ad-hoc / unsigned locally without paid Developer ID or EV Authenticode certificates).
 
 | Platform / Component | Artifacts | Highlights |
 |---|---|---|
-| **macOS (Apple Silicon)** | `AkronCode-1.6.8-arm64.dmg` · `AkronCode-1.6.8-arm64.zip` | Top-level `Akron Code.app` + standalone `Akron Browser Bot/` folder, ad-hoc signed, `RunAsNode=false` Fuse, ASAR integrity verified, `CGEvent` 60Hz glide + Emerald HUD |
-| **Windows 11 / 10 (x64 & ARM64)** | `AkronCode-1.6.8-win-setup-x64.exe` · `AkronCode-1.6.8-win-setup-arm64.exe` | NSIS Setup, native dark titlebar overlay (`Ctrl+` shortcuts), ConPTY `node-pty`, Per-Monitor DPI v2 + `SendInput` Unicode + UIAutomation Computer Use 2.0, Toast XML |
-| **Windows Portable (x64)** | `AkronCode-1.6.8-win-portable-x64.exe` | Zero-install single portable executable |
-| **Linux (x64 & ARM64)** | `AkronCode-1.6.8-linux-x86_64.AppImage` · `AkronCode-1.6.8-linux-x64.tar.gz` · `AkronCode-1.6.8-linux-arm64.tar.gz` | Single-file `AppImage` + portable `x64`/`arm64` `.tar.gz` archives (`npmRebuild: false`, X11 + Wayland `ydotool`/`wtype`/`grim`/AT-SPI2 Computer Use 2.0, ASAR + Fuses hardened) |
+| **macOS (Apple Silicon)** | `AkronCode-1.6.9-arm64.dmg` · `AkronCode-1.6.9-arm64.zip` | Top-level `Akron Code.app` + standalone `Akron Browser Bot/` folder, ad-hoc signed, `RunAsNode=false` Fuse, ASAR integrity verified, `CGEvent` 60Hz glide + Emerald HUD |
+| **Windows 11 / 10 (x64 & ARM64)** | `AkronCode-1.6.9-win-setup-x64.exe` · `AkronCode-1.6.9-win-setup-arm64.exe` | NSIS Setup, native dark titlebar overlay (`Ctrl+` shortcuts), ConPTY `node-pty`, Per-Monitor DPI v2 + `SendInput` Unicode + UIAutomation Computer Use 2.0, Toast XML |
+| **Windows Portable (x64)** | `AkronCode-1.6.9-win-portable-x64.exe` | Zero-install single portable executable |
+| **Linux (x64 & ARM64)** | `AkronCode-1.6.9-linux-x86_64.AppImage` · `AkronCode-1.6.9-linux-x64.tar.gz` · `AkronCode-1.6.9-linux-arm64.tar.gz` | Single-file `AppImage` + portable `x64`/`arm64` `.tar.gz` archives (`npmRebuild: false`, X11 + Wayland `ydotool`/`wtype`/`grim`/AT-SPI2 Computer Use 2.0, ASAR + Fuses hardened) |
 | **Standalone Akron Browser Bot (`1.6.13`)** | `AkronBrowserBot-1.6.13.crx` · `AkronBrowserBot-1.6.13.zip` | Deterministic RSA-2048 signed CRX3 (`Cr24`) + unpacked MV3 bundle auto-synced to user-accessible OS folder, `close_tab` & `list_tabs` fixes, `:8766` bridge, GitHub auto-updater |
 | **Companion Terminal CLI & Daemon** | `./bin/akron.js` (`npm link` → `akron`) | Multi-turn `akron` REPL & `akron -p` coding agent (`--continue`/`--yolo`/`--stream-json`), `akron daemon`, `akron update`, `akron review --adversarial`, `akron doctor`, `akron eval` |
 
@@ -100,7 +100,7 @@ Every major AI company wants you trapped inside its own **Four Walled Gardens**:
 ```mermaid
 flowchart TD
   UI["Akron Code UI (4-Mode Welcome · 3-Mode Picker · Editable AGENTS.md · Monaco IDE · Notebooks · Markmap)"] --> Preload["Context-Isolated Preload Bridge"]
-  Preload --> Main["Electron Main Process & Agent Harness (v1.6.8)"]
+  Preload --> Main["Electron Main Process & Agent Harness (v1.6.9)"]
 
   Main --> Vault["1. OAuth 2.1 PKCE Vault & AES-256-GCM SecretStore"]
   Main --> Brain["2. DeepSeek V4.1 Flash Dispatcher (OpenRouter Free / DeepSeek API / FreeLLMAPI)"]
@@ -112,7 +112,7 @@ flowchart TD
 
 | Stage | Module & Mechanism |
 |---|---|
-| **1. Credential & OAuth 2.1 PKCE Vault** | `electron/provider-oauth.js` + `electron/secretstore.js` — portable cross-OS `aes-256-gcm` secret store (`~/.autobot/secrets.json`, `0o600`), encrypted `oauth-mirror/`, and single-flight `refreshFlights` (10-minute `autoHealAll`). |
+| **1. Credential & Official CLI Auth Vault** | `electron/provider-oauth.js` + `electron/secretstore.js` — encrypted cross-OS secret store (`~/.autobot/secrets.json` + random 32-byte `master.key` / OS `safeStorage`, `0o600`), thin native CLI auth wrappers (`claude`, `codex`, `grok`, `gemini`/`agy`), and encrypted API-key storage. |
 | **2. DeepSeek V4.1 Flash Dispatcher & 3-Mode Router** | `electron/task-router.js` + `electron/llm.js` — enforces strict `direct`, `orchestrator`, or `auto` dispatch (`1,200 ms` hard timeout, connected-only allowlist, `0 ms` deterministic heuristic fallback, and `<runtime_identity>` attribution). |
 | **3. Cross-Provider Context Bridge & Prompt Cache Preservation** | `electron/context-pipeline.js` + `electron/mindmap.js` + `electron/spill.js` — preserves KV prefix cache ordering, keeps newest 4 turns verbatim, spills `>12 KB` outputs to `0o600` files, and syncs live project mindmaps across model switches. |
 | **4. Self-Healing Failover Engine** | `electron/orch-router.js` + `electron/provider-gate.js` — cooldown-aware 8-role failover pools across OAuth subscriptions, local runtimes, and the **1,575-model / 97-platform FreeLLMAPI Unified Engine**. |
@@ -121,9 +121,9 @@ flowchart TD
 
 ---
 
-### Why Akron Code (`v1.6.8` Head-to-Head Matrix)
+### Why Akron Code (`v1.6.9` Head-to-Head Matrix)
 
-| Capability | **Akron Code v1.6.8** | **Claude.app** | **ChatGPT / Codex.app** | **Google Antigravity** | **Cursor** |
+| Capability | **Akron Code v1.6.9** | **Claude.app** | **ChatGPT / Codex.app** | **Google Antigravity** | **Cursor** |
 |---|---|---|---|---|---|
 | Multi-Vendor Subscriptions (`Claude` + `GPT` + `Gemini` + `Grok` + `Ollama`) | **Native OAuth + Auto-Heal** | Anthropic only | OpenAI only | Google / Partner | Proprietary billing |
 | 8-Role Auto-Routing (`planner`, `coder`, `image_gen`, `video_gen`, `audio_speech`, …) | **Yes + 429 Failover** | No | No | Partial | Partial |
@@ -147,7 +147,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   UI["Akron Code Desktop UI (React 18 · Monaco · Notebooks · Debugger · Markmap · Appearance Studio)"] --> Preload["Context-Isolated Preload Bridge (contextIsolation: true)"]
-  Preload --> Main["Electron Main Process & Agent Harness (v1.6.8)"]
+  Preload --> Main["Electron Main Process & Agent Harness (v1.6.9)"]
 
   Main --> Brand["Brand Guard & 6/6 Electron Fuses (SHA-256 Assets + ASAR Integrity)"]
   Main --> Auth["OAuth Auto-Heal & AES-256-GCM Secret Store (Claude · Codex · Gemini · Grok · Keyring)"]
@@ -282,8 +282,8 @@ Manage all integrations, slash skills, `@`-mentionable Custom Sub-Agents (`~/.au
 ### 6C. Live Cross-Platform Desktop Verification (macOS Apple Silicon + Windows 11 VM + Kali Linux VM)
 Every release is validated with real native execution across all three operating systems before tagging:
 - **macOS (Apple Silicon):** Strict `codesign --verify --deep --strict`, `COLD_BOOT_OK` (`15` checked files, `0` console errors), and `40+` Retina (`2560x1550`) UI captures.
-- **Windows 11 ARM64 VM (`v1.6.8` Live):** Silent NSIS install (`AkronCode-1.6.8-win-setup-arm64.exe /S`), `COLD_BOOT_OK` (`brandOk: true, domOk: true, ipcOk: true, checkedFiles: 15, consoleErrorCount: 0`), standalone `%LOCALAPPDATA%\AkronLogic\Akron Browser Bot\akron-browser-bot.crx` (`Cr24`, `5,903,043` bytes), native `CopyFromScreen` / `UIAutomationClient` check (`1920x1080`), and visible desktop UI launch (`1460x960` window, zero integrity dialogs).
-- **Kali Linux ARM64 VM (`v1.6.8` Live):** Portable `AkronCode-1.6.8-linux-arm64.tar.gz` extraction, `COLD_BOOT_OK` (`checkedFiles: 15, consoleErrorCount: 0`), X11 `xdotool` (`1920x1200`) + `import` capture check, and live Xfce desktop window render.
+- **Windows 11 ARM64 VM (`v1.6.9` Live):** Silent NSIS install (`AkronCode-1.6.9-win-setup-arm64.exe /S`), `COLD_BOOT_OK` (`brandOk: true, domOk: true, ipcOk: true, checkedFiles: 15, consoleErrorCount: 0`), standalone `%LOCALAPPDATA%\AkronLogic\Akron Browser Bot\akron-browser-bot.crx`, native `CopyFromScreen` / `UIAutomationClient` check (`1920x1080`), and visible desktop UI launch (`1460x960` window, zero integrity dialogs).
+- **Kali Linux ARM64 VM (`v1.6.9` Live):** Portable `AkronCode-1.6.9-linux-arm64.tar.gz` extraction, `COLD_BOOT_OK` (`checkedFiles: 15, consoleErrorCount: 0`), X11 `xdotool` (`1920x1200`) + `import` capture check, and live Xfce desktop window render.
 
 ![Akron Code Live on Windows 11 Desktop](docs/screenshots/windows11-akron-code-live.png)
 
@@ -573,8 +573,8 @@ Claude-parity **3-OS Computer Use 2.0** (`macOS`, `Windows 11 PMv2`, `Linux X11 
   - Headless background daemon (`akron daemon start|stop|status|install|uninstall`) with exclusive `scheduler.lock.json` coordination and authenticated `POST /webhooks/github` PR/issue reviews running in isolated detached `git worktree` sandboxes.
 - **Universal Media & Pre-Bundled Office Studio (`electron/media-gen.js`, `electron/doc-studio.js`):**
   - Automatic routing for **`GenerateImage`**, **`EditImage`**, **`GenerateVideo`**, **`EditVideo`**, **`ReadDocument`**, and **`GenerateDocument`** supporting PDF, LaTeX, `.docx`, `.xlsx`/`.csv`, `.pptx`, `.epub`, `.sqlite`, and `.zip`/`.tar.gz` completely offline.
-- **Cross-Platform OAuth Auto-Heal & Portable Encrypted Storage:**
-  - AES-256-GCM portable secret store (`~/.autobot/secrets.json`), encrypted `oauth-mirror/`, single-flight `refreshFlights`, and 1-click **Auto-Heal PC Accounts** across macOS, Windows, and Linux.
+- **Cross-Platform Official CLI Subprocess Transport & Encrypted Storage:**
+  - AES-256-GCM encrypted secret store (`~/.autobot/secrets.json`, `master.key` / OS `safeStorage`) plus official CLI subprocess NDJSON execution (`electron/cli-runner.js`) across macOS, Windows, and Linux.
 - **Hardened Dual `[Agent | IDE]` Workbench, `.ipynb` Notebooks, Debugger & Next-Edit Prediction:**
   - Per-file Monaco models (`monaco.Uri.file`), shared split-editor state, stateful **`.ipynb` Python/JS Notebooks**, live **Node CDP + Python `pdb` Debugger** (gutter breakpoints, Call Stack, Locals, Watches), **Next-Edit Prediction (`Alt+]`)**, persistent non-leaking PTY lifecycle, full LSP sync, per-hunk `ideGitStagePatch`, and offline **Markmap** mind maps.
 

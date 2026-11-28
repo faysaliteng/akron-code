@@ -362,9 +362,10 @@ The available model tiers are: {ROSTER}
 Route expensive tiers to work that needs them and cheap tiers to mechanical work.
 
 Reply with ONLY a JSON object, no prose, no markdown fence:
-{"subtasks":[{"id":"t1","title":"short label","tier":"small|heavy|critical","role":"coder|vision|fast|planner","prompt":"complete instructions for that agent","owns":["path/or/area"]}],"synthesis":"how to merge the results"}
+{"subtasks":[{"id":"t1","title":"short label","tier":"small|heavy|critical","role":"coder|vision|fast|planner","isolation":"worktree|readonly","prompt":"complete instructions for that agent","owns":["path/or/area"]}],"synthesis":"how to merge the results"}
 ("role" is optional: coder = implementation (default), vision = UI/screenshot work,
-fast = trivial/mechanical, planner = architecture/review.)
+fast = trivial/mechanical, planner = architecture/review.
+"isolation" is optional: "worktree" = isolated git worktree (default for any task writing/editing files), "readonly" = read-only research/audit task.)
 
 USER GOAL:
 {GOAL}`;
@@ -676,6 +677,63 @@ async function decompose(opts) {
 
 // Run the whole supervisor → workers → review loop.
 // opts: { goal, runAgent, provider, orchestrator, emit, tasks?, concurrency?,
+async function reconcileWorkerWorktrees(doneResults, rootCwd, emit) {
+  const out = { merged: [], conflicts: [] };
+  const withWt = (doneResults || []).filter((r) => r && r.worktree && r.worktree.branch && r.worktree.path);
+  if (!withWt.length) return out;
+  const gitRoot = withWt[0].worktree.gitRoot || rootCwd;
+  if (!gitRoot || !fs.existsSync(gitRoot)) return out;
+
+  for (const r of withWt) {
+    const { branch, path: wtDir } = r.worktree;
+    let diffFiles = '';
+    try {
+      diffFiles = execFileSync('git', ['diff', '--name-only', `HEAD...${branch}`], {
+        cwd: gitRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    } catch (_) {
+      continue;
+    }
+    if (!diffFiles) {
+      try { execFileSync('git', ['worktree', 'remove', '--force', wtDir], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+      try { fs.rmSync(wtDir, { recursive: true, force: true }); } catch (_) {}
+      try { execFileSync('git', ['worktree', 'prune'], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+      try { execFileSync('git', ['branch', '-D', branch], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+      delete r.worktree;
+      continue;
+    }
+    try {
+      execFileSync('git', ['-c', 'user.name=Akron Swarm', '-c', 'user.email=swarm@akronlogic.com', 'merge', '--no-ff', '--no-edit', branch], {
+        cwd: gitRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      r.worktree.merged = true;
+      out.merged.push({ worker: r.name, branch, files: diffFiles.split(/\r?\n/).filter(Boolean) });
+      r.result = String(r.result || '').replace(/\n*\[Worktree preserved:[^\]]+\]/g, '') + `\n\n[Worktree merged into HEAD: branch=${branch}]`;
+      try { execFileSync('git', ['worktree', 'remove', '--force', wtDir], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+      try { fs.rmSync(wtDir, { recursive: true, force: true }); } catch (_) {}
+      try { execFileSync('git', ['worktree', 'prune'], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+      try { execFileSync('git', ['branch', '-D', branch], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+      if (typeof emit === 'function') {
+        emit({ type: 'swarm', phase: 'worktree_merged', worker: r.name, branch, files: out.merged[out.merged.length - 1].files });
+      }
+    } catch (mergeErr) {
+      try { execFileSync('git', ['merge', '--abort'], { cwd: gitRoot, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (_) {}
+      out.conflicts.push({
+        worker: r.name,
+        branch,
+        path: wtDir,
+        files: diffFiles.split(/\r?\n/).filter(Boolean),
+        error: String((mergeErr && (mergeErr.stderr || mergeErr.message)) || mergeErr).slice(0, 300),
+      });
+    }
+  }
+  return out;
+}
+
 //         maxTasks?, maxSteps?, cwd?, signal?, critique?, supervisor? }
 async function swarm(goal, opts = {}) {
   const { runAgent } = opts;
@@ -859,16 +917,18 @@ async function swarm(goal, opts = {}) {
   });
 
   const planThreads = modeCollab.normalizeThreads(plan, tasks);
-  const autoIso = opts.worktreeIsolation === 'auto' || opts.worktreeIsolation === 'worktree';
-  const overlapWorktrees = opts.worktreeIsolation === 'auto'
-    ? modeCollab.detectOverlappingTasks(tasks)
-    : (opts.worktreeIsolation === 'worktree' ? new Set(tasks.map((t) => t.id)) : new Set());
+  const wtMode = opts.worktreeIsolation || 'auto';
+  const disableWorktrees = wtMode === 'off' || wtMode === 'none' || opts.readOnly === true;
+  const overlapWorktrees = wtMode === 'auto' ? modeCollab.detectOverlappingTasks(tasks) : new Set();
   for (const t of tasks) {
-    if (overlapWorktrees.has(t.id) || t.isolation === 'worktree') {
+    if (disableWorktrees) {
+      t.worktree = false;
+      t.isolation = t.isolation || 'readonly';
+    } else if (t.isolation === 'readonly') {
+      t.worktree = false;
+    } else if (wtMode === 'worktree' || wtMode === 'auto' || overlapWorktrees.has(t.id) || t.isolation === 'worktree') {
       t.worktree = true;
       t.isolation = 'worktree';
-    } else if (autoIso && !t.isolation) {
-      t.worktree = Boolean(t.worktree);
     }
   }
 
@@ -1140,12 +1200,20 @@ async function swarm(goal, opts = {}) {
       if (worktreeInfo) {
         let dirtyOrCommitted = false;
         try {
-          const st = execFileSync('git', ['status', '--porcelain'], { cwd: worktreeInfo.wtDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+          let st = execFileSync('git', ['status', '--porcelain'], { cwd: worktreeInfo.wtDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+          if (st) {
+            execFileSync('git', ['add', '-A'], { cwd: worktreeInfo.wtDir, stdio: ['ignore', 'pipe', 'pipe'] });
+            execFileSync('git', ['-c', 'user.name=Akron Swarm', '-c', 'user.email=swarm@akronlogic.com', 'commit', '-m', `swarm: ${workerName}`, '--no-verify'], {
+              cwd: worktreeInfo.wtDir,
+              stdio: ['ignore', 'pipe', 'pipe'],
+            });
+          }
           const headCount = Number(execFileSync('git', ['rev-list', '--count', `${worktreeInfo.baseHead}..HEAD`], { cwd: worktreeInfo.wtDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()) || 0;
+          st = execFileSync('git', ['status', '--porcelain'], { cwd: worktreeInfo.wtDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
           dirtyOrCommitted = Boolean(st) || headCount > 0;
         } catch (_) { dirtyOrCommitted = true; }
         if (dirtyOrCommitted) {
-          preservedWorktree = { path: worktreeInfo.wtDir, branch: worktreeInfo.wtBranch };
+          preservedWorktree = { path: worktreeInfo.wtDir, branch: worktreeInfo.wtBranch, gitRoot: worktreeInfo.gitRoot, baseHead: worktreeInfo.baseHead };
           result += `\n\n[Worktree preserved: path=${worktreeInfo.wtDir}, branch=${worktreeInfo.wtBranch}]`;
           worktreeInfo = null;
         }
@@ -1302,6 +1370,10 @@ async function swarm(goal, opts = {}) {
   emit({ type: 'swarm', phase: 'dispatched', results: done.map((r) => ({ id: r.id, title: r.title, tier: r.tier, role: r.role, model: r.model, status: r.status, ms: r.ms })) });
   if (opts.signal && opts.signal.aborted) throw new Error('aborted');
 
+  const wtRecon = opts.autoMergeWorktrees !== false && !(opts.signal && opts.signal.aborted)
+    ? await reconcileWorkerWorktrees(done, opts.cwd, emit)
+    : { merged: [], conflicts: [] };
+
   // ---- 3. Supervisor review / merge ----
   let answer = '';
   let reviewError = null;
@@ -1318,10 +1390,16 @@ async function swarm(goal, opts = {}) {
     for (const { r, env } of envelopes) {
       for (const f of env.files) touchedSet.add(f);
       for (const c of env.checks) checksList.push(`${r.name}: ${c}`);
-      if (r.worktree && r.worktree.branch) wtBranches.push(`${r.name} -> ${r.worktree.branch} (${r.worktree.path})`);
+      if (r.worktree && r.worktree.branch && !r.worktree.merged) wtBranches.push(`${r.name} -> ${r.worktree.branch} (${r.worktree.path})`);
     }
-    const files = touchedSet.size || done.some((r) => /\.(html?|css|js|jsx|tsx|ts|json|md|py)\b/i.test(r.result))
-      ? `\nThe team reported creating/updating files${touchedSet.size ? ' (' + [...touchedSet].slice(0, 12).join(', ') + ')' : ''}.${wtBranches.length ? ' Preserved worker branches: ' + wtBranches.join('; ') + '.' : ''}${checksList.length ? ' Reported checks: ' + checksList.slice(0, 6).join('; ') + '.' : ''} Verify the key files exist (Read/Glob, or run the tests with Bash) and make sure the final answer names the entry file.\n` : '';
+    const mergedNote = wtRecon.merged.length
+      ? ` Auto-merged worktrees into HEAD: ${wtRecon.merged.map((m) => `${m.worker} (${m.files.join(', ')})`).join('; ')}.`
+      : '';
+    const conflictNote = wtRecon.conflicts.length
+      ? ` CONFLICTS NEED MANUAL RESOLUTION from worker branches: ${wtRecon.conflicts.map((c) => `${c.worker} branch ${c.branch} at ${c.path} [${c.files.join(', ')}]`).join('; ')}.`
+      : '';
+    const files = touchedSet.size || wtRecon.merged.length || wtRecon.conflicts.length || done.some((r) => /\.(html?|css|js|jsx|tsx|ts|json|md|py)\b/i.test(r.result))
+      ? `\nThe team reported creating/updating files${touchedSet.size ? ' (' + [...touchedSet].slice(0, 12).join(', ') + ')' : ''}.${mergedNote}${conflictNote}${wtBranches.length ? ' Preserved unmerged worker branches: ' + wtBranches.join('; ') + '.' : ''}${checksList.length ? ' Reported checks: ' + checksList.slice(0, 6).join('; ') + '.' : ''} Verify the key files exist (Read/Glob, or run the tests with Bash) and make sure the final answer names the entry file.\n` : '';
     try {
         const hasWorkerErrors = done.some((r) => r && r.status === 'error');
         const effectiveReviewTools = (opts.readOnly === true || opts.permissionMode === 'plan')
@@ -1379,7 +1457,7 @@ async function swarm(goal, opts = {}) {
 
 module.exports = {
   TIER_RANK, normalizeTier, ensureHighThinkingSupervisor, buildRoster, pickProvider, rosterSummary, isFrontier,
-  extractJSON, normalizePlan, swarm, decompose,
+  extractJSON, normalizePlan, swarm, decompose, reconcileWorkerWorktrees,
   createBoard, boardTools, STALL_NOTE, PLAN_TOOLS, READONLY_REVIEW_TOOLS, REVIEW_TOOLS, MAX_CONCURRENCY,
   SUPERVISOR_PLAN_PROMPT, SUPERVISOR_MERGE_PROMPT,
 };

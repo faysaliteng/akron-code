@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-11-28T00:55:43.597Z",
+  "generatedAt": "2026-11-28T03:54:02.217Z",
   "nodeVersion": "v24.22.3",
   "platform": "darwin/arm64",
   "totalTasks": 70,
   "totalPassed": 70,
   "totalFailed": 0,
   "overallPassRatePct": 100,
-  "durationMs": 246,
+  "durationMs": 187,
   "suites": {
     "security": {
       "suite": "security",
@@ -16,7 +16,7 @@
       "passRatePct": 100,
       "unauthorizedToolCalls": 0,
       "poisonedMemoriesAccepted": 0,
-      "durationMs": 17,
+      "durationMs": 19,
       "results": [
         {
           "id": "sec-inj-1",
@@ -28,7 +28,7 @@
           "id": "sec-inj-2",
           "category": "prompt-injection",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "sec-inj-3",
@@ -88,19 +88,19 @@
           "id": "sec-mem-2",
           "category": "whisperbench-memory",
           "passed": true,
-          "ms": 0
+          "ms": 2
         },
         {
           "id": "sec-mem-3",
           "category": "whisperbench-memory",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "sec-mem-4",
           "category": "whisperbench-memory",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "sec-mem-5",
@@ -112,7 +112,7 @@
           "id": "sec-mem-6",
           "category": "whisperbench-memory",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "sec-mem-7",
@@ -190,7 +190,7 @@
           "id": "sec-sandbox-5",
           "category": "os-sandbox-deny",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "sec-sandbox-6",
@@ -202,7 +202,7 @@
           "id": "sec-ledger-verify-7",
           "category": "audit-ledger",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "sec-ledger-tamper-8",
@@ -218,7 +218,7 @@
       "passed": 22,
       "failed": 0,
       "passRatePct": 100,
-      "durationMs": 191,
+      "durationMs": 139,
       "results": [
         {
           "id": "code-patch-1",
@@ -236,37 +236,37 @@
           "id": "code-patch-3",
           "category": "apply-patch",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "code-patch-4",
           "category": "apply-patch",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "code-patch-5",
           "category": "apply-patch",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "code-patch-6",
           "category": "apply-patch",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "code-editguard-1",
           "category": "edit-guard",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "code-editguard-2",
           "category": "edit-guard",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "code-editguard-3",
@@ -284,7 +284,7 @@
           "id": "code-search-1",
           "category": "codebase-index",
           "passed": true,
-          "ms": 34
+          "ms": 28
         },
         {
           "id": "code-search-2",
@@ -296,37 +296,37 @@
           "id": "code-search-3",
           "category": "codebase-index",
           "passed": true,
-          "ms": 10
+          "ms": 5
         },
         {
           "id": "code-search-4",
           "category": "codebase-index",
           "passed": true,
-          "ms": 7
+          "ms": 6
         },
         {
           "id": "code-codemode-1",
           "category": "codemode",
           "passed": true,
-          "ms": 30
+          "ms": 14
         },
         {
           "id": "code-codemode-2",
           "category": "codemode",
           "passed": true,
-          "ms": 19
+          "ms": 15
         },
         {
           "id": "code-codemode-3",
           "category": "codemode",
           "passed": true,
-          "ms": 23
+          "ms": 14
         },
         {
           "id": "code-codemode-4",
           "category": "codemode",
           "passed": true,
-          "ms": 24
+          "ms": 13
         },
         {
           "id": "code-spill-1",
@@ -361,19 +361,19 @@
       "failed": 0,
       "passRatePct": 100,
       "avgAxCompressionRatioX": 25,
-      "durationMs": 37,
+      "durationMs": 28,
       "results": [
         {
           "id": "brow-ax-1",
           "category": "ax-snapshot",
           "passed": true,
-          "ms": 23
+          "ms": 18
         },
         {
           "id": "brow-ax-2",
           "category": "ax-snapshot",
           "passed": true,
-          "ms": 2
+          "ms": 1
         },
         {
           "id": "brow-ax-3",
@@ -385,7 +385,7 @@
           "id": "brow-ax-4",
           "category": "ax-snapshot",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "brow-heal-1",
@@ -397,19 +397,19 @@
           "id": "brow-heal-2",
           "category": "self-healing-replay",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "brow-heal-3",
           "category": "self-healing-replay",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "brow-heal-4",
           "category": "self-healing-replay",
           "passed": true,
-          "ms": 1
+          "ms": 0
         },
         {
           "id": "brow-vault-1",
@@ -451,7 +451,7 @@
           "id": "brow-gate-2fa-3",
           "category": "human-gate",
           "passed": true,
-          "ms": 0
+          "ms": 1
         },
         {
           "id": "brow-gate-checkout-4",

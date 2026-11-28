@@ -100,7 +100,8 @@ function poolsConfig(orch) {
   return any ? p : null;
 }
 
-function isGatewayCredentialReady(baseURL, apiKey) {
+function isGatewayCredentialReady(baseURL, apiKey, row) {
+  if (row && (row.transport === 'cli' || row.cliMode === true || row.oauthProvider)) return true;
   const base = String(baseURL || '').trim();
   const key = String(apiKey || '').trim();
   if (!base) return false;
@@ -438,21 +439,6 @@ function resolveMediaChain({
       const cfg = fl && typeof fl.loadConfig === 'function' ? fl.loadConfig() : null;
       if (cfg && cfg.providers && typeof cfg.providers === 'object') {
         freeLlmProviders = { ...cfg.providers };
-      }
-    } catch (_) {}
-    try {
-      const fs = require('fs');
-      const path = require('path');
-      const os = require('os');
-      const keyFile = path.join(os.homedir(), 'Desktop', 'freellmapi-keys.json');
-      if (fs.existsSync(keyFile)) {
-        const raw = JSON.parse(fs.readFileSync(keyFile, 'utf8'));
-        const map = (raw && raw.providers && typeof raw.providers === 'object') ? raw.providers : raw;
-        if (map && typeof map === 'object') {
-          for (const [id, entry] of Object.entries(map)) {
-            if (!freeLlmProviders[id] && entry) freeLlmProviders[id] = entry;
-          }
-        }
       }
     } catch (_) {}
   }

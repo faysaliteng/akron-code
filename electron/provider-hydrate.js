@@ -64,28 +64,25 @@ async function hydrateProviderNode(rawProvider, opts = {}) {
   let r = null;
   try {
     r = await providerOauth.resolve(targetId);
-    if (!r || !r.accessToken) {
-      if (providerOauth.autoHealAll) await providerOauth.autoHealAll({ silent: true }).catch(() => {});
-      r = await providerOauth.resolve(targetId, { force: true });
-    }
   } catch (_) {
     if (providerOauth.autoHealAll) await providerOauth.autoHealAll({ importMissing: true, silent: true }).catch(() => {});
-    r = await providerOauth.resolve(targetId, { force: true });
+    r = await providerOauth.resolve(targetId);
   }
 
   const out = Object.assign({}, provider, {
     transport: r.transport,
-    accessToken: r.accessToken,
-    account: r.account,
-    accountId: r.accountId || provider.accountId || '',
-    codexUrl: r.codexUrl || provider.codexUrl || '',
-    cloudcodeUrl: r.cloudcodeUrl || provider.cloudcodeUrl || '',
-    oauth: true,
+    cliId: r.cliId || provider.cliId || '',
+    cliBin: r.cliBin || provider.cliBin || '',
+    cliKind: r.cliKind || provider.cliKind || '',
+    cliMode: Boolean(r.cliMode || r.transport === 'cli'),
+    apiKey: r.apiKey || provider.apiKey || '',
+    accessToken: '',
+    account: r.account || '',
+    oauth: false,
     model: provider.model || (r.models && r.models[0] && r.models[0].id) || '',
   });
-  if (!providertransport.needsTransport({ transport: r.transport })) {
+  if (!out.cliMode && !providertransport.needsTransport({ transport: r.transport })) {
     out.transport = '';
-    out.apiKey = r.accessToken;
     out.baseURL = r.baseURL || provider.baseURL || '';
     out.supportsTools = true;
   }

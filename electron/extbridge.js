@@ -99,12 +99,32 @@ async function gatherOllamaModels() {
   return models;
 }
 
+function loadStoreAndSecret() {
+  let settings = {};
+  let secretstore = null;
+  try {
+    const store = require('./store');
+    if (store && typeof store.getSettings === 'function') settings = store.getSettings() || {};
+  } catch (_) {}
+  try {
+    secretstore = require('./secretstore');
+  } catch (_) {}
+  return { settings, secretstore };
+}
+
 function enrichRow(row) {
   if (!row || typeof row !== 'object') return row;
   if (!row.apiKey && /:(3001|31415)\b/.test(String(row.baseURL || ''))) {
     try {
       const cfg = freellm.loadConfig ? freellm.loadConfig() : null;
       if (cfg && cfg.token) return { ...row, apiKey: cfg.token };
+    } catch (_) {}
+  }
+  if (!row.apiKey && !row.oauthProvider && !row.transport && row.baseURL && typeof orchRouter.resolvePaidProviderApiKey === 'function') {
+    try {
+      const { settings, secretstore } = loadStoreAndSecret();
+      const resolvedKey = orchRouter.resolvePaidProviderApiKey(row, { settings, secretstore });
+      if (resolvedKey) return { ...row, apiKey: resolvedKey };
     } catch (_) {}
   }
   return row;
@@ -154,6 +174,35 @@ async function gatherBackends() {
   if (Array.isArray(extras)) {
     for (const ex of extras) addBackend(ex);
   }
+  try {
+    const { settings, secretstore } = loadStoreAndSecret();
+    const savedPaid = Array.isArray(settings.orchPaidProviders) ? settings.orchPaidProviders : [];
+    for (const p of savedPaid) {
+      if (!p || !p.baseURL) continue;
+      const baseURL = String(p.baseURL || '').trim();
+      if (!baseURL || !/^https?:\/\//i.test(baseURL)) continue;
+      const resolvedKey = typeof orchRouter.resolvePaidProviderApiKey === 'function'
+        ? orchRouter.resolvePaidProviderApiKey({ orchProviderId: p.id, baseURL }, { settings, secretstore })
+        : '';
+      if (!p.custom && !resolvedKey) continue;
+      const rawModels = Array.isArray(p.models) && p.models.length
+        ? p.models
+        : (p.model ? [{ id: p.model }] : []);
+      const modelIds = rawModels.map((m) => String((m && (m.id || m.model)) || m || '').trim()).filter(Boolean);
+      if (!modelIds.length) continue;
+      const firstModelObj = rawModels[0] && typeof rawModels[0] === 'object' ? rawModels[0] : null;
+      addBackend({
+        id: p.id,
+        name: p.name || p.id,
+        baseURL,
+        apiKey: resolvedKey,
+        orchProviderId: p.id,
+        model: modelIds[0],
+        contextWindow: Number((firstModelObj && firstModelObj.contextWindow) || p.contextWindow) || 0,
+        supportsTools: true,
+      }, modelIds);
+    }
+  } catch (_) {}
   if (ollamaModels.length) {
     addBackend({
       id: 'ollama',
@@ -181,6 +230,13 @@ function inferModelTransport(reqModel) {
 
 function backendTransportKind(b) {
   if (!b) return '';
+  if (b.transport === 'cli' || b.cliMode) {
+    const rawKind = String(b.cliKind || String(b.oauthProvider || '').split(':')[0] || '').toLowerCase().trim();
+    if (rawKind === 'claude' || rawKind === 'anthropic' || rawKind === 'claude-code') return 'anthropic';
+    if (rawKind === 'chatgpt' || rawKind === 'codex' || rawKind === 'openai') return 'codex';
+    if (rawKind === 'antigravity' || rawKind === 'google' || rawKind === 'gemini' || rawKind === 'agy') return 'google';
+    if (rawKind === 'grok' || rawKind === 'xai') return 'grok';
+  }
   if (b.transport) return String(b.transport);
   if (b._isOllama || /11434/.test(String(b.baseURL || ''))) return 'ollama';
   if (b._isFreeLlm || /:(3001|31415)\b/.test(String(b.baseURL || ''))) return 'freellm';
@@ -322,7 +378,10 @@ async function resolveCandidateList(requestedModel) {
     }
   }
 
-  const ordered = [...exact, ...catalogHits, ...affinityHits, ...genericFallback];
+  const hasCustomOpenAi = [...exact, ...catalogHits].some((b) => backendTransportKind(b) === 'openai');
+  const ordered = hasCustomOpenAi
+    ? [...exact, ...catalogHits]
+    : [...exact, ...catalogHits, ...affinityHits, ...genericFallback];
   // Never append unrelated transports/models for an explicit non-alias request;
   // that caused wrong-provider 400s instead of testing the requested model cleanly.
   return dedupList(ordered);

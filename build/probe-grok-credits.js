@@ -17,17 +17,13 @@ const CANDIDATES = [
 
 app.whenReady().then(async () => {
   const prov = await oauth.resolve('grok');
-  const base = transport._internal.grokHeaders({ model: 'grok-4.5' });
   const out = [];
   for (const url of CANDIDATES) {
-    // Only the auth + identity headers; browser-origin paths reject the CLI UA.
+    // Only the official auth header when probing bearer billing paths.
     const headers = {
-      authorization: 'Bearer ' + prov.accessToken,
+      authorization: 'Bearer ' + (prov.accessToken || ''),
       accept: 'application/json',
-      'user-agent': base['user-agent'],
-      'x-xai-token-auth': base['x-xai-token-auth'],
-      'x-grok-client-identifier': base['x-grok-client-identifier'],
-      'x-grok-client-version': base['x-grok-client-version'],
+      'user-agent': 'akron-code/1.6.9',
     };
     try {
       const r = await fetch(url, { headers });

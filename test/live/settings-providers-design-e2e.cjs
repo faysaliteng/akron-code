@@ -6,9 +6,10 @@ app.on('window-all-closed', (e) => e.preventDefault());
 const assert = require('assert');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const REPO = path.resolve(__dirname, '../..');
-const ART = '/Users/saimon/.gemini/antigravity/brain/cb4ff1d8-186c-4ca3-9b84-bfe96acbf3bc';
+const ART = (process.env.AKRON_ARTIFACTS_DIR || os.tmpdir());
 
 async function run() {
   const safe = (ch, fn) => {

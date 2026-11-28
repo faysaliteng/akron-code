@@ -7,11 +7,12 @@
 'use strict';
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
 
 const PORT = Number(process.env.STUB_PORT || 8899);
-const DIR = '/Users/saimon/Akron Bot/live-preview-test';
+const DIR = path.join(os.homedir(), 'Akron Bot', 'live-preview-test');
 const PAGE_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><title>Live Scores</title>
 <style>body{font-family:system-ui;background:#0b1020;color:#e8eefc;padding:40px}

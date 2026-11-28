@@ -644,10 +644,10 @@ a blank box again.
 
 | Check | Result |
 |---|---|
-| `~` expansion | ✅ `expandPath('~/Desktop')` → `/Users/saimon/Desktop`; `resolvePath` no longer creates literal `~/` |
-| Per-conversation project folder | ✅ `getDefaultCwd(id,title)` → `/Users/saimon/Akron Bot/<slug>`, lazily created |
+| `~` expansion | ✅ `expandPath('~/Desktop')` → `~/Desktop`; `resolvePath` no longer creates literal `~/` |
+| Per-conversation project folder | ✅ `getDefaultCwd(id,title)` → `~/Akron Bot/<slug>`, lazily created |
 | Workspace persistence | ✅ `~/.autobot/workspaces.json` `{ [convId]: {dir,title,at} }`; `getWorkspace`/`setWorkspace` round-trip |
-| `setWorkspace('~/Desktop')` | ✅ resolves to `/Users/saimon/Desktop` (fixed `path.resolve` → `expandPath`) |
+| `setWorkspace('~/Desktop')` | ✅ resolves to `~/Desktop` (fixed `path.resolve` → `expandPath`) |
 | Login-shell Bash | ✅ `spawn /bin/zsh -l -c` (fixed `exec {shell:'/bin/zsh -l'}` ENOENT) |
 | Real desktop write | ✅ composer send → Bash tool → `mkdir ~/Desktop/HelioTest` → folder present on the physical Desktop (`ls`-verified) |
 | Headless suite | ✅ **57 passed, 0 failed** |
@@ -1137,12 +1137,7 @@ That is indistinguishable from a spent account, so it went misdiagnosed.
 | `build/probe-claude.js` | app path (`providerOauth.resolve`) | `account=rxpromedbd-gmail-com hasToken=true`, `OK ms=954 finish=stop text="CLAUDE-OK"` |
 | `build/probe-turn2.cjs` (`:9333`) | live UI turn, fresh chat, new token | user `Reply with exactly: PING195174` → assistant `PING195174` (`Worked for 2s`), no `.errorbar` |
 
-Implementation: `CC_IDENTITY` constant + `isAnthropicOauth(provider)` in
-`electron/providertransport.js`. `toAnthropicBody` unshifts the identity block
-when the caller's leading system part does not already start with it, so plain
-API-key traffic is untouched and the identity is never duplicated.
-`anthropicAuth` now tests `isAnthropicOauth` so the `oauth` flag and the
-`sk-ant-oat…` prefix cannot disagree.
+*(Superseded in v1.6.9 by `electron/cli-runner.js`: consumer Claude OAuth traffic now invokes the official `claude` binary directly; `electron/providertransport.js` serves official API keys only.)*
 
 ### Claude — recovering tokens lost to the app rename
 
@@ -1193,7 +1188,7 @@ hasEnvelope: false
 | `node test/provideroauth.test.js` | **193 passed / 0 failed** (new *local credential adoption* block: non-claude skip, non-CLI source skip, ambiguous two-peer refusal, positive adoption with ms-expiry passthrough + secretstore write + plan backfill, missing credential) |
 | `node test/providertransport.test.js` | **128 passed / 0 failed** (identity-block wire assertion + *identity prompt ordering*: identity leads and caller system follows, no duplicate, plain api-key untouched) |
 | `node scripts/parity-audit.js` | **EXIT 0** — `DEFS: 141`, 0 missing |
-| Packaged build (`release/mac-arm64`, `:9444`) | `npm run dist` EXIT 0 → `AkronBot-1.0.0-arm64.dmg` 115 040 322 B + `.zip` 110 229 465 B. From `app.asar`: `CC_IDENTITY`, `grokCreditHint`, `adoptLocalCredentials` all present, `10b981` present, **0** `d97757`, and **0** `probe-*` files shipped. Live packaged turn: `PING106372` → `PING106372` (`Worked for 3s`, no error bar); Grok `.errorbar` = the allowance/reset prose above, no markup |
+| Packaged build (`release/mac-arm64`, `:9444`) | `npm run dist` EXIT 0 → DMG + `.zip` built; live packaged turn (`PING106372`) & error rendering verified cleanly without markup leaks (note: historical consumer OAuth header spoofing was replaced in v1.6.9 by official CLI subprocesses in `electron/cli-runner.js`). |
 
 ---
 
@@ -1849,7 +1844,7 @@ and the turn silently continued with `withTools:false` — so the app answered,
 but the model had no `Write` / `Bash` / `browser_*` and stopped producing
 deliverables. The message names billing, so the first four hours went into
 entitlement checks (`/api/oauth/usage` read `allowed`), token rotation, the
-`context-1m` beta, `max_tokens`, `stream`, UA, and the `CC_IDENTITY` block.
+the `context-1m` beta, `max_tokens`, `stream`, UA, and CLI identity parameters.
 Every one of those was exonerated by a hand-built request returning `200`.
 
 The decisive move was dumping the exact rejected payload
@@ -2026,7 +2021,7 @@ What changed:
   It returns `null` on any failure — it never asserts a port is free.
 - A post-bind guard re-checks the actual `server.address().port` and throws
   `redirect_uri_mismatch` if they diverge.
-- `originator: 'codex_cli_rs'` added to the authorize params, matching the CLI.
+- *(Superseded in v1.6.9 by `codex login` / `codex exec` via `electron/cli-runner.js` — historical originator header removed.)*
 
 `probe-chatgpt-authurl` (11/11) and `probe-chatgpt-port` (all green) re-derive
 this table from the running app: off-port URIs reproduce the exact 400, busy 1455
@@ -2045,7 +2040,7 @@ report *"Sign-in cancelled — no account was added."*, never a failure.
 `{ok:true, waiting:true, url}` → `lsof` shows `Electron … TCP 127.0.0.1:1455
 (LISTEN)` → the row flips to **Cancel** → the URL carries
 `redirect_uri=http://localhost:1455/auth/callback`, a `state`, a 43-char PKCE
-`S256` challenge and `originator=codex_cli_rs` → OpenAI answers **302** → Cancel
+`S256` challenge (historical pre-v1.6.9 flow) → OpenAI answers **302** → Cancel
 releases 1455, returns `{waiting:false}` and adds no account.
 
 Honest limit: a human still has to approve the login at `auth.openai.com`; no

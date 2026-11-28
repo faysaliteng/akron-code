@@ -68,7 +68,7 @@ function isBlockedCredentialTarget(targetPath, sandbox) {
     }
     const base = path.basename(String(targetPath)).toLowerCase();
     const norm = path.resolve(String(targetPath)).replace(/\\/g, '/').toLowerCase();
-    return norm.includes('/.autobot/') && (base === 'secrets.json' || base === 'oauth.json' || base === 'oauth-mirror.json');
+    return norm.includes('/.autobot/') && (base === 'secrets.json' || base === 'master.key' || base === 'oauth.json');
   } catch (_) {
     return false;
   }

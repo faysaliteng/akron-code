@@ -14,19 +14,19 @@ async function hydrateProvider(p) {
   if (!p || !p.oauthProvider) return p;
   const r = await providerOauth.resolve(String(p.oauthProvider));
   const out = Object.assign({}, p, {
-    transport: r.transport,
-    accessToken: r.accessToken,
+    transport: r.transport || p.transport || 'cli',
+    cliId: r.cliId || p.cliId || '',
+    cliBin: r.cliBin || p.cliBin || '',
+    cliKind: r.cliKind || p.cliKind || '',
+    cliMode: Boolean(r.cliMode || r.transport === 'cli'),
+    apiKey: r.apiKey || p.apiKey || '',
+    baseURL: r.baseURL || p.baseURL || '',
     account: r.account,
-    accountId: r.accountId || p.accountId || '',
-    codexUrl: r.codexUrl || p.codexUrl || '',
-    cloudcodeUrl: r.cloudcodeUrl || p.cloudcodeUrl || '',
-    oauth: true,
+    oauth: false,
     model: p.model || (r.models && r.models[0] && r.models[0].id) || '',
   });
-  if (!providertransport.needsTransport({ transport: r.transport })) {
+  if (!out.cliMode && !providertransport.needsTransport({ transport: out.transport })) {
     out.transport = '';
-    out.apiKey = r.accessToken;
-    out.baseURL = r.baseURL || p.baseURL || '';
     out.supportsTools = true;
   }
   return out;

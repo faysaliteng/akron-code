@@ -105,43 +105,38 @@ describe('v1.5.2 — Timeouts, Model Discovery/Replacement, Thinking Capabilitie
     assert.ok(opusCaps.levels.includes('xhigh'));
   });
 
-  it('auto-recovers mid-turn when a subscription model returns 404 model_not_found by refreshing live catalog', async () => {
+  it('auto-recovers mid-turn when a model returns 404 model_not_found by refreshing live catalog', async () => {
     const srv = http.createServer((req, res) => {
-      if (req.url && req.url.endsWith(':fetchAvailableModels')) {
+      if (req.url && req.url.endsWith('/v1beta/models')) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
-          models: {
-            'gemini-4-carbon-high': { displayName: 'Gemini 4 Carbon (High)', apiProvider: 'API_PROVIDER_GOOGLE', maxTokens: 1048576, supportsThinking: true, recommended: true },
-          },
+          models: [
+            { name: 'models/gemini-4-carbon-high', displayName: 'Gemini 4 Carbon (High)', inputTokenLimit: 1048576 },
+          ],
         }));
         return;
       }
-      let raw = '';
-      req.on('data', (c) => (raw += c));
-      req.on('end', () => {
-        const body = JSON.parse(raw || '{}');
-        if (body.model === 'gemini-4-carbon-retired') {
-          res.writeHead(404, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: `Model '${body.model}' not found` } }));
-          return;
-        }
-        res.writeHead(200, { 'content-type': 'text/event-stream' });
-        res.write('data: ' + JSON.stringify({ response: { candidates: [{ content: { parts: [{ text: 'Recovered on live sibling.' }] }, finishReason: 'STOP' }], modelVersion: 'gemini-4-carbon-high' } }) + '\n\n');
-        res.end();
-      });
+      if (req.url && req.url.includes('gemini-4-carbon-retired')) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: `Model 'gemini-4-carbon-retired' not found` } }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: ' + JSON.stringify({ candidates: [{ content: { parts: [{ text: 'Recovered on live sibling.' }] }, finishReason: 'STOP' }], modelVersion: 'gemini-4-carbon-high' }) + '\n\n');
+      res.end();
     });
     await new Promise((r) => srv.listen(0, '127.0.0.1', r));
     servers.push(srv);
-    const cloudcodeUrl = `http://127.0.0.1:${srv.address().port}/v1internal`;
+    const baseURL = `http://127.0.0.1:${srv.address().port}/v1beta`;
 
     const llm = require('../electron/llm');
     const events = [];
     const out = await llm.runAgent({
       provider: {
-        oauthProvider: 'antigravity:test',
+        oauthProvider: 'google',
         transport: 'google',
-        accessToken: 'tok-test',
-        cloudcodeUrl,
+        apiKey: 'AIzaTestKey',
+        baseURL,
         model: 'gemini-4-carbon-retired',
         supportsTools: false,
       },

@@ -2,7 +2,7 @@
 // local FreeLLMAPI router on :3001. Proves the model writes a file, runs a
 // shell command, and opens the built-in browser through the real app.
 // Usage: node probe-local.cjs [port] [baseURL] [model]
-const WebSocket = require('/Users/saimon/Documents/Default Project/autobot/node_modules/ws');
+const WebSocket = require('ws');
 const port = Number(process.argv[2] || 9333);
 const BASEURL = process.argv[3] || 'http://localhost:3001/v1';
 const MODEL = process.argv[4] || 'auto';

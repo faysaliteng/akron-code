@@ -2,13 +2,14 @@
 const { dialog } = require('electron'); dialog.showErrorBox = () => {};
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const http = require('http');
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
 
 const ROOT = path.join(__dirname, '..', '..');
 const EXT_DIR = path.join(ROOT, 'resources', 'akron-browser-bot');
-const ARTIFACTS = '/Users/saimon/.gemini/antigravity/brain/cb4ff1d8-186c-4ca3-9b84-bfe96acbf3bc';
+const ARTIFACTS = (process.env.AKRON_ARTIFACTS_DIR || os.tmpdir());
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',

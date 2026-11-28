@@ -2,10 +2,17 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
+
+const REAL_HOME = os.homedir();
+const MCP_SERVER_PATH = path.join(REAL_HOME, '.gemini', 'config', 'plugins', 'akron-web-bot', 'server', 'mcp-server.mjs');
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'akron-extbridge-test-'));
+process.env.HOME = TEST_HOME;
+process.env.AUTOBOT_HOME = TEST_HOME;
 
 const extbridge = require('../electron/extbridge');
 
@@ -50,7 +57,7 @@ function sendMcpReq(child, msg) {
 }
 
 test('Phase 6: standalone MCP yields bridge port cleanly to Akron Code Desktop primary', async () => {
-  const mcpServerPath = path.join(os.homedir(), '.gemini', 'config', 'plugins', 'akron-web-bot', 'server', 'mcp-server.mjs');
+  const mcpServerPath = MCP_SERVER_PATH;
   const fs = require('node:fs');
   if (!fs.existsSync(mcpServerPath)) {
     return;
@@ -114,7 +121,9 @@ test('Phase 6: standalone MCP yields bridge port cleanly to Akron Code Desktop p
     assert.notStrictEqual(c1.status, 404, '/v1/chat/completions must never return 404');
     assert.notStrictEqual(c2.status, 404, '/chat/completions must never return 404');
   } finally {
+    process.env.HOME = REAL_HOME;
     try { await extbridge.stop(); } catch (_) {}
     try { child.kill('SIGTERM'); } catch (_) {}
+    try { fs.rmSync(TEST_HOME, { recursive: true, force: true }); } catch (_) {}
   }
 });

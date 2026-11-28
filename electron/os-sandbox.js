@@ -81,7 +81,7 @@ function hasDestructiveRecursiveRm(sub) {
   return false;
 }
 
-const CREDENTIAL_PATH_RE = /(?:(?:~\/|\$HOME\/|"\$HOME"\/|\/Users\/[^/\s]+\/|\/home\/[^/\s]+\/|\/root\/|%USERPROFILE%[\\/])(?:\.ssh\/id_|\.aws\/credentials|\.gnupg\/|\.autobot\/(?:secrets\.json|oauth\.json|oauth-mirror))|\.autobot[\s\S]*\b(?:secrets|oauth|oauth-mirror)\.json\b)/i;
+const CREDENTIAL_PATH_RE = /(?:(?:~\/|\$HOME\/|"\$HOME"\/|\/Users\/[^/\s]+\/|\/home\/[^/\s]+\/|\/root\/|%USERPROFILE%[\\/])(?:\.ssh\/id_|\.aws\/credentials|\.gnupg\/|\.autobot\/(?:secrets\.json|master\.key|oauth\.json))|\.autobot[\s\S]*\b(?:secrets\.json|master\.key|oauth\.json)\b)/i;
 
 function unquote(s) {
   const t = String(s || '').trim();
@@ -206,8 +206,8 @@ function buildSeatbeltProfile({
     lines.push(`(deny file-write* (literal "${sbEscape(path.join(absCwd, '.git', 'config'))}"))`);
     lines.push(`(deny file-write* (literal "${sbEscape(path.join(absCwd, '.claude', 'settings.json'))}"))`);
     lines.push(`(deny file-write* (literal "${sbEscape(path.join(home, '.autobot', 'secrets.json'))}"))`);
+    lines.push(`(deny file-write* (literal "${sbEscape(path.join(home, '.autobot', 'master.key'))}"))`);
     lines.push(`(deny file-write* (literal "${sbEscape(path.join(home, '.autobot', 'oauth.json'))}"))`);
-    lines.push(`(deny file-write* (subpath "${sbEscape(path.join(home, '.autobot', 'oauth-mirror'))}"))`);
   }
   for (const w of denyWrite || []) {
     lines.push(`(deny file-write* (subpath "${sbEscape(w)}"))`);

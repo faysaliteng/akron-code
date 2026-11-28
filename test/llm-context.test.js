@@ -76,6 +76,8 @@ function providerFor(url, model) {
       'LLM 400: reduce the length of the messages',
       'LLM 422: request is too large for this model',
       'LLM 400: context_length_exceeded',
+      'LLM 400: {"error":{"code":400,"message":"request (35738 tokens) exceeds the available context size (16384 tokens), try increasing it","type":"exceed_context_size_error"}}',
+      'LLM 400: exceed_context_size_error',
     ];
     for (const m of yes) assert.strictEqual(llm.isContextOverflow(new Error(m)), true, m);
     const no = [
@@ -198,6 +200,40 @@ function providerFor(url, model) {
       const last = [...out].reverse().find((m) => m.role === 'assistant');
       assert.ok(last && /done/.test(last.content), 'reply missing');
       assert.ok(!events.some((e) => e.type === 'error'), 'the turn must not surface an error');
+    } finally { await server.close(); }
+  });
+
+  await t('small-context 16K model auto-selects lean tool surface and stays under 16K', async () => {
+    const server = await startServer({ reply: 'ok-16k' });
+    try {
+      const history = [];
+      for (let i = 0; i < 6; i++) {
+        history.push({ role: 'user', content: `Turn ${i}: ` + 'x'.repeat(1800) });
+        history.push({ role: 'assistant', content: `Reply ${i}: ` + 'y'.repeat(1800) });
+      }
+      history.push({ role: 'user', content: 'hi what can you do' });
+      const events = [];
+      const out = await llm.runAgent({
+        provider: {
+          baseURL: server.url,
+          apiKey: 'sk-test-local',
+          model: 'bonsai-2.5',
+          contextWindow: 16384,
+          maxTokens: 4096,
+          supportsTools: true,
+        },
+        messages: history,
+        emit: (e) => events.push(e),
+        turnStart: false,
+      });
+      assert.ok(server.bodies.length >= 1, 'expected at least 1 request');
+      const reqTools = server.bodies[0].tools || [];
+      assert.ok(reqTools.length > 0 && reqTools.length <= 20, `expected lean tool count <= 20, got ${reqTools.length}`);
+      const payloadChars = JSON.stringify(server.bodies[0].messages).length + JSON.stringify(reqTools).length;
+      assert.ok(payloadChars < 16384 * 3.5, `expected payload under 16K budget, got ${payloadChars} chars`);
+      const last = [...out].reverse().find((m) => m.role === 'assistant');
+      assert.ok(last && /ok-16k/.test(last.content), 'reply missing');
+      assert.ok(!events.some((e) => e.type === 'error'), 'must not error');
     } finally { await server.close(); }
   });
 

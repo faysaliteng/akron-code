@@ -5,7 +5,7 @@
 //   node build/probe-notices-toast.cjs [port]
 'use strict';
 
-const WebSocket = require('/Users/saimon/Documents/Default Project/autobot/node_modules/ws');
+const WebSocket = require('ws');
 const port = Number(process.argv[2] || 9333);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

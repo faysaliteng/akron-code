@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { formatFooterModelSummary } from '../../utils/sessionModelState.js';
 import { Icon } from '../Icon.jsx';
 import { LOCALES } from '../../i18n.js';
 import { normBase, LOCAL_BASE } from '../../providerstatus-ui.mjs';
@@ -1233,7 +1234,7 @@ export function SettingsModalBody({
 
           <footer className="settings-foot">
             <div className="settings-foot-inner">
-              <span className="muted" style={{ margin: 0 }}>{provider.model ? `Active model: ${provider.model}` : 'Configure a provider to begin'}</span>
+              <span className="muted" style={{ margin: 0 }}>{formatFooterModelSummary(provider, orchestrator)}</span>
               <div className="modal-actions">
                 <button onClick={testProvider}>Test connection</button>
                 <button className="primary" onClick={onClose}>{T('settings.done')}</button>

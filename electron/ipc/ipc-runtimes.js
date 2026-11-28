@@ -2,6 +2,68 @@
 const path = require('path');
 const fs = require('fs');
 
+function isInsideAppResources(targetPath) {
+  const norm = path.resolve(String(targetPath || ''));
+  if (process.resourcesPath) {
+    const resNorm = path.resolve(process.resourcesPath);
+    if (norm === resNorm || norm.startsWith(resNorm + path.sep)) return true;
+  }
+  return norm.includes(`.app${path.sep}Contents${path.sep}Resources`);
+}
+
+function syncBundledBinsToDir({ binDir, links = [] } = {}) {
+  try {
+    if (!binDir) return { binDir: '', linked: [] };
+    fs.mkdirSync(binDir, { recursive: true });
+    const linked = [];
+    for (const item of links) {
+      const name = item && item.name;
+      const target = item && item.target;
+      if (!name || !target || !fs.existsSync(target)) continue;
+      const ext = process.platform === 'win32' && !/\.(exe|cmd|bat)$/i.test(name)
+        ? (/\.(exe|cmd|bat)$/i.test(target) ? path.extname(target) : '.exe')
+        : '';
+      const destName = ext ? `${name}${ext}` : name;
+      const dest = path.join(binDir, destName);
+      if (path.resolve(target) === path.resolve(dest)) {
+        linked.push({ name: destName, dest, target });
+        continue;
+      }
+      // Never mutate permissions inside signed macOS .app/Contents/Resources bundles.
+      if (process.platform !== 'win32' && !isInsideAppResources(target)) {
+        try { fs.chmodSync(target, 0o755); } catch (_) {}
+      }
+      if (process.platform === 'win32') {
+        try {
+          fs.copyFileSync(target, dest);
+          linked.push({ name: destName, dest, target });
+          if (!/\.(cmd|bat)$/i.test(destName)) {
+            const cmdShim = path.join(binDir, `${name.replace(/\.(exe|cmd|bat)$/i, '')}.cmd`);
+            try { fs.writeFileSync(cmdShim, `@echo off\r\n"${dest}" %*\r\n`, 'utf8'); } catch (_) {}
+          }
+          continue;
+        } catch (_) {}
+      }
+      try {
+        try {
+          if (fs.lstatSync(dest)) fs.unlinkSync(dest);
+        } catch (_) {}
+        fs.symlinkSync(target, dest);
+        linked.push({ name: destName, dest, target });
+      } catch (_) {
+        try {
+          fs.copyFileSync(target, dest);
+          if (process.platform !== 'win32') fs.chmodSync(dest, 0o755);
+          linked.push({ name: destName, dest, target });
+        } catch (_) {}
+      }
+    }
+    return { binDir, linked };
+  } catch (_) {
+    return { binDir: '', linked: [] };
+  }
+}
+
 module.exports = function createRuntimesController(ctx) {
   const { app, ipcMain, store, workspace, shells, freellm, createRuntimes, providertransport, runAgent, hydrateProvider, hydrateOrchestrator, validateOrchestrator, freellmFallbackApiKey, oneLine, broadcast, mcp, autoConnectMcp, sessionDb, notificationService, proactivity, gdrive } = ctx;
 
@@ -33,45 +95,6 @@ function getRuntimes() {
     });
   }
   return runtimesHandle;
-}
-
-function syncBundledBinsToDir({ binDir, links = [] } = {}) {
-  try {
-    if (!binDir) return { binDir: '', linked: [] };
-    fs.mkdirSync(binDir, { recursive: true });
-    const linked = [];
-    for (const item of links) {
-      const name = item && item.name;
-      const target = item && item.target;
-      if (!name || !target || !fs.existsSync(target)) continue;
-      const ext = process.platform === 'win32' && !/\.(exe|cmd|bat)$/i.test(name)
-        ? (/\.(exe|cmd|bat)$/i.test(target) ? path.extname(target) : '.exe')
-        : '';
-      const destName = ext ? `${name}${ext}` : name;
-      const dest = path.join(binDir, destName);
-      if (path.resolve(target) === path.resolve(dest)) {
-        linked.push({ name: destName, dest, target });
-        continue;
-      }
-      try { fs.chmodSync(target, 0o755); } catch (_) {}
-      try {
-        try {
-          if (fs.lstatSync(dest)) fs.unlinkSync(dest);
-        } catch (_) {}
-        fs.symlinkSync(target, dest);
-        linked.push({ name: destName, dest, target });
-      } catch (_) {
-        try {
-          fs.copyFileSync(target, dest);
-          fs.chmodSync(dest, 0o755);
-          linked.push({ name: destName, dest, target });
-        } catch (_) {}
-      }
-    }
-    return { binDir, linked };
-  } catch (_) {
-    return { binDir: '', linked: [] };
-  }
 }
 
 function prependPathDir(dir) {
@@ -760,35 +783,5 @@ async function freellmStatus() {
   };
 };
 
-module.exports.syncBundledBinsToDir = function syncBundledBinsToDirStandalone({ binDir, links = [] } = {}) {
-  if (!binDir) return { binDir: '', linked: [] };
-  fs.mkdirSync(binDir, { recursive: true });
-  const linked = [];
-  for (const item of links) {
-    const name = item && item.name;
-    const target = item && item.target;
-    if (!name || !target || !fs.existsSync(target)) continue;
-    const ext = process.platform === 'win32' && !/\.(exe|cmd|bat)$/i.test(name)
-      ? (/\.(exe|cmd|bat)$/i.test(target) ? path.extname(target) : '.exe')
-      : '';
-    const destName = ext ? `${name}${ext}` : name;
-    const dest = path.join(binDir, destName);
-    if (path.resolve(target) === path.resolve(dest)) {
-      linked.push({ name: destName, dest, target });
-      continue;
-    }
-    try { fs.chmodSync(target, 0o755); } catch (_) {}
-    try {
-      try { if (fs.lstatSync(dest)) fs.unlinkSync(dest); } catch (_) {}
-      fs.symlinkSync(target, dest);
-      linked.push({ name: destName, dest, target });
-    } catch (_) {
-      try {
-        fs.copyFileSync(target, dest);
-        fs.chmodSync(dest, 0o755);
-        linked.push({ name: destName, dest, target });
-      } catch (_) {}
-    }
-  }
-  return { binDir, linked };
-};
+module.exports.syncBundledBinsToDir = syncBundledBinsToDir;
+module.exports.isInsideAppResources = isInsideAppResources;

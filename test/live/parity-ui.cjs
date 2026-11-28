@@ -31,7 +31,7 @@ const path = require('path');
     else { fail++; console.log('  FAIL ' + name + (extra ? '  -> ' + JSON.stringify(extra).slice(0, 300) : '')); }
   };
 
-  const CWD = JSON.stringify('/Users/saimon/Documents/Default Project/autobot');
+  const CWD = JSON.stringify(path.resolve(__dirname, '..', '..'));
 
   // ---- bridge surface ---------------------------------------------------
   const bridge = await ev(`Object.keys(window.autobot).filter(k => ['listCommands','resolveCommand','listAgentDefs','getProjectMemory','getPermissions','checkPermission','listCheckpoints','rewind','mcpStatus','mcpConfig'].includes(k)).sort().join(',')`);

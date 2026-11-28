@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const OUT_DIR = '/Users/saimon/.gemini/antigravity/brain/cb4ff1d8-186c-4ca3-9b84-bfe96acbf3bc';
+const OUT_DIR = (process.env.AKRON_ARTIFACTS_DIR || os.tmpdir());
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'akron-ui-cpsd-'));
 process.env.AUTOBOT_PLUGINS_FILE = path.join(tmpRoot, 'plugins.json');
 process.env.AUTOBOT_GDRIVE_FILE = path.join(tmpRoot, 'gdrive.json');

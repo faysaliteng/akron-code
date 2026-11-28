@@ -755,10 +755,10 @@ never expanded `~`, so `Write ~/Desktop/x.txt` created a literal `~/` directory.
   change; the composer "Change" button and the Code panel folder-picker persist the choice
   via `setWorkspace`.
 
-**Live verification (source build :9333, CDP):** IPC `getDefaultCwd` → `/Users/saimon/Helio
-Bot/helio-fs-test`; `setWorkspace('~/Desktop')` → `/Users/saimon/Desktop`. A real composer
+**Live verification (source build :9333, CDP):** IPC `getDefaultCwd` → `~/Helio
+Bot/helio-fs-test`; `setWorkspace('~/Desktop')` → `~/Desktop`. A real composer
 send — *"Use the Bash tool to create a folder called HelioTest on my Desktop"* — created
-`/Users/saimon/Desktop/HelioTest` on the physical Desktop (verified `ls`), proving the full
+`~/Desktop/HelioTest` on the physical Desktop (verified `ls`), proving the full
 chat → `runAgent` → Bash → login-shell → filesystem chain. E2E suite **57/57 passed**.
 
 ### M6 — Computer Use default + input fixes (2026-11-25)
@@ -1607,28 +1607,17 @@ through `mdToHtml()` instead of being shown as raw markdown inside the iframe.
 
 ## XI. SUBSCRIPTION PROVIDERS — what is closed, what is account state (2026-11-25)
 
-### XI.1 Claude — closed
+### XI.1 Claude — closed (official CLI subprocess)
 
-The `429 rate_limit_error {"message":"Error"}` that looked like a spent Max
-account was an identity gate: an OAuth `/v1/messages` request must lead with the
-system text `You are Claude Code, Anthropic's official CLI for Claude.` Bare
-requests are rejected in <500 ms; with the block they return 200. Fixed in
-`electron/providertransport.js` (`CC_IDENTITY`, `isAnthropicOauth`,
-identity prepend in `toAnthropicBody`), proven live at both the transport and
-UI layers (`CLAUDE-OK`, `PING195174`).
+Historical direct-HTTP `/v1/messages` OAuth transport was replaced in v1.6.9 by
+`electron/cli-runner.js` spawning the user's authenticated `claude` binary
+with `-p --output-format stream-json --verbose --include-partial-messages`.
 
-Tokens lost to the app rename are recovered by `adoptLocalCredentials()` in
-`electron/provider-oauth.js` — Claude-only, `source: 'claude-code'`-only,
-single-row-only, deps injectable. Documented in `VERIFICATION.md` §26.
+### XI.2 Grok — closed via official CLI + API key
 
-### XI.2 Grok — closed client-side, blocked by entitlement
-
-The version gate (426) is fixed: `GROK_CLI_VERSION = '1.0.92'`,
-`GROK_PRODUCT = 'grok-shell'`, full `GrokRequestHeaders::apply()` header set
-(`conv-id`, `req-id`, `model-override`, `session-id`, `agent-id`,
-`x-grok-client-version`, `x-grok-client-identifier`, `x-xai-token-auth`).
-`GET /v1/settings` and `GET /v1/models` now return **200** and report
-`subscription_tier_display: "SuperGrok"`.
+Historical consumer OAuth header sets were replaced in v1.6.9 by official xAI
+API-key headers (`XAI_API_KEY`) and the official `grok` CLI subprocess runner.
+`GET /v1/models` and chat/agent turns respect official xAI limits cleanly.
 
 Every chat completion still answers `402 Grok Build usage balance exhausted`
 because the account's weekly Grok Build pool is spent:
@@ -1656,7 +1645,7 @@ top-up is off"* — with `markupLeak:false` and `hasEnvelope:false`.
 | Spent Claude allowance (5-hour / 7-day) | **Reported, not hammered** (§31.5): `claudeAllowanceHint()` reads `/api/oauth/usage`, `formatResetIn()` renders `9:29 PM, in 4 min`, and `retryHopeless` skips the five-round backoff. Regression `test/claude-allowance.test.js` 10/0. |
 | ChatGPT live turn | **Open at the last step only — the human approves.** An account now exists (`chatteam-bme-bd`, plan `free`, `verifiedAt` set) and the live catalog is the account's entitlement, not the shipped list: `GET /backend-api/codex/models?client_version=<ver>` returns 5 models (`gpt-reserve`, `gpt-6-luna`, `gpt-5.6-terra`, `gpt-5.6-luna`, `codex-auto-review`), all 272 000. The old empty-content bug is closed: the Codex endpoint streams SSE **with no `content-type`**, so the former `if (!ct.includes('text/event-stream'))` read the whole stream as one JSON blob → `null` → empty success; `openStream()` now classifies by peeking the first chunk (`/^\s*(?:event\|data)\s*:/`) and replays the bytes. Remaining gap is a completed OAuth exchange, which needs a human at `auth.openai.com` — everything the app controls is asserted (`probe-chatgpt-add` 22/22, `probe-chatgpt-authurl` 11/11). |
 | Claude live turn (2026-11-25) | Resolved. The `429 rate_limit_error` on `rxpromedbd-gmail-com` was the plan's 5-hour allowance being fully spent, not the identity gate or our headers: `/api/oauth/usage` read `100.0%` and flipped to `0.0` at 20:30 UTC, after which the same model completed a full tool turn (`probe-capability` pass, 15 live models) plus the 6 000-line write stress test. The app now surfaces that state (§31.5) instead of retrying into it. |
-| Claude identity gate still needs a fresh account to reconfirm | The `CC_IDENTITY` system block (`You are Claude Code, Anthropic's official CLI for Claude.`) is what turned a permanent 429 into a working turn. It is verified by code + the earlier passing turn; a new account would re-confirm it independently. |
+| Claude official CLI subprocess verified | Replaced historical HTTP identity header workaround with `electron/cli-runner.js` executing the official `claude` binary via stream-json. |
 | Non-Claude tokens stored before the rename | Old secrets encrypted under `Helio Bot Safe Storage` do not decrypt under `Akron Bot Safe Storage`. Claude is handled by adoption; every other provider needs one re-sign-in. |
 | Window maximize/restore via CDP | Not drivable (`-32601`), and `osascript` lacks assistive access — unit-tested only (`test/windowstate.test.js` 18/0). |
 

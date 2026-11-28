@@ -4,7 +4,7 @@ const assert = require('assert');
 const http = require('http');
 const path = require('path');
 
-const OUT_SHOT = '/Users/saimon/.gemini/antigravity/brain/cb4ff1d8-186c-4ca3-9b84-bfe96acbf3bc/model-before-worked-for-verified.png';
+const OUT_SHOT = path.join(process.env.AKRON_ARTIFACTS_DIR || os.tmpdir(), 'model-before-worked-for-verified.png');
 
 app.whenReady().then(async () => {
   const tmpData = path.join(require('os').tmpdir(), 'akron-e2e-model-' + Date.now());

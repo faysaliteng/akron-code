@@ -9,6 +9,7 @@ const hooks = require('./hooks');
 const budgetPool = require('./budget');
 const modelCatalog = require('./model-catalog');
 const providertransport = require('./providertransport');
+const cliRunner = require('./cli-runner');
 const mcpSchema = require('./mcp-schema');
 const gate = require('./provider-gate');
 const router = require('./orch-router');
@@ -402,10 +403,10 @@ function parseTextToolCalls(text, opts = {}) {
 function normalizeProvider(p) {
   p = p || {};
   let baseURL = (p.baseURL || '').trim();
-  // A native transport (Anthropic Messages / Codex responses / Google Cloud
-  // Code) knows its own endpoint. Defaulting to Ollama here would POST a
-  // subscription bearer token at localhost — so leave it empty for them.
-  if (!baseURL && !p.transport) baseURL = 'http://localhost:11434/v1';
+  // A native transport (API-key adapter) or official CLI runner knows its own
+  // endpoint/binary. Defaulting to Ollama here would point a Claude/Codex row
+  // at localhost — so leave baseURL empty for them.
+  if (!baseURL && !p.transport && !p.cliMode) baseURL = 'http://localhost:11434/v1';
   if (baseURL && !baseURL.endsWith('/')) baseURL += '/';
   const model = (p.model || '').trim() || 'llama3.1';
   return {
@@ -421,17 +422,22 @@ function normalizeProvider(p) {
     // A caller that already knows the selected model's window (the picker does,
     // and orchestrator entries may) pins it here. Dropping it made budgetForModel
     // resolve the model's *name* instead of the window the user saw in the UI.
-    contextWindow: Number(p.contextWindow) > 0 ? Number(p.contextWindow) : 0,
+    // Subscription OAuth models (Claude, Antigravity, Codex, Grok) always resolve
+    // their authoritative context window from modelCatalog instead of inheriting a
+    // stale custom-provider contextWindow from an earlier switch.
+    contextWindow: (p.oauth || p.oauthProvider || p.cliMode || p.transport === 'cli') ? 0 : (Number(p.contextWindow) > 0 ? Number(p.contextWindow) : 0),
     // Reasoning / thinking level: 'auto' (provider default) | 'low' | 'medium'
     // | 'high'. Only mapped to the OpenAI-style `reasoning_effort` request param
     // when NOT 'auto', so providers that reject it are never sent an unknown field.
     reasoningLevel: ['low', 'medium', 'high'].includes(p.reasoningLevel) ? p.reasoningLevel : 'auto',
     supportsTools: p.supportsTools !== false,
-    // Native provider transports (Anthropic Messages, Codex responses, Google
-    // Cloud Code). When `transport` names a real adapter, `chatCompletion`
-    // delegates instead of assuming an OpenAI-compatible `/chat/completions`
-    // gateway — a subscription endpoint is not an API gateway.
+    // Official CLI subprocess mode (`claude`, `codex`, `grok`, `gemini`/`agy`)
+    // or official API-key wire adapter (`providertransport.js`).
     transport: p.transport || '',
+    cliMode: Boolean(p.cliMode || p.transport === 'cli'),
+    cliId: p.cliId || '',
+    cliBin: p.cliBin || '',
+    cliKind: p.cliKind || '',
     oauth: !!p.oauth,
     accessToken: p.accessToken || '',
     account: p.account || '',
@@ -490,7 +496,24 @@ function sanitizeOpenAIWireMessages(messages, provider) {
   });
 }
 
-async function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
+async function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta, extraOpts) {
+  // Route signed-in consumer subscription rows through their official CLI binary
+  // (`claude`, `codex`, `grok`, `gemini`/`agy`) instead of direct spoofed HTTP.
+  if (cliRunner.isCliProvider(provider)) {
+    const cliOpts = extraOpts && typeof extraOpts === 'object' ? extraOpts : {};
+    return cliRunner.runCliTurn({
+      provider,
+      messages,
+      cwd: cliOpts.cwd || process.cwd(),
+      permissions: cliOpts.permissions,
+      onDelta,
+      onToolDelta,
+      emit: cliOpts.emit || (() => {}),
+      signal,
+      singleTurn: cliOpts.singleTurn === true,
+      timeoutMs: cliOpts.timeoutMs,
+    });
+  }
   // Delegating to a wire adapter keeps one stream contract for the agent loop:
   // the adapter returns the same {content, tool_calls, finish_reason, usage}
   // shape the OpenAI-compatible path does, so failover and parsing are unchanged.
@@ -534,8 +557,14 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
       if (signal.aborted) { clearTimeout(timer); return fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal }); }
       signal.addEventListener('abort', onAbort, { once: true });
     }
+    let keepStopLink = false;
     try {
-      return await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal: ctrl.signal });
+      const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal: ctrl.signal });
+      if (signal && r && r.body) {
+        keepStopLink = true;
+        r._cleanupAbort = () => { try { signal.removeEventListener('abort', onAbort); } catch (_) {} };
+      }
+      return r;
     } catch (e) {
       if (timedOut && !(signal && signal.aborted)) {
         const err = new Error(`LLM connect timed out after ${Math.round(CONNECT_TIMEOUT_MS / 1000)}s`);
@@ -546,7 +575,13 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
       throw e;
     } finally {
       clearTimeout(timer);
-      if (signal) signal.removeEventListener('abort', onAbort);
+      if (signal && !keepStopLink) signal.removeEventListener('abort', onAbort);
+    }
+  };
+  const detachResAbort = (r) => {
+    if (r && typeof r._cleanupAbort === 'function') {
+      try { r._cleanupAbort(); } catch (_) {}
+      r._cleanupAbort = null;
     }
   };
   const req = { ...body };
@@ -558,9 +593,12 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   // hard failure here looked to the user like the agent simply stopped.
   let rejectedText = '';
   let bodyRead = false;
-  for (let attempt = 0; attempt < 4 && !res.ok && (res.status === 400 || res.status === 422); attempt++) {
+  for (let attempt = 0; attempt < 4 && !res.ok && (res.status === 400 || res.status === 422 || res.status === 500); attempt++) {
     rejectedText = await res.text().catch(() => '');
     bodyRead = true;
+    if (res.status === 500 && !/reasoning_effort|Unexpected reasoning effort|stream_options|include_usage|max_tokens|max_completion_tokens|reasoning_content/i.test(rejectedText)) {
+      break;
+    }
     // "Prompt is too long" cannot be fixed by dropping a request field — every
     // retry sends the same history. Break out (keeping the prose for
     // isContextOverflow) so the agent loop compacts instead of quadrupling the
@@ -589,6 +627,7 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
       changed = true;
     }
     if (!changed) break;
+    detachResAbort(res);
     res = await doFetch(req);
     bodyRead = false;
   }
@@ -602,6 +641,7 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   if (!req.reasoning_effort) delete body.reasoning_effort;
   if (!res.ok) {
     const text = bodyRead ? rejectedText : await res.text().catch(() => '');
+    detachResAbort(res);
     const err = new Error(`LLM ${res.status}: ${text.slice(0, 400)}`);
     err.status = res.status;
     // Respect Retry-After when the provider tells us how long to wait.
@@ -631,7 +671,12 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
     // Non-streaming JSON response (some gateways/proxies ignore `stream:true`).
     // Replay the text as one delta so the UI still shows the reply instead of
     // committing an empty message at the end of the run.
-    const data = await res.json();
+    let data;
+    try {
+      data = await res.json();
+    } finally {
+      detachResAbort(res);
+    }
     const msg = data.choices && data.choices[0] && data.choices[0].message;
     if (msg && typeof msg.reasoning_content === 'string' && msg.reasoning_content) onDelta(msg.reasoning_content, true);
     if (msg && typeof msg.content === 'string' && msg.content) onDelta(msg.content);
@@ -679,31 +724,51 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
   // air and treat it like the transient network fault it is.
   const STALL_MS = Number(process.env.HELIO_STREAM_STALL_MS) || 90000;
   let stallTimer = null;
-  const readWithStallGuard = () => Promise.race([
-    reader.read(),
-    new Promise((_, reject) => {
+  const readWithStallGuard = () => {
+    if (signal && signal.aborted) {
+      try { reader.cancel().catch(() => {}); } catch (_) {}
+      return Promise.reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }));
+    }
+    let onSigAbort = null;
+    const stallPromise = new Promise((_, reject) => {
       stallTimer = setTimeout(() => reject(Object.assign(new Error(`LLM stream stalled: no data for ${STALL_MS / 1000}s`), { transient: true })), STALL_MS);
-    }),
-  ]).finally(() => clearTimeout(stallTimer));
+      if (stallTimer && typeof stallTimer.unref === 'function') stallTimer.unref();
+    });
+    const abortPromise = signal ? new Promise((_, reject) => {
+      onSigAbort = () => {
+        try { reader.cancel().catch(() => {}); } catch (_) {}
+        reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }));
+      };
+      signal.addEventListener('abort', onSigAbort, { once: true });
+    }) : null;
+    const races = abortPromise ? [reader.read(), stallPromise, abortPromise] : [reader.read(), stallPromise];
+    return Promise.race(races).finally(() => {
+      clearTimeout(stallTimer);
+      if (signal && onSigAbort) {
+        try { signal.removeEventListener('abort', onSigAbort); } catch (_) {}
+      }
+    });
+  };
 
+  try {
   while (true) {
     const { done, value } = await readWithStallGuard()
       .catch((e) => {
         // A user Stop is never a partial success.
         if (signal && signal.aborted) {
-          try { reader.cancel(); } catch (_) {}
+          try { reader.cancel().catch(() => {}); } catch (_) {}
           throw e;
         }
         // Mid-stream stall with partial prose and zero tool calls: retry instead of committing a truncated sentence.
         if (message.content && !message.tool_calls.length) {
-          try { reader.cancel(); } catch (_) {}
+          try { reader.cancel().catch(() => {}); } catch (_) {}
           throw Object.assign(new Error('LLM stream stalled mid-response'), { transient: true });
         }
         if (message.tool_calls.length) {
           message.stalled = true;
           return { done: true, value: undefined };
         }
-        try { reader.cancel(); } catch (_) {}
+        try { reader.cancel().catch(() => {}); } catch (_) {}
         throw e;
       });
     if (done) {
@@ -731,7 +796,7 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
         const hint = gate.retryHintMs(JSON.stringify(json.error));
         if (hint) err.retryAfterMs = hint;
         if (!message.content && !message.tool_calls.length) {
-          try { reader.cancel(); } catch (_) {}
+          try { reader.cancel().catch(() => {}); } catch (_) {}
           throw err;
         }
         message.stalled = true;
@@ -826,6 +891,9 @@ async function chatCompletion(provider, messages, tools, onDelta, signal, maxTok
     }
     if (done) break;
   }
+  } finally {
+    detachResAbort(res);
+  }
   // Every call needs an id or its result cannot be paired (orphan → 400).
   message.tool_calls.forEach((c, i) => {
     if (!c.id) c.id = 'call_' + Date.now().toString(36) + '_' + i + Math.random().toString(36).slice(2, 6);
@@ -852,8 +920,9 @@ const RETRY_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 
 function isContextOverflow(e) {
   const msg = String((e && e.message) || e || '');
   if (!msg) return false;
+  if (/exceed_context_size_error/i.test(msg)) return true;
   if (!/context|prompt|input|messages|token|length|request/i.test(msg)) return false;
-  return /context[_ -]?length|maximum context|context window(?: is| size)?|prompt is too long|too many tokens|input is too long|input token count|token count exceeds|exceeds? (?:the )?(?:model'?s? )?(?:maximum|context|limit)|reduce the length|too long for (?:this )?model|request (?:is )?too large|larger than (?:the )?(?:model|context)/i.test(msg);
+  return /context[_ -]?length|maximum context|available context|context window(?: is| size)?|prompt is too long|too many tokens|input is too long|input token count|token count exceeds|exceeds? (?:the )?(?:available )?(?:model'?s? )?(?:maximum|context|limit)|reduce the length|too long for (?:this )?model|request (?:is )?too large|larger than (?:the )?(?:model|context)/i.test(msg);
 }
 
 // True when the account cannot pay for *this request shape*. Distinct from a
@@ -1082,7 +1151,13 @@ async function chatWithFailover(opts) {
             .replace(/powered on this turn by [^\n.]*(?: \([^)]*\))?/i, `powered on this turn by ${p.model} (${vLabel})`);
           reqMessages = [{ ...messages[0], content: updatedSys }, ...messages.slice(1)];
         }
-        const out = await chatCompletion(p, reqMessages, tools, onDelta, signal, reqMax, opts.onToolDelta);
+        const out = await chatCompletion(p, reqMessages, tools, onDelta, signal, reqMax, opts.onToolDelta, {
+          emit,
+          cwd: opts.cwd,
+          permissions: opts.permissions,
+          singleTurn: opts.cliSingleTurn === true || !tools || tools.length === 0,
+          timeoutMs: opts.timeoutMs,
+        });
         if (out && out.finish_reason === 'content_filter' && !(out.tool_calls && out.tool_calls.length) && n > 1) {
           const nx = nextRow();
           if (nx) {
@@ -1685,15 +1760,23 @@ async function runAgent(opts) {
     poolMode = Boolean(opts.swarm === true && orch && router.poolsConfig(orch) && router.poolsActive(orch, providerList[0]));
     effectiveOrch = opts.swarm === true && orch && router.poolsConfig(orch) ? orch : null;
   } else if (routingMode === 'orchestrator') {
-    const supervisor = normalizeProvider({ ...rawProv, routingMode: 'orchestrator' });
+    const rawRows = (orch && Array.isArray(orch.providers) ? orch.providers : [])
+      .filter((p) => p && p.enabled !== false)
+      .map((p) => normalizeProvider(p));
+    const hasUsableEndpoint = Boolean(rawProv.transport || rawProv.oauthProvider || String(rawProv.baseURL || '').trim());
+    let chosenSupRaw = rawProv;
+    if (!hasUsableEndpoint && rawRows.length) {
+      const wantModel = String(rawProv.model || '').trim().toLowerCase();
+      const matched = rawRows.find((r) => String(r.model || '').trim().toLowerCase() === wantModel);
+      const ai = (orch && Number(orch.activeIndex) >= 0 && Number(orch.activeIndex) < rawRows.length) ? Number(orch.activeIndex) : 0;
+      chosenSupRaw = matched || rawRows[ai] || rawRows[0];
+    }
+    const supervisor = normalizeProvider({ ...chosenSupRaw, routingMode: 'orchestrator' });
     const supSig = [
       String(supervisor.model || '').trim().toLowerCase(),
       String(supervisor.oauthProvider || '').trim().toLowerCase(),
       String(supervisor.baseURL || '').trim().replace(/\/+$/, '').toLowerCase(),
     ].join('|');
-    const rawRows = (orch && Array.isArray(orch.providers) ? orch.providers : [])
-      .filter((p) => p && p.enabled !== false)
-      .map((p) => normalizeProvider(p));
     const poolTail = (orch && router.poolsActive(orch, supervisor))
       ? router.chainFor(orch, supervisor).map((p) => normalizeProvider(p))
       : [];
@@ -1945,13 +2028,16 @@ async function runAgent(opts) {
       allAllowedDefs.set(t.name, { name: t.name, description: t.description, parameters: t.inputSchema || t.parameters });
     }
   }
+  const providerIdForBudget = String(provider.oauthProvider || '').split(':')[0] || provider.transport || '';
+  const effectiveWindow = modelCatalog.contextWindowFor(provider.model, providerIdForBudget, provider.contextWindow);
+  const isSmallContext = effectiveWindow > 0 && effectiveWindow <= 24576;
+  const isMediumContext = effectiveWindow > 24576 && effectiveWindow <= 49152;
   // MCP servers publish verbose schemas; a big one (REA: 263 tools, ≈384 kB of
   // JSON) would cost ≈113 k prompt tokens on every step. Compact the schemas,
-  // and when even the compacted surface is still too fat, defer it behind a
-  // single search tool. Nothing stops being callable either way — dispatch is
-  // by name — only the advertised text shrinks.
+  // and when even the compacted surface is still too fat (or on small-context
+  // local models <= 24K), defer it behind a single search tool.
   const mcpSurface = mcpSchema.buildSurface(extra, { budget: opts.mcpToolBudget });
-  if (mcpSurface.mode === 'deferred') {
+  if (mcpSurface.mode === 'deferred' || (isSmallContext && !opts.toolProfile && extra.length > 0)) {
     const servers = [...new Set(extra.map((t) => (String(t.name).split('__')[1] || '')))].filter(Boolean);
     // A tool-scoped sub-agent that never asked for MCP keeps its surface clean.
     const allowIndex = !toolAllow || toolAllow.has('*') || toolAllow.has('mcp') || toolAllow.has('mcp__*') || toolAllow.has('find_mcp_tools');
@@ -2007,7 +2093,7 @@ async function runAgent(opts) {
   //   standard — the main agent on a pool: core + team/plan tools
   //   full     — everything (subscription providers, explicit opt-in)
   const isLocalOllama = /:11434\b|ollama/i.test(String((provider && provider.baseURL) || ''));
-  const profile = opts.toolProfile || ((poolMode || isLocalOllama) ? (depth >= 1 ? 'lean' : 'standard') : 'full');
+  const profile = opts.toolProfile || (isSmallContext ? 'lean' : ((isMediumContext || poolMode || isLocalOllama) ? (depth >= 1 ? 'lean' : 'standard') : 'full'));
   if (profile === 'lean' || profile === 'standard') {
     const keep = profile === 'lean' ? LEAN_TOOLS : STANDARD_TOOLS;
     tools = tools.filter((t) => {
@@ -2050,7 +2136,10 @@ async function runAgent(opts) {
   // 1. Static per repo: CLAUDE.md project memory hierarchy (global → ancestors → cwd → local).
   try {
     const memory = require('./memory');
-    const memText = memory.loadMemoryText(currentCwd);
+    const rawMemText = memory.loadMemoryText(currentCwd);
+    const memText = rawMemText && isSmallContext && rawMemText.length > 1500
+      ? rawMemText.slice(0, 1500) + '\n…[truncated for compact context]'
+      : rawMemText;
     if (memText) messages[0].content += `\n\n<project_memory>\n${memText}\n</project_memory>`;
   } catch (_) {}
 
@@ -2081,7 +2170,7 @@ async function runAgent(opts) {
     const agentdefs = require('./agentdefs');
     const defs = agentdefs.discover(currentCwd, { fresh: true });
     if (defs.length) {
-      const roster = defs.map((d) => `- ${d.name}${d.model ? ` (model: ${d.model})` : ''}: ${d.description}`).join('\n');
+      const roster = defs.slice(0, isSmallContext ? 8 : defs.length).map((d) => `- ${d.name}${d.model ? ` (model: ${d.model})` : ''}: ${String(d.description || '').slice(0, isSmallContext ? 100 : 240)}`).join('\n');
       messages[0].content += `\n\n<subagent_types>\nWhen calling Task or Agent you may set subagent_type to one of these to run it with that definition (prompt + tool restrictions + model):\n${roster}\n</subagent_types>`;
     }
   } catch (_) {}
@@ -2092,8 +2181,8 @@ async function runAgent(opts) {
     const enabledSkills = (skillStore.getSkills(currentCwd) || []).filter((s) => s && s.enabled !== false && s.name);
     if (enabledSkills.length) {
       const skillLines = enabledSkills
-        .slice(0, 40)
-        .map((s) => `- ${s.name}: ${String(s.description || '').replace(/\s+/g, ' ').trim().slice(0, 180)}`)
+        .slice(0, isSmallContext ? 10 : 40)
+        .map((s) => `- ${s.name}: ${String(s.description || '').replace(/\s+/g, ' ').trim().slice(0, isSmallContext ? 100 : 180)}`)
         .join('\n');
       messages[0].content += `\n\n<available_skills>\nCall \`Skill\` {"name": "<skill-name>"} before handling a domain covered below:\n${skillLines}\n</available_skills>`;
     }
@@ -2152,8 +2241,9 @@ async function runAgent(opts) {
   // 6. Semi-dynamic: user long-term memory.
   const { memoryAsText } = require('./store');
   if (opts.useMemory !== false) {
-    const mem = memoryAsText();
-    if (mem !== '(no saved memory)') {
+    const rawMem = memoryAsText();
+    if (rawMem !== '(no saved memory)') {
+      const mem = isSmallContext && rawMem.length > 1200 ? rawMem.slice(0, 1200) + '\n…[truncated]' : rawMem;
       messages[0].content += `\n\n<long_term_memory>\n${mem}\n</long_term_memory>`;
     }
   }
@@ -2162,7 +2252,8 @@ async function runAgent(opts) {
   // so model switches retain continuity while preserving the static prefix cache.
   try {
     const { read: readMindmap } = require('./mindmap');
-    const mm = readMindmap(currentCwd);
+    const rawMm = readMindmap(currentCwd);
+    const mm = rawMm && isSmallContext && rawMm.length > 1500 ? rawMm.slice(0, 1500) + '\n…[truncated]' : rawMm;
     if (mm) messages[0].content += `\n\n<project_mindmap>\n${mm}\n</project_mindmap>`;
   } catch (_) {}
 
@@ -2225,6 +2316,13 @@ async function runAgent(opts) {
   // re-sending the identical history only stalls. Compacting and retrying keeps
   // the turn alive, exactly like the Claude app.
   let historyBudget = modelBudget.maxChars;
+  if (modelBudget.window > 0 && modelBudget.window <= 49152) {
+    const overheadChars = String((messages[0] && messages[0].content) || '').length + (toolMode ? JSON.stringify(tools).length : 0);
+    const reserveOut = Math.min(Number(provider.maxTokens) || 2048, Math.floor(modelBudget.window * 0.25));
+    const safeTotalChars = Math.floor((modelBudget.window - reserveOut) * 2.8);
+    const remainingChars = Math.max(3200, safeTotalChars - overheadChars);
+    historyBudget = Math.min(historyBudget, remainingChars);
+  }
   messages = sanitizeHistory(messages, {
     supportsTools: toolMode,
     maxChars: historyBudget,
@@ -2707,6 +2805,9 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
         setIndex,
         messages: wireMessages,
         tools: withTools ? tools : undefined,
+        cwd: currentCwd,
+        permissions: permissionMode,
+        cliSingleTurn: !withTools,
         onDelta: (text, thinking) => {
           if (thinking) turnThink += text.length; else turnChars += text.length;
           emit({ type: thinking ? 'thinking' : 'delta', text });
@@ -2800,12 +2901,29 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
             continue;
           }
           if (!isContextOverflow(e) || (opts.signal && opts.signal.aborted)) throw e;
+          if (withTools && tools.length > LEAN_TOOLS.size) {
+            const prevCount = tools.length;
+            tools = tools.filter((t) => {
+              const nm = t.function && t.function.name;
+              return LEAN_TOOLS.has(nm) || isLocal(nm) || (toolAllow && toolAllow.has(nm));
+            });
+            if (tools.length < prevCount) {
+              emit({ type: 'notice', text: `“${provider.model}” exceeded its context window with ${prevCount} tools — trimmed to ${tools.length} core tools and retrying.` });
+              continue;
+            }
+          }
           if (tries >= 5) throw e;
           const ratios = contextPipeline.SHRINK_RATIOS;
           const ratio = ratios[Math.min(tries, ratios.length - 1)];
           tries++;
           const c = compactTo(Math.round(historyBudget * ratio));
-          const shrunk = c.freed > 0 || shrinkLargest();
+          let shrunk = c.freed > 0 || shrinkLargest();
+          if (!shrunk && messages[0] && typeof messages[0].content === 'string') {
+            const beforeSys = messages[0].content.length;
+            messages[0].content = messages[0].content
+              .replace(/\n\n<(project_mindmap|available_skills|subagent_types|long_term_memory)>[\s\S]*?<\/\1>/g, '');
+            if (messages[0].content.length < beforeSys) shrunk = true;
+          }
           if (!shrunk) throw e;
           emit({
             type: 'notice',
@@ -2954,9 +3072,9 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       }
     }
 
-    let calls = message.tool_calls && message.tool_calls.length ? message.tool_calls : [];
+    let calls = (!message.cliHandledTools && message.tool_calls && message.tool_calls.length) ? message.tool_calls : [];
     let textCalls = false;
-    if (!calls.length && (textToolMode || message.content)) {
+    if (!calls.length && !message.cliHandledTools && (textToolMode || message.content)) {
       // Free models often answer with <tool_call>/<function=…> text even when
       // native tools are on; run those instead of ending the turn on raw JSON.
       const parsed = parseTextToolCalls(message.content || '', { nativeFallback: !textToolMode }).filter((c) => knownToolNames.has(c.function.name));
@@ -2971,7 +3089,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       const afterToolMsg = prevTurn && (prevTurn.role === 'tool' || prevTurn._syntheticImageRead || (prevTurn.role === 'user' && /^TOOL RESULT\b/i.test(String(prevTurn.content || ''))));
       const hasContinuePrompt = prevTurn && prevTurn.role === 'user' && /^\[continue\] Provide your complete/i.test(String(prevTurn.content || ''));
       const recentToolTurn = afterToolMsg || hasContinuePrompt;
-      if (depth === 0 && step >= 1 && !String(message.content || '').trim() && recentToolTurn && blankPostToolRetries < 2) {
+      if (!message.cliHandledTools && depth === 0 && step >= 1 && !String(message.content || '').trim() && recentToolTurn && blankPostToolRetries < 2) {
         blankPostToolRetries++;
         if (blankPostToolRetries === 2 && providerList.length > 1) {
           const prevIdx = getIndex();
@@ -2988,7 +3106,7 @@ Finish the turn with ExitPlanMode {"plan": "<the plan>"} so the user can approve
       // Safety net: if this turn produced visible code but never touched a file
       // or the Artifact tool, materialize it so the "website" actually exists.
       let extraNote = '';
-      if (!wroteSomething) {
+      if (!wroteSomething && !message.cliHandledTools) {
         const created = autoCaptureArtifacts(message.content || '', currentCwd, emit);
         if (created.length) extraNote = `\n\n(Saved ${created.join(', ')} to your project so it renders live.)`;
       }
@@ -4121,6 +4239,8 @@ async function chatOnce({ provider, messages, maxTokens, signal, tools }) {
     setIndex: () => {},
     messages,
     tools,
+    cwd: process.cwd(),
+    cliSingleTurn: true,
     signal,
     maxTokens: maxTokens != null ? maxTokens : p.maxTokens,
     onDelta: (t, thinking) => { if (!thinking) streamed += t; },

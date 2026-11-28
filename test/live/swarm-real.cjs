@@ -20,7 +20,7 @@ const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
 
-const KEY = 'sk-0xqsYQbMGNtG59gMI40gWfX7inTdZDuURr3DaBlymVuNKCwJ';
+const KEY = process.env.TOKENROUTER_API_KEY || process.env.FREELLM_API_KEY || '';
 const BASE = 'https://api.tokenrouter.com/v1';
 const KIMI = { name: 'TokenRouter · Kimi K3.1 Pro', baseURL: BASE, model: 'moonshotai/kimi-k3.1-pro' };
 const DEEPSEEK = { name: 'TokenRouter · DeepSeek V4.1 Flash', baseURL: BASE, model: 'deepseek/deepseek-v4.1-flash-1017' };

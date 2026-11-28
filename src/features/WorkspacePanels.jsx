@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { Icon } from '../components/Icon.jsx';
+import { normalizeMcpToolEntry } from '../utils/sessionModelState.js';
+export { normalizeMcpToolEntry };
 
 const makeUid = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
 
@@ -171,32 +173,110 @@ export function ProjectsView({ projects, setProjects, activeProject, setActivePr
 
 export function McpView({ mcpServers, mcpForm, setMcpForm, connectMcp, disconnectMcp }) {
   const transport = mcpForm.transport || 'stdio';
+  const [expandedByServer, setExpandedByServer] = useState({});
+  const [filterByServer, setFilterByServer] = useState({});
+  const servers = Array.isArray(mcpServers) ? mcpServers : [];
+
   return (
-    <div className="panel">
+    <div className="panel mcp-panel">
       <h2>MCP Servers</h2>
       <p className="muted">Connect external Model Context Protocol servers over stdio, SSE, or streamable-HTTP. Their tools become available to Akron Code automatically.</p>
       <div className="mcp-form">
-        <select value={transport} onChange={(e) => setMcpForm({ ...mcpForm, transport: e.target.value })}>
-          <option value="stdio">stdio</option>
+        <select
+          className="mcp-select"
+          aria-label="MCP transport"
+          value={transport}
+          onChange={(e) => setMcpForm({ ...mcpForm, transport: e.target.value })}
+        >
+          <option value="stdio">stdio (local)</option>
           <option value="sse">sse</option>
           <option value="http">streamable-http</option>
         </select>
         {transport === 'stdio' ? (
           <>
-            <input placeholder="command (e.g. npx -y @modelcontextprotocol/server-filesystem)" value={mcpForm.command} onChange={(e) => setMcpForm({ ...mcpForm, command: e.target.value })} />
-            <input placeholder="args (space-separated)" value={mcpForm.args} onChange={(e) => setMcpForm({ ...mcpForm, args: e.target.value })} />
+            <input
+              className="mcp-input mcp-input-cmd"
+              placeholder="Command (e.g. npx)"
+              value={mcpForm.command || ''}
+              onChange={(e) => setMcpForm({ ...mcpForm, command: e.target.value })}
+            />
+            <input
+              className="mcp-input mcp-input-args"
+              placeholder="Args (e.g. -y @modelcontextprotocol/server-filesystem .)"
+              value={mcpForm.args || ''}
+              onChange={(e) => setMcpForm({ ...mcpForm, args: e.target.value })}
+            />
           </>
         ) : (
-          <input placeholder="URL (e.g. https://host/mcp or /sse)" value={mcpForm.url} onChange={(e) => setMcpForm({ ...mcpForm, url: e.target.value })} />
+          <input
+            className="mcp-input mcp-input-url"
+            placeholder="Server URL (e.g. https://host/mcp or /sse)"
+            value={mcpForm.url || ''}
+            onChange={(e) => setMcpForm({ ...mcpForm, url: e.target.value })}
+          />
         )}
-        <button onClick={connectMcp}>Connect</button>
+        <button type="button" className="btn-mini primary mcp-connect-btn" onClick={connectMcp}>Connect</button>
       </div>
-      {mcpServers.map((s) => (
-        <div key={s.serverId} className="mcpserver">
-          <div className="mcpserver-head"><b>{s.name}</b><button onClick={() => disconnectMcp(s.serverId)}>Disconnect</button></div>
-          <div className="tools">{s.tools.map((t) => <span key={t.name} className="toolchip" title={t.description}>{t.name}</span>)}</div>
-        </div>
-      ))}
+      {servers.length === 0 && (
+        <p className="muted" style={{ marginTop: 8 }}>No MCP servers connected yet.</p>
+      )}
+      {servers.map((s, sIdx) => {
+        const sid = String(s.serverId || s.name || sIdx);
+        const tools = (Array.isArray(s.tools) ? s.tools : []).map(normalizeMcpToolEntry).filter((x) => x.name);
+        const q = String(filterByServer[sid] || '').trim().toLowerCase();
+        const filtered = q ? tools.filter((t) => t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)) : tools;
+        const isLarge = tools.length > 24;
+        const isExpanded = expandedByServer[sid] !== undefined ? !!expandedByServer[sid] : !isLarge;
+        const visibleTools = isExpanded ? filtered : (isLarge ? [] : filtered.slice(0, 12));
+        return (
+          <div key={sid} className="mcpserver">
+            <div className="mcpserver-head">
+              <div className="mcpserver-meta">
+                <span className={'mcpserver-dot ' + (s.connected === false ? 'off' : 'on')} />
+                <b className="mcpserver-name">{s.name || sid}</b>
+                {s.builtin && <span className="mcp-badge">Built-in</span>}
+                <span className="mcp-count-pill">{tools.length} tool{tools.length === 1 ? '' : 's'}</span>
+              </div>
+              <div className="mcpserver-actions">
+                {tools.length > 0 && (
+                  <button
+                    type="button"
+                    className="btn-mini mcp-toggle-btn"
+                    onClick={() => setExpandedByServer((m) => ({ ...m, [sid]: !isExpanded }))}
+                  >
+                    {isExpanded ? 'Hide tools' : `Inspect ${tools.length} tools`}
+                  </button>
+                )}
+                {disconnectMcp && (
+                  <button type="button" className="mcp-disconnect-btn" onClick={() => disconnectMcp(s.serverId)}>Disconnect</button>
+                )}
+              </div>
+            </div>
+            {isExpanded && tools.length > 16 && (
+              <div className="mcp-filter-row">
+                <input
+                  type="text"
+                  className="mcp-filter-input"
+                  placeholder={`Filter ${tools.length} tools in ${s.name || sid}…`}
+                  value={filterByServer[sid] || ''}
+                  onChange={(e) => setFilterByServer((m) => ({ ...m, [sid]: e.target.value }))}
+                />
+                {q && <span className="muted" style={{ margin: 0, fontSize: 11.5 }}>{filtered.length} match{filtered.length === 1 ? '' : 'es'}</span>}
+              </div>
+            )}
+            {visibleTools.length > 0 && (
+              <div className="mcp-tool-chips">
+                {visibleTools.map((t, idx) => (
+                  <span key={`${sid}:${t.name}:${idx}`} className="mcp-tool-chip" title={t.description || t.name}>{t.name}</span>
+                ))}
+              </div>
+            )}
+            {isExpanded && q && filtered.length === 0 && (
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>No tools match &ldquo;{filterByServer[sid]}&rdquo;.</div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

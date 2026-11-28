@@ -133,9 +133,9 @@ async function run() {
           seenBodies.push(JSON.parse(raw));
           res.writeHead(200, { 'content-type': 'text/event-stream' });
           if (seenBodies.length === 1) {
-            res.write(`data: ${JSON.stringify({ response: { candidates: [{ content: { parts: [{ functionCall: { id: 'toolu_vrtx_99', name: 'read_text', args: { maxChars: 500 } }, thoughtSignature: 'sig_v1' }] }, finishReason: 'STOP' }] } })}\n\n`);
+            res.write(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ functionCall: { id: 'toolu_vrtx_99', name: 'read_text', args: { maxChars: 500 } }, thoughtSignature: 'sig_v1' }] }, finishReason: 'STOP' }] })}\n\n`);
           } else {
-            res.write(`data: ${JSON.stringify({ response: { candidates: [{ content: { parts: [{ text: 'Compared successfully.' }] }, finishReason: 'STOP' }] } })}\n\n`);
+            res.write(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: 'Compared successfully.' }] }, finishReason: 'STOP' }] })}\n\n`);
           }
           res.end();
         });
@@ -143,7 +143,7 @@ async function run() {
       s.listen(0, '127.0.0.1', () => resolve({ server: s, base: 'http://127.0.0.1:' + s.address().port }));
     });
     try {
-      const prov = { transport: 'google', model: 'claude-opus-5-5-medium', accessToken: 'tok', cloudcodeUrl: srv.base + '/v1internal' };
+      const prov = { transport: 'google', model: 'claude-opus-5-5-medium', apiKey: 'AIzaTestKey', baseURL: srv.base + '/v1beta' };
       const r1 = await transport.chatCompletion(prov, [{ role: 'user', content: 'check' }], null, () => {});
       eq('Turn 1 preserves thoughtSignature on tool_call', r1.tool_calls[0].thoughtSignature, 'sig_v1');
       const r2 = await transport.chatCompletion(prov, [
@@ -152,10 +152,10 @@ async function run() {
         { role: 'tool', tool_call_id: r1.tool_calls[0].id, content: 'Today 16 | Month 1347' },
         { role: 'user', content: 'compare whole month' },
       ], null, () => {});
-      eq('Turn 2 wire functionCall carries id', seenBodies[1].request.contents[1].parts[0].functionCall.id, 'toolu_vrtx_99');
-      eq('Turn 2 wire functionCall carries thoughtSignature', seenBodies[1].request.contents[1].parts[0].thoughtSignature, 'sig_v1');
-      eq('Turn 2 wire functionResponse carries id', seenBodies[1].request.contents[2].parts[0].functionResponse.id, 'toolu_vrtx_99');
-      eq('Turn 2 wire functionResponse carries resolved name', seenBodies[1].request.contents[2].parts[0].functionResponse.name, 'read_text');
+      eq('Turn 2 wire functionCall carries id', seenBodies[1].contents[1].parts[0].functionCall.id, 'toolu_vrtx_99');
+      eq('Turn 2 wire functionCall carries thoughtSignature', seenBodies[1].contents[1].parts[0].thoughtSignature, 'sig_v1');
+      eq('Turn 2 wire functionResponse carries id', seenBodies[1].contents[2].parts[0].functionResponse.id, 'toolu_vrtx_99');
+      eq('Turn 2 wire functionResponse carries resolved name', seenBodies[1].contents[2].parts[0].functionResponse.name, 'read_text');
       eq('Turn 2 completes cleanly', r2.content, 'Compared successfully.');
     } finally {
       await new Promise((r) => srv.server.close(r));

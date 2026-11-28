@@ -117,7 +117,7 @@ function makeSolidPngBase64(w, h, r, g, b) {
   ], (r) => r.includes('AKRON-LONGCTX-7391')));
 
   // 3. vision pool (real UI screenshot reading)
-  const mcPath = '/Users/saimon/.gemini/antigravity/brain/cb4ff1d8-186c-4ca3-9b84-bfe96acbf3bc/mission-control.png';
+  const mcPath = path.join(process.env.AKRON_ARTIFACTS_DIR || os.tmpdir(), 'mission-control.png');
   const imgB64 = fs.existsSync(mcPath)
     ? fs.readFileSync(mcPath).toString('base64')
     : makeSolidPngBase64(128, 128, 255, 0, 0);

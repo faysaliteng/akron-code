@@ -12,7 +12,7 @@ const http = require('http');
 const { execFileSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '../..');
-const ARTIFACTS = '/Users/saimon/.gemini/antigravity/brain/cb4ff1d8-186c-4ca3-9b84-bfe96acbf3bc';
+const ARTIFACTS = (process.env.AKRON_ARTIFACTS_DIR || os.tmpdir());
 
 const { runAgent, createPauseController, normalizeProvider, humanizeLLMError } = require(path.join(REPO, 'electron/llm'));
 const ideIpc = require(path.join(REPO, 'electron/ide/ipc'));

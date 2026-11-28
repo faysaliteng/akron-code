@@ -2,6 +2,25 @@
 
 All notable changes to **Akron Code** are documented here.
 
+## [1.6.9] - 2026-11-28
+
+### Fixed & Verified Live
+- **Mid-Stream `Stop`, Abort Propagation & Instant Queue Unblock (`electron/providertransport.js`, `electron/llm.js`, `electron/main.js`, `src/App.jsx`):**
+  - Fixed the streaming transport bug where `fetchWithTimeout` / `doFetch` detached the parent `AbortSignal` listener as soon as HTTP headers arrived and `reader.read()` blocked until the model finished on its own — `Stop` now cancels underlying HTTP streams immediately across Anthropic, OpenAI-compatible, Codex Responses, and Gemini adapters with zero leaked `abort` listeners.
+  - Released `sendingLocksRef` immediately once a run is registered (before awaiting the long-running `autobot:run` IPC promise), added `queueWakeTick`, and updated `stop()` + `sendQueuedNow({ forceImmediate: true })` so prompts sent or triggered right after `Stop` dispatch immediately instead of getting stuck in `QUEUED`.
+  - Added automatic HTTP `500` negotiation retry for local/gateway OpenAI-compatible servers that reject `reasoning_effort`, `stream_options`, `max_tokens`, or `reasoning_content`.
+- **Per-Conversation Independent Model, Mode, Swarm & Workspace Isolation (`src/utils/sessionModelState.js`, `src/App.jsx`):**
+  - Scoped `provider`, `routingMode` (`direct` / `orchestrator` / `auto`), `orchestrator.enabled` / `activeIndex` / `executorModel`, `swarmEnabled`, `reasoningLevel`, and `cwd` per conversation tab (`autobot:sessionConfigs` + `cwdByConv`), so multiple chats can run concurrently on completely different models, modes, Swarm settings, and project folders without one tab overwriting another or `+ New chat` resetting open sessions.
+- **Orphaned OAuth Model Auto-Heal, Supervisor Fallback & Diff Crash Guard (`electron/ipc/ipc-oauth-models.js`, `electron/orch-hydrate.js`, `electron/llm.js`, `src/utils/tutorialPresets.js`, `src/components/CodeReviewPane.jsx`, `src/review-helpers.mjs`):**
+  - Auto-healed orphaned OAuth models (e.g. `claude-fable-5-2` saved with empty `oauthProvider` or keyless `localhost:11434` fallback) onto the signed-in matching OAuth account, rejected stale unkeyed rows in `hydrateOrchestrator` before falling back to Ollama, selected a valid configured supervisor in Orchestrator mode when `rawProv` is unusable, preserved `oauthProvider`/`transport`/`oauth`/`baseURL` across `applyBeginnerPreset` switches, and guarded `CodeReviewPane` / `mergeDiffFiles` against non-iterable values.
+- **Settings → MCP Connectors Layout & Footer Summary (`src/features/WorkspacePanels.jsx`, `src/styles/workspace-panels.css`, `src/components/settings/SettingsModalBody.jsx`):**
+  - Normalized string vs. `{ name, description }` MCP tool entries (`normalizeMcpToolEntry`) inside `McpView`, eliminated the 263 blank chip bars and `.tools` CSS collision with searchable collapsible `.mcp-tool-chips`, fixed `.mcp-form` `select` & input flex widths, and wired `formatFooterModelSummary` into the Settings footer.
+- **Official CLI Subprocess Transport, Secret Store & Swarm Worktree Isolation (`electron/cli-runner.js`, `electron/provider-oauth.js`, `electron/providertransport.js`, `electron/secretstore.js`, `electron/swarm.js`, `electron/ipc/ipc-runtimes.js`, `electron/runtimes.js`):**
+  - Replaced consumer OAuth header spoofing and local token scrapers with `electron/cli-runner.js` executing official CLI binaries (`claude`, `codex`, `grok`, `gemini`/`agy`) in NDJSON streaming mode, thin native CLI auth wrappers in `electron/provider-oauth.js`, and official API-key REST transports in `electron/providertransport.js`.
+  - Enabled macOS `safeStorage` by default in `electron/secretstore.js` alongside a random 32-byte `0o600` `~/.autobot/master.key` and purged legacy plaintext token mirrors.
+  - Enabled default Git worktree isolation for concurrent writing workers and automatic branch merge/cleanup (`reconcileWorkerWorktrees()`) before Supervisor review in `electron/swarm.js`.
+  - Prevented `chmodSync` inside signed `.app/Contents/Resources` bundles (`electron/ipc/ipc-runtimes.js`) and enforced `.sha256` sidecar / OS signature verification, Windows `codex.exe`/`.cmd` shims, and `current.ptr` + NTFS junctions in `electron/runtimes.js`.
+
 ## [1.6.8] - 2026-11-28
 
 ### Fixed & Verified Live Across All 3 Platforms (macOS, Windows 11, Kali Linux)

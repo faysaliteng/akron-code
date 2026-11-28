@@ -1,5 +1,6 @@
 const WS = require('ws');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 // Live check: every slash command that must not touch the network
 // (notes, toggles, panels, IPC-backed lookups) resolves in the real app instead
@@ -200,7 +201,7 @@ const path = require('path');
   check('/rename updates the conversation title', String(title) === 'Parity Check', title);
 
   // ---- skill commands resolve through the real IPC bridge ---------------
-  const cwd = JSON.stringify('/Users/saimon/Documents/Default Project/autobot');
+  const cwd = JSON.stringify(path.resolve(__dirname, '..', '..'));
   for (const name of ['batch', 'claude-api', 'claude-in-chrome', 'fewer-permission-prompts', 'keybindings-help', 'run', 'run-skill-generator', 'update-config']) {
     const r = await ev(`window.autobot.resolveCommand(${JSON.stringify(name)}, 'ARGHERE', ${cwd})`);
     const prompt = r && r.prompt ? String(r.prompt) : '';

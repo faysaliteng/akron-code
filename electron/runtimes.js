@@ -138,13 +138,22 @@ const DESCRIPTORS = [
       if (!fs.existsSync(from)) throw new Error('codex: this package does not contain vendor/' + triple);
       await fsp.mkdir(dest, { recursive: true });
       await copyTree(from, path.join(dest, 'vendor', triple));
-      const bin = path.join(dest, 'bin', 'codex');
+      const exe = ctx.platform === 'win32' ? 'codex.exe' : 'codex';
+      const bin = path.join(dest, 'bin', exe);
       await fsp.mkdir(path.dirname(bin), { recursive: true });
-      // Relative symlink so the tree stays valid wherever it is installed.
       await removeIfExists(bin);
-      await fsp.symlink(path.join('..', 'vendor', triple, 'bin', 'codex'), bin);
+      if (ctx.platform === 'win32') {
+        const srcBin = fs.existsSync(path.join(dest, 'vendor', triple, 'bin', exe))
+          ? path.join(dest, 'vendor', triple, 'bin', exe)
+          : path.join(dest, 'vendor', triple, 'bin', 'codex');
+        await fsp.copyFile(srcBin, bin);
+        await fsp.writeFile(path.join(dest, 'bin', 'codex.cmd'), `@echo off\r\n"${bin}" %*\r\n`, 'utf8');
+      } else {
+        // Relative symlink so the tree stays valid wherever it is installed.
+        await fsp.symlink(path.join('..', 'vendor', triple, 'bin', 'codex'), bin);
+      }
     },
-    binPath: (dir) => path.join(dir, 'bin', 'codex'),
+    binPath: (dir, platform) => path.join(dir, 'bin', platform === 'win32' ? 'codex.exe' : 'codex'),
   },
   {
     id: 'grok',
@@ -176,11 +185,11 @@ const DESCRIPTORS = [
       const name = 'grok-' + pointer + '-' + suffix + (ctx.platform === 'win32' ? '.exe' : '');
       // Artifacts sit beside the pointer: …/cli/stable → …/cli/grok-<ver>-<platform>.
       // Deriving the base keeps the GCS mirror (and the test registry) working.
+      const baseClean = String(base || 'https://x.ai/cli/').replace(/\/+$/, '');
       return {
         version: pointer,
-        url: String(base || 'https://x.ai/cli/').replace(/\/+$/, '') + '/' + name,
-        // Upstream publishes no checksum (install.sh does not verify one either);
-        // integrity is therefore recorded locally after download, not asserted.
+        url: baseClean + '/' + name,
+        sha256Url: baseClean + '/' + name + '.sha256',
         integrity: '',
         kind: 'bin',
       };
@@ -373,13 +382,43 @@ function createRuntimes(opts) {
   }
 
   async function currentLink(id) {
-    const link = path.join(root, id, 'current');
+    const baseDir = path.join(root, id);
+    const link = path.join(baseDir, 'current');
     try {
       const target = await fsp.readlink(link);
-      const dir = path.isAbsolute(target) ? target : path.join(root, id, target);
+      const dir = path.isAbsolute(target) ? target : path.join(baseDir, target);
       const st = await fsp.stat(dir);
-      return st.isDirectory() ? dir : '';
-    } catch (_) { return ''; }
+      if (st.isDirectory()) return dir;
+    } catch (_) { /* fall back to CURRENT pointer file */ }
+    try {
+      const ptr = (await fsp.readFile(path.join(baseDir, 'current.ptr'), 'utf8')).trim();
+      if (ptr) {
+        const dir = path.isAbsolute(ptr) ? ptr : path.join(baseDir, ptr);
+        const st = await fsp.stat(dir);
+        if (st.isDirectory()) return dir;
+      }
+    } catch (_) { /* ignore */ }
+    return '';
+  }
+
+  async function pointCurrent(versionsDir, targetName) {
+    const link = path.join(versionsDir, 'current');
+    const tmpLink = path.join(versionsDir, '.current.' + process.pid);
+    await fsp.writeFile(path.join(versionsDir, 'current.ptr'), targetName + '\n', 'utf8');
+    await removeIfExists(tmpLink);
+    try {
+      if (platform === 'win32') {
+        await fsp.symlink(path.join(versionsDir, targetName), tmpLink, 'junction');
+        await removeIfExists(link);
+        await fsp.rename(tmpLink, link);
+      } else {
+        await fsp.symlink(targetName, tmpLink);
+        await fsp.rename(tmpLink, link);
+      }
+    } catch (_) {
+      await removeIfExists(tmpLink);
+      if (platform !== 'win32') throw _;
+    }
   }
 
   /** Resolved runtime: self-updated → bundled → PATH. Never throws. */
@@ -555,7 +594,23 @@ function createRuntimes(opts) {
       const artifact = path.join(work, m.kind === 'tgz' ? 'artifact.tgz' : 'artifact.bin');
       const got = await download(m.url, artifact, { id, version });
       const integ = integrityOf(m.integrity, got.sri);
-      if (integ.verified) emit({ id, phase: 'verify', pct: 100, message: 'sha512 verified' });
+      if (!integ.verified && m.sha256Url) {
+        try {
+          const sumTxt = await text(m.sha256Url);
+          const hexMatch = /\b([0-9a-f]{64})\b/i.exec(String(sumTxt || ''));
+          if (hexMatch) {
+            const expectedHex = hexMatch[1].toLowerCase();
+            if (expectedHex !== String(got.sha256 || '').toLowerCase()) {
+              throw new Error('runtime: integrity mismatch — sha256 sidecar rejected');
+            }
+            integ.verified = true;
+            integ.reason = 'sha256 sidecar verified';
+          }
+        } catch (sumErr) {
+          if (String(sumErr && sumErr.message).includes('integrity mismatch')) throw sumErr;
+        }
+      }
+      if (integ.verified) emit({ id, phase: 'verify', pct: 100, message: integ.reason || 'sha512 verified' });
       else emit({ id, phase: 'verify', pct: 100, message: integ.reason });
 
       emit({ id, phase: 'extract', pct: 0, message: 'Unpacking ' + version });
@@ -567,6 +622,23 @@ function createRuntimes(opts) {
 
       const bin = d.binPath(stage, platform);
       if (!fs.existsSync(bin)) throw new Error('runtime: the archive did not contain ' + bin);
+
+      if (!integ.verified) {
+        let osSigned = false;
+        if (platform === 'darwin') {
+          const cs = await run('codesign', ['--verify', '--strict', bin], { timeout: 10000 });
+          osSigned = cs.ok;
+        } else if (platform === 'win32') {
+          const ps = await run('powershell.exe', ['-NoProfile', '-Command', `(Get-AuthenticodeSignature -LiteralPath '${bin.replace(/'/g, "''")}').Status -eq 'Valid'`], { timeout: 10000 });
+          osSigned = ps.ok && /\bTrue\b/i.test(String(ps.out || ''));
+        }
+        if (osSigned) {
+          integ.verified = true;
+          integ.reason = 'OS signature verified';
+        } else if (!net.insecure) {
+          throw new Error('runtime: refusing to execute unverified ' + d.label + ' binary (no checksum or valid OS signature)');
+        }
+      }
 
       emit({ id, phase: 'verify-bin', pct: 0, message: 'Smoke-testing the new binary' });
       const probe = await run(bin, d.versionArgs, { timeout: 30000 });
@@ -595,17 +667,12 @@ function createRuntimes(opts) {
         installedAt: new Date().toISOString(),
       }, null, 2));
 
-      // Promote: move into place, then atomically repoint `current`.
       const versionsDir = path.join(root, id);
       await fsp.mkdir(versionsDir, { recursive: true });
       const finalDir = path.join(versionsDir, reported);
       await removeIfExists(finalDir);
       await fsp.rename(stage, finalDir);
-      const link = path.join(versionsDir, 'current');
-      const tmpLink = path.join(versionsDir, '.current.' + process.pid);
-      await removeIfExists(tmpLink);
-      await fsp.symlink(reported, tmpLink);
-      await fsp.rename(tmpLink, link);
+      await pointCurrent(versionsDir, reported);
 
       await prune(id, reported);
       await saveState({ updated: { ...(await loadState()).updated, [id]: { version: reported, at: Date.now() } } });
@@ -654,11 +721,7 @@ function createRuntimes(opts) {
     const curName = cur ? path.basename(cur) : '';
     const prev = versions.find((v) => v.name !== curName);
     if (!prev) return { ok: false, error: 'no previous version on disk' };
-    const link = path.join(dir, 'current');
-    const tmpLink = path.join(dir, '.current.' + process.pid);
-    await removeIfExists(tmpLink);
-    await fsp.symlink(prev.name, tmpLink);
-    await fsp.rename(tmpLink, link);
+    await pointCurrent(dir, prev.name);
     const after = await resolve(id);
     return { ok: true, version: after.version };
   }

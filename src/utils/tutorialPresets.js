@@ -107,21 +107,50 @@ export const STARTER_MISSIONS = [
   },
 ];
 
-function firstEnabledOrchModel(orchestrator) {
+function firstEnabledOrchRow(orchestrator, preferModel = '') {
   const rows = (orchestrator && Array.isArray(orchestrator.providers)) ? orchestrator.providers : [];
-  const enabled = rows.find((r) => r && r.enabled !== false && r.model);
-  if (enabled) return enabled.model;
-  const anyRow = rows.find((r) => r && r.model);
-  if (anyRow) return anyRow.model;
+  const want = String(preferModel || '').trim().toLowerCase();
+  if (want) {
+    const exact = rows.find((r) => r && r.enabled !== false && String(r.model || '').trim().toLowerCase() === want && (r.oauthProvider || r.transport || String(r.baseURL || '').trim()));
+    if (exact) return exact;
+  }
+  const enabled = rows.find((r) => r && r.enabled !== false && r.model && (r.oauthProvider || r.transport || String(r.baseURL || '').trim()));
+  if (enabled) return enabled;
+  const anyValid = rows.find((r) => r && r.model && (r.oauthProvider || r.transport || String(r.baseURL || '').trim()));
+  if (anyValid) return anyValid;
+  const fallback = rows.find((r) => r && r.enabled !== false && r.model) || rows.find((r) => r && r.model);
+  if (fallback) return fallback;
   const roles = orchestrator && orchestrator.pools && orchestrator.pools.roles;
   if (roles && typeof roles === 'object') {
     for (const def of Object.values(roles)) {
       const m = def && Array.isArray(def.models) && def.models[0];
-      if (typeof m === 'string' && m.trim()) return m.replace(/@\d+$/, '').trim();
-      if (m && m.model) return m.model;
+      if (typeof m === 'string' && m.trim()) return { model: m.replace(/@\d+$/, '').trim() };
+      if (m && m.model) return m;
     }
   }
-  return '';
+  return null;
+}
+
+function hydratePresetProvider(prevProv, prevOrch, modelId) {
+  const cur = prevProv && typeof prevProv === 'object' ? prevProv : {};
+  const hasConn = Boolean(cur.oauthProvider || cur.transport || String(cur.baseURL || '').trim());
+  const row = firstEnabledOrchRow(prevOrch, modelId);
+  if (hasConn && (!row || String(cur.model || '').trim() === String(row.model || '').trim())) {
+    return cur;
+  }
+  if (!row || !row.model) return cur;
+  const isOauth = Boolean(row.oauth || row.oauthProvider);
+  return {
+    ...cur,
+    model: modelId || row.model,
+    baseURL: row.baseURL || (isOauth ? '' : (cur.baseURL || '')),
+    apiKey: row.apiKey || (isOauth ? '' : (cur.apiKey || '')),
+    oauthProvider: row.oauthProvider || '',
+    transport: row.transport || '',
+    oauth: isOauth,
+    ...(row.orchProviderId ? { orchProviderId: row.orchProviderId } : {}),
+    ...(Number(row.contextWindow) > 0 && !isOauth ? { contextWindow: Number(row.contextWindow) } : { contextWindow: 0 }),
+  };
 }
 
 export function applyBeginnerPreset(presetId, state = {}) {
@@ -130,15 +159,17 @@ export function applyBeginnerPreset(presetId, state = {}) {
   const prevOrch = state.orchestrator && typeof state.orchestrator === 'object'
     ? state.orchestrator
     : { enabled: false, providers: [], activeIndex: -1 };
+  const firstRow = firstEnabledOrchRow(prevOrch);
   const rememberedDirectModel = (prevProv.model && prevProv.model !== 'auto')
     ? prevProv.model
-    : (prevProv.lastDirectModel || firstEnabledOrchModel(prevOrch) || 'gemini-2.5-flash');
+    : (prevProv.lastDirectModel || (firstRow && firstRow.model) || 'gemini-2.5-flash');
+  const resolvedProv = hydratePresetProvider(prevProv, prevOrch, rememberedDirectModel);
 
   if (id === 'auto') {
     return {
       presetId: 'auto',
       provider: {
-        ...prevProv,
+        ...resolvedProv,
         lastDirectModel: rememberedDirectModel,
         routingMode: 'auto',
         reasoningLevel: 'auto',
@@ -156,7 +187,7 @@ export function applyBeginnerPreset(presetId, state = {}) {
     return {
       presetId: 'orchestrator',
       provider: {
-        ...prevProv,
+        ...resolvedProv,
         model: rememberedDirectModel,
         lastDirectModel: rememberedDirectModel,
         routingMode: 'orchestrator',
@@ -179,7 +210,7 @@ export function applyBeginnerPreset(presetId, state = {}) {
     return {
       presetId: 'swarm',
       provider: {
-        ...prevProv,
+        ...resolvedProv,
         model: rememberedDirectModel,
         lastDirectModel: rememberedDirectModel,
         routingMode: 'orchestrator',
@@ -201,7 +232,7 @@ export function applyBeginnerPreset(presetId, state = {}) {
   return {
     presetId: 'direct',
     provider: {
-      ...prevProv,
+      ...resolvedProv,
       model: rememberedDirectModel,
       lastDirectModel: rememberedDirectModel,
       routingMode: 'direct',
@@ -209,7 +240,7 @@ export function applyBeginnerPreset(presetId, state = {}) {
     },
     orchestrator: { ...prevOrch, enabled: false },
     swarmEnabled: false,
-    reasoningLevel: state.reasoningLevel || prevProv.reasoningLevel || 'auto',
+    reasoningLevel: state.reasoningLevel || resolvedProv.reasoningLevel || 'auto',
     permissions: state.permissions || 'auto',
     notice: `Applied Single Pinned Model (${rememberedDirectModel}) — Orchestrator & Swarm OFF.`,
   };

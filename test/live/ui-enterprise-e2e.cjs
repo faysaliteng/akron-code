@@ -28,15 +28,15 @@ const handlers = {
   'autobot:poolStatus': () => ({ active: true, roles: {}, rows: [{ key: 'k1', model: 'gpt-5.6-luna', coolingMs: 0, inflight: 0 }, { key: 'k2', model: 'qwen3.8-flash', coolingMs: 0, inflight: 1 }] }),
   'autobot:getFeatures': () => ({ computerUse: true, chrome: false, bridges: false, quickEntry: true, extensions: true }),
   'autobot:setFeatures': (_e, f) => f,
-  'autobot:getWorkspace': () => '/Users/saimon/Akron Bot/sample-devpulse',
-  'autobot:getDefaultCwd': () => '/Users/saimon/Akron Bot/sample-devpulse',
+  'autobot:getWorkspace': () => path.join(os.homedir(), 'Akron Bot', 'sample-devpulse'),
+  'autobot:getDefaultCwd': () => path.join(os.homedir(), 'Akron Bot', 'sample-devpulse'),
   'autobot:providerCatalog': () => ({ providers: [], storeError: null }),
   'autobot:ollamaModels': () => ({ ok: false, base: 'http://localhost:11434/v1', models: [], detail: 'Stopped' }),
   'autobot:listAgents': () => [],
-  'autobot:listCheckpoints': () => [{ id: 'turn-1', at: new Date().toISOString(), files: [{ path: '/Users/saimon/Akron Bot/sample-devpulse/src/scanner.js', existed: true }, { path: '/Users/saimon/Akron Bot/sample-devpulse/src/graph.js', existed: false }] }],
+  'autobot:listCheckpoints': () => [{ id: 'turn-1', at: new Date().toISOString(), files: [{ path: path.join(os.homedir(), 'Akron Bot', 'sample-devpulse/src/scanner.js'), existed: true }, { path: path.join(os.homedir(), 'Akron Bot', 'sample-devpulse/src/graph.js'), existed: false }] }],
   'autobot:turnDiffs': () => [
     {
-      path: '/Users/saimon/Akron Bot/sample-devpulse/src/scanner.js',
+      path: path.join(os.homedir(), 'Akron Bot', 'sample-devpulse/src/scanner.js'),
       relPath: 'src/scanner.js',
       status: 'modified',
       added: 3,
@@ -51,7 +51,7 @@ const handlers = {
       ],
     },
     {
-      path: '/Users/saimon/Akron Bot/sample-devpulse/src/graph.js',
+      path: path.join(os.homedir(), 'Akron Bot', 'sample-devpulse/src/graph.js'),
       relPath: 'src/graph.js',
       status: 'added',
       added: 4,
@@ -69,13 +69,13 @@ const handlers = {
   'autobot:extBridgeStatus': () => ({
     running: true, port: 8766, bridgeUrl: 'ws://127.0.0.1:8766', proxyUrl: 'http://127.0.0.1:8766/v1',
     extensionConnected: true, connectedClients: 1, extensionVersion: '1.6.7',
-    extensionDir: '/Users/saimon/akron-bot-standalone/resources/akron-browser-bot',
+    extensionDir: path.resolve(__dirname, '..', '..', 'resources/akron-browser-bot'),
     tabs: [{ id: 12, title: 'Akron Logic Dashboard', url: 'https://akronlogic.com', active: true }],
   }),
   'autobot:reaStatus': () => ({
     ok: true, available: true, connected: true, serverId: 'rea',
-    version: '6.10.1', mode: 'package', nodePath: '/Users/saimon/.volta/bin/node', nodeVersion: 'v24.22.3',
-    reaPath: '/Users/saimon/.volta/tools/image/packages/rea-agents/lib/node_modules/rea-agents',
+    version: '6.10.1', mode: 'package', nodePath: process.execPath, nodeVersion: 'v24.22.3',
+    reaPath: path.resolve(__dirname, '..', '..', 'node_modules', 'rea-agents'),
     toolCount: 263, skillBundled: true,
   }),
   'autobot:reaConnect': () => ({ ok: true, toolCount: 263 }),
@@ -119,8 +119,8 @@ app.whenReady().then(async () => {
         content: 'Built **devpulse** modules (`src/scanner.js`, `src/graph.js`) and saved checkpoints for turn review.',
         checkpointId: 'turn-1',
         checkpoints: [
-          { id: 'turn-1', path: '/Users/saimon/Akron Bot/sample-devpulse/src/scanner.js', existed: true },
-          { id: 'turn-1', path: '/Users/saimon/Akron Bot/sample-devpulse/src/graph.js', existed: false },
+          { id: 'turn-1', path: path.join(os.homedir(), 'Akron Bot', 'sample-devpulse/src/scanner.js'), existed: true },
+          { id: 'turn-1', path: path.join(os.homedir(), 'Akron Bot', 'sample-devpulse/src/graph.js'), existed: false },
         ],
         tools: [
           { id: 't1', name: 'TodoWrite', status: 'done', args: { todos: [

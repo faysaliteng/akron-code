@@ -331,7 +331,7 @@ async function main() {
     mock.server.close();
     const note = events.find((e) => e.type === 'notice');
     assert.ok(note, 'compaction must tell the user');
-    assert.match(String(note.text), /Compacted \d+ earlier turns to fit .+ 32K context window/);
+    assert.match(String(note.text), /(?:Compacted \d+ earlier turns to fit .+ 32K context window|Fitted this conversation to .+ 32K context window: \d+ earlier turn)/);
   });
 
   await test('a hung tool call cannot freeze the run forever', async () => {

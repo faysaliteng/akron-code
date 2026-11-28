@@ -1,6 +1,6 @@
 'use strict';
 // Live FreeLLMAPI end-to-end test verifying:
-//   1. Built-in REA (`rea` tool calling `analyze_javascript_application`) against `/Users/saimon/Akron Bot/sample-devpulse`
+//   1. Built-in REA (`rea` tool calling `analyze_javascript_application`) against `${path.join(os.homedir(), 'Akron Bot', 'sample-devpulse')}`
 //   2. Parallel `Task` delegation & non-null synthesis
 //   3. `Write` + live `checkpoint` event + `toolStream` progress + `Bash` verification
 // Reads local ~/.autobot/freellm.json & ~/.autobot/orchestrator.json in-memory only.
@@ -38,7 +38,7 @@ const checkpoints = require('../../electron/checkpoints');
   const mcp = new MCPClient();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'akron-rea-e2e-'));
   const convId = 'live-rea-' + Date.now();
-  const sampleTarget = '/Users/saimon/Akron Bot/sample-devpulse';
+  const sampleTarget = path.join(os.homedir(), 'Akron Bot', 'sample-devpulse');
 
   try {
     const conn = await rea.ensureConnected(mcp);

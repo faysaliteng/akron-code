@@ -18,7 +18,7 @@ const MODELS = {
   deepseek: { name: 'TokenRouter · DeepSeek V4.1 Flash', baseURL: 'https://api.tokenrouter.com/v1', model: 'deepseek/deepseek-v4.1-flash-1017' },
   kimi: { name: 'TokenRouter · Kimi K3.1 Pro', baseURL: 'https://api.tokenrouter.com/v1', model: 'moonshotai/kimi-k3.1-pro' },
 };
-const KEY = 'sk-0xqsYQbMGNtG59gMI40gWfX7inTdZDuURr3DaBlymVuNKCwJ';
+const KEY = process.env.TOKENROUTER_API_KEY || process.env.FREELLM_API_KEY || '';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function rpc(ws, method, params) {

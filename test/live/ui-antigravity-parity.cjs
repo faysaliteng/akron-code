@@ -5,6 +5,7 @@
 //   3. Tabbed SessionPane + Code Review (For Turn chip, +N more lines, +10 fold expand, Search Aa/ab/.* auto-unfold, blue + inline comment card)
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 
@@ -62,15 +63,15 @@ const handlers = {
   'autobot:poolStatus': () => ({ active: true, roles: {}, rows: [] }),
   'autobot:getFeatures': () => ({ computerUse: true, chrome: false, bridges: false, quickEntry: true, extensions: true }),
   'autobot:setFeatures': (_e, f) => f,
-  'autobot:getWorkspace': () => '/Users/saimon/akron-bot-standalone',
-  'autobot:getDefaultCwd': () => '/Users/saimon/akron-bot-standalone',
+  'autobot:getWorkspace': () => path.resolve(__dirname, '..', '..'),
+  'autobot:getDefaultCwd': () => path.resolve(__dirname, '..', '..'),
   'autobot:providerStatus': () => ({ providers: [], storeError: null }),
   'autobot:ollamaModels': () => ({ ok: false, base: 'http://localhost:11434/v1', models: [], detail: 'Stopped' }),
   'autobot:listAgents': () => [],
-  'autobot:listCheckpoints': () => [{ id: 'turn-1', at: new Date().toISOString(), files: [{ path: '/Users/saimon/akron-bot-standalone/electron/orch-router.js', existed: true }] }],
+  'autobot:listCheckpoints': () => [{ id: 'turn-1', at: new Date().toISOString(), files: [{ path: path.resolve(__dirname, '..', '..', 'electron/orch-router.js'), existed: true }] }],
   'autobot:turnDiffs': () => ([
     {
-      path: '/Users/saimon/akron-bot-standalone/electron/orch-router.js',
+      path: path.resolve(__dirname, '..', '..', 'electron/orch-router.js'),
       relPath: 'electron/orch-router.js',
       status: 'modified',
       added: 4,
@@ -80,7 +81,7 @@ const handlers = {
   ]),
   'autobot:gitDiffFiles': () => ([
     {
-      path: '/Users/saimon/akron-bot-standalone/electron/orch-router.js',
+      path: path.resolve(__dirname, '..', '..', 'electron/orch-router.js'),
       relPath: 'electron/orch-router.js',
       status: 'modified',
       added: 4,
@@ -155,10 +156,10 @@ app.whenReady().then(async () => {
         durationMs: 12400,
         checkpointId: 'turn-1',
         subAgents: seedSubs,
-        checkpoints: [{ id: 'turn-1', path: '/Users/saimon/akron-bot-standalone/electron/orch-router.js', existed: true }],
+        checkpoints: [{ id: 'turn-1', path: path.resolve(__dirname, '..', '..', 'electron/orch-router.js'), existed: true }],
         tools: [
           { id: 'tl-1', name: 'TodoWrite', status: 'done', args: { todos: [{ content: 'Upgrade UI & Code Review', status: 'completed' }, { content: 'Verify E2E suite', status: 'completed' }] } },
-          { id: 'tl-2', name: 'Edit', status: 'done', args: { file_path: '/Users/saimon/akron-bot-standalone/electron/orch-router.js', old_string: 'old1\nold2', new_string: 'new1\nnew2\nnew3\nnew4' } },
+          { id: 'tl-2', name: 'Edit', status: 'done', args: { file_path: path.resolve(__dirname, '..', '..', 'electron/orch-router.js'), old_string: 'old1\nold2', new_string: 'new1\nnew2\nnew3\nnew4' } },
         ],
         ts: Date.now() - 10000,
       },
@@ -168,7 +169,7 @@ app.whenReady().then(async () => {
   await win.webContents.executeJavaScript(`
     localStorage.setItem('autobot:convs', ${JSON.stringify(JSON.stringify(seedConvs))});
     localStorage.setItem('autobot:activeId', ${JSON.stringify(JSON.stringify('conv-parity'))});
-    localStorage.setItem('autobot:workspace:conv-parity', ${JSON.stringify(JSON.stringify('/Users/saimon/akron-bot-standalone'))});
+    localStorage.setItem('autobot:workspace:conv-parity', ${JSON.stringify(JSON.stringify(path.resolve(__dirname, '..', '..')))});
   `);
   await win.reload();
   await sleep(600);

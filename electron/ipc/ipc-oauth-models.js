@@ -44,6 +44,40 @@ function hydrateLocalFreeLlmProvider(provider) {
 async function hydrateProvider(provider) {
   provider = hydrateLocalFreeLlmProvider(provider);
   if (!provider || typeof provider !== 'object') return provider;
+  const rawBase = String(provider.baseURL || '').trim();
+  const isDefaultOllamaNoKey = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):11434(\/v1)?\/?$/i.test(rawBase)
+    && !String(provider.apiKey || '').trim();
+  const looksCloudModel = /^(claude-|gpt-|o[1-4](?:-|$)|codex|gemini-|grok-)/i.test(String(provider.model || '').trim());
+  if (!provider.oauthProvider && !provider.transport && provider.model && (!rawBase || (isDefaultOllamaNoKey && looksCloudModel))) {
+    try {
+      const st = providerOauth.status ? providerOauth.status() : null;
+      const modelId = String(provider.model || '').trim();
+      const lowerModel = modelId.toLowerCase();
+      let preferredVendor = '';
+      if (/^claude-/i.test(lowerModel)) preferredVendor = 'claude';
+      else if (/^(gpt-|o[1-4](?:-|$)|codex)/i.test(lowerModel)) preferredVendor = 'chatgpt';
+      else if (/^gemini-/i.test(lowerModel)) preferredVendor = 'antigravity';
+      else if (/^grok-/i.test(lowerModel)) preferredVendor = 'grok';
+      const providers = (st && Array.isArray(st.providers)) ? st.providers : [];
+      const exactHit = (pv) => {
+        if (modelCatalog.hasLiveCatalog && modelCatalog.hasLiveCatalog(pv.id)) {
+          return modelCatalog.isModelAvailable(pv.id, modelId);
+        }
+        const def = providerOauth.provider ? providerOauth.provider(pv.id) : null;
+        return Boolean(def && Array.isArray(def.models) && def.models.some((m) => m && String(m.id || '').toLowerCase() === lowerModel));
+      };
+      const signedWithAcct = providers.filter((pv) => pv && Array.isArray(pv.accounts) && pv.accounts.some((a) => a && a.hasToken !== false));
+      const matchedPv = signedWithAcct.find((pv) => pv.id === preferredVendor && exactHit(pv))
+        || signedWithAcct.find((pv) => exactHit(pv))
+        || signedWithAcct.find((pv) => pv.id === preferredVendor);
+      if (matchedPv) {
+        const acct = matchedPv.accounts.find((a) => a && a.hasToken !== false) || matchedPv.accounts[0];
+        if (acct && acct.account) {
+          provider = { ...provider, oauthProvider: matchedPv.id + ':' + acct.account, oauth: true, baseURL: '' };
+        }
+      }
+    } catch (_) {}
+  }
   if (!provider.oauthProvider) {
     if (!String(provider.apiKey || '').trim() && provider.baseURL) {
       const paidKey = orchRouter.resolvePaidProviderApiKey(provider, {
@@ -58,20 +92,14 @@ async function hydrateProvider(provider) {
   let r;
   try {
     r = await providerOauth.resolve(targetId);
-    if (!r || !r.accessToken) {
-      if (providerOauth.autoHealAll) await providerOauth.autoHealAll().catch(() => {});
-      r = await providerOauth.resolve(targetId, { force: true });
-    }
   } catch (e) {
     try {
       if (providerOauth.autoHealAll) await providerOauth.autoHealAll({ importMissing: true }).catch(() => {});
-      r = await providerOauth.resolve(targetId, { force: true });
+      r = await providerOauth.resolve(targetId);
     } catch (e2) {
-      // A dead refresh token is a sign-in problem, not an LLM failure. Surface one
-      // human line instead of an OAuth error code the composer can't act on.
       const prov = providerOauth.provider(targetId.split(':')[0]);
       const label = (prov && prov.label) || 'This provider';
-      const err = new Error(`${label} needs to be signed in again — open the model menu and choose Sign in.`);
+      const err = new Error(`${label} CLI needs to be signed in — open Settings and sign in with the official CLI.`);
       err.code = 'provider_needs_signin';
       err.human = true;
       err.cause = e2 || e;
@@ -79,16 +107,15 @@ async function hydrateProvider(provider) {
     }
   }
   const out = Object.assign({}, provider, {
-    // Native transport wins over any OpenAI-compatible baseURL the renderer had.
     transport: r.transport,
-    accessToken: r.accessToken,
-    account: r.account,
-    // `chatgpt-account-id` is mandatory on the Codex responses endpoint; without
-    // it the request is rejected even with a perfectly valid bearer token.
-    accountId: r.accountId || provider.accountId || '',
-    codexUrl: r.codexUrl || provider.codexUrl || '',
-    cloudcodeUrl: r.cloudcodeUrl || provider.cloudcodeUrl || '',
-    oauth: true,
+    cliId: r.cliId || provider.cliId || '',
+    cliBin: r.cliBin || provider.cliBin || '',
+    cliKind: r.cliKind || provider.cliKind || '',
+    cliMode: Boolean(r.cliMode || r.transport === 'cli'),
+    apiKey: r.apiKey || provider.apiKey || '',
+    accessToken: '',
+    account: r.account || '',
+    oauth: false,
     model: provider.model || (r.models && r.models[0] && r.models[0].id) || '',
   });
   const provKey = String(targetId.split(':')[0] || '');
@@ -99,13 +126,8 @@ async function hydrateProvider(provider) {
       out.model = replacement.id;
     }
   }
-  // Providers with no bespoke wire adapter are plain OpenAI-compatible bearers
-  // (xAI/Grok today). Hand the token over as the key so the ordinary
-  // `{baseURL}/chat/completions` path uses it, and clear `transport` so
-  // nothing tries to find an adapter that doesn't exist.
-  if (!providertransport.needsTransport({ transport: r.transport })) {
+  if (!out.cliMode && !providertransport.needsTransport({ transport: r.transport })) {
     out.transport = '';
-    out.apiKey = r.accessToken;
     out.baseURL = r.baseURL || provider.baseURL || '';
     out.supportsTools = true;
   }
@@ -709,19 +731,7 @@ async function startClaudeLogin(event) {
       }
     };
     child.on('exit', (code, signal) => {
-      // Reading the store must never be able to take main down. This exact read
-      // used to throw (`readClaudeCodeCredentials` was not a top-level export)
-      // and surfaced as a "JavaScript error occurred in the main process" dialog
-      // immediately after the CLI had successfully written the credential —
-      // destroying a sign-in that had actually worked.
-      let wrote = null;
-      try {
-        const read = typeof providerOauth.readClaudeCodeCredentials === 'function'
-          ? providerOauth.readClaudeCodeCredentials
-          : (providerOauth._internal && providerOauth._internal.readClaudeCodeCredentials);
-        wrote = typeof read === 'function' ? !!read() : null;
-      } catch (_) { wrote = null; }
-      console.log('[claude-login] exit', code, signal || '', '| wrote=' + String(wrote), '| last=' + String((flow.lines || []).slice(-1)[0] || ''));
+      console.log('[claude-login] exit', code, signal || '', '| last=' + String((flow.lines || []).slice(-1)[0] || ''));
       if (code !== 0) {
         const said = String((flow.lines || []).slice(-1)[0] || '');
         const err = signal || /cancel/i.test(said)
@@ -729,9 +739,6 @@ async function startClaudeLogin(event) {
           : (said || 'Claude Code sign-in did not complete');
         return settle({ ok: false, error: err });
       }
-      if (wrote === false) return settle({ ok: false, error: 'Claude Code finished but wrote no credential' });
-      // `wrote === null` — we could not read the store at all. Let the live probe
-      // inside adoptClaudeFromCli decide instead of inventing a verdict.
       settle({ ok: true });
     });
     child.on('error', (e) => settle({ ok: false, error: e.message }));

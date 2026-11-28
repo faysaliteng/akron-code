@@ -303,12 +303,28 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   // instead of shipping a stale hardcoded list. Values carry the resolved
   // context window used for the per-model label and the auto-compact budget.
   const [provModels, setProvModels] = useState({});
+  const [paidProviders, setPaidProviders] = useState([]);
 
   // Context ring in the composer: measure the window of the model that served
   // the last turn. `provider.model` is right on a fresh chat, but switching
   // models (or sitting on a gateway alias like `auto`) would otherwise rescale
   // an existing conversation against the wrong window.
-  const ctxWindow = contextWindowFor((lastUsage && lastUsage.model) || provider.model);
+  const ctxWindow = (!provider.oauth && !provider.oauthProvider && Number(provider.contextWindow) > 0 && (!lastUsage || !lastUsage.model || lastUsage.model === provider.model))
+    ? Number(provider.contextWindow)
+    : contextWindowFor((lastUsage && lastUsage.model) || provider.model);
+
+  const loadPaidProviders = useCallback(async () => {
+    try {
+      if (!window.autobot || typeof window.autobot.orchPaidProvidersGet !== 'function') return;
+      const res = await window.autobot.orchPaidProvidersGet();
+      const list = Array.isArray(res) ? res : (res && Array.isArray(res.providers) ? res.providers : []);
+      setPaidProviders(list);
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    loadPaidProviders();
+  }, [loadPaidProviders]);
 
   const loadProvOauth = useCallback(async () => {
     const r = await Promise.resolve(window.autobot.providerStatus()).catch(() => null);
@@ -377,8 +393,11 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   }, []);
 
   useEffect(() => {
-    if (modelMenuOpen) loadProvOauth();
-  }, [modelMenuOpen, loadProvOauth]);
+    if (modelMenuOpen) {
+      loadProvOauth();
+      loadPaidProviders();
+    }
+  }, [modelMenuOpen, loadProvOauth, loadPaidProviders]);
 
   const [autoRouterInfo, setAutoRouterInfo] = useState(null);
   useEffect(() => {
@@ -540,6 +559,14 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
     scanOllama();
   }, [modelMenuOpen, scanOllama]);
 
+  const cleanProviderSwitch = useCallback((prev, patch) => {
+    const next = { ...(prev || {}), ...(patch || {}) };
+    delete next.name;
+    delete next.type;
+    delete next.lastDirectModel;
+    return next;
+  }, []);
+
   // One-click "Connect Ollama": start the server if it is not up, then jump
   // straight onto the first installed model.
   const connectOllama = async () => {
@@ -551,7 +578,19 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
       const scan = (r && r.ok ? r : null) || found[base] || null;
       const first = scan && scan.models && scan.models[0];
       if (first) {
-        setProvider((v) => ({ ...v, baseURL: base, model: first.name, apiKey: '', supportsTools: true, routingMode: 'direct', oauthProvider: '', transport: '', accessToken: '', oauth: false }));
+        setProvider((v) => cleanProviderSwitch(v, {
+          baseURL: base,
+          model: first.name,
+          apiKey: '',
+          supportsTools: true,
+          maxTokens: 32000,
+          contextWindow: 0,
+          routingMode: 'direct',
+          oauthProvider: '',
+          transport: '',
+          accessToken: '',
+          oauth: false,
+        }));
         if (setOrchestrator && orchestrator && orchestrator.enabled) {
           setOrchestrator({ ...orchestrator, enabled: false });
         }
@@ -643,6 +682,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   // a fresh array every render defeated.
   const pickerRows = useMemo(() => {
   const pickerRows = [];
+  const seenPairs = new Set();
   for (const p of PRESETS) {
     const base = normBase(p.baseURL);
     const scan = ollama[base];
@@ -664,6 +704,7 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
           const n = parseInt(ctxMatch[1], 10);
           ctxBadge = n >= 1000000 ? `${Math.round(n / 100000) / 10}M` : (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n));
         }
+        seenPairs.add(endpointKey(base) + '|' + String(m.name || '').toLowerCase());
         pickerRows.push({
           key: base + '|' + m.name,
           preset: p,
@@ -676,10 +717,50 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
       }
       continue;
     }
+    if (base && p.model) seenPairs.add(endpointKey(base) + '|' + String(p.model).toLowerCase());
     pickerRows.push({ key: p.name, preset: p, model: p.model, label: (p.model || 'custom').split('/').pop(), prov: p.name });
   }
+  for (const p of (Array.isArray(paidProviders) ? paidProviders : [])) {
+    if (!p || !p.baseURL) continue;
+    const base = normBase(p.baseURL);
+    if (!base) continue;
+    const hasConfiguredKey = Boolean(p.hasKey || resolveLoopbackKey(base, providerKeys, provider));
+    if (!p.custom && !hasConfiguredKey) continue;
+    const list = Array.isArray(p.models) && p.models.length
+      ? p.models
+      : (p.model ? [{ id: p.model, label: p.model, contextWindow: Number(p.contextWindow) || 0 }] : []);
+    for (const m of list) {
+      const mid = String((m && (m.id || m.model)) || m || '').trim();
+      if (!mid) continue;
+      const pairKey = endpointKey(base) + '|' + mid.toLowerCase();
+      if (seenPairs.has(pairKey)) continue;
+      seenPairs.add(pairKey);
+      const ctxWin = Number((m && m.contextWindow) || p.contextWindow) || 0;
+      const ctxBadge = ctxWin >= 1000000
+        ? `${Math.round(ctxWin / 100000) / 10}M`
+        : (ctxWin > 0 ? `${ctxWin % 1024 === 0 ? ctxWin / 1024 : Math.round(ctxWin / 1000)}K` : '');
+      const preset = {
+        name: p.name || p.id || mid,
+        baseURL: p.baseURL,
+        model: mid,
+        apiKey: '',
+        supportsTools: true,
+        contextWindow: ctxWin,
+        maxTokens: ctxWin > 0 && ctxWin <= 16384 ? 4096 : 32000,
+      };
+      pickerRows.push({
+        key: 'paid|' + (p.id || base) + '|' + mid,
+        preset,
+        model: mid,
+        label: String((m && m.label) || mid).split('/').pop(),
+        ctxBadge,
+        prov: (p.name || p.id || 'Custom') + (LOCAL_BASE.test(base) ? ' · local' : ' · custom'),
+        local: Boolean(hasConfiguredKey || LOCAL_BASE.test(base)),
+      });
+    }
+  }
   return pickerRows;
-  }, [ollama, provider.baseURL, provider.model]);
+  }, [ollama, paidProviders, providerKeys, provider.baseURL, provider.model]);
   const ollamaEmpty = PRESETS.some((p) => {
     const b = normBase(p.baseURL);
     return /:11434\b/.test(b) && ollama[b] && !(ollama[b].ok && ollama[b].models && ollama[b].models.length);
@@ -874,7 +955,22 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   const pickModel = (p, model) => {
     const base = normBase(p.baseURL);
     const key = keyFor(p);
-    setProvider((v) => ({ ...v, baseURL: p.baseURL, model: model || p.model, apiKey: key, supportsTools: p.supportsTools !== false, maxTokens: p.maxTokens != null ? p.maxTokens : v.maxTokens, reasoningLevel: p.reasoningLevel || v.reasoningLevel || 'auto', oauthProvider: '', transport: '', accessToken: '', oauth: false, routingMode: 'direct' }));
+    const ctxWin = Number(p.contextWindow) > 0 ? Number(p.contextWindow) : 0;
+    const nextMaxTokens = p.maxTokens != null ? p.maxTokens : (ctxWin > 0 && ctxWin <= 16384 ? 4096 : 32000);
+    setProvider((v) => cleanProviderSwitch(v, {
+      baseURL: p.baseURL,
+      model: model || p.model,
+      apiKey: key,
+      supportsTools: p.supportsTools !== false,
+      maxTokens: nextMaxTokens,
+      contextWindow: ctxWin,
+      reasoningLevel: p.reasoningLevel || 'auto',
+      oauthProvider: '',
+      transport: '',
+      accessToken: '',
+      oauth: false,
+      routingMode: 'direct',
+    }));
     if (key && base) setProviderKeys((m) => ({ ...(m || {}), [base]: key }));
     disableOrchestrator();
     setModelMenuOpen(false);
@@ -893,11 +989,12 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
     const nextModel = dflt || vModelFallback();
     function vModelFallback() { return provider.model; }
     const suffixMatch = /-(minimal|low|medium|high|xhigh)$/i.exec(String(dflt || ''));
-    setProvider((v) => ({
-      ...v,
+    setProvider((v) => cleanProviderSwitch(v, {
       baseURL: '',
       apiKey: '',
       model: dflt || v.model,
+      maxTokens: 32000,
+      contextWindow: 0,
       reasoningLevel: suffixMatch ? suffixMatch[1].toLowerCase() : (model ? 'auto' : v.reasoningLevel),
       supportsTools: true,
       oauthProvider: prov.id + ':' + account,
@@ -929,15 +1026,19 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
     const baseRows = (orchestrator && Array.isArray(orchestrator.providers)) ? orchestrator.providers : [];
     if (row && row.model) {
       const idx = baseRows.findIndex((p) => p && p.model === row.model && String(p.oauthProvider || '') === String(row.oauthProvider || ''));
-      setProvider((v) => ({
-        ...v,
+      const isOauthRow = !!(row.oauth || row.oauthProvider);
+      const ctxWin = isOauthRow ? 0 : (Number(row.contextWindow) > 0 ? Number(row.contextWindow) : 0);
+      const nextMaxTokens = row.maxTokens != null ? row.maxTokens : (ctxWin > 0 && ctxWin <= 16384 ? 4096 : 32000);
+      setProvider((v) => cleanProviderSwitch(v, {
         baseURL: row.baseURL != null ? row.baseURL : (row.oauthProvider ? '' : v.baseURL),
         apiKey: row.apiKey != null ? row.apiKey : (row.oauthProvider ? '' : v.apiKey),
         model: row.model,
+        maxTokens: nextMaxTokens,
+        contextWindow: ctxWin,
         supportsTools: row.supportsTools !== false,
         oauthProvider: row.oauthProvider || '',
         transport: row.transport || '',
-        oauth: !!row.oauth || !!row.oauthProvider,
+        oauth: isOauthRow,
         accessToken: '',
         routingMode: 'orchestrator',
       }));
@@ -1035,9 +1136,12 @@ export function InputBarBody({ streaming, paused, onPause, onResume, send, stop,
   // the effective context length without opening the picker. Backed by the
   // live per-model window cached from `autobot:providerModels`.
   const modelWindowLabel = (() => {
-    const w = contextWindowFor(provider.model);
+    const w = (!provider.oauth && !provider.oauthProvider && Number(provider.contextWindow) > 0)
+      ? Number(provider.contextWindow)
+      : contextWindowFor(provider.model);
     if (!w) return '';
     if (w >= 1000000) return Math.round(w / 100000) / 10 + 'M';
+    if (w % 1024 === 0 && w >= 1024 && w < 1000000) return Math.round(w / 1024) + 'K';
     return Math.round(w / 1000) + 'K';
   })();
   const allStyles = useMemo(() => {

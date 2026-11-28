@@ -116,15 +116,16 @@ export function CodeReviewPane({ convId, cwd, target, allTools = [], provider = 
       setLoading(true);
       try {
         const cpArg = scope === 'turn' ? (target?.checkpointId || 'latest') : 'all';
+        const unwrapDiffList = (x) => (Array.isArray(x) ? x : (x && Array.isArray(x.files) ? x.files : []));
         let cpDiffs = [];
         if (convId && window.autobot && window.autobot.turnDiffs) {
-          cpDiffs = await window.autobot.turnDiffs(convId, cpArg, cwd).catch(() => []);
+          cpDiffs = unwrapDiffList(await window.autobot.turnDiffs(convId, cpArg, cwd).catch(() => []));
         }
         const toolDiffs = fallbackDiffsFromTools(scope === 'turn' && target?.tools?.length ? target.tools : allTools);
         let merged = mergeDiffFiles(cpDiffs, toolDiffs);
 
         if ((scope === 'all' || merged.length === 0) && window.autobot && window.autobot.gitDiffFiles && cwd) {
-          const gitDiffs = await window.autobot.gitDiffFiles(cwd).catch(() => []);
+          const gitDiffs = unwrapDiffList(await window.autobot.gitDiffFiles(cwd).catch(() => []));
           merged = scope === 'all' ? mergeDiffFiles(merged, gitDiffs) : (gitDiffs.length ? gitDiffs : merged);
         }
         if (alive) setFiles(Array.isArray(merged) ? merged : []);

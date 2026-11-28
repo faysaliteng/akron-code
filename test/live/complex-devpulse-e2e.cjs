@@ -3,7 +3,7 @@
 //   Phase A: Antigravity Swarm (planner + parallel coder workers + board + review)
 //   Phase B: Claude-Code single-agent repair pass (if initial npm test fails)
 //   Phase C: Claude-Code parallel Task subagents + Creator Mode custom tool
-// Builds `/Users/saimon/Akron Bot/sample-devpulse` from scratch and verifies
+// Builds `${path.join(os.homedir(), 'Akron Bot', 'sample-devpulse')}` from scratch and verifies
 // `npm test` and CLI execution independently.
 
 const fs = require('fs');
@@ -17,7 +17,7 @@ const gate = require('../../electron/provider-gate');
 const customtools = require('../../electron/customtools');
 const toolsMod = require('../../electron/tools');
 
-const dir = path.resolve(process.argv[2] || '/Users/saimon/Akron Bot/sample-devpulse');
+const dir = path.resolve(process.argv[2] || path.join(os.homedir(), 'Akron Bot', 'sample-devpulse'));
 const phaseArg = process.argv[3] || 'all';
 
 // Prepare clean project directory with git init only on full/swarm runs.

@@ -3,9 +3,10 @@ const { app, BrowserWindow, dialog } = require('electron');
 dialog.showErrorBox = () => {};
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
-const OUT_DIR = '/Users/saimon/.gemini/antigravity/brain/cb4ff1d8-186c-4ca3-9b84-bfe96acbf3bc';
+const OUT_DIR = (process.env.AKRON_ARTIFACTS_DIR || os.tmpdir());
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 

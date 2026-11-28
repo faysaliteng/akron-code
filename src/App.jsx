@@ -68,10 +68,8 @@ import { sendDesktopNotification, convToMarkdown, convToHtml, escapeHtml, fmtSiz
 import { extractPersistedSettings, mergeBootSettings, reconcileBootProvider, syncProviderForOrchestratorToggle, mergeBootUiState } from './utils/settingsPersistence.js';
 import { InteractiveTutorialModal, WelcomeQuickStartBar } from './components/InteractiveTutorialModal.jsx';
 import { TUTORIAL_SEEN_KEY, ORCH_SETUP_NOTICE, hasConfiguredOrchestratorModels, applyBeginnerPreset, shouldAutoOpenTutorial } from './utils/tutorialPresets.js';
+import { usePerConvSessionState, useSettingsBootSync } from './hooks/usePerConvSessionState.js';
 
-// Compact record of what the assistant actually did with tools last turn.
-// Model switches need this: the new model sees files + mindmap, but without the
-// action trace it re-does work or claims things it never ran.
 const summarizeTrace = (tools) => {
   const list = Array.isArray(tools) ? tools.filter((t) => t && t.name) : [];
   if (!list.length) return '';
@@ -95,9 +93,7 @@ const buildPayloadMessages = (msgs) => msgs.map((m) => {
   const images = atts.filter((a) => a.isImage && a.dataUrl);
   const textAtts = atts.filter((a) => !(a.isImage && a.dataUrl));
   let textPart = m.content || '';
-  if (m.role === 'assistant' && Array.isArray(m.tools) && m.tools.length) {
-    textPart += summarizeTrace(m.tools);
-  }
+  if (m.role === 'assistant' && Array.isArray(m.tools) && m.tools.length) textPart += summarizeTrace(m.tools);
   if (textAtts.length) {
     textPart += '\n\nAttached files:\n' + textAtts.map((a) => (a.isText && a.content != null
       ? `\n--- FILE: ${a.name} ---\n${a.content}\n--- END FILE: ${a.name} ---`
@@ -116,10 +112,13 @@ const buildPayloadMessages = (msgs) => msgs.map((m) => {
   return out;
 });
 
-
 export default function App() {
   const [convs, setConvs] = useState(() => loadJSON('autobot:convs', []));
   const [activeId, setActiveId] = useState(() => loadJSON('autobot:activeId', null));
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const convsRef = useRef(convs);
+  convsRef.current = convs;
   const [openTabIds, setOpenTabIds] = useState(() => {
     const savedTabs = loadJSON('autobot:openTabs', null);
     const curId = loadJSON('autobot:activeId', null);
@@ -132,6 +131,9 @@ export default function App() {
     setOpenTabIds((tabs) => (tabs.includes(activeId) ? tabs : [...tabs, activeId]));
   }, [activeId]);
   const [provider, setProvider] = useState(() => hydrateProvider(loadJSON('autobot:provider', {}), DEFAULT_PROVIDER, PRESETS));
+  const providerRef = useRef(provider);
+  providerRef.current = provider;
+  const [queueWakeTick, setQueueWakeTick] = useState(0);
   const [providerKeys, setProviderKeys] = useState(() => loadJSON('autobot:providerKeys', {}));
   const [settings, setSettings] = useState(() => {
     const base = loadJSON('autobot:settings', null);
@@ -308,10 +310,6 @@ export default function App() {
     return () => clearTimeout(t);
   }, [error]);
   const [attachments, setAttachments] = useState([]); // { name, path, size, isText, content }
-  // Reasoning / thinking level is stored on the provider object so it (a) drives
-  // the prompt directive and (b) is sent to the API as `reasoning_effort`.
-  const reasoningLevel = provider.reasoningLevel || 'auto';
-  const setReasoningLevel = (lv) => setProvider((p) => ({ ...p, reasoningLevel: lv }));
   const [styleId, setStyleId] = useState(() => loadJSON('autobot:styleId', 'default'));
   const [customAgents, setCustomAgents] = useState([]);
   const [customStyles, setCustomStyles] = useState([]);
@@ -325,6 +323,10 @@ export default function App() {
   // `Swarm` only becomes visible to the model when this pill is on. The roster
   // it uses is restricted to frontier models (see electron/swarm.js).
   const [swarmEnabled, setSwarmEnabled] = useState(() => !!loadJSON('autobot:swarmEnabled', false));
+  const swarmRef = useRef(swarmEnabled);
+  swarmRef.current = swarmEnabled;
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
   const [dictating, setDictating] = useState(false);
   const [projects, setProjects] = useState(() => loadJSON('autobot:projects', [])); // { id, name, instructions }
   const [activeProject, setActiveProject] = useState(() => loadJSON('autobot:activeProject', null));
@@ -563,128 +565,25 @@ export default function App() {
   // main-process state is hydrated once, so a fresh or upgrading renderer
   // profile can never overwrite saved user configuration with boot defaults.
   const [settingsAdopted, setSettingsAdopted] = useState(false);
-  useEffect(() => { if (settingsAdopted) saveJSON('autobot:provider', { ...provider, _updatedAt: Date.now() }); }, [provider, settingsAdopted]);
-  useEffect(() => { if (settingsAdopted) saveJSON('autobot:providerKeys', providerKeys); }, [providerKeys, settingsAdopted]);
-  const bootRef = useRef(null);
-  if (bootRef.current === null) {
-    const hasKey = (k) => { try { return typeof localStorage !== 'undefined' && localStorage.getItem(k) !== null; } catch (_) { return false; } };
-    const bootSettings = loadJSON('autobot:settings', null);
-    bootRef.current = {
-      own: loadJSON('autobot:provider', null),
-      hasOwn: hasKey('autobot:provider'),
-      keys: loadJSON('autobot:providerKeys', {}),
-      rawSettings: bootSettings,
-      hasSettings: hasKey('autobot:settings'),
-      designPrefs: loadJSON(UI_DESIGN_PREFS_KEY, {}),
-      uiTimestamps: loadJSON('autobot:uiTimestamps', {}),
-      hasUi: { permissions: hasKey('autobot:permissions'), swarmEnabled: hasKey('autobot:swarmEnabled'), webSearch: hasKey('autobot:webSearch'), styleId: hasKey('autobot:styleId'), sidebarCollapsed: hasKey('autobot:sidebarCollapsed'), workbenchMode: hasKey('autobot:workbenchMode'), projects: hasKey('autobot:projects'), activeProject: hasKey('autobot:activeProject') },
-    };
-  }
-  const hydrateAckRef = useRef(0);
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([
-      Promise.resolve(window.autobot.getSettings?.()).catch(() => null),
-      Promise.resolve(window.autobot.getOrchestrator?.()).catch(() => null),
-      Promise.resolve(window.autobot.getFeatures?.()).catch(() => null),
-    ]).then(([s, diskOrch, diskFeat]) => {
-      if (cancelled) return;
-      if (diskOrch && typeof diskOrch === 'object') {
-        orchRef.current = diskOrch;
-        setOrchestrator(diskOrch);
-        saveJSON('autobot:orchestrator', diskOrch);
-      }
-      if (diskFeat && typeof diskFeat === 'object') {
-        featRef.current = diskFeat;
-        setFeatures(diskFeat);
-        saveJSON('autobot:features', diskFeat);
-      }
-      const boot = bootRef.current || {};
-      if (s && typeof s === 'object') {
-        const nextSet = mergeBootSettings({ localSettings: boot.rawSettings, hasLocalSettings: boot.hasSettings, designPrefs: boot.designPrefs, diskSettings: s, defaultAppearance: DEFAULT_APPEARANCE_SETTINGS, normalizeTypography });
-        setSettings(nextSet);
-        const provRes = reconcileBootProvider({ localProvider: boot.own, hasLocalProvider: boot.hasOwn, localKeys: boot.keys, diskProvider: s.provider || null, diskKeys: s.providerKeys || {}, diskOrchestrator: diskOrch, defaultProvider: DEFAULT_PROVIDER, presets: PRESETS, hydrateProviderFn: hydrateProvider });
-        if (provRes.adoptedFromDisk || provRes.healedRoutingMode) {
-          setProvider(provRes.provider);
-          saveJSON('autobot:provider', provRes.provider);
-          if (provRes.healedRoutingMode) {
-            try { window.autobot.setSettings?.({ provider: { ...provRes.provider, _updatedAt: Date.now() } }); } catch (_) {}
-          }
-        }
-        if (provRes.providerKeys && Object.keys(provRes.providerKeys).length) {
-          setProviderKeys(provRes.providerKeys);
-          saveJSON('autobot:providerKeys', provRes.providerKeys);
-        }
-        const ui = mergeBootUiState({
-          localUiState: { permissions, swarmEnabled, webSearch, styleId, sidebarCollapsed, workbenchMode, projects, activeProject, _timestamps: boot.uiTimestamps },
-          hasLocalKeyMap: boot.hasUi,
-          diskUiState: s.uiState || null,
-        });
-        if (ui.permissions !== undefined && ui.permissions !== permissions) setPermissions(ui.permissions);
-        if (ui.swarmEnabled !== undefined && Boolean(ui.swarmEnabled) !== Boolean(swarmEnabled)) setSwarmEnabled(Boolean(ui.swarmEnabled));
-        if (ui.webSearch !== undefined && Boolean(ui.webSearch) !== Boolean(webSearch)) setWebSearch(Boolean(ui.webSearch));
-        if (ui.styleId !== undefined && ui.styleId !== styleId) setStyleId(ui.styleId);
-        if (ui.sidebarCollapsed !== undefined && Boolean(ui.sidebarCollapsed) !== Boolean(sidebarCollapsed)) setSidebarCollapsed(Boolean(ui.sidebarCollapsed));
-        if (ui.workbenchMode !== undefined && ui.workbenchMode !== workbenchMode) setWorkbenchMode(ui.workbenchMode);
-        if (Array.isArray(ui.projects)) setProjects(ui.projects);
-        if (ui.activeProject !== undefined) setActiveProject(ui.activeProject);
-      } else if (diskOrch && diskOrch.enabled === true && (!boot.own?.routingMode || boot.own?.routingMode === 'direct')) {
-        setProvider((v) => ({ ...v, routingMode: 'orchestrator' }));
-      }
-      hydrateAckRef.current = 1;
-    }).catch(() => {}).finally(() => { if (!cancelled) setSettingsAdopted(true); });
-    return () => { cancelled = true; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  // Mirror active provider, keys, full settings & session UI preferences to main.
-  useEffect(() => {
-    if (!settingsAdopted) return;
-    if (hydrateAckRef.current === 1) { hydrateAckRef.current = 2; return; }
-    try { window.autobot.setSettings?.({ provider: { ...provider, _updatedAt: Date.now() }, providerKeys }); } catch (_) {}
-  }, [provider, providerKeys, settingsAdopted]);
-  // Keep orchestrator.activeIndex aligned when switching models while Orchestrator is on.
-  useEffect(() => {
-    if (!settingsAdopted) return;
-    if (provider && (provider.routingMode === 'direct' || provider.routingMode === 'auto')) return;
-    if (!orchestrator || !orchestrator.enabled || !Array.isArray(orchestrator.providers) || !orchestrator.providers.length) return;
-    const selModel = String((provider && provider.model) || '').trim().toLowerCase();
-    const selOauth = String((provider && provider.oauthProvider) || '').trim().toLowerCase();
-    const selBase = normBase((provider && provider.baseURL) || '').toLowerCase();
-    if (!selModel) return;
-    const idx = orchestrator.providers.findIndex((p) => {
-      if (!p) return false;
-      if (String(p.model || '').trim().toLowerCase() !== selModel) return false;
-      if (selOauth) return String(p.oauthProvider || '').trim().toLowerCase() === selOauth;
-      if (selBase) return normBase(p.baseURL || '').toLowerCase() === selBase;
-      return true;
-    });
-    if (idx >= 0 && idx !== orchestrator.activeIndex) {
-      saveOrchestrator({ ...orchestrator, activeIndex: idx });
-    }
-  }, [provider.model, provider.oauthProvider, provider.baseURL, settingsAdopted]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    applyTypographyToDocument(settings.typography);
-    if (!settingsAdopted) return;
-    const ts = Date.now();
-    const persisted = { ...extractPersistedSettings(settings), _updatedAt: ts };
-    saveJSON('autobot:settings', persisted);
-    try { window.autobot.setSettings?.({ theme: persisted.theme, launchAtLogin: !!persisted.launchAtLogin, typography: persisted.typography, preventSleep: !!persisted.preventSleep, keepInTray: !!persisted.keepInTray, uiSettings: persisted }); } catch (_) {}
-  }, [settings, settingsAdopted]);
-  useEffect(() => { saveJSON('autobot:account', account); }, [account]);
-  useEffect(() => {
-    if (!settingsAdopted) return;
-    const now = Date.now();
-    const uiState = { permissions, swarmEnabled, webSearch, styleId, sidebarCollapsed, workbenchMode, projects, activeProject, _updatedAt: now };
-    saveJSON('autobot:projects', projects);
-    saveJSON('autobot:activeProject', activeProject);
-    saveJSON('autobot:permissions', permissions);
-    saveJSON('autobot:swarmEnabled', swarmEnabled);
-    saveJSON('autobot:webSearch', webSearch);
-    saveJSON('autobot:styleId', styleId);
-    saveJSON('autobot:sidebarCollapsed', sidebarCollapsed);
-    saveJSON('autobot:workbenchMode', workbenchMode);
-    saveJSON('autobot:uiTimestamps', { permissions: now, swarmEnabled: now, webSearch: now, styleId: now, sidebarCollapsed: now, workbenchMode: now, projects: now, activeProject: now });
-    try { window.autobot.setSettings?.({ uiState }); } catch (_) {}
-  }, [permissions, swarmEnabled, webSearch, styleId, sidebarCollapsed, workbenchMode, projects, activeProject, settingsAdopted]);
+  const {
+    cwdByConv, cwdByConvRef, getSessionBundle, activeProvider, activeOrchestrator, activeSwarmEnabled,
+    activeCwd, reasoningLevel, setSessionProvider, setReasoningLevel, setSessionSwarmEnabled,
+    setSessionCwd, saveSessionOrchestrator, setProviderFromSettings, saveOrchestratorFromSettings,
+    promoteDraftSessionConfig, resetDraftSessionConfig,
+  } = usePerConvSessionState({
+    activeId, activeIdRef, convs, convsRef, provider, setProvider, providerRef,
+    orchestrator, orchRef, saveOrchestrator, swarmEnabled, swarmRef, cwd, setCwd, cwdRef,
+    settingsAdopted, setNotice, setSettingsInitialSection, setShowSettings,
+  });
+  useSettingsBootSync({
+    activeId, activeProvider, activeOrchestrator, saveSessionOrchestrator,
+    provider, setProvider, providerKeys, setProviderKeys, settings, setSettings,
+    setOrchestrator, orchRef, setFeatures, featRef, permissions, setPermissions,
+    swarmEnabled, setSwarmEnabled, webSearch, setWebSearch, styleId, setStyleId,
+    sidebarCollapsed, setSidebarCollapsed, workbenchMode, setWorkbenchMode,
+    projects, setProjects, activeProject, setActiveProject, account,
+    settingsAdopted, setSettingsAdopted, applyTypographyToDocument,
+  });
 
   // init cwd + memory + skills + customizations
   useEffect(() => {
@@ -709,16 +608,17 @@ export default function App() {
   // project workspace (or create one) — Claude Desktop per-project parity.
   useEffect(() => {
     if (!activeId) return;
-    window.autobot.getWorkspace(activeId).then((d) => {
-      if (d) { setCwd(d); saveJSON('autobot:workspace:' + activeId, d); }
+    const targetId = activeId;
+    window.autobot.getWorkspace(targetId).then((d) => {
+      if (d) { setSessionCwd(d, targetId); }
       else {
-        const conv = convsRef.current.find((c) => c.id === activeId);
-        window.autobot.getDefaultCwd(activeId, conv?.title || '').then((dir) => {
-          setCwd(dir); saveJSON('autobot:workspace:' + activeId, dir);
+        const conv = convsRef.current.find((c) => c.id === targetId);
+        window.autobot.getDefaultCwd(targetId, conv?.title || '').then((dir) => {
+          setSessionCwd(dir, targetId);
         });
       }
     });
-  }, [activeId]);
+  }, [activeId, setSessionCwd]);
 
   // Skill activation/deactivation (per-skill toggle, persisted server-side).
   const refreshSkills = useCallback(async () => {
@@ -891,35 +791,37 @@ export default function App() {
     return () => clearTimeout(t);
   }, [pendingScroll, activeId]);
 
-  const activeIdRef = useRef(activeId);
-  activeIdRef.current = activeId;
-  const convsRef = useRef(convs);
-  convsRef.current = convs;
   const sendingLocksRef = useRef(new Set());
   const dispatchedQueueIdsRef = useRef(new Set());
 
-  const send = useCallback(async (textOverride, attsOverride, convOverride) => {
+  const send = useCallback(async (textOverride, attsOverride, convOverride, opts = {}) => {
+    const forceImmediate = Boolean(opts && opts.forceImmediate);
     const override = typeof textOverride === 'string' ? textOverride : undefined;
     const text = (override !== undefined ? override : (inputRef.current?.value || '')).trim();
     const atts = Array.isArray(attsOverride) ? attsOverride : attachments;
     if (!text && atts.length === 0) return;
 
     const targetConvId = (typeof convOverride === 'string' && convOverride) ? convOverride : activeIdRef.current;
+    const targetBundle = getSessionBundle(targetConvId);
+    const sessProv = targetBundle.provider;
+    const sessOrch = targetBundle.orchestrator;
+    const sessSwarm = targetBundle.swarmEnabled;
     const targetRun = targetConvId ? (runsByConvRef.current[targetConvId] || null) : null;
+    const needsOrchCheck = (sessProv.routingMode === 'orchestrator' || (sessOrch && sessOrch.enabled && sessProv.routingMode !== 'auto' && sessProv.routingMode !== 'direct')) && !hasConfiguredOrchestratorModels(sessOrch);
     if (targetRun && targetRun.streaming && targetRun.paused && text && targetRun.runId && window.autobot && window.autobot.resume) {
-      if ((provider.routingMode === 'orchestrator' || (orchestrator && orchestrator.enabled && provider.routingMode !== 'auto' && provider.routingMode !== 'direct')) && !hasConfiguredOrchestratorModels(orchestrator)) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
-    if (override === undefined && inputRef.current) inputRef.current.value = '';
+      if (needsOrchCheck) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
+      if (override === undefined && inputRef.current) inputRef.current.value = '';
       await window.autobot.resume(targetRun.runId, text);
       return;
     }
-    if ((targetRun && targetRun.streaming) || (targetConvId && sendingLocksRef.current.has(targetConvId))) {
-      if ((provider.routingMode === 'orchestrator' || (orchestrator && orchestrator.enabled && provider.routingMode !== 'auto' && provider.routingMode !== 'direct')) && !hasConfiguredOrchestratorModels(orchestrator)) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
-    if (override === undefined && inputRef.current) inputRef.current.value = '';
+    if (!forceImmediate && ((targetRun && targetRun.streaming) || (targetConvId && sendingLocksRef.current.has(targetConvId)))) {
+      if (needsOrchCheck) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
+      if (override === undefined && inputRef.current) inputRef.current.value = '';
       if (!Array.isArray(attsOverride)) setAttachments([]);
       setQueued((q) => [...q, { id: uid(), text, atts, convId: targetConvId, paused: false }]);
       return;
     }
-    if ((provider.routingMode === 'orchestrator' || (orchestrator && orchestrator.enabled && provider.routingMode !== 'auto' && provider.routingMode !== 'direct')) && !hasConfiguredOrchestratorModels(orchestrator)) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
+    if (needsOrchCheck) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
     if (override === undefined && inputRef.current) inputRef.current.value = '';
     setError('');
 
@@ -930,8 +832,12 @@ export default function App() {
     sendingLocksRef.current.add(convId);
 
     try {
-      const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
-      const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
+      if (isNewConv) {
+        promoteDraftSessionConfig(convId, targetBundle.cfg);
+      }
+
+      const effKey = sessProv.apiKey || resolveLoopbackKey(sessProv.baseURL, providerKeys, sessProv);
+      const effProvider = effKey && !sessProv.apiKey ? { ...sessProv, apiKey: effKey } : sessProv;
       const runId = uid();
 
       const userMsg = {
@@ -959,26 +865,29 @@ export default function App() {
       startSessionRun(convId, runId, {
         content: '',
         tools: [],
-        model: effProvider.routingMode === 'auto' ? '' : (effProvider.model || provider.model || ''),
+        model: effProvider.routingMode === 'auto' ? '' : (effProvider.model || sessProv.model || ''),
       });
 
-      let runCwd = cwd;
-      if (isNewConv || convId !== activeIdRef.current || !runCwd) {
+      let runCwd = (targetConvId && cwdByConvRef.current[targetConvId]) || targetBundle.cfg.cwd || (convId === activeIdRef.current ? cwdRef.current : '');
+      if (!runCwd) {
         const existingTitle = convsRef.current.find((c) => c.id === convId)?.title || '';
         runCwd = await window.autobot.getWorkspace(convId)
           || await window.autobot.getDefaultCwd(convId, existingTitle || autoTitle);
-        if (runCwd) {
-          saveJSON('autobot:workspace:' + convId, runCwd);
-          if (convId === activeIdRef.current) setCwd(runCwd);
-        }
+      }
+      if (runCwd) {
+        setSessionCwd(runCwd, convId);
       }
 
       const payloadMessages = buildPayloadMessages([...currentMessages, userMsg]);
-      const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile, customStyles });
+      const directives = buildDirectives(styleId, sessProv.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile, customStyles });
       if (workbenchMode === 'ide' && editorContextXmlRef.current) {
         directives.push(editorContextXmlRef.current);
       }
       if (directives.length) payloadMessages.unshift({ role: 'system', content: directives.join('\n') });
+
+      // Release send pre-flight lock before awaiting the long-running IPC turn so Stop + Send
+      // or Send now can start a replacement run immediately without re-queuing.
+      sendingLocksRef.current.delete(convId);
 
       const started = await window.autobot.run({
         runId,
@@ -986,11 +895,11 @@ export default function App() {
         provider: effProvider,
         cwd: runCwd || undefined,
         useMemory: settings.useMemory,
-        orchestrator,
+        orchestrator: sessOrch,
         permissions,
         convId,
         title: convsRef.current.find((c) => c.id === convId)?.title || autoTitle,
-        swarm: swarmEnabled,
+        swarm: sessSwarm,
       });
       if (started && started.ok === false) {
         commitSessionLive(convId, runId);
@@ -999,15 +908,18 @@ export default function App() {
       }
     } finally {
       sendingLocksRef.current.delete(convId);
+      setQueueWakeTick((t) => t + 1);
     }
-  }, [convs, provider, providerKeys, cwd, settings.useMemory, settings.harnessProfile, orchestrator, attachments, styleId, webSearch, activeProject, permissions, swarmEnabled, workbenchMode, customStyles, runsByConvRef, startSessionRun, commitSessionLive]);
+  }, [convs, provider, providerKeys, cwd, settings.useMemory, settings.harnessProfile, orchestrator, attachments, styleId, webSearch, activeProject, permissions, swarmEnabled, workbenchMode, customStyles, runsByConvRef, startSessionRun, commitSessionLive, getSessionBundle, setSessionCwd, promoteDraftSessionConfig]);
 
   const stop = useCallback((convOverride = null) => {
     const cid = (typeof convOverride === 'string' && convOverride) ? convOverride : activeIdRef.current;
     const run = cid ? runsByConvRef.current[cid] : null;
     if (!run || !run.runId) return;
+    if (cid) sendingLocksRef.current.delete(cid);
     if (window.autobot && window.autobot.cancel) window.autobot.cancel(run.runId);
     commitSessionLive(cid, run.runId);
+    setQueueWakeTick((t) => t + 1);
   }, [runsByConvRef, commitSessionLive]);
 
   const pauseRun = useCallback(() => {
@@ -1037,7 +949,7 @@ export default function App() {
     Promise.resolve(send(next.text, next.atts, next.convId)).finally(() => {
       dispatchedQueueIdsRef.current.delete(next.id);
     });
-  }, [queued, queuePausedByConv, streamingConvIds, send]);
+  }, [queued, queuePausedByConv, streamingConvIds, queueWakeTick, send]);
 
   const unqueue = useCallback((id) => setQueued((q) => q.filter((x) => x.id !== id)), []);
   const clearQueuedForConv = useCallback((convId) => {
@@ -1066,7 +978,10 @@ export default function App() {
     if (!target) return;
     const cid = target.convId || null;
     const targetRun = cid ? (runsByConvRef.current[cid] || null) : null;
-    if (cid) setQueuePausedByConv((m) => ({ ...m, [cid]: false }));
+    if (cid) {
+      sendingLocksRef.current.delete(cid);
+      setQueuePausedByConv((m) => ({ ...m, [cid]: false }));
+    }
     setQueued((q) => q.filter((x) => x.id !== target.id));
     if (targetRun && targetRun.streaming) {
       if (targetRun.runId && window.autobot && window.autobot.cancel) {
@@ -1074,7 +989,7 @@ export default function App() {
       }
       commitSessionLive(cid, targetRun.runId);
     }
-    send(target.text, target.atts, cid);
+    send(target.text, target.atts, cid, { forceImmediate: true });
   }, [queued, send, runsByConvRef, commitSessionLive]);
 
   // Quick Entry (menu-bar / global-hotkey) → insert or send into the composer.
@@ -1200,9 +1115,7 @@ export default function App() {
     setActiveId(null);
     setError('');
     setPanel('chats');
-    if (settings && settings.autoSwitch && settings.autoSwitch.defaultForNewSessions) {
-      setProvider((v) => ({ ...(v || {}), routingMode: 'auto' }));
-    }
+    resetDraftSessionConfig(Boolean(settings && settings.autoSwitch && settings.autoSwitch.defaultForNewSessions));
     inputRef.current?.focus();
   };
   const selectConv = (id) => { setActiveId(id); setPanel('chats'); };
@@ -1385,28 +1298,32 @@ export default function App() {
     const kept = msgs.slice(0, userIdx + 1);
     setError('');
     setConvs((cs) => cs.map((c) => (c.id === convId ? { ...c, messages: kept } : c)));
+    const targetBundle = getSessionBundle(convId);
+    const sessProv = targetBundle.provider;
+    const sessOrch = targetBundle.orchestrator;
+    const sessSwarm = targetBundle.swarmEnabled;
     const payloadMessages = buildPayloadMessages(kept);
-    const directives = buildDirectives(styleId, provider.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile, customStyles });
+    const directives = buildDirectives(styleId, sessProv.reasoningLevel, { webSearch, project: activeProject, harnessProfile: settings.harnessProfile, customStyles });
     if (directives.length) payloadMessages.unshift({ role: 'system', content: directives.join('\n') });
-    let runCwd = cwd;
-    if (convId !== activeIdRef.current || !runCwd) {
+    let runCwd = (convId && cwdByConvRef.current[convId]) || targetBundle.cfg.cwd || (convId === activeIdRef.current ? cwdRef.current : '');
+    if (!runCwd) {
       runCwd = await window.autobot.getWorkspace(convId)
         || await window.autobot.getDefaultCwd(convId, conv.title || '');
-      if (runCwd) { saveJSON('autobot:workspace:' + convId, runCwd); if (convId === activeIdRef.current) setCwd(runCwd); }
     }
-    const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
-    const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
+    if (runCwd) { setSessionCwd(runCwd, convId); }
+    const effKey = sessProv.apiKey || resolveLoopbackKey(sessProv.baseURL, providerKeys, sessProv);
+    const effProvider = effKey && !sessProv.apiKey ? { ...sessProv, apiKey: effKey } : sessProv;
     const runId = uid();
     startSessionRun(convId, runId, {
       content: '',
       tools: [],
-      model: effProvider.routingMode === 'auto' ? '' : (effProvider.model || provider.model || ''),
+      model: effProvider.routingMode === 'auto' ? '' : (effProvider.model || sessProv.model || ''),
     });
     const started = await window.autobot.run({
       runId, messages: payloadMessages, provider: effProvider,
-      cwd: runCwd || undefined, useMemory: settings.useMemory, orchestrator, permissions,
+      cwd: runCwd || undefined, useMemory: settings.useMemory, orchestrator: sessOrch, permissions,
       convId, title: conv.title || '',
-      swarm: swarmEnabled,
+      swarm: sessSwarm,
     });
     if (started && started.ok === false) {
       commitSessionLive(convId, runId);
@@ -1447,8 +1364,8 @@ export default function App() {
 
   const testProvider = async () => {
     setError('');
-    const effKey = provider.apiKey || resolveLoopbackKey(provider.baseURL, providerKeys, provider);
-    const effProvider = effKey && !provider.apiKey ? { ...provider, apiKey: effKey } : provider;
+    const effKey = activeProvider.apiKey || resolveLoopbackKey(activeProvider.baseURL, providerKeys, activeProvider);
+    const effProvider = effKey && !activeProvider.apiKey ? { ...activeProvider, apiKey: effKey } : activeProvider;
     const r = await window.autobot.testProvider(effProvider);
     if (r.ok) setError('✅ Provider OK — reply: ' + r.reply);
     else setError('❌ Provider error: ' + r.error);
@@ -1468,8 +1385,8 @@ export default function App() {
       const res = await window.autobot.learnSkill({
         name: skillName || '',
         messages: (active && active.messages) || [],
-        cwd,
-        provider,
+        cwd: activeCwd,
+        provider: activeProvider,
       });
       if (res && res.ok) {
         try { await refreshSkills(); } catch (_) {}
@@ -1582,7 +1499,7 @@ export default function App() {
     };
     const cmd = ALIAS[rawCmd] || rawCmd;
     const argText = rest.join(' ');
-    const model = provider.model || '';
+    const model = activeProvider.model || '';
     const note = (s) => appendAssistant(s);
     const lastAssistant = () => [...messages].reverse().find((m) => m.role === 'assistant' && m.content);
     // One-shot model call shared by /advisor, /btw, /recap, /brief. Errors are
@@ -1590,7 +1507,7 @@ export default function App() {
     const askOnce = async (system, question, maxTokens = 1200) => {
       try {
         const r = await window.autobot.chatOnce({
-          provider, maxTokens,
+          provider: activeProvider, maxTokens,
           messages: [{ role: 'system', content: system }, { role: 'user', content: question }],
         });
         if (r && r.ok) return String(r.content || '').trim() || '_(empty response)_';
@@ -1643,7 +1560,7 @@ export default function App() {
         break;
       case 'commands': {
         let custom = [];
-        try { custom = (await window.autobot.listCommands(cwd)) || []; } catch (_) {}
+        try { custom = (await window.autobot.listCommands(activeCwd)) || []; } catch (_) {}
         const only = custom.filter((c) => c.custom);
         note('**Custom commands** (' + only.length + ')\n' + (only.length ? only.map((c) => '- `/' + c.name + '`' + (c.description ? ' — ' + c.description : '') + ' _(' + c.source + ')_').join('\n') : '_(none — add `.claude/commands/*.md`)_'));
         break;
@@ -1652,7 +1569,7 @@ export default function App() {
         const msgs = (active && active.messages) || [];
         if (msgs.length < 4) { note('Nothing to compact — this conversation is still short.'); break; }
         note('⏳ Compacting ' + msgs.length + ' messages…');
-        const r = await window.autobot.compact({ provider, messages: msgs });
+        const r = await window.autobot.compact({ provider: activeProvider, messages: msgs });
         if (!r || !r.ok) { note('❌ Compact failed: ' + ((r && r.error) || 'unknown error')); break; }
         const digest = { id: uid(), role: 'assistant', content: '**Compacted conversation** — earlier turns were summarized.\n\n' + String(r.summary || ''), ts: Date.now() };
         setConvs((cs) => cs.map((c) => (c.id === activeId ? { ...c, messages: [digest], compactedAt: Date.now() } : c)));
@@ -1741,7 +1658,7 @@ export default function App() {
         setError('✅ Reset complete.');
         break;
       case 'status':
-        appendAssistant('**Status**\n- Provider: `' + provider.baseURL + '`\n- Model: `' + provider.model + '`\n- Tools: function-calling ' + (provider.supportsTools ? 'enabled' : 'disabled') + '\n- Memory: ' + (settings.useMemory ? 'on' : 'off') + '\n- CWD: `' + (cwd || '~') + '`');
+        appendAssistant('**Status**\n- Provider: `' + activeProvider.baseURL + '`\n- Model: `' + activeProvider.model + '`\n- Tools: function-calling ' + (activeProvider.supportsTools ? 'enabled' : 'disabled') + '\n- Memory: ' + (settings.useMemory ? 'on' : 'off') + '\n- CWD: `' + (activeCwd || '~') + '`');
         break;
       case 'notebooks':
         setPanel('notebooks');
@@ -1751,7 +1668,7 @@ export default function App() {
         break;
       // ---------- model & context ----------
       case 'usage': {
-        const u = effectiveUsageForConv(lastUsage, active, provider, liveForActive);
+        const u = effectiveUsageForConv(lastUsage, active, activeProvider, liveForActive);
         if (!u) { note('No token usage recorded yet for this session. Run a message first.'); break; }
         const cost = estimateCost(u.model || model, u.prompt_tokens, u.completion_tokens);
         const ctxUsed = usedTokens(u);
@@ -1829,8 +1746,8 @@ export default function App() {
         let v = null;
         try { v = await window.autobot.getVersion(); } catch (_) {}
         let gi = null;
-        try { gi = await window.autobot.gitInfo(cwd); } catch (_) {}
-        note('**Debug**\n- Provider: `' + provider.baseURL + '`\n- Model: `' + model + '`\n- Tools: ' + (provider.supportsTools ? 'on' : 'off') + '\n- Reasoning: `' + (reasoningLevel || 'auto') + '`\n- Swarm: ' + (swarmEnabled ? 'on' : 'off') + '\n- Permission mode: `' + (permissions || 'auto') + '`\n- CWD: `' + (cwd || '~') + '`\n' + (gi && gi.isRepo ? '- Repo: `' + gi.root + '` on `' + gi.branch + '` (+' + gi.ahead + '/-' + gi.behind + ')' : '- Repo: none') + (v ? '\n- Build: ' + v.app + ' · Electron ' + v.electron : ''));
+        try { gi = await window.autobot.gitInfo(activeCwd); } catch (_) {}
+        note('**Debug**\n- Provider: `' + activeProvider.baseURL + '`\n- Model: `' + (activeProvider.model || model) + '`\n- Tools: ' + (activeProvider.supportsTools ? 'on' : 'off') + '\n- Reasoning: `' + (reasoningLevel || 'auto') + '`\n- Swarm: ' + (activeSwarmEnabled ? 'on' : 'off') + '\n- Permission mode: `' + (permissions || 'auto') + '`\n- CWD: `' + (activeCwd || '~') + '`\n' + (gi && gi.isRepo ? '- Repo: `' + gi.root + '` on `' + gi.branch + '` (+' + gi.ahead + '/-' + gi.behind + ')' : '- Repo: none') + (v ? '\n- Build: ' + v.app + ' · Electron ' + v.electron : ''));
         break;
       }
       case 'doctor': {
@@ -1838,16 +1755,16 @@ export default function App() {
         let v = null;
         try { v = await window.autobot.getVersion(); } catch (_) {}
         checks.push((v ? '✅' : '❌') + ' App runtime' + (v ? ' (' + v.app + ')' : ''));
-        checks.push((provider.baseURL && provider.model ? '✅' : '❌') + ' Provider configured (' + (provider.model || 'none') + ')');
-        checks.push((provider.apiKey || provider.baseURL) ? '✅' : '⚠️' + ' Credentials');
+        checks.push((activeProvider.baseURL && activeProvider.model ? '✅' : '❌') + ' Provider configured (' + (activeProvider.model || 'none') + ')');
+        checks.push((activeProvider.apiKey || activeProvider.baseURL) ? '✅' : '⚠️' + ' Credentials');
         let gi = null;
-        try { gi = await window.autobot.gitInfo(cwd); } catch (_) {}
+        try { gi = await window.autobot.gitInfo(activeCwd); } catch (_) {}
         checks.push((gi && gi.isRepo ? '✅' : '⚠️') + ' Git repo ' + (gi && gi.isRepo ? gi.root : 'not detected'));
         let sk = [];
         try { sk = (await window.autobot.getSkills()) || []; } catch (_) {}
         checks.push('✅ Skills loaded: ' + sk.length);
         let hooks = null;
-        try { hooks = await window.autobot.getHooks(cwd); } catch (_) {}
+        try { hooks = await window.autobot.getHooks(activeCwd); } catch (_) {}
         const hookCount = hooks ? Object.values(hooks).reduce((n, a) => n + (Array.isArray(a) ? a.length : 0), 0) : 0;
         checks.push((hookCount ? '✅' : 'ℹ️') + ' Hooks: ' + hookCount);
         note('**Doctor**\n' + checks.join('\n') + '\n\nIf a provider check is red, open `/model` and re-enter the key.');
@@ -1856,8 +1773,8 @@ export default function App() {
       // ---------- workspace ----------
       case 'diff': {
         let gi = null;
-        try { gi = await window.autobot.gitInfo(cwd); } catch (_) {}
-        if (!gi || !gi.isRepo) { note('Not a git repository (`' + (cwd || '~') + '`).'); break; }
+        try { gi = await window.autobot.gitInfo(activeCwd); } catch (_) {}
+        if (!gi || !gi.isRepo) { note('Not a git repository (`' + (activeCwd || '~') + '`).'); break; }
         const c = gi.counts || {};
         let stat = null;
         try { stat = await window.autobot.gitRun(gi.root, ['diff', '--stat']); } catch (_) {}
@@ -1870,8 +1787,8 @@ export default function App() {
       case 'add-dir':
       case 'cwd': {
         const dir = String(argText || '').trim();
-        if (!dir) { note('Current working directory: `' + (cwd || '~') + '`\nUse `/add-dir <path>` to change it.'); break; }
-        setCwd(dir);
+        if (!dir) { note('Current working directory: `' + (activeCwd || '~') + '`\nUse `/add-dir <path>` to change it.'); break; }
+        setSessionCwd(dir);
         note('Working directory set to `' + dir + '`.');
         break;
       }
@@ -2005,17 +1922,17 @@ export default function App() {
       case 'swarm': {
         const clean = String(argText || '').trim();
         if (clean === 'off') {
-          setSwarmEnabled(false);
+          setSessionSwarmEnabled(false);
           note('Swarm mode **OFF**.');
           break;
         }
         if (clean === 'on' || !clean) {
-          const next = clean === 'on' ? true : !swarmEnabled;
-          setSwarmEnabled(next);
+          const next = clean === 'on' ? true : !activeSwarmEnabled;
+          setSessionSwarmEnabled(next);
           note('Swarm mode **' + (next ? 'ON' : 'OFF') + '** — multi-model Planner + role-pooled Swarm workers ' + (next ? 'enabled.' : 'disabled.'));
           break;
         }
-        setSwarmEnabled(true);
+        setSessionSwarmEnabled(true);
         if (!streaming) send(clean);
         else note('Swarm mode ON. Current run is still active.');
         break;
@@ -2112,16 +2029,16 @@ export default function App() {
         // Sign out the subscription this session is actually using (not a mock
         // identity). Clear the OAuth binding so the next turn falls back to the
         // configured gateway until an account is picked again.
-        const active = provider.oauthProvider || '';
-        if (active) {
-          const cut = active.indexOf(':');
-          const pid = cut > 0 ? active.slice(0, cut) : active;
-          const acct = cut > 0 ? active.slice(cut + 1) : '';
+        const activeAcct = activeProvider.oauthProvider || '';
+        if (activeAcct) {
+          const cut = activeAcct.indexOf(':');
+          const pid = cut > 0 ? activeAcct.slice(0, cut) : activeAcct;
+          const acct = cut > 0 ? activeAcct.slice(cut + 1) : '';
           try { await window.autobot.providerSignOut(pid, acct); } catch (_) { /* main may not hold it */ }
-          setProvider((v) => ({ ...v, oauthProvider: '', oauth: false, accessToken: '' }));
+          setSessionProvider((v) => ({ ...v, oauthProvider: '', oauth: false, accessToken: '' }));
         }
         setAccount((a) => ({ ...a, signedIn: false, email: '', authMethod: null, plan: 'Free' }));
-        note(active ? 'Signed out of the active provider account.' : 'No provider account is active.');
+        note(activeAcct ? 'Signed out of the active provider account.' : 'No provider account is active.');
         break;
       }
       case 'quit':
@@ -2266,7 +2183,7 @@ export default function App() {
       }
       case 'session': {
         const conv = convs.find((c) => c.id === activeId);
-        note('**Session** `' + (activeId || 'new') + '` — ' + (conv ? (conv.messages || []).length + ' messages, titled “' + (conv.title || 'Untitled') + '”' : 'not yet persisted') + '.\nWorking folder: `' + cwd + '`. Use `/export` to save the transcript.');
+        note('**Session** `' + (activeId || 'new') + '` — ' + (conv ? (conv.messages || []).length + ' messages, titled “' + (conv.title || 'Untitled') + '”' : 'not yet persisted') + '.\nWorking folder: `' + activeCwd + '`. Use `/export` to save the transcript.');
         break;
       }
       case 'remote-env': {
@@ -2278,13 +2195,13 @@ export default function App() {
         break;
       }
       case 'setup-bedrock': {
-        setProvider((v) => ({ ...v, baseURL: 'https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1', model: v.model || 'anthropic.claude-sonnet-4-5', apiKey: v.apiKey || '', supportsTools: true }));
+        setSessionProvider((v) => ({ ...v, baseURL: 'https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1', model: v.model || 'anthropic.claude-sonnet-4-5', apiKey: v.apiKey || '', supportsTools: true }));
         setShowSettings(true);
         note('**Amazon Bedrock** — Bedrock ships an OpenAI-compatible endpoint. Set the API key to a Bedrock API key (or `AWS_BEARER_TOKEN_BEDROCK`) and change the region in the URL, then press **Test** in Settings.');
         break;
       }
       case 'setup-vertex': {
-        setProvider((v) => ({ ...v, baseURL: 'https://us-central1-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/us-central1/endpoints/openapi', model: v.model || 'google/gemini-2.5-pro', apiKey: v.apiKey || '', supportsTools: true }));
+        setSessionProvider((v) => ({ ...v, baseURL: 'https://us-central1-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/us-central1/endpoints/openapi', model: v.model || 'google/gemini-2.5-pro', apiKey: v.apiKey || '', supportsTools: true }));
         setShowSettings(true);
         note('**Google Vertex AI** — replace `PROJECT_ID` with your GCP project, put an OAuth access token in the API key field, and press **Test** in Settings.');
         break;
@@ -2516,21 +2433,19 @@ export default function App() {
     openPreview, setCwd, setGoal, setCompliance, selectConv, newChat, inputRef,
   });
   const handleApplyPreset = useCallback((pid) => {
-    if ((pid === 'orchestrator' || pid === 'swarm') && !hasConfiguredOrchestratorModels(orchestrator)) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
-    const r = applyBeginnerPreset(pid, { provider, orchestrator, reasoningLevel, permissions });
-    setProvider(r.provider);
-    saveJSON('autobot:provider', { ...r.provider, _updatedAt: Date.now() });
-    try { window.autobot.setSettings?.({ provider: { ...r.provider, _updatedAt: Date.now() } }); } catch (_) {}
-    saveOrchestrator(r.orchestrator, { skipProviderSync: true });
-    setSwarmEnabled(r.swarmEnabled);
+    if ((pid === 'orchestrator' || pid === 'swarm') && !hasConfiguredOrchestratorModels(activeOrchestrator)) { setNotice(ORCH_SETUP_NOTICE); setSettingsInitialSection('orchestrator'); setShowSettings(true); return; }
+    const r = applyBeginnerPreset(pid, { provider: activeProvider, orchestrator: activeOrchestrator, reasoningLevel, permissions });
+    setSessionProvider(r.provider);
+    saveSessionOrchestrator(r.orchestrator, { skipProviderSync: true });
+    setSessionSwarmEnabled(r.swarmEnabled);
     setReasoningLevel(r.reasoningLevel);
     setPermissions(r.permissions);
-  }, [provider, orchestrator, reasoningLevel, permissions, saveOrchestrator]);
+  }, [activeProvider, activeOrchestrator, reasoningLevel, permissions, setSessionProvider, saveSessionOrchestrator, setSessionSwarmEnabled, setReasoningLevel]);
   const welcomeExtraEl = (
     <WelcomeQuickStartBar
-      provider={provider}
-      orchestrator={orchestrator}
-      swarmEnabled={swarmEnabled}
+      provider={activeProvider}
+      orchestrator={activeOrchestrator}
+      swarmEnabled={activeSwarmEnabled}
       onApplyPreset={handleApplyPreset}
       onOpenTutorial={openTutorial}
       onFillPrompt={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }}
@@ -2578,14 +2493,17 @@ export default function App() {
           </div>
         </div>
         <div className="ws-tabs" role="tablist" aria-label="Workspace sessions">
-          {visibleTabs.map((tab) => (
+          {visibleTabs.map((tab) => {
+            const tabCfg = getSessionBundle(tab.id);
+            const tabModel = String((tabCfg.provider && tabCfg.provider.model) || '').split('/').pop().trim();
+            return (
             <div
               key={tab.id}
               role="tab"
               aria-selected={tab.id === activeId && panel === 'chats'}
               className={'ws-tab' + (tab.id === activeId && panel === 'chats' ? ' on' : '')}
               onClick={() => selectConv(tab.id)}
-              title={tab.title || 'Untitled session'}
+              title={`${tab.title || 'Untitled session'}${tabModel ? ` · ${tabModel}` : ''}`}
             >
               {streamingConvIds.has(tab.id) && <span className="ws-tab-dot" />}
               {renderTabAlerts(tab.id)}
@@ -2594,7 +2512,8 @@ export default function App() {
                 <Icon name="X" size={10} />
               </button>
             </div>
-          ))}
+            );
+          })}
           <button type="button" className="ws-tab-add" title="New session tab" aria-label="New session tab" onClick={newChat}>
             <Icon name="Add" size={14} />
           </button>
@@ -2604,22 +2523,16 @@ export default function App() {
 
       {workbenchMode === 'ide' ? (
         <IdeWorkbench
-          cwd={cwd || ''}
-          setCwd={(dir) => {
-            setCwd(dir);
-            if (activeId && dir) {
-              saveJSON('autobot:workspace:' + activeId, dir);
-              try { window.autobot.setWorkspace(activeId, dir); } catch (_) {}
-            }
-          }}
+          cwd={activeCwd || ''}
+          setCwd={(dir) => setSessionCwd(dir)}
           theme={settings.theme}
           typography={settings.typography}
-          provider={provider}
-          orchestrator={orchestrator}
+          provider={activeProvider}
+          orchestrator={activeOrchestrator}
           envState={envState}
           contextPct={(() => {
-            const effU = effectiveUsageForConv(lastUsage, active, provider, liveForActive);
-            const win = contextWindowFor((effU && effU.model) || (provider && provider.model) || '');
+            const effU = effectiveUsageForConv(lastUsage, active, activeProvider, liveForActive);
+            const win = contextWindowFor((effU && effU.model) || (activeProvider && activeProvider.model) || '');
             const used = usedTokens(effU);
             if (!(win > 0 && used > 0)) return null;
             const raw = (used / win) * 100;
@@ -2699,7 +2612,7 @@ export default function App() {
                   onAnswer={answerQuestion}
                 />
                 <InputBar
-                  streaming={streaming} paused={paused} onPause={pauseRun} onResume={resumeRun} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
+                  streaming={streaming} paused={paused} onPause={pauseRun} onResume={resumeRun} send={send} stop={stop} inputRef={inputRef} cwd={activeCwd} setCwd={setSessionCwd} runSlashCommand={runSlashCommand}
                   queued={filterQueueForConv(queued, activeId)}
                   queuePaused={!!(activeId && queuePausedByConv[activeId])}
                   onToggleQueuePaused={() => toggleQueuePaused(activeId)}
@@ -2710,11 +2623,11 @@ export default function App() {
                   onUpdateQueueItemText={updateQueuedText}
                   unqueue={unqueue} sendQueuedNow={sendQueuedNow}
                   settings={settings} onVoiceError={setError}
-                  provider={provider} setProvider={setProvider} orchestrator={orchestrator} setOrchestrator={saveOrchestrator} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); if (opts && opts.notice) setNotice(opts.notice); openSettingsAt((opts && opts.section) || 'providers'); }}
+                  provider={activeProvider} setProvider={setSessionProvider} orchestrator={activeOrchestrator} setOrchestrator={saveSessionOrchestrator} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); if (opts && opts.notice) setNotice(opts.notice); openSettingsAt((opts && opts.section) || 'providers'); }}
                   providerKeys={providerKeys} setProviderKeys={setProviderKeys}
                   attachments={attachments} setAttachments={setAttachments}
                   reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
-                  swarmEnabled={swarmEnabled} setSwarmEnabled={setSwarmEnabled}
+                  swarmEnabled={activeSwarmEnabled} setSwarmEnabled={setSessionSwarmEnabled}
                   onOpenTutorial={openTutorial}
                   styleId={styleId} setStyleId={setStyleId}
                   customStyles={customStyles} customAgents={customAgents} onOpenCustomizations={() => { setWorkbenchMode('agent'); setPanel('customizations'); }}
@@ -2723,7 +2636,7 @@ export default function App() {
                   voiceMode={voiceMode} startVoiceMode={startVoiceMode} stopVoiceMode={stopVoiceMode}
                   sessionPane={sessionPane} toggleSessionPane={toggleSessionPane}
                   permissions={permissions} setPermissions={setPermissions}
-                  lastUsage={effectiveUsageForConv(lastUsage, active, provider, liveForActive)}
+                  lastUsage={effectiveUsageForConv(lastUsage, active, activeProvider, liveForActive)}
                   gdriveState={gdriveState}
                   onOpenGdrive={() => setGdriveModalOpen(true)}
                   envState={envState}
@@ -2851,8 +2764,8 @@ export default function App() {
         <main className="main">
           <div className="main-split">
             <div className="main-content">
-              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={cwd} uiSettings={settings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => openInIde(fp)} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} welcomeExtra={welcomeExtraEl} />}
-              {panel === 'search' && <SearchView convs={convs} cwd={cwd} initialTab={searchTab} provider={provider} onOpenSessionLink={openSessionDeepLink} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
+              {panel === 'chats' && <ChatView MessageComponent={MemoMessage} messages={messages} live={liveForActive} thinking={liveForActive ? thinking : ''} paused={paused} onScrollAway={setScrolledAway} subAgents={effectiveSubAgents} swarmInfo={effectiveSwarmInfo} swarmBoard={effectiveSwarmBoard} planMode={planMode} copyBlock={copyBlock} applyBlock={applyBlock} bottomRef={bottomRef} convId={activeId} cwd={activeCwd} uiSettings={settings} copyMessage={copyMessage} editMessage={editMessage} deleteMessage={deleteMessage} retryMessage={retryMessage} forkFromMessage={forkFromMessage} shareFromMessage={shareFromMessage} conv={active} exportConv={exportConv} T={T} runStartedAt={runStartedAt} envOpen={sessionPane.type === 'env'} onToggleEnv={() => toggleSessionPane('env')} runLogOpen={sessionPane.type === 'runlog'} onToggleRunLog={() => showSessionPane('runlog')} reviewOpen={sessionPane.type === 'review'} sessionPaneType={sessionPane.type} onOpenReview={openReview} onTogglePane={(tp) => (tp ? showSessionPane(tp) : toggleSessionPane())} onOpenPlugins={() => openSettingsAt('skills')} onLearnSkill={() => learnCurrentSession('')} onRenameConv={(title) => active && renameConv(active.id, title)} onPinConv={() => active && pinConv(active.id)} onArchiveConv={() => active && archiveConv(active.id)} onSplitConv={() => (active ? splitConv(active.id) : openReview({ scope: 'all' }))} onDeleteConv={() => active && deleteConv(active.id)} setError={setError} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }} onOpenInIde={(fp) => openInIde(fp)} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} welcomeExtra={welcomeExtraEl} />}
+              {panel === 'search' && <SearchView convs={convs} cwd={activeCwd} initialTab={searchTab} provider={activeProvider} onOpenSessionLink={openSessionDeepLink} onOpenConv={(convId, msgId) => { setActiveId(convId); setPanel('chats'); if (msgId) setPendingScroll(msgId); }} />}
               {panel === 'mission' && (
                 <MissionControlPane
                   convs={convs}
@@ -2882,21 +2795,21 @@ export default function App() {
                   Icon={Icon}
                 />
               )}
-              {panel === 'artifacts' && <ArtifactsView blocks={artifacts} tools={allActiveTools} cwd={cwd} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } setPanel('chats'); }} onOpenInIde={(fp) => openInIde(fp)} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} />}
-              {panel === 'media' && <MediaStudioView cwd={cwd} provider={provider} focusPath={mediaStudioFocusPath} onOpenInIde={(fp) => openInIde(fp)} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} setNotice={setNotice} setError={setError} />}
-              {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} convs={convs} provider={provider} onJumpToMessage={(cid, mid) => { if (cid) selectConv(cid); if (mid) setPendingScroll(mid); }} />}
+              {panel === 'artifacts' && <ArtifactsView blocks={artifacts} tools={allActiveTools} cwd={activeCwd} onPromptAction={(txt) => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } setPanel('chats'); }} onOpenInIde={(fp) => openInIde(fp)} onOpenMediaStudio={(fp) => { setMediaStudioFocusPath(fp || ''); setPanel('media'); }} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} />}
+              {panel === 'media' && <MediaStudioView cwd={activeCwd} provider={activeProvider} focusPath={mediaStudioFocusPath} onOpenInIde={(fp) => openInIde(fp)} onConfigureMediaKey={(keyId) => openSettingsAt('media', { focusMediaKey: keyId || '' })} setNotice={setNotice} setError={setError} />}
+              {panel === 'memory' && <MemoryView memory={memory} addMemory={addMemory} clearMemory={clearMemory} convs={convs} provider={activeProvider} onJumpToMessage={(cid, mid) => { if (cid) selectConv(cid); if (mid) setPendingScroll(mid); }} />}
               {panel === 'skills' && <SkillsView skills={skills} toggleSkill={toggleSkill} setAllSkills={setAllSkills} refreshSkills={refreshSkills} />}
               {panel === 'notebooks' && <NotebooksView notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells} openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook} />}
               {panel === 'mcp' && <McpView mcpServers={mcpServers} mcpForm={mcpForm} setMcpForm={setMcpForm} connectMcp={connectMcp} disconnectMcp={disconnectMcp} />}
               {panel === 'terminal' && <TerminalView terminal={terminal} setTerminal={setTerminal} startTerminal={startTerminal} runInTerminal={runInTerminal} writeTerminal={writeTerminal} killTerminal={killTerminal} />}
-              {panel === 'code' && <CodeView cwd={cwd} setCwd={setCwd} permissions={permissions} setPermissions={setPermissions} T={T} />}
+              {panel === 'code' && <CodeView cwd={activeCwd} setCwd={setSessionCwd} permissions={permissions} setPermissions={setPermissions} T={T} />}
               {panel === 'projects' && <ProjectsView projects={projects} setProjects={setProjects} activeProject={activeProject} setActiveProject={setActiveProject} />}
               {panel === 'plugins' && <PluginsView onOpenGdrive={() => setGdriveModalOpen(true)} gdriveState={gdriveState} />}
               {panel === 'scheduled' && (
                 <ScheduledView
-                  cwd={cwd}
+                  cwd={activeCwd}
                   convs={convs}
-                  provider={provider}
+                  provider={activeProvider}
                   projects={projects}
                   mcpServers={mcpServers}
                   envState={envState}
@@ -2907,7 +2820,7 @@ export default function App() {
               )}
               {panel === 'customizations' && (
                 <CustomizationsHub
-                  cwd={cwd}
+                  cwd={activeCwd}
                   skills={skills}
                   toggleSkill={toggleSkill}
                   refreshSkills={refreshSkills}
@@ -2932,7 +2845,7 @@ export default function App() {
             {sessionPane.type === 'browser' && (
               <SessionPane {...paneProps} icon="Globe" title={T('sidebar.browser')}>
                 <BrowserView
-                  cwd={cwd}
+                  cwd={activeCwd}
                   previewUrl={previewUrl}
                   onClose={() => setSessionPane((p) => ({ ...p, type: null }))}
                   onAttachInspect={(items, kind) => {
@@ -2948,14 +2861,14 @@ export default function App() {
             {sessionPane.type === 'env' && (
               <SessionPane {...paneProps} icon="DotsHorizontal" title="Environment">
                 <EnvPanel
-                  cwd={cwd} setCwd={setCwd} provider={provider} lastUsage={effectiveUsageForConv(lastUsage, active, provider, liveForActive)}
+                  cwd={activeCwd} setCwd={setSessionCwd} provider={activeProvider} lastUsage={effectiveUsageForConv(lastUsage, active, activeProvider, liveForActive)}
                   mcpServers={mcpServers} features={features} saveFeat={saveFeat}
                   runSlashCommand={runSlashCommand}
                   onOpenConnectors={() => openSettingsAt('mcp')}
                   envState={envState} refreshEnvState={refreshEnvState}
                   onSwitchEnvironment={switchEnvironment}
                   onOpenEnvironments={() => openSettingsAt('environments')}
-                  activeConv={active} skills={skills} swarmEnabled={swarmEnabled} permissions={permissions} setNotice={setNotice}
+                  activeConv={active} skills={skills} swarmEnabled={activeSwarmEnabled} permissions={permissions} setNotice={setNotice}
                   T={T}
                 />
               </SessionPane>
@@ -2969,11 +2882,11 @@ export default function App() {
               <SessionPane {...paneProps} icon="File" title="Review">
                 <CodeReviewPane
                   convId={activeId}
-                  cwd={cwd}
+                  cwd={activeCwd}
                   target={reviewTarget}
                   allTools={allActiveTools}
-                  provider={provider}
-                  orchestrator={orchestrator}
+                  provider={activeProvider}
+                  orchestrator={activeOrchestrator}
                   onSendComment={(txt) => send(txt)}
                   onRewindDone={(r) => setError(`✅ Rewound: restored ${(r && r.restored) || 0}, removed ${(r && r.removed) || 0}.`)}
                   onOpenFile={(fp) => openInIde(fp)}
@@ -2988,7 +2901,7 @@ export default function App() {
               <SessionPane {...paneProps} icon="Eye" title="Preview">
                 <DocPreviewPane
                   target={docPreviewTarget}
-                  cwd={cwd}
+                  cwd={activeCwd}
                   onOpenInIde={(fp, ln) => openInIde(fp, { line: ln })}
                   onOpenBrowser={(fp) => openPreview(fp)}
                   onNotice={setNotice}
@@ -3002,7 +2915,7 @@ export default function App() {
             )}
             {sessionPane.type === 'files' && (
               <SessionPane {...paneProps} icon="Files" title="Files">
-                <CodeView cwd={cwd} setCwd={setCwd} permissions={permissions} setPermissions={setPermissions} T={T} />
+                <CodeView cwd={activeCwd} setCwd={setSessionCwd} permissions={permissions} setPermissions={setPermissions} T={T} />
               </SessionPane>
             )}
             {sessionPane.type === 'terminal' && (
@@ -3012,7 +2925,7 @@ export default function App() {
             )}
             {sessionPane.type === 'mindmap' && (
               <SessionPane {...paneProps} icon="Grid" title="Mind Map">
-                <MindMapView cwd={cwd} theme={settings.theme === 'light' ? 'light' : 'dark'} onClose={() => closeSessionTab('mindmap')} />
+                <MindMapView cwd={activeCwd} theme={settings.theme === 'light' ? 'light' : 'dark'} onClose={() => closeSessionTab('mindmap')} />
               </SessionPane>
             )}
           </div>
@@ -3060,7 +2973,7 @@ export default function App() {
 
           {panel === 'chats' && (
             <InputBar
-              streaming={streaming} paused={paused} onPause={pauseRun} onResume={resumeRun} send={send} stop={stop} inputRef={inputRef} cwd={cwd} setCwd={setCwd} runSlashCommand={runSlashCommand}
+              streaming={streaming} paused={paused} onPause={pauseRun} onResume={resumeRun} send={send} stop={stop} inputRef={inputRef} cwd={activeCwd} setCwd={setSessionCwd} runSlashCommand={runSlashCommand}
               queued={filterQueueForConv(queued, activeId)}
               queuePaused={!!(activeId && queuePausedByConv[activeId])}
               onToggleQueuePaused={() => toggleQueuePaused(activeId)}
@@ -3071,11 +2984,11 @@ export default function App() {
               onUpdateQueueItemText={updateQueuedText}
               unqueue={unqueue} sendQueuedNow={sendQueuedNow}
               settings={settings} onVoiceError={setError}
-              provider={provider} setProvider={setProvider} orchestrator={orchestrator} setOrchestrator={saveOrchestrator} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); if (opts && opts.notice) setNotice(opts.notice); openSettingsAt((opts && opts.section) || 'providers'); }}
+              provider={activeProvider} setProvider={setSessionProvider} orchestrator={activeOrchestrator} setOrchestrator={saveSessionOrchestrator} modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen} openSettings={(opts) => { setPendingPreset(opts && opts.preset ? opts.preset : null); if (opts && opts.notice) setNotice(opts.notice); openSettingsAt((opts && opts.section) || 'providers'); }}
               providerKeys={providerKeys} setProviderKeys={setProviderKeys}
               attachments={attachments} setAttachments={setAttachments}
               reasoningLevel={reasoningLevel} setReasoningLevel={setReasoningLevel}
-              swarmEnabled={swarmEnabled} setSwarmEnabled={setSwarmEnabled}
+              swarmEnabled={activeSwarmEnabled} setSwarmEnabled={setSessionSwarmEnabled}
               onOpenTutorial={openTutorial}
               styleId={styleId} setStyleId={setStyleId}
               customStyles={customStyles} customAgents={customAgents} onOpenCustomizations={() => setPanel('customizations')}
@@ -3084,7 +2997,7 @@ export default function App() {
               voiceMode={voiceMode} startVoiceMode={startVoiceMode} stopVoiceMode={stopVoiceMode}
               sessionPane={sessionPane} toggleSessionPane={toggleSessionPane}
               permissions={permissions} setPermissions={setPermissions}
-              lastUsage={effectiveUsageForConv(lastUsage, active, provider, liveForActive)}
+              lastUsage={effectiveUsageForConv(lastUsage, active, activeProvider, liveForActive)}
               gdriveState={gdriveState}
               onOpenGdrive={() => setGdriveModalOpen(true)}
               envState={envState}
@@ -3102,11 +3015,11 @@ export default function App() {
       {tutorialState.open && (
         <InteractiveTutorialModal
           initialTab={tutorialState.tab}
-          provider={provider}
-          orchestrator={orchestrator}
-          swarmEnabled={swarmEnabled}
+          provider={activeProvider}
+          orchestrator={activeOrchestrator}
+          swarmEnabled={activeSwarmEnabled}
           permissions={permissions}
-          cwd={cwd}
+          cwd={activeCwd}
           mcpServers={mcpServers}
           providerKeys={providerKeys}
           onApplyPreset={handleApplyPreset}
@@ -3114,7 +3027,7 @@ export default function App() {
           onOpenSettings={(sec) => openSettingsAt(sec || 'providers')}
           onNewChat={newChat}
           onTogglePane={(tp) => toggleSessionPane(tp)}
-          onPickFolder={async () => { const d = await window.autobot.pickFolder(); if (d) { setCwd(d); if (activeId) window.autobot.setWorkspace(activeId, d).catch(() => {}); } }}
+          onPickFolder={async () => { const d = await window.autobot.pickFolder(); if (d) setSessionCwd(d); }}
           onFillPrompt={(txt) => { setPanel('chats'); setTimeout(() => { if (inputRef.current) { inputRef.current.value = txt; inputRef.current.dispatchEvent(new Event('input', { bubbles: true })); inputRef.current.focus(); } }, 30); }}
           onRunPrompt={(txt) => { setPanel('chats'); setTimeout(() => send(txt), 30); }}
         />
@@ -3122,8 +3035,8 @@ export default function App() {
 
       {showSettings && (
         <SettingsModal
-          provider={provider} setProvider={setProvider} providerKeys={providerKeys} setProviderKeys={setProviderKeys}
-          settings={settings} setSettings={setSettings} orchestrator={orchestrator} setOrchestrator={saveOrchestrator}
+          provider={activeProvider} setProvider={setProviderFromSettings} providerKeys={providerKeys} setProviderKeys={setProviderKeys}
+          settings={settings} setSettings={setSettings} orchestrator={activeOrchestrator} setOrchestrator={saveOrchestratorFromSettings}
           features={features} setFeatures={saveFeat} testProvider={testProvider}
           projects={projects} setProjects={setProjects} activeProject={activeProject} setActiveProject={setActiveProject}
           onClose={() => { setShowSettings(false); setPendingPreset(null); }}
@@ -3138,7 +3051,7 @@ export default function App() {
           onJumpToMessage={(cid, mid) => { if (cid) selectConv(cid); if (mid) setPendingScroll(mid); setShowSettings(false); }}
           notebooks={notebooks} activeNotebook={activeNotebook} notebookCells={notebookCells} setNotebookCells={setNotebookCells}
           openNotebook={openNotebook} newNotebook={newNotebook} saveActiveNotebook={saveActiveNotebook} deleteActiveNotebook={deleteActiveNotebook}
-          cwd={cwd} setCwd={setCwd} activeId={activeId}
+          cwd={activeCwd} setCwd={setSessionCwd} activeId={activeId}
           onOpenGdrive={() => setGdriveModalOpen(true)}
           gdriveState={gdriveState}
           envState={envState}
@@ -3192,8 +3105,8 @@ export default function App() {
       )}
 
       <ContextLimitToast
-        lastUsage={effectiveUsageForConv(lastUsage, active, provider, liveForActive)}
-        model={((effectiveUsageForConv(lastUsage, active, provider, liveForActive) || {}).model) || (provider && provider.model) || ''}
+        lastUsage={effectiveUsageForConv(lastUsage, active, activeProvider, liveForActive)}
+        model={((effectiveUsageForConv(lastUsage, active, activeProvider, liveForActive) || {}).model) || (activeProvider && activeProvider.model) || ''}
         T={T}
       />
     </div>

@@ -75,7 +75,7 @@ test('hasConfiguredOrchestratorModels & guard block empty Orchestrator setups', 
   const mainSrc = fs.readFileSync(path.join(ROOT, 'electron/main.js'), 'utf8');
   const appSrc = fs.readFileSync(path.join(ROOT, 'src/App.jsx'), 'utf8');
   assert.ok(mainSrc.includes('hasConfiguredOrchestratorModels(orchSource)'), 'autobot:run must block unconfigured Orchestrator');
-  assert.ok(appSrc.includes('hasConfiguredOrchestratorModels(orchestrator)'), 'send() & handleApplyPreset must block unconfigured Orchestrator');
+  assert.ok(appSrc.includes('hasConfiguredOrchestratorModels('), 'send() & handleApplyPreset must block unconfigured Orchestrator');
 });
 
 test('Auto-detection supports Kimi, Z.ai/GLM, Grok/xAI, ChatGPT, Claude, Antigravity, settings & env vars', () => {

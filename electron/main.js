@@ -794,6 +794,7 @@ ipcMain.handle('autobot:run', async (event, payload) => {
     return { ok: false, error: e.message, needsSignIn };
   }
   const ac = new AbortController();
+  try { require('events').setMaxListeners(0, ac.signal); } catch (_) {}
   const pauseCtrl = createPauseController();
   const owner = winFor(event); // route streaming events back to the originating window
   const turnId = 't' + Date.now();

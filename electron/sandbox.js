@@ -141,8 +141,8 @@ function anyMatch(list, target) {
 
 const PROTECTED_CREDENTIAL_FILES = [
   path.resolve(path.join(os.homedir(), '.autobot', 'secrets.json')),
+  path.resolve(path.join(os.homedir(), '.autobot', 'master.key')),
   path.resolve(path.join(os.homedir(), '.autobot', 'oauth.json')),
-  path.resolve(path.join(os.homedir(), '.autobot', 'oauth-mirror.json')),
 ];
 
 function realpathOrResolved(targetPath) {

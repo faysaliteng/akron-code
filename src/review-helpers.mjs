@@ -2,7 +2,7 @@
 
 export function fallbackDiffsFromTools(tools = []) {
   const byPath = new Map();
-  for (const t of tools || []) {
+  for (const t of (Array.isArray(tools) ? tools : [])) {
     if (!t) continue;
     const nm = String(t.name || '');
     if (nm !== 'Write' && nm !== 'Edit' && nm !== 'MultiEdit' && nm !== 'StrReplace') continue;
@@ -52,7 +52,8 @@ export function mergeDiffFiles(primary = [], secondary = []) {
   const normKey = (f) => String(f?.path || f?.relPath || '').replace(/\\/g, '/');
 
   const ingest = (list, preferRicher) => {
-    for (const item of list || []) {
+    if (!Array.isArray(list)) return;
+    for (const item of list) {
       if (!item || (!item.path && !item.relPath)) continue;
       const key = normKey(item);
       const existing = byKey.get(key)

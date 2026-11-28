@@ -35,10 +35,10 @@
 const { randomUUID } = require('node:crypto');
 
 const DEFAULT_ANTHROPIC_BASE = 'https://api.anthropic.com';
-const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
-// Antigravity has its own Cloud Code deployment; the Gemini-CLI one
-// (`cloudcode-pa.googleapis.com`) answers 403 for an Antigravity grant.
-const CLOUDCODE_BASE = 'https://daily-cloudcode-pa.googleapis.com/v1internal';
+const DEFAULT_OPENAI_BASE = 'https://api.openai.com/v1';
+const DEFAULT_GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const DEFAULT_XAI_BASE = 'https://api.x.ai/v1';
+const OFFICIAL_USER_AGENT = 'akron-code/1.6.9';
 
 // Context windows + auto-compact budgets. Pure data module, no imports, so this
 // does not create a cycle (and survives asar packing).
@@ -49,39 +49,10 @@ const usageEstimator = require('./usage-estimator');
 // window with headroom for its tokenizer being a little finer than ours.
 const LONG_CONTEXT_MIN_TOKENS = 190000;
 
-// Mimic the first-party CLI: subscription endpoints gate on these.
-//
-// The version token is itself a fingerprint the vendor validates, so it must
-// track the CLI we actually ship. Verified live: `claude-fable-5-2` answers
-// 400 "Claude Code 2.1.154 does not support this model; version 2.1.290 or
-// newer is required" until the UA claims a new enough build, on exactly the
-// same token that had worked for older models. The defaults below are a floor;
-// main.js injects the resolved runtime version at boot (and after every
-// install), so a self-update immediately unblocks newer models.
-const DEFAULT_CLIENT_VERSIONS = { claude: '2.1.332', codex: '0.172.0', grok: '1.0.92' };
-const clientVersions = { ...DEFAULT_CLIENT_VERSIONS };
-
-/** Adopt the versions of the CLIs on disk; unknown/garbage values are ignored. */
-function setClientVersions(v) {
-  if (v && typeof v === 'object') {
-    for (const k of Object.keys(clientVersions)) {
-      const m = String(v[k] || '').match(/(\d+\.\d+\.\d+)/);
-      if (m) clientVersions[k] = m[1];
-    }
-  }
-  return { ...clientVersions };
+/** No-op legacy shim retained for callers expecting setClientVersions(). */
+function setClientVersions() {
+  return {};
 }
-
-const claudeUa = () => 'claude-cli/' + clientVersions.claude + ' (external, cli)';
-const codexUa = () => 'codex-cli/' + clientVersions.codex;
-const CODEX_ORIGINATOR = 'codex_cli_rs';
-
-// Antigravity's license gate is a user-agent prefix check. Verified live: every
-// `antigravity/hub/<anything> (aidev_client; ...)` variant answers 200 while
-// `akron-bot/1.0` answers 403 `#3501 You do not have a valid license`. The
-// trailing `cl=` build stamp is not validated (000000000 works), but the whole
-// observed string is sent so a stricter future check still passes.
-const ANTIGRAVITY_UA = 'antigravity/hub/1.0.0 (aidev_client; os_type=darwin; arch=arm64; cl=1029194470)';
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 
@@ -117,8 +88,19 @@ async function fetchWithTimeout(url, options, label, customTimeoutMs = 0) {
     parent.addEventListener('abort', onParentAbort, { once: true });
   }
   const fn = (options && options.fetchImpl) || fetch;
+  let keepParentLink = false;
   try {
-    return await fn(url, { ...options, signal: ctrl.signal });
+    const res = await fn(url, { ...options, signal: ctrl.signal });
+    // Keep Stop wired to `ctrl` while `res.body` streams so Stop mid-reply
+    // immediately cancels the underlying socket; `openStream` / response cleanup
+    // invokes `res._cleanupAbort()` when the body settles.
+    if (parent && res && res.body) {
+      keepParentLink = true;
+      res._cleanupAbort = () => {
+        try { parent.removeEventListener('abort', onParentAbort); } catch (_) {}
+      };
+    }
+    return res;
   } catch (e) {
     if (timedOut && !(parent && parent.aborted)) {
       const err = new Error(`LLM ${label || 'provider'} connection timed out after ${Math.round(timeoutMs / 1000)}s`);
@@ -129,55 +111,106 @@ async function fetchWithTimeout(url, options, label, customTimeoutMs = 0) {
     throw e;
   } finally {
     clearTimeout(timer);
-    if (parent) parent.removeEventListener('abort', onParentAbort);
+    if (parent && !keepParentLink) parent.removeEventListener('abort', onParentAbort);
   }
 }
 
 async function openStream(res, signal) {
+  const detachResAbort = () => {
+    if (res && typeof res._cleanupAbort === 'function') {
+      try { res._cleanupAbort(); } catch (_) {}
+      res._cleanupAbort = null;
+    }
+  };
   const body = res && res.body;
-  if (!body || typeof body.getReader !== 'function') return { stream: null, isSse: false, empty: true };
+  if (!body || typeof body.getReader !== 'function') {
+    detachResAbort();
+    return { stream: null, isSse: false, empty: true };
+  }
   const reader = body.getReader();
   const stallMs = Number(process.env.HELIO_STREAM_STALL_MS) || 150000;
-  let stallTimer = null;
+
+  let streamAbortHandler = null;
+  const detachAll = () => {
+    detachResAbort();
+    if (signal && streamAbortHandler) {
+      try { signal.removeEventListener('abort', streamAbortHandler); } catch (_) {}
+      streamAbortHandler = null;
+    }
+  };
+
+  const readWithGuards = () => {
+    if (signal && signal.aborted) {
+      try { reader.cancel().catch(() => {}); } catch (_) {}
+      return Promise.reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }));
+    }
+    let stallTimer = null;
+    const stallPromise = new Promise((_, reject) => {
+      stallTimer = setTimeout(() => reject(Object.assign(new Error(`LLM stream stalled: no data for ${stallMs / 1000}s`), { transient: true })), stallMs);
+      if (stallTimer && typeof stallTimer.unref === 'function') stallTimer.unref();
+    });
+    let onSigAbort = null;
+    const abortPromise = signal ? new Promise((_, reject) => {
+      onSigAbort = () => {
+        try { reader.cancel().catch(() => {}); } catch (_) {}
+        reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }));
+      };
+      signal.addEventListener('abort', onSigAbort, { once: true });
+    }) : null;
+    const races = abortPromise ? [reader.read(), stallPromise, abortPromise] : [reader.read(), stallPromise];
+    return Promise.race(races).finally(() => {
+      clearTimeout(stallTimer);
+      if (signal && onSigAbort) {
+        try { signal.removeEventListener('abort', onSigAbort); } catch (_) {}
+      }
+    });
+  };
+
   let first;
   try {
-    first = await Promise.race([
-      reader.read(),
-      new Promise((_, reject) => {
-        stallTimer = setTimeout(() => reject(Object.assign(new Error(`LLM stream stalled: no data for ${stallMs / 1000}s`), { transient: true })), stallMs);
-      }),
-    ]);
+    first = await readWithGuards();
   } catch (e) {
-    clearTimeout(stallTimer);
+    detachAll();
     if (signal && signal.aborted) throw e;
-    if (e && e.transient) { try { reader.cancel(); } catch (_) {} throw e; }
+    if (e && e.transient) { try { reader.cancel().catch(() => {}); } catch (_) {} throw e; }
     return { stream: null, isSse: false, empty: true };
-  } finally {
-    clearTimeout(stallTimer);
   }
-  if (first.done) return { stream: null, isSse: false, empty: true };
+  if (first.done) {
+    detachAll();
+    return { stream: null, isSse: false, empty: true };
+  }
   const head = new TextDecoder().decode(first.value, { stream: true });
   const isSse = /^\s*(?:event|data)\s*:/.test(head);
   const stream = new ReadableStream({
-    start(c) { c.enqueue(first.value); },
+    start(c) {
+      c.enqueue(first.value);
+      if (signal) {
+        streamAbortHandler = () => {
+          try { reader.cancel().catch(() => {}); } catch (_) {}
+          try { c.error(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })); } catch (_) {}
+        };
+        if (signal.aborted) streamAbortHandler();
+        else signal.addEventListener('abort', streamAbortHandler, { once: true });
+      }
+    },
     async pull(c) {
-      let t = null;
       try {
-        const resChunk = await Promise.race([
-          reader.read(),
-          new Promise((_, reject) => {
-            t = setTimeout(() => reject(Object.assign(new Error(`LLM stream stalled: no data for ${stallMs / 1000}s`), { transient: true })), stallMs);
-          }),
-        ]);
-        clearTimeout(t);
-        if (resChunk.done) { c.close(); return; }
+        const resChunk = await readWithGuards();
+        if (resChunk.done) {
+          detachAll();
+          c.close();
+          return;
+        }
         c.enqueue(resChunk.value);
       } catch (e) {
-        clearTimeout(t);
+        detachAll();
         c.error(e);
       }
     },
-    cancel(reason) { try { reader.cancel(reason); } catch (_) {} },
+    cancel(reason) {
+      detachAll();
+      try { reader.cancel(reason).catch(() => {}); } catch (_) {}
+    },
   });
   return { stream, isSse, empty: false };
 }
@@ -333,20 +366,26 @@ function toolDeltaPayload(acc) {
 // subscription traffic needs the `oauth-2025-04-20` beta header, and `x-api-key`
 // is ignored on an OAuth token — it must be `Authorization: Bearer`.
 // ---------------------------------------------------------------------------
-// The first-party identity prompt, verbatim. Subscription OAuth traffic is
-// gated on it: without this exact system block the API answers
-// `429 rate_limit_error {"message":"Error"}` for every model, which reads like a
-// spent account but is really a "you are not Claude Code" rejection. Verified
-// live on this machine 2026-11-25 — same token, same model, 429 bare / 200 with
-// the block — so it is prepended rather than left to the caller.
-const CC_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
-
-function isAnthropicOauth(provider) {
-  const tok = String((provider && (provider.accessToken || provider.apiKey)) || '');
-  return !!(provider && provider.oauth) || /^sk-ant-oat/.test(tok);
+function assertOfficialApiKey(provider, envVarNames, label) {
+  const explicitKey = String((provider && provider.apiKey) || '').trim();
+  const tok = String((provider && provider.accessToken) || '').trim();
+  if ((provider && (provider.oauth || provider.oauthProvider)) && !explicitKey) {
+    const err = new Error(`Subscription models for ${label} must run through the official CLI runner, not direct OAuth HTTPS transport.`);
+    err.code = 'cli_transport_required';
+    throw err;
+  }
+  if (/^sk-ant-oat/i.test(explicitKey || tok)) {
+    const err = new Error('Anthropic subscription OAuth tokens cannot be sent via direct HTTPS transport; use Claude Code CLI mode or an official x-api-key.');
+    err.code = 'cli_transport_required';
+    throw err;
+  }
+  if (explicitKey) return explicitKey;
+  for (const name of (envVarNames || [])) {
+    const val = String(process.env[name] || '').trim();
+    if (val) return val;
+  }
+  return '';
 }
-
-const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 
 function formatResetIn(iso) {
   const t = Date.parse(iso || '');
@@ -360,67 +399,18 @@ function formatResetIn(iso) {
   return new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-/**
- * Turn a Claude subscription 429 into a fact instead of a guess. The OAuth usage
- * endpoint reports both allowance windows and when each resets, so the banner
- * can say "the 5-hour allowance is 100% used, resets at 2:30 AM" instead of
- * "rate limiting this key" after five rounds of 45 s backoff. Only subscription
- * tokens can read it — API keys cannot.
- */
-async function claudeAllowanceHint(provider) {
-  try {
-    const { headers, oauth } = anthropicAuth(provider);
-    if (!oauth) return '';
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 2500);
-    let res;
-    try {
-      res = await fetch(CLAUDE_USAGE_URL, {
-        headers: { authorization: headers.authorization, 'anthropic-beta': headers['anthropic-beta'] },
-        signal: ctrl.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!res || !res.ok) return '';
-    const j = await res.json().catch(() => null);
-    if (!j) return '';
-    const wins = ['five_hour', 'seven_day']
-      .map((k) => ({ k, w: j[k] }))
-      .filter((x) => x.w && Number.isFinite(Number(x.w.utilization)));
-    if (!wins.length) return '';
-    // Name the window that is actually blocking this request.
-    const hit = wins.find((x) => Number(x.w.utilization) >= 99.5) || wins[0];
-    const util = Number(hit.w.utilization);
-    const pct = Math.max(0, Math.min(100, Math.round(util)));
-    const label = hit.k === 'five_hour' ? '5-hour' : '7-day';
-    const when = formatResetIn(hit.w.resets_at);
-    let hint = `the Claude plan's ${label} allowance is ${pct}% used${when ? ` (resets ${when})` : ''}`;
-    if (util >= 99.5) hint += '; send this request again after the reset — nothing in the conversation is lost';
-    return hint;
-  } catch (_) {
-    return '';
-  }
-}
-
 function anthropicAuth(provider) {
-  const tok = String(provider.accessToken || provider.apiKey || '');
-  const oauth = isAnthropicOauth(provider);
-  const headers = {
-    'content-type': 'application/json',
-    accept: 'text/event-stream',
-    'anthropic-version': '2023-06-01',
+  const apiKey = assertOfficialApiKey(provider, ['ANTHROPIC_API_KEY'], 'anthropic');
+  return {
+    oauth: false,
+    headers: {
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'anthropic-version': '2023-06-01',
+      'x-api-key': apiKey,
+      'user-agent': OFFICIAL_USER_AGENT,
+    },
   };
-  if (oauth) {
-    headers.authorization = 'Bearer ' + tok;
-    headers['anthropic-beta'] = 'oauth-2025-04-20';
-    headers['user-agent'] = claudeUa();
-    headers['x-app'] = 'cli';
-  } else {
-    headers['x-api-key'] = tok;
-    headers['user-agent'] = 'akron-bot/1.0';
-  }
-  return { headers, oauth };
 }
 
 /**
@@ -567,13 +557,6 @@ function toAnthropicBody(provider, messages, tools, maxTokens) {
     else if (cur.content.length) out.push(cur);
   }
 
-  // OAuth/subscription turns must lead with the Claude Code identity prompt.
-  if (isAnthropicOauth(provider)) {
-    const lead = systemParts[0] && String(systemParts[0].text || '');
-    if (!lead || !lead.startsWith(CC_IDENTITY)) {
-      systemParts.unshift({ type: 'text', text: CC_IDENTITY });
-    }
-  }
   const wantMax = Number(maxTokens) > 0 ? Number(maxTokens) : 32000;
   const rLevel = String((provider && provider.reasoningLevel) || '').toLowerCase();
   const thinkingBudgets = { low: 2048, medium: 8192, high: 16384 };
@@ -676,8 +659,10 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   const estTokens = catalog.tokensForChars(payload.length);
   const bigTurn = estTokens > LONG_CONTEXT_MIN_TOKENS;
   const longBeta = catalog.supportsLongContext(model) && bigTurn;
-  const shortBeta = headers['anthropic-beta'];
-  if (longBeta) headers['anthropic-beta'] = shortBeta + ',' + catalog.LONG_CONTEXT_BETA;
+  const shortBeta = headers['anthropic-beta'] || '';
+  if (longBeta) {
+    headers['anthropic-beta'] = shortBeta ? (shortBeta + ',' + catalog.LONG_CONTEXT_BETA) : catalog.LONG_CONTEXT_BETA;
+  }
 
   const connectTimeoutMs = (body.thinking || /(opus|fable|sonnet|pro)/i.test(model)) ? 180000 : 120000;
   const post = (hdrs) => fetchWithTimeout(base + '/v1/messages', {
@@ -685,8 +670,15 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   }, 'anthropic', connectTimeoutMs);
 
   let res = await post(headers);
-    if (!res.ok && body.thinking && res.status === 400) {
+  const detachResAbort = (r) => {
+    if (r && typeof r._cleanupAbort === 'function') {
+      try { r._cleanupAbort(); } catch (_) {}
+      r._cleanupAbort = null;
+    }
+  };
+  if (!res.ok && body.thinking && res.status === 400) {
     const rejectedThink = await res.text().catch(() => '');
+    detachResAbort(res);
     if (/thinking|signature|budget_tokens|redacted_thinking/i.test(rejectedThink)) {
       const noThinkBody = { ...body };
       delete noThinkBody.thinking;
@@ -699,6 +691,7 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   }
   if (!res.ok && bigTurn && res.status === 400) {
     const rejected = await res.text().catch(() => '');
+    detachResAbort(res);
     // The endpoint refused a turn sized for a window larger than the default.
     // Either the beta is not entitled, or the model does not really serve the
     // 1M its catalog advertises for this account. Retrying the identical request
@@ -714,6 +707,7 @@ async function anthropicChat(provider, messages, tools, onDelta, signal, maxToke
   }
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
+    detachResAbort(res);
     // Opt-in forensic dump: when a subscription turn is rejected it is usually
     // the *shape* of the request, not the credential, so keep the exact payload
     // that was refused (never the headers — they carry the bearer token).
@@ -991,7 +985,11 @@ async function responsesChat(o) {
   const res = o.fetchImpl
     ? await o.fetchImpl(o.url, { method: 'POST', headers: o.headers, body: JSON.stringify(o.body), signal: o.signal })
     : await fetchWithTimeout(o.url, { method: 'POST', headers: o.headers, body: JSON.stringify(o.body), signal: o.signal }, label, connectTimeoutMs);
-  if (!res.ok) throw httpError(label, res, await res.text().catch(() => ''));
+  if (!res.ok) {
+    const errTxt = await res.text().catch(() => '');
+    if (res._cleanupAbort) { try { res._cleanupAbort(); } catch (_) {} res._cleanupAbort = null; }
+    throw httpError(label, res, errTxt);
+  }
 
   const opened = await openStream(res, o.signal);
 
@@ -1108,6 +1106,7 @@ async function responsesChat(o) {
 }
 
 async function codexChat(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
+  const apiKey = assertOfficialApiKey(provider, ['OPENAI_API_KEY'], 'openai');
   const { instructions, input } = toCodexInput(messages);
   const body = {
     model: provider.model,
@@ -1128,20 +1127,15 @@ async function codexChat(provider, messages, tools, onDelta, signal, maxTokensOv
   const headers = {
     'content-type': 'application/json',
     accept: 'text/event-stream',
-    authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
-    originator: CODEX_ORIGINATOR,
-    'openai-beta': 'responses=experimental',
-    // Impersonating the shipped CLI here is not cosmetic: the subscription
-    // endpoint gates model entitlement on the client the request claims to be,
-    // and an unknown agent string is rejected outright.
-    'user-agent': codexUa(),
+    authorization: 'Bearer ' + apiKey,
+    'user-agent': OFFICIAL_USER_AGENT,
   };
-  if (provider.accountId) headers['chatgpt-account-id'] = String(provider.accountId);
-  if (provider.sessionId) headers.session_id = String(provider.sessionId);
+  const base = trimBase(provider.baseURL || DEFAULT_OPENAI_BASE);
+  const url = /\/responses$/.test(base) ? base : base + '/responses';
 
   return responsesChat({
-    label: 'codex',
-    url: trimBase(provider.codexUrl || CODEX_RESPONSES_URL),
+    label: 'openai',
+    url,
     headers,
     body,
     onDelta,
@@ -1254,10 +1248,6 @@ function geminiFinish(reason) {
     return 'content_filter';
   }
   return 'stop';
-}
-
-function cloudcodeBase(provider) {
-  return trimBase((provider && provider.cloudcodeUrl) || CLOUDCODE_BASE);
 }
 
 // Antigravity's own Cloud Code deployment issues per-model context windows
@@ -1374,27 +1364,38 @@ function googleModelList(json) {
 }
 
 async function googleModels(provider, signal) {
-  const res = await fetch(cloudcodeBase(provider) + ':fetchAvailableModels', {
-    method: 'POST',
+  const apiKey = assertOfficialApiKey(provider, ['GEMINI_API_KEY', 'GOOGLE_API_KEY'], 'google');
+  const base = trimBase(provider.baseURL || DEFAULT_GEMINI_BASE);
+  const res = await fetch(base + '/models', {
+    method: 'GET',
     headers: {
-      'content-type': 'application/json',
-      authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
-      'user-agent': ANTIGRAVITY_UA,
+      accept: 'application/json',
+      'x-goog-api-key': apiKey,
+      'user-agent': OFFICIAL_USER_AGENT,
     },
-    body: '{}',
     signal,
   });
   const text = await res.text().catch(() => '');
-  if (!res.ok) throw httpError('antigravity', res, text);
+  if (!res.ok) throw httpError('google', res, text);
   let json = null;
   try { json = JSON.parse(text); } catch (_) { return []; }
-  const list = googleModelList(json);
-  if (!list.length) {
-    const err = new Error('LLM antigravity: no models are available for this account — sign in to Antigravity once, then retry');
-    err.status = 403;
-    throw err;
+  const rawModels = Array.isArray(json && json.models) ? json.models : [];
+  if (rawModels.length) {
+    return rawModels.map((m) => {
+      const id = String(m.name || m.id || '').replace(/^models\//, '');
+      const cap = num(m.inputTokenLimit || m.contextWindow || m.maxTokens);
+      const thinks = /^gemini-(?:2\.5|[3-9])/i.test(id) || /thinking/i.test(id);
+      return {
+        id,
+        label: String(m.displayName || id),
+        contextWindow: cap,
+        thinking: thinks,
+        thinkingLevels: thinks ? ['auto', 'low', 'medium', 'high'] : [],
+        group: 'Gemini',
+      };
+    }).filter((m) => m.id);
   }
-  return list;
+  return googleModelList(json || {});
 }
 
 // ── Gemini function declarations ───────────────────────────────────────────
@@ -1515,6 +1516,7 @@ function toGeminiDeclarations(tools) {
 }
 
 async function googleChat(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
+  const apiKey = assertOfficialApiKey(provider, ['GEMINI_API_KEY', 'GOOGLE_API_KEY'], 'google');
   const { systemParts, contents } = toGeminiContents(messages, provider && provider.model);
   const want = Number(maxTokensOverride || provider.maxTokens) > 0
     ? Number(maxTokensOverride || provider.maxTokens) : 32000;
@@ -1532,35 +1534,45 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
     const declarations = toGeminiDeclarations(tools);
     if (declarations.length) request.tools = [{ functionDeclarations: declarations }];
   }
-  // Verified live against `daily-cloudcode-pa`: no `project` field is needed
-  // (sending one is what produced the old `403 The caller does not have
-  // permission`), and `requestType`/`userAgent` mirror the desktop client.
-  const body = { model: provider.model, request, userAgent: 'antigravity', requestType: 'agent' };
+  const base = trimBase(provider.baseURL || DEFAULT_GEMINI_BASE).replace(/\/openai$/, '');
+  const modelPath = encodeURIComponent(modelStr.replace(/^models\//, ''));
+  const endpointUrl = `${base}/models/${modelPath}:streamGenerateContent?alt=sse`;
   const isSlowThinkingModel = !!(generationConfig.thinkingConfig || /(carbon|neon|opus|fable|sonnet|pro|gemini-(?:2\.5|[3-9]))/i.test(modelStr));
   const connectTimeoutMs = isSlowThinkingModel ? 180000 : 120000;
-  const postGoogle = (payloadObj) => fetchWithTimeout(cloudcodeBase(provider) + ':streamGenerateContent?alt=sse', {
+  const postGoogle = (payloadObj) => fetchWithTimeout(endpointUrl, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       accept: 'text/event-stream',
-      authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
-      'user-agent': ANTIGRAVITY_UA,
+      'x-goog-api-key': apiKey,
+      'user-agent': OFFICIAL_USER_AGENT,
     },
     body: JSON.stringify(payloadObj),
     signal,
-  }, 'antigravity', connectTimeoutMs);
+  }, 'google', connectTimeoutMs);
 
-  let res = await postGoogle(body);
+  let res = await postGoogle(request);
+  const detachGoogleAbort = (r) => {
+    if (r && typeof r._cleanupAbort === 'function') {
+      try { r._cleanupAbort(); } catch (_) {}
+      r._cleanupAbort = null;
+    }
+  };
   if (!res.ok && generationConfig.thinkingConfig && res.status === 400) {
     const errBody = await res.text().catch(() => '');
+    detachGoogleAbort(res);
     if (/thinking|thinkingConfig|thinking_budget/i.test(errBody)) {
       const strippedReq = { ...request, generationConfig: { maxOutputTokens: want } };
-      res = await postGoogle({ ...body, request: strippedReq });
+      res = await postGoogle(strippedReq);
     } else {
-      throw httpError('antigravity', res, errBody);
+      throw httpError('google', res, errBody);
     }
   }
-  if (!res.ok) throw httpError('antigravity', res, await res.text().catch(() => ''));
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    detachGoogleAbort(res);
+    throw httpError('google', res, errBody);
+  }
 
   const message = { role: 'assistant', content: '', tool_calls: [] };
   let callSeq = 0;
@@ -1643,98 +1655,10 @@ async function googleChat(provider, messages, tools, onDelta, signal, maxTokensO
 }
 
 // ---------------------------------------------------------------------------
-// xAI Grok — subscription `responses` through the first-party CLI proxy
-//
-// Endpoint: https://cli-chat-proxy.grok.com/v1/responses (verified live: a bad
-// bearer answers 401 from *this* host, so the route exists). The body shape is
-// the OpenAI Responses shape with the CLI proxy's extra `include`/`text`
-// fields; the subscription path also sends two token-auth headers. Wire-format
-// unit-tested, not field-verified — no Grok subscription credential exists on
-// this machine.
+// xAI Grok — official API (`/responses` on `https://api.x.ai/v1`)
 // ---------------------------------------------------------------------------
-const GROK_RESPONSES_URL = 'https://cli-chat-proxy.grok.com/v1/responses';
-// The proxy gates subscription sampling on `x-grok-client-version` and rejects
-// anything below a rolling minimum with `HTTP 426` ("Your Grok CLI version
-// (x.y.z) is outdated. Please update to version 1.0.13 or later"). The gate is
-// header-derived, not package-derived: the published crate/npm versions ahead of
-// it are `@xai-official/grok` 1.0.92 (stable) / 1.0.93 (alpha). One constant
-// feeds both the UA and the gate header so they can never disagree — a mismatch
-// is itself a fingerprint the proxy can reject.
-const GROK_PRODUCT = 'grok-shell';
-const grokUa = () => GROK_PRODUCT + '/' + clientVersions.grok + ' (macos; aarch64)';
-// Subscription sampling is billed against the Grok Build credit pool, not the
-// SuperGrok plan itself, so a paying account can still answer `402 Grok Build
-// usage balance exhausted` (verified live: 100% of the weekly allowance spent).
-// That response carries no numbers, so read the account's own credit config to
-// say *why* and *when it resets* instead of showing a bare 402.
-const GROK_CREDITS_URL = 'https://grok.com/rest/grok/credits';
-const GROK_CREDITS_TTL_MS = 5 * 60 * 1000;
-let grokCreditsCache = { at: 0, text: '' };
-
-async function grokCreditHint(provider) {
-  if (Date.now() - grokCreditsCache.at < GROK_CREDITS_TTL_MS) return grokCreditsCache.text;
-  let text = '';
-  try {
-    const headers = {
-      authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
-      accept: 'application/json',
-      'user-agent': grokUa(),
-      'x-xai-token-auth': 'xai-grok-cli',
-      'x-grok-client-identifier': GROK_PRODUCT,
-      'x-grok-client-version': clientVersions.grok,
-    };
-    const r = await fetch(GROK_CREDITS_URL, {
-      headers, signal: AbortSignal.timeout(8000),
-    });
-    if (r.ok) {
-      const j = await r.json();
-      const c = (j && j.config) || {};
-      const period = c.currentPeriod || {};
-      const used = Number(c.creditUsagePercent);
-      const cents = Number((c.prepaidBalance && c.prepaidBalance.val) || 0);
-      const bits = [];
-      if (Number.isFinite(used)) {
-        const cycle = /WEEKLY/i.test(String(period.type || '')) ? 'this week' : 'this period';
-        bits.push(`the Grok Build allowance is ${Math.round(used)}% used ${cycle}`);
-      }
-      if (period.end) bits.push(`it resets ${String(period.end).slice(0, 10)}`);
-      if (!cents && !c.onDemandCap) bits.push('prepaid balance is $0 and on-demand top-up is off');
-      text = bits.join('; ');
-    }
-  } catch (_) { /* the hint is best-effort; the 402 still surfaces */ }
-  grokCreditsCache = { at: Date.now(), text };
-  return text;
-}
-
-/**
- * The exact header set the shipped Grok CLI sends. Exported so diagnostics can
- * hit `/v1/settings` and `/v1/models` with the same identity as inference —
- * a different header set there returns 426/403 for reasons unrelated to the
- * account's entitlement.
- */
-function grokHeaders(provider) {
-  const convId = String(provider.sessionId || provider.conversationId || randomUUID());
-  const reqId = String(provider.requestId || randomUUID());
-  const agentId = String(provider.agentId || randomUUID());
-  const headers = {
-    'content-type': 'application/json',
-    accept: 'text/event-stream',
-    authorization: 'Bearer ' + (provider.accessToken || provider.apiKey || ''),
-    'user-agent': grokUa(),
-    'x-xai-token-auth': 'xai-grok-cli',
-    'x-grok-client-identifier': GROK_PRODUCT,
-    'x-grok-client-version': clientVersions.grok,
-    'x-grok-model-override': String(provider.model || ''),
-    'x-grok-conv-id': convId,
-    'x-grok-req-id': reqId,
-    'x-grok-session-id': convId,
-    'x-grok-agent-id': agentId,
-  };
-  if (provider.accountId) headers['x-grok-user-id'] = String(provider.accountId);
-  return headers;
-}
-
 function grokChat(provider, messages, tools, onDelta, signal, maxTokensOverride, onToolDelta) {
+  const apiKey = assertOfficialApiKey(provider, ['XAI_API_KEY'], 'grok');
   const { instructions, input } = toCodexInput(messages);
   const toolDefs = toCodexTools(tools);
   const body = {
@@ -1758,15 +1682,14 @@ function grokChat(provider, messages, tools, onDelta, signal, maxTokensOverride,
     ? Number(maxTokensOverride || provider.maxTokens) : 0;
   if (maxOut) body.max_output_tokens = maxOut;
 
-  // Mirror `GrokRequestHeaders::apply()` from xai-grok-sampler: the proxy reads
-  // the conversation/request/session/agent ids, so a request without them is
-  // visibly not the CLI even when the version gate passes.
-  const headers = grokHeaders(provider);
+  const headers = {
+    'content-type': 'application/json',
+    accept: 'text/event-stream',
+    authorization: 'Bearer ' + apiKey,
+    'user-agent': OFFICIAL_USER_AGENT,
+  };
 
-  // `provider.baseURL` is the `/v1` root from the provider registry; the
-  // subscription route is `<root>/responses`. If a caller already hands us a
-  // full `/responses` URL, don't append a second one.
-  const root = trimBase(provider.baseURL || GROK_RESPONSES_URL);
+  const root = trimBase(provider.baseURL || DEFAULT_XAI_BASE);
   const url = /\/responses$/.test(root) ? root : root + '/responses';
 
   return responsesChat({
@@ -1777,14 +1700,6 @@ function grokChat(provider, messages, tools, onDelta, signal, maxTokensOverride,
     onDelta,
     onToolDelta,
     signal,
-  }).catch(async (err) => {
-    // A 402 here means the account's Grok Build credit pool, not the request.
-    // Enrich it once so the banner explains the situation and the reset date.
-    if (err && Number(err.status) === 402) {
-      const hint = await grokCreditHint(provider);
-      if (hint) err.hint = hint;
-    }
-    throw err;
   });
 }
 
@@ -1798,7 +1713,7 @@ const ADAPTERS = {
   grok: grokChat,
 };
 
-/** True when this provider needs a native adapter instead of /chat/completions. */
+/** True when this provider uses a non-`/chat/completions` official REST adapter. */
 function needsTransport(provider) {
   return !!(provider && ADAPTERS[provider.transport]);
 }
@@ -1810,27 +1725,13 @@ function chatCompletion(provider, messages, tools, onDelta, signal, maxTokensOve
 }
 
 /**
- * Fetch a provider's LIVE model catalog, normalized to the one shape the picker
- * and the token-budget module both consume:
- *
- *   { id, label, contextWindow, thinking, group? }
- *
- * Each subscription exposes its own inventory and it changes without warning
- * (Claude Max listed 15 models on the verification machine, Antigravity 38), so
- * a hardcoded list in the renderer goes stale immediately. When a provider does
- * not advertise a window we return `contextWindow: 0` and let
- * `model-catalog.js` apply its documented rule instead of inventing a number.
- *
- * @param {object} provider hydrated provider (transport + bearer token)
- * @returns {Promise<Array<{id:string,label:string,contextWindow:number,thinking:boolean}>>}
+ * Fetch a provider's model catalog using official API keys only.
  */
 async function listModels(provider, signal) {
   const effSignal = signal || AbortSignal.timeout(15000);
   const transport = String((provider && provider.transport) || '');
-  const token = (provider && (provider.accessToken || provider.apiKey)) || '';
 
   if (transport === 'google') {
-    // Antigravity advertises `maxTokens` per model — the authoritative source.
     return googleModels(provider, effSignal);
   }
 
@@ -1845,12 +1746,6 @@ async function listModels(provider, signal) {
     if (!res.ok) throw httpError('anthropic', res, text);
     let json = null;
     try { json = JSON.parse(text); } catch (_) { return []; }
-    // `max_input_tokens` is the *input* window and is authoritative — measured
-    // live 2026-11-26: 15 models, 11 of them advertise 1 000 000 (the whole 5.x
-    // line plus opus/sonnet 4-6..4-8) and the 4-5 pair advertises 200 000.
-    // `max_tokens` is the output cap (128k), never a context window, so it is
-    // deliberately not used as a fallback. When the field is absent we return 0
-    // and `model-catalog`'s documented rule fills the number in.
     const winOf = (m) => num(m.max_input_tokens || m.context_window || m.max_context_window || m.contextWindow);
     return (json.data || []).map((m) => {
       const id = String(m.id || '');
@@ -1874,32 +1769,25 @@ async function listModels(provider, signal) {
   }
 
   if (transport === 'codex') {
-    const base = trimBase(provider.codexUrl || CODEX_RESPONSES_URL).replace(/\/responses$/, '');
-    const headers = {
-      accept: 'application/json',
-      authorization: 'Bearer ' + token,
-      originator: CODEX_ORIGINATOR,
-      'user-agent': codexUa(),
-    };
-    if (provider.accountId) headers['chatgpt-account-id'] = String(provider.accountId);
-    // Field-verified: `/codex/models` without `client_version` answers
-    // 400 `missing query param client_version`; with the shipped CLI's own
-    // version it returns the models this account is actually entitled to.
-    const res = await fetch(base + '/models?client_version=' + encodeURIComponent(clientVersions.codex), { headers, signal: effSignal });
+    const apiKey = assertOfficialApiKey(provider, ['OPENAI_API_KEY'], 'openai');
+    const base = trimBase(provider.baseURL || DEFAULT_OPENAI_BASE).replace(/\/responses$/, '');
+    const res = await fetch(base + '/models', {
+      headers: {
+        accept: 'application/json',
+        authorization: 'Bearer ' + apiKey,
+        'user-agent': OFFICIAL_USER_AGENT,
+      },
+      signal: effSignal,
+    });
     const text = await res.text().catch(() => '');
-    if (!res.ok) throw httpError('codex', res, text);
+    if (!res.ok) throw httpError('openai', res, text);
     let json = null;
     try { json = JSON.parse(text); } catch (_) { return []; }
     const list = json.data || json.models || (Array.isArray(json) ? json : []);
     return list.map((m) => {
       const id = String(m.id || m.model || m.slug || '');
-      const modesRaw = Array.isArray(m.supported_reasoning_levels)
-        ? m.supported_reasoning_levels.map((x) => (typeof x === 'string' ? x : (x && x.effort))).filter(Boolean)
-        : (Array.isArray(m.reasoning_efforts) ? m.reasoning_efforts : (Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : []));
-      const thinks = m.supports_reasoning !== false;
-      const levels = thinks
-        ? (modesRaw.length ? ['auto', ...modesRaw] : (/\b(gpt-5\.[1-9]|codex)\b/i.test(id) ? ['auto', 'low', 'medium', 'high', 'xhigh'] : ['auto', 'low', 'medium', 'high']))
-        : [];
+      const thinks = /\b(gpt-5|o[1-4]|codex)\b/i.test(id);
+      const levels = thinks ? ['auto', 'low', 'medium', 'high', 'xhigh'] : [];
       return {
         id,
         label: String(m.display_name || m.displayName || id),
@@ -1911,8 +1799,14 @@ async function listModels(provider, signal) {
   }
 
   if (transport === 'grok') {
-    const res = await fetch('https://cli-chat-proxy.grok.com/v1/models', {
-      headers: Object.assign({}, grokHeaders(provider), { accept: 'application/json' }),
+    const apiKey = assertOfficialApiKey(provider, ['XAI_API_KEY'], 'grok');
+    const base = trimBase(provider.baseURL || DEFAULT_XAI_BASE).replace(/\/responses$/, '');
+    const res = await fetch(base + '/models', {
+      headers: {
+        accept: 'application/json',
+        authorization: 'Bearer ' + apiKey,
+        'user-agent': OFFICIAL_USER_AGENT,
+      },
       signal: effSignal,
     });
     const text = await res.text().catch(() => '');
@@ -1922,14 +1816,13 @@ async function listModels(provider, signal) {
     const list = json.data || json.models || (Array.isArray(json) ? json : []);
     return list.map((m) => {
       const id = String(m.id || m.model || '');
-      const modes = Array.isArray(m.reasoning_efforts) ? m.reasoning_efforts : (Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : []);
-      const thinks = modes.length > 0 || /grok-[3-9]/.test(id);
+      const thinks = /grok-[3-9]/.test(id);
       return {
         id,
         label: String(m.display_name || m.displayName || m.name || id),
         contextWindow: num(m.context_window || m.contextLength || m.max_context_window || m.max_tokens),
         thinking: thinks,
-        thinkingLevels: thinks ? (modes.length ? ['auto', ...modes] : ['auto', 'low', 'medium', 'high']) : [],
+        thinkingLevels: thinks ? ['auto', 'low', 'medium', 'high'] : [],
       };
     }).filter((m) => m.id);
   }
@@ -1947,11 +1840,9 @@ module.exports = {
   _internal: {
     httpError, sseEvents, toAnthropicBody, anthropicAuth, anthropicFinish, sanitizeToolCallId,
     toCodexInput, toCodexTools, toGeminiContents, geminiFinish, responsesChat,
-    googleModels, googleModelList, ANTIGRAVITY_UA,
+    googleModels, googleModelList, OFFICIAL_USER_AGENT,
     toGeminiSchema, toGeminiDeclarations,
-    claudeUa, codexUa, grokUa, clientVersions, setClientVersions, DEFAULT_CLIENT_VERSIONS,
-    CODEX_RESPONSES_URL, GROK_RESPONSES_URL, CLOUDCODE_BASE, DEFAULT_ANTHROPIC_BASE, cloudcodeBase,
-    grokHeaders, GROK_PRODUCT, GROK_CREDITS_URL, grokCreditHint,
-    claudeAllowanceHint, CLAUDE_USAGE_URL, formatResetIn,
+    setClientVersions, formatResetIn, assertOfficialApiKey,
+    DEFAULT_ANTHROPIC_BASE, DEFAULT_OPENAI_BASE, DEFAULT_GEMINI_BASE, DEFAULT_XAI_BASE,
   },
 };

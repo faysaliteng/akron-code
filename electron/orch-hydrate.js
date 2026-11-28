@@ -31,9 +31,16 @@
  */
 function isRemoteUnkeyedRow(entry, resolved) {
   if (!entry || typeof entry !== 'object') return false;
-  if (entry.oauthProvider || entry.oauth) return false;
+  const rOauth = Boolean((resolved && (resolved.oauthProvider || resolved.oauth || resolved.transport)) || entry.oauthProvider || entry.oauth || entry.transport);
+  if (rOauth) return false;
   const base = String((resolved && resolved.baseURL) || entry.baseURL || '').trim();
-  if (!base) return false;
+  if (!base) return true;
+  const isOllamaNoKey = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):11434(\/v1)?\/?$/i.test(base)
+    && !String((resolved && resolved.apiKey) || entry.apiKey || '').trim();
+  const modelId = String((resolved && resolved.model) || entry.model || '').trim();
+  if (isOllamaNoKey && /^(claude-|gpt-|o[1-4](?:-|$)|codex|gemini-|grok-)/i.test(modelId)) {
+    return true;
+  }
   const isLocalNoKey = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(base)
     && !/(localhost|127\.0\.0\.1):(3001|31415)\b/i.test(base);
   if (isLocalNoKey) return false;
